@@ -6,10 +6,71 @@
 
 use lichen_core::{
     Block, CanonicalCommitCertificate, Hash, Mempool, Pubkey, StateBatch, StateStore, TxProcessor,
+    MAX_COMPUTE_BUDGET,
 };
 use std::path::Path;
 use std::time::Instant;
 use tracing::{debug, info};
+
+/// Maximum number of user transactions admitted to a live BFT proposal.
+///
+/// Proposal construction and proposal validation both execute these
+/// transactions before voting. This hard count bound limits signature,
+/// serialization, and per-transaction overhead even when transactions declare
+/// tiny compute budgets. The mandatory parent commit certificate is appended
+/// separately and does not count against this limit.
+pub const BFT_PROPOSAL_TRANSACTION_LIMIT: usize = 16;
+
+/// Maximum total transaction entries in a live BFT proposal.
+///
+/// Heights after the genesis child carry exactly one protocol-generated parent
+/// commit certificate in addition to the bounded user workload. Enforcing the
+/// total before block-signature verification prevents a faulty proposer from
+/// using arbitrarily many consensus-typed envelopes to bypass the user count.
+pub const BFT_PROPOSAL_TOTAL_TRANSACTION_LIMIT: usize = BFT_PROPOSAL_TRANSACTION_LIMIT + 1;
+
+/// Maximum aggregate declared compute budget in a live BFT proposal.
+///
+/// Two maximum-budget transactions, or fourteen default-budget transactions,
+/// fit in one proposal. The same deterministic limit is enforced before a
+/// validator executes a received proposal, so an elected but faulty proposer
+/// cannot recreate the unbounded backlog stall.
+pub const BFT_PROPOSAL_COMPUTE_LIMIT: u64 = 2 * MAX_COMPUTE_BUDGET;
+
+pub fn validate_bft_proposal_limits(block: &Block) -> Result<(), String> {
+    if block.transactions.len() > BFT_PROPOSAL_TOTAL_TRANSACTION_LIMIT {
+        return Err(format!(
+            "proposal carries {} total transaction entries; limit is {BFT_PROPOSAL_TOTAL_TRANSACTION_LIMIT}",
+            block.transactions.len()
+        ));
+    }
+
+    let mut user_transactions = 0usize;
+    let mut aggregate_compute = 0u64;
+
+    for transaction in block
+        .transactions
+        .iter()
+        .filter(|transaction| !transaction.is_consensus())
+    {
+        user_transactions = user_transactions.saturating_add(1);
+        if user_transactions > BFT_PROPOSAL_TRANSACTION_LIMIT {
+            return Err(format!(
+                "proposal carries {user_transactions} user transactions; limit is {BFT_PROPOSAL_TRANSACTION_LIMIT}"
+            ));
+        }
+        aggregate_compute = aggregate_compute
+            .checked_add(transaction.message.effective_compute_budget())
+            .ok_or_else(|| "proposal aggregate compute budget overflowed".to_string())?;
+        if aggregate_compute > BFT_PROPOSAL_COMPUTE_LIMIT {
+            return Err(format!(
+                "proposal declares {aggregate_compute} aggregate compute units; limit is {BFT_PROPOSAL_COMPUTE_LIMIT}"
+            ));
+        }
+    }
+
+    Ok(())
+}
 
 /// Compute the minimum delay (in milliseconds) the proposer should wait
 /// after committing before building the next block, so that wall-clock
@@ -76,6 +137,7 @@ pub fn build_block(
     validator_pubkey: &Pubkey,
     oracle_prices: Vec<(String, u64)>,
     max_transactions: usize,
+    max_compute_units: u64,
     bft_timestamp: Option<u64>,
 ) -> Result<(Block, Vec<Hash>), String> {
     let build_started = Instant::now();
@@ -88,12 +150,22 @@ pub fn build_block(
     let collect_started = Instant::now();
     let mut stale_hashes = Vec::new();
     let tx_limit = max_transactions.min(2000);
-    let pending: Vec<_> = if tx_limit == 0 {
+    let pending: Vec<_> = if tx_limit == 0 || max_compute_units == 0 {
         Vec::new()
     } else {
+        let mut selected_compute_units = 0u64;
         mempool
             .get_top_transactions(tx_limit)
             .into_iter()
+            .take_while(|transaction| {
+                let next_compute_units = selected_compute_units
+                    .saturating_add(transaction.message.effective_compute_budget());
+                if next_compute_units > max_compute_units {
+                    return false;
+                }
+                selected_compute_units = next_compute_units;
+                true
+            })
             .filter(|tx| {
                 let tx_hash = tx.hash();
                 match state.has_hot_transaction(&tx_hash) {
@@ -293,7 +365,10 @@ pub fn build_block(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lichen_core::{Account, Instruction, Keypair, Message, Transaction, SYSTEM_PROGRAM_ID};
+    use lichen_core::{
+        Account, Instruction, Keypair, Message, Transaction, DEFAULT_COMPUTE_BUDGET,
+        SYSTEM_PROGRAM_ID,
+    };
     use tempfile::tempdir;
 
     fn signed_transfer(
@@ -343,6 +418,7 @@ mod tests {
             &validator,
             Vec::new(),
             2000,
+            u64::MAX,
             None,
         )
         .unwrap();
@@ -443,6 +519,7 @@ mod tests {
             &validator,
             Vec::new(),
             2000,
+            u64::MAX,
             None,
         )
         .unwrap();
@@ -491,6 +568,7 @@ mod tests {
             &validator,
             Vec::new(),
             0,
+            u64::MAX,
             None,
         )
         .unwrap();
@@ -499,6 +577,129 @@ mod tests {
         assert!(processed.is_empty());
         assert!(mempool.contains(&tx_hash));
         assert!(state.get_transaction(&tx_hash).unwrap().is_none());
+    }
+
+    #[test]
+    fn live_bft_proposal_limit_leaves_backlog_for_later_blocks() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let validator = Pubkey([7u8; 32]);
+        let processor = TxProcessor::new(state.clone());
+        let mut mempool = Mempool::new(100, 300);
+
+        let alice_kp = Keypair::generate();
+        let alice = alice_kp.pubkey();
+        let treasury = Pubkey([3u8; 32]);
+        state.set_treasury_pubkey(&treasury).unwrap();
+        state
+            .put_account(&treasury, &Account::new(0, treasury))
+            .unwrap();
+        state
+            .put_account(&alice, &Account::new(1000, alice))
+            .unwrap();
+
+        let parent = Block::genesis(Hash::hash(b"parent-state"), 1, Vec::new());
+        let parent_hash = parent.hash();
+        state.put_block(&parent).unwrap();
+        state.set_last_slot(0).unwrap();
+
+        let mut pending_hashes = Vec::new();
+        for index in 0..BFT_PROPOSAL_TRANSACTION_LIMIT {
+            let transaction = signed_transfer(
+                &alice_kp,
+                alice,
+                Pubkey([index as u8 + 20; 32]),
+                1,
+                parent_hash,
+            );
+            pending_hashes.push(transaction.hash());
+            mempool
+                .add_transaction(transaction, index as u64 + 1, 0)
+                .unwrap();
+        }
+
+        let (block, processed) = build_block(
+            &state,
+            &mut mempool,
+            &processor,
+            temp.path(),
+            1,
+            parent_hash,
+            &validator,
+            Vec::new(),
+            BFT_PROPOSAL_TRANSACTION_LIMIT,
+            BFT_PROPOSAL_COMPUTE_LIMIT,
+            None,
+        )
+        .unwrap();
+
+        let expected = (BFT_PROPOSAL_COMPUTE_LIMIT / DEFAULT_COMPUTE_BUDGET) as usize;
+        assert!(expected < BFT_PROPOSAL_TRANSACTION_LIMIT);
+        assert_eq!(block.transactions.len(), expected);
+        assert_eq!(processed.len(), expected);
+        assert!(pending_hashes.iter().all(|hash| mempool.contains(hash)));
+        validate_bft_proposal_limits(&block).unwrap();
+    }
+
+    #[test]
+    fn received_bft_proposal_limits_reject_count_and_compute_excess() {
+        let normal_transaction = |marker: u8, compute_budget: Option<u64>| {
+            let mut message = Message::new(
+                vec![Instruction {
+                    program_id: SYSTEM_PROGRAM_ID,
+                    accounts: vec![Pubkey([marker; 32]), Pubkey([marker + 1; 32])],
+                    data: vec![0; 9],
+                }],
+                Hash::hash(&[marker]),
+            );
+            message.compute_budget = compute_budget;
+            Transaction::new(message)
+        };
+
+        let count_excess = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::default(),
+            [7; 32],
+            (0..=BFT_PROPOSAL_TRANSACTION_LIMIT)
+                .map(|index| normal_transaction(index as u8 + 1, Some(1)))
+                .collect(),
+            1,
+        );
+        assert!(validate_bft_proposal_limits(&count_excess)
+            .unwrap_err()
+            .contains("user transactions"));
+
+        let compute_excess = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::default(),
+            [8; 32],
+            (0..3)
+                .map(|index| normal_transaction(index + 40, Some(lichen_core::MAX_COMPUTE_BUDGET)))
+                .collect(),
+            1,
+        );
+        assert!(validate_bft_proposal_limits(&compute_excess)
+            .unwrap_err()
+            .contains("aggregate compute units"));
+
+        let consensus_entry = Transaction {
+            signatures: Vec::new(),
+            message: Message::new(Vec::new(), Hash::default()),
+            tx_type: lichen_core::TransactionType::Consensus,
+        };
+        let total_entry_excess = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::default(),
+            [9; 32],
+            vec![consensus_entry; BFT_PROPOSAL_TOTAL_TRANSACTION_LIMIT + 1],
+            1,
+        );
+        assert!(validate_bft_proposal_limits(&total_entry_excess)
+            .unwrap_err()
+            .contains("total transaction entries"));
     }
 
     #[test]
@@ -541,6 +742,7 @@ mod tests {
             &validator,
             Vec::new(),
             2000,
+            u64::MAX,
             None,
         )
         .unwrap();
@@ -600,6 +802,7 @@ mod tests {
             &validator,
             Vec::new(),
             2000,
+            u64::MAX,
             None,
         )
         .unwrap();
@@ -655,6 +858,7 @@ mod tests {
             &validator,
             Vec::new(),
             2000,
+            u64::MAX,
             None,
         )
         .unwrap();
@@ -735,6 +939,7 @@ mod tests {
             &validator.pubkey(),
             Vec::new(),
             2000,
+            u64::MAX,
             None,
         )
         .unwrap();

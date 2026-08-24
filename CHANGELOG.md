@@ -5,6 +5,42 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.258] - 2026-08-24
+
+### Fixed
+- Bounds every live BFT proposal to at most 16 user transactions, 17 total
+  transaction entries including the mandatory parent certificate, and 2.8
+  million aggregate declared compute units. The same limits are enforced
+  before signature verification or execution of a received proposal, so
+  neither a recovered backlog nor a faulty proposer can consume the proposal
+  timeout and halt finality.
+- Restores the validator oracle-attestation defaults to a 30-second minimum,
+  60-second maximum staleness, and 10-basis-point change threshold. Explicit
+  operator overrides remain supported.
+- Keeps slot-addressed public block reads on slot-addressed hot/cold/Archive V2
+  fallbacks. A missing recent replay body outside catalog coverage can no
+  longer trigger an unbounded Archive V2 block-by-hash scan across every
+  segment and monopolize validator runtime workers.
+- Replays an immutable cached response for an exact duplicate snapshot-chunk
+  request instead of re-exporting the same expensive category ahead of the
+  receiver's next chunk. Snapshot transfers also retain their commit-certified
+  source across authenticated reconnect announcement gaps, reject node or
+  validator identity changes, ignore late metadata while pinned, invalidate
+  pruned checkpoint advertisements, and restart replacement-source discovery
+  from the short retry window.
+
+### Tests
+- Adds a four-validator regression gate that pauses finality, admits a
+  96-transaction backlog, resumes the quorum, verifies every transaction
+  finalizes through bounded proposals, and requires all validators to
+  reconverge and continue advancing.
+- Adds a state-level regression proving a missing recent block body outside the
+  catalog returns without reading or decoding any Archive V2 object.
+- Extends the exact four-validator gate through fresh full-archive,
+  verified-cache, and consensus joins; source loss; corrupt segment/cache
+  quarantine and repair; own-state and coordinated restarts; and immutable
+  public-history and Archive V2 catalog parity.
+
 ## [0.5.257] - 2026-08-23
 
 ### Fixed

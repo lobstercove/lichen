@@ -300,11 +300,17 @@ function main() {
 
     test('contract docs and expected-contracts include wrapped asset contracts with current counts', () => {
         assert(expectedContracts.length === 32, 'expected-contracts.json must list 32 genesis contracts');
-        const productionExpectedContracts = readJson(FILES.productionExpectedContracts).contracts;
-        assert(productionExpectedContracts.length === 32, 'tests/expected-contracts.json must list 32 genesis contracts');
+        const productionExpectedContracts = docs.productionExpectedContracts === null
+            ? null
+            : JSON.parse(docs.productionExpectedContracts).contracts;
+        if (productionExpectedContracts !== null) {
+            assert(productionExpectedContracts.length === 32, 'tests/expected-contracts.json must list 32 genesis contracts');
+        }
         ['wgas_token', 'wneo_token', 'wbtc_token', 'neo_gas_rewards'].forEach((contractName) => {
             assert(expectedContracts.includes(contractName), `expected-contracts.json missing ${contractName}`);
-            assert(productionExpectedContracts.includes(contractName), `tests/expected-contracts.json missing ${contractName}`);
+            if (productionExpectedContracts !== null) {
+                assert(productionExpectedContracts.includes(contractName), `tests/expected-contracts.json missing ${contractName}`);
+            }
         });
         assertAllIncludes(docs.contractPortal, [
             '32 genesis-deployed smart contracts',

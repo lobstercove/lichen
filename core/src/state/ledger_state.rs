@@ -732,33 +732,37 @@ impl StateStore {
                 Ok(Some(block))
             }
             Ok(None) => {
-                if self.legacy_cold_history_reads_enabled() {
-                    if let Some(ref cold) = self.cold_db {
-                        if let Some(cold_cf) = cold.cf_handle(COLD_CF_BLOCKS) {
-                            if let Ok(Some(data)) = cold.get_cf(&cold_cf, hash.0) {
-                                let block: Block = if data.first() == Some(&0xBC) {
-                                    deserialize_legacy_bincode(&data[1..], "cold block").map_err(
-                                        |e| {
-                                            format!(
-                                                "Failed to deserialize cold block (bincode): {}",
-                                                e
-                                            )
-                                        },
-                                    )?
-                                } else {
-                                    serde_json::from_slice(&data).map_err(|e| {
-                                        format!("Failed to deserialize cold block (json): {}", e)
-                                    })?
-                                };
-                                return Ok(Some(block));
-                            }
-                        }
-                    }
+                if let Some(block) = self.get_legacy_cold_block(hash)? {
+                    return Ok(Some(block));
                 }
                 self.archive_v2_block_by_hash(hash)
             }
             Err(e) => Err(format!("Database error: {}", e)),
         }
+    }
+
+    fn get_legacy_cold_block(&self, hash: &Hash) -> Result<Option<Block>, String> {
+        if !self.legacy_cold_history_reads_enabled() {
+            return Ok(None);
+        }
+        let Some(cold) = self.cold_db.as_ref() else {
+            return Ok(None);
+        };
+        let Some(cold_cf) = cold.cf_handle(COLD_CF_BLOCKS) else {
+            return Ok(None);
+        };
+        let data = match cold.get_cf(&cold_cf, hash.0) {
+            Ok(Some(data)) => data,
+            Ok(None) | Err(_) => return Ok(None),
+        };
+        let block = if data.first() == Some(&0xBC) {
+            deserialize_legacy_bincode(&data[1..], "cold block")
+                .map_err(|error| format!("Failed to deserialize cold block (bincode): {error}"))?
+        } else {
+            serde_json::from_slice(&data)
+                .map_err(|error| format!("Failed to deserialize cold block (json): {error}"))?
+        };
+        Ok(Some(block))
     }
 
     /// Get a canonical block only when both its slot mapping and body are
@@ -830,25 +834,40 @@ impl StateStore {
             .db
             .cf_handle(CF_SLOTS)
             .ok_or_else(|| "Slots CF not found".to_string())?;
-
-        match self.db.get_cf(&slot_cf, slot.to_be_bytes()) {
-            Ok(Some(hash_bytes)) => {
-                if hash_bytes.len() != 32 {
-                    return Err(format!(
-                        "Invalid canonical slot hash length at slot {slot}: {}",
-                        hash_bytes.len()
-                    ));
-                }
-                let mut hash = [0u8; 32];
-                hash.copy_from_slice(&hash_bytes);
-                match self.get_block(&Hash(hash))? {
-                    Some(block) => Ok(Some(block)),
-                    None => self.archive_v2_block_by_slot(slot),
-                }
-            }
-            Ok(None) => self.archive_v2_block_by_slot(slot),
-            Err(e) => Err(format!("Database error: {}", e)),
+        let Some(hash_bytes) = self
+            .db
+            .get_cf(&slot_cf, slot.to_be_bytes())
+            .map_err(|error| format!("Database error: {error}"))?
+        else {
+            return self.archive_v2_block_by_slot(slot);
+        };
+        if hash_bytes.len() != 32 {
+            return Err(format!(
+                "Invalid canonical slot hash length at slot {slot}: {}",
+                hash_bytes.len()
+            ));
         }
+
+        if let Some(block) = self.get_hot_block_by_slot(slot)? {
+            return Ok(Some(block));
+        }
+
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&hash_bytes);
+        if let Some(block) = self.get_legacy_cold_block(&Hash(hash))? {
+            if block.header.slot != slot || block.hash().0.as_slice() != hash_bytes.as_slice() {
+                return Err(format!(
+                    "canonical cold block {slot} conflicts with its slot index"
+                ));
+            }
+            return Ok(Some(block));
+        }
+
+        // A slot lookup already supplies the exact catalog key. Falling back
+        // through block-by-hash would decode every Archive V2 segment when the
+        // hash belongs to a recent header-only replay row outside catalog
+        // coverage. That unbounded scan can monopolize the validator runtime.
+        self.archive_v2_block_by_slot(slot)
     }
 
     /// Verify that every canonical block in an inclusive range is physically

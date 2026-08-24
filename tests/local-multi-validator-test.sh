@@ -46,6 +46,7 @@ RUN_LAUNCHPAD_E2E="${LICHEN_RUN_LAUNCHPAD_E2E:-0}"
 RUN_VOLUME_E2E="${LICHEN_RUN_VOLUME_E2E:-0}"
 SKIP_LOCAL_GATE_BUILD="${LICHEN_SKIP_LOCAL_GATE_BUILD:-0}"
 LIVE_PAUSE_GAP_SLOTS="${LICHEN_LIVE_PAUSE_GAP_SLOTS:-140}"
+BACKLOG_REGRESSION_TXS="${LICHEN_BACKLOG_REGRESSION_TXS:-96}"
 ARCHIVE_V2_HTTPS_SOURCE_PID=""
 ARCHIVE_V2_HTTPS_SOURCE_ROOT=""
 ARCHIVE_V2_HTTPS_SOURCE_CA=""
@@ -647,6 +648,152 @@ verify_chain_producing() {
     ok "Chain alive ($label): $diff blocks in ${seconds}s (slot $s1 → $s2)"
 }
 
+verify_loaded_backlog_liveness() {
+    [[ "$MAX_VALIDATORS" -ge 4 ]] || return 0
+    [[ "$BACKLOG_REGRESSION_TXS" =~ ^[1-9][0-9]*$ ]] \
+        || fail "LICHEN_BACKLOG_REGRESSION_TXS must be a positive integer"
+
+    local wallet_metadata wallet recipient accepted=0 amount output signature
+    local first_failure=""
+    local before_stall after_stall resume_slot target_slot current_slot
+    local signatures_file="/tmp/lichen-testnet/rg-403-signatures.txt"
+    local -a backlog_logs=()
+    local -a backlog_log_starts=()
+    wallet_metadata="$(db_path 1)/genesis-wallet.json"
+    wallet="$(python3 -c '
+import json
+import pathlib
+import sys
+
+metadata = pathlib.Path(sys.argv[1]).resolve()
+base = metadata.parent
+wallet = json.loads(metadata.read_text())
+relative = next(
+    (
+        entry.get("keypair_path")
+        for entry in wallet.get("distribution_wallets", [])
+        if entry.get("role") == "builder_grants"
+    ),
+    None,
+)
+if not isinstance(relative, str) or not relative:
+    raise SystemExit("missing canonical funded distribution keypair path")
+candidate = (base / relative).resolve()
+candidate.relative_to(base)
+print(candidate)
+' "$wallet_metadata")" || fail "RG-403 could not resolve V1's canonical funded distribution keypair"
+    recipient="${ALL_PUBKEYS[1]}"
+    [[ -f "$wallet" ]] || fail "RG-403 requires V1's canonical funded distribution keypair"
+    : > "$signatures_file"
+
+    log "═══════════════════════════════════════════════════════════"
+    log "RG-403: Recovering a ${BACKLOG_REGRESSION_TXS}-transaction mempool backlog"
+    log "═══════════════════════════════════════════════════════════"
+
+    for validator_num in $(seq 1 "$MAX_VALIDATORS"); do
+        local active_log
+        active_log="${VALIDATOR_LOGS[$validator_num]:-$(log_path "$validator_num")}"
+        [[ -f "$active_log" ]] \
+            || fail "RG-403 cannot inspect V${validator_num}'s active validator log: $active_log"
+        backlog_logs[$validator_num]="$active_log"
+        backlog_log_starts[$validator_num]="$(( $(wc -l < "$active_log") + 1 ))"
+    done
+
+    for validator_num in 2 3 4; do
+        signal_validator_pid_tree "${VALIDATOR_PIDS[$validator_num]:-}" STOP
+    done
+
+    before_stall="$(get_slot "$V1_RPC")"
+    sleep 2
+    after_stall="$(get_slot "$V1_RPC")"
+    if (( after_stall - before_stall > 2 )); then
+        for validator_num in 2 3 4; do
+            signal_validator_pid_tree "${VALIDATOR_PIDS[$validator_num]:-}" CONT
+        done
+        fail "RG-403 could not establish a no-quorum backlog window"
+    fi
+
+    for tx_num in $(seq 1 "$BACKLOG_REGRESSION_TXS"); do
+        amount="$(printf '0.%06d' "$tx_num")"
+        if output="$("$REPO_ROOT/target/release/lichen" transfer \
+            "$recipient" "$amount" \
+            --keypair "$wallet" \
+            --rpc-url "http://127.0.0.1:${V1_RPC}" 2>&1)"; then
+            signature="$(sed -nE 's/^.*Signature:[[:space:]]*([0-9a-f]+).*$/\1/p' <<< "$output" | tail -n 1)"
+            if [[ -n "$signature" ]]; then
+                printf '%s\n' "$signature" >> "$signatures_file"
+                accepted=$((accepted + 1))
+            fi
+        elif [[ -z "$first_failure" ]]; then
+            first_failure="$output"
+        fi
+    done
+
+    if (( accepted != BACKLOG_REGRESSION_TXS )); then
+        for validator_num in 2 3 4; do
+            signal_validator_pid_tree "${VALIDATOR_PIDS[$validator_num]:-}" CONT
+        done
+        [[ -z "$first_failure" ]] || warn "RG-403 first admission failure: $(tail -n 1 <<< "$first_failure")"
+        fail "RG-403 admitted ${accepted}/${BACKLOG_REGRESSION_TXS} backlog transactions"
+    fi
+    ok "RG-403 admitted all ${accepted} transactions while finality was paused"
+
+    resume_slot="$(get_slot "$V1_RPC")"
+    target_slot=$((resume_slot + accepted + 20))
+    for validator_num in 2 3 4; do
+        signal_validator_pid_tree "${VALIDATOR_PIDS[$validator_num]:-}" CONT
+    done
+
+    local recovered=false
+    for _ in $(seq 1 60); do
+        sleep 1
+        current_slot="$(get_slot "$V1_RPC")"
+        if (( current_slot >= target_slot )); then
+            recovered=true
+            break
+        fi
+    done
+    $recovered || fail "RG-403 did not drain the bounded backlog while advancing finality"
+
+    local confirmed=0 response
+    while IFS= read -r signature; do
+        response="$(rpc_query_params "$V1_RPC" getTransaction "[\"${signature}\"]")"
+        if python3 -c '
+import json
+import sys
+result = json.load(sys.stdin).get("result")
+raise SystemExit(0 if isinstance(result, dict) else 1)
+' <<< "$response"; then
+            confirmed=$((confirmed + 1))
+        fi
+    done < "$signatures_file"
+    (( confirmed == accepted )) \
+        || fail "RG-403 finalized ${confirmed}/${accepted} admitted transactions"
+
+    local max_block_txs=0 observed_max
+    for validator_num in $(seq 1 "$MAX_VALIDATORS"); do
+        observed_max="$({
+            tail -n "+${backlog_log_starts[$validator_num]}" \
+                "${backlog_logs[$validator_num]}" \
+                | awk '/COMMITTED/' \
+                | sed -nE 's/^.*txs:[[:space:]]*([0-9]+).*$/\1/p'
+            } | sort -nr | head -n 1)"
+        observed_max="${observed_max:-0}"
+        (( observed_max > max_block_txs )) && max_block_txs="$observed_max"
+    done
+    # The production BFT budget admits at most fourteen default-budget user
+    # transfers plus the mandatory parent commit certificate.
+    (( max_block_txs <= 15 )) \
+        || fail "RG-403 observed a ${max_block_txs}-transaction block above the bounded default-compute proposal limit"
+    (( max_block_txs > 1 )) \
+        || fail "RG-403 did not observe a transaction-bearing backlog block in the active validator logs"
+
+    wait_for_cluster_slot_spread 20 60 \
+        || fail "RG-403 validators did not reconverge after backlog recovery"
+    verify_chain_producing "after bounded backlog recovery" "$V1_RPC" 5
+    ok "RG-403 finalized ${confirmed} transactions through count-and-compute-bounded proposals (max block txs=${max_block_txs})"
+}
+
 verify_chain_recovers_within_bft_window() {
     local label=$1 rpc=$2
     local initial_window_secs=10 recovery_window_secs=50 recovery_min_blocks=10
@@ -1080,6 +1227,7 @@ start_archive_v2_validator() {
             > "$output_log" 2>&1 &
     fi
     ARCHIVE_V2_STARTED_PID=$!
+    VALIDATOR_LOGS[$validator_num]="$output_log"
 }
 
 stop_archive_v2_https_source() {
@@ -1239,6 +1387,7 @@ prepare_archive_v2_fresh_join_roots() {
         LICHEN_DISABLE_SUPERVISOR=1 "$REPO_ROOT/run-validator.sh" testnet "$validator_num" \
             > "$restart_log" 2>&1 &
         VALIDATOR_PIDS[$validator_num]=$!
+        VALIDATOR_LOGS[$validator_num]="$restart_log"
     done
     SOURCE_RESTARTED=false
     for _ in $(seq 1 180); do
@@ -1477,6 +1626,7 @@ verify_fresh_archive_v2_role_rejoins() {
         > "$role_log" 2>&1 &
     pid=$!
     VALIDATOR_PIDS[$validator_num]="$pid"
+    VALIDATOR_LOGS[$validator_num]="$role_log"
     for i in $(seq 1 360); do
         sleep 2
         if ! kill -0 "$pid" 2>/dev/null; then
@@ -1905,18 +2055,24 @@ print(
             && "$v1_paused" == "false" && "$v2_paused" == "false" ]]; then
             local success_delta=$((v1_success - v2_success))
             (( success_delta < 0 )) && success_delta=$((-success_delta))
-            [[ "$success_delta" -ge 100 ]] \
-                || fail "V1/V2 cold migration completions synchronized within ${success_delta}ms"
-            ok "Bounded cold migration advanced independently: V1 cursor=${v1_cursor} rows=${v1_migrated}; V2 cursor=${v2_cursor} rows=${v2_migrated}; completion delta=${success_delta}ms"
-            verify_chain_producing "during bounded cold migration and deferred reclaim" "$V1_RPC" 10
-            return 0
+            # Both schedulers can legitimately observe the first newly cold
+            # slot in the same millisecond. Wait for durable state or timing
+            # divergence instead of failing that safe boundary coincidence.
+            if [[ "$success_delta" -ge 100
+                || "$v1_cursor" -ne "$v2_cursor"
+                || "$v1_migrated" -ne "$v2_migrated"
+                || "$v1_scanned" -ne "$v2_scanned" ]]; then
+                ok "Bounded cold migration advanced independently: V1 cursor=${v1_cursor} rows=${v1_migrated}; V2 cursor=${v2_cursor} rows=${v2_migrated}; completion delta=${success_delta}ms"
+                verify_chain_producing "during bounded cold migration and deferred reclaim" "$V1_RPC" 10
+                return 0
+            fi
         fi
         sleep 2
     done
 
     warn "V1 Archive migration status: $v1_status"
     warn "V2 Archive migration status: $v2_status"
-    fail "Bounded cold migration did not advance both durable cursors within 180s"
+    fail "Bounded cold migration did not advance divergent durable state on both validators within 180s"
 }
 
 report_reused_cluster() {
@@ -2007,6 +2163,7 @@ fi
 
 declare -a ALL_PUBKEYS=()
 declare -a VALIDATOR_PIDS=()
+declare -a VALIDATOR_LOGS=()
 V1_RPC="$(rpc_port 1)"
 V1_LOG="$(log_path 1)"
 VCNT=0
@@ -2050,6 +2207,7 @@ if [[ "$RESUME_AFTER_PUBLIC_PARITY" == "1" ]]; then
         LICHEN_DISABLE_SUPERVISOR=1 "$REPO_ROOT/run-validator.sh" testnet "$validator_num" \
             > "$resume_log" 2>&1 &
         VALIDATOR_PIDS[$validator_num]=$!
+        VALIDATOR_LOGS[$validator_num]="$resume_log"
     done
     if ! wait_for_existing_cluster_healthy "$ARCHIVE_V2_FRESH_ROLE_TIMEOUT_SECS"; then
         for validator_num in $(seq 1 "$MAX_VALIDATORS"); do
@@ -2118,6 +2276,7 @@ elif [[ "$RESUME_AFTER_PHASE2" == "1" ]]; then
         LICHEN_DISABLE_SUPERVISOR=1 "$REPO_ROOT/run-validator.sh" testnet "$validator_num" \
             >> "$resume_log" 2>&1 &
         VALIDATOR_PIDS[$validator_num]=$!
+        VALIDATOR_LOGS[$validator_num]="$resume_log"
         validator_pubkey="$(
             grep -m1 '"publicKeyBase58"' "$(db_path "$validator_num")/validator-keypair.json" \
                 | sed -E 's/.*"publicKeyBase58"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'
@@ -2216,6 +2375,7 @@ log "═════════════════════════
 LICHEN_DISABLE_SUPERVISOR=1 "$REPO_ROOT/run-validator.sh" testnet 1 \
     > "$V1_LOG" 2>&1 &
 V1_PID=$!
+VALIDATOR_LOGS[1]="$V1_LOG"
 log "V1 started (PID: $V1_PID)"
 
 # Wait for V1 to produce blocks
@@ -2287,6 +2447,7 @@ for V_NUM in $(seq "$JOIN_START" "$MAX_VALIDATORS"); do
         LICHEN_DISABLE_SUPERVISOR=1 "$REPO_ROOT/run-validator.sh" testnet "$V_NUM" \
             > "$V_LOG" 2>&1 &
         V_PID=$!
+        VALIDATOR_LOGS[$V_NUM]="$V_LOG"
     fi
     VALIDATOR_PIDS[$V_NUM]="$V_PID"
     log "V${V_NUM} started (PID: $V_PID)"
@@ -2385,6 +2546,10 @@ for V_NUM in $(seq "$JOIN_START" "$MAX_VALIDATORS"); do
         verify_fresh_archive_v2_role_rejoins
     fi
 done
+
+if [[ "$MAX_VALIDATORS" -ge 4 && "$SKIP_JOINER_RESTART_CHECK" != "1" ]]; then
+    verify_loaded_backlog_liveness
+fi
 
 if [[ "$MAX_VALIDATORS" -ge 4 && "$SKIP_JOINER_RESTART_CHECK" != "1" ]]; then
     PAUSE_VALIDATOR_NUM="$MAX_VALIDATORS"

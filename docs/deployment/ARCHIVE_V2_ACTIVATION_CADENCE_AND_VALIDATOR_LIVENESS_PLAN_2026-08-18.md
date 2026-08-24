@@ -1,8 +1,10 @@
 # Archive V2 Activation, Cadence Recovery, And Validator Liveness Plan
 
 **Date:** 2026-08-18
-**Status:** Authoritative execution plan; v0.5.257 locally qualified, signed
-release and coordinated Track A deployment pending
+**Last updated:** 2026-08-24
+**Status:** Authoritative execution plan; signed v0.5.257 recovery is live,
+v0.5.258 liveness correction is under full qualification, and final Archive V2
+role activation, tail extension, legacy retirement, and R2 cleanup remain open
 **Scope:** `lichen-testnet-1`, the Archive V2 production topology, current
 four-validator cadence, and a future deterministic offline-validator design
 
@@ -21,33 +23,56 @@ ad-hoc production change.
 
 ## 1. Executive Decision
 
-The fleet is intentionally frozen and is not yet in the intended final state.
+The fleet has safely recovered from the frozen v0.5.255 boundary but is not yet
+in the intended final state.
 
-- The prior v0.5.255 processes are stopped under recovery watchdogs so a
-  partially converged network cannot extend divergent local tips. Public RPC
-  correctly returns 503 during this coordinated release boundary.
-- EU is the frozen source tip at 11,779,014. US is frozen at 11,762,850, while
-  SEA and IN remain inactive until the coordinated v0.5.257 install and start.
-- The original 300-400 ms cadence regression was traced to a current-commit
-  transaction-metadata miss falling through to an Archive V2 segment read; an
-  exact measured instance blocked event fanout for 7.443 seconds.
-- v0.5.257 removes that archive fallback from the live commit path and also
-  hardens block-range catch-up, future-round convergence, mempool lock scope,
-  and passive returning-validator admission.
+- Signed v0.5.257 is installed and running on all four hosts. Every validator
+  converged from its preserved WAL, resumed finality from the frozen source
+  height 11,779,014, and now serves the same advancing chain within the normal
+  bounded tip spread. That recovery state is the signed rollback baseline for
+  the coordinated v0.5.258 transition.
+- The initial current-commit Archive V2 receipt fallback was real and
+  v0.5.257 removed it from event fanout, but it was not the complete explanation
+  for the production halt and multi-second cadence.
+- The decisive live recovery evidence showed 97-185 pending transactions while
+  the built-in oracle feeder used 5-second/15-second/1-bps defaults. Git history
+  dates those aggressive defaults to the May 2026 cadence work, before Archive
+  V2; they are a latent recovery-load amplifier, not an Archive V2 format
+  change. The earlier 30-second/60-second/10-bps policy is restored here.
+  A recovered proposer blindly selected as many as 2,000 pending transactions;
+  proposal construction and validation then consumed 4-15 seconds and could
+  exhaust the proposal round.
+- Disabling only the feeder through a temporary, identical systemd drop-in on
+  all four hosts immediately restored empty-block production. With US stopped,
+  round-zero intervals were approximately 0.28-0.45 seconds and each slot for
+  which US was proposer incurred the expected approximately 2.5-second
+  round-one timeout. This separates the backlog defect from the offline-proposer
+  behavior and from Archive V2 reads.
+- v0.5.258 restores the established oracle defaults and bounds every live BFT
+  proposal to at most 16 pending user transactions, 17 total entries including
+  the mandatory parent commit certificate, and 2.8 million aggregate declared
+  compute units. The same limits reject an oversized received proposal before
+  signature verification or execution. Its
+  release gate explicitly creates a 96-transaction backlog while quorum is
+  paused and requires bounded drain, complete finalization, convergence, and
+  continued production after quorum returns.
 - The Explorer's `Observed ... ms avg` value is not an arithmetic average. It
   is the upper median of at most 120 observer-side normalized block-arrival
   samples. It can therefore move from roughly 300 ms to roughly 1,000 ms when
   a sustained timeout burst occupies more than half of the rolling window.
-- The Archive V2 binary and role implementation are present, but the live
-  validators do not currently run an Archive V2 role. Their command lines have
-  no `--archive-v2-role`, and live health reports
-  `archive_v2.enabled=false`.
+- The Archive V2 binary and role implementation are present. US has been
+  admitted as `verified_cache` against the 317-segment catalog with a temporary
+  200,000-slot hot-history bridge; EU, SEA, and IN still report
+  `archive_v2.enabled=false`. This is a recovery canary, not final fleet-wide
+  activation.
 - The existing read-only FUSE SST mounts are an emergency, dual-R2-backed
   legacy archive offload. They are not the final full-archive,
   verified-cache, and consensus role topology.
-- Current disk free space is runway, not a permanent capacity solution. The
-  last verified figures were approximately 28.09 GB US, 8.77 GB EU, 13.15 GB
-  SEA, and 13.18 GB IN.
+- Current disk free space is runway, not completion. The 2026-08-23 read-only
+  audit measured approximately 41.7 GB free on US and 15.8-16.5 GB on the other
+  three hosts. EU and SEA still carry roughly 83-89 GB of legacy archive each,
+  in addition to roughly 84-86 GB of hot state. Those bytes are reclaimed only
+  after fleet-wide Archive V2 admission and fixed-tip parity, not before.
 
 Accordingly:
 
@@ -55,11 +80,16 @@ Accordingly:
    remain unexplained or while Archive V2 role activation is disabled.
 2. Do not start reclaim attempt 799 or another emergency FUSE batch merely to
    conceal the capacity constraint.
-3. Publish the already-qualified v0.5.257 candidate through the signed release
-   workflow and verify its detached post-quantum checksum signature.
-4. Provision the intended storage plane and complete the Archive V2 migration,
-   rollback, role, and edge-routing gates.
-5. Treat offline-validator quarantine as a separate versioned consensus change.
+3. Complete the v0.5.258 hard gates, publish it through the signed release
+   workflow, verify its detached post-quantum checksum signature, and deploy it
+   through one coordinated four-host stop/install/start.
+4. Extend the canonical Archive V2 tail from a stopped immutable hot snapshot,
+   activate the exact role matrix, prove fixed-tip parity and cadence, and only
+   then retire legacy rows/FUSE bridges and reclaim disk.
+5. Generate a new exact R2 deletion manifest only after all live references are
+   gone; require explicit approval of that manifest before deleting proven
+   obsolete temporary objects.
+6. Treat offline-validator quarantine as a separate versioned consensus change.
 
 ## 2. Authoritative Current Evidence
 
@@ -81,7 +111,7 @@ The recovery evidence and exact artifact hashes are recorded in
 `memories/repo/current-state.md` and the terminal addendum in
 `memories/repo/2026-08-13-v05247-retirement-recovery-handover.md`.
 
-### 2.2 Historical cadence evidence
+### 2.2 Historical and current cadence evidence
 
 The most recent synchronized ten-minute sample showed:
 
@@ -104,6 +134,15 @@ commits. Phase-level reconstruction proved two different tail classes:
 Therefore the observed slowdown is real. Four services being online proves
 neither round-zero proposal delivery nor timely quorum participation.
 
+The later recovery run supplied the missing causal evidence. A 97-transaction
+proposal took multiple seconds to execute and validate. After the oracle feeder
+was disabled, the same binaries resumed 300-400 ms-class round-zero empty-block
+production. When only three validators were participating, the remaining
+approximately 2.5-second spikes mapped to slots assigned to the catching-up US
+validator and disappeared from other proposer slots. The release correction
+therefore has two independent obligations: bound transaction work per proposal,
+and restore US before measuring steady-state four-validator cadence.
+
 ### 2.3 What the source diff proves
 
 The v0.5.229-to-v0.5.250 comparison found no change in:
@@ -117,32 +156,50 @@ The v0.5.229-to-v0.5.250 comparison found no change in:
 The current block proposal path uses the hot transaction index and does not
 perform deep Archive V2 reads. No live `state-testnet` SST is backed by an
 Archive V2 FUSE mount. Active Archive V2 segment migration is also disabled.
-This rules out a direct Archive V2 state-read regression.
-
-It does not yet rule out indirect contention from the emergency recovery
-topology, legacy archive access, scheduling, networking, or other periodic
-tasks.
+This rules out a direct Archive V2 state-read regression. The later live A/B
+recovery also ruled it out as the cause of the halt: holding the high-frequency
+oracle ingress restored cadence without changing the Archive V2 canary, source
+mounts, or legacy archive layout. Archive and checkpoint work can still amplify
+host pressure and must pass isolation gates, but the reproduced liveness defect
+is an unbounded proposal workload fed by overly aggressive oracle defaults.
 
 ### 2.4 Background faults already identified
 
-Two background conditions must be removed or contained:
+Two separate background conditions must still be removed or contained:
 
-- Each validator performs a checkpoint/full-replay retry approximately every
-  15 seconds. US checkpoint creation repeatedly fails when attempting to link
-  an SST into a checkpoint with `Operation not permitted`. Peers then report no
-  checkpoint and continue bounded full-replay behavior.
+- Checkpoint creation fails on hosts that have hot-state SST symlinks into
+  `/dev/shm`, because RocksDB's hardlink-based checkpoint operation returns
+  `Operation not permitted`. The 2026-08-23 inventory found seven such links on
+  US totaling 3,673,754,324 bytes, three on SEA totaling roughly 273 MB, four on
+  IN totaling roughly 343 MB, and none on EU. During the coordinated v0.5.258
+  stop, each exact link target must be copied to a regular same-filesystem file,
+  size/hash verified, and atomically substituted before restart.
+- EU and SEA currently skip new checkpoints because free space is below the
+  20 GiB checkpoint safety floor. This is resolved by qualified Archive V2
+  legacy retirement and reclamation, not by weakening the reserve.
 - Legacy cold maintenance wakes approximately every five minutes and is
   terminally unable to progress because the reclaim queue is at or near its
   4,096-range limit.
+- The live US `verified_cache` canary exposed an additional slot-fallback bug
+  after catch-up. A recent `getBlock` request whose replay body was absent but
+  whose slot index was present fell through to Archive V2 block-by-hash lookup.
+  Because the catalog has no block-hash-to-segment filter, that path repeatedly
+  read and decoded segments newest-to-oldest. `strace -yy` proved repeated
+  237,888,524-byte reads of cached object
+  `2ed2c026206a545dc5529aa11df658f8c86e8747d57cb2c53f539ade43c7f9a5.av2s`,
+  one runtime thread at approximately 100% CPU, another blocked in
+  `fuse_file_read_iter`, and an accumulating RPC accept queue. v0.5.258 keeps
+  known-slot fallback on hot-by-slot, legacy-cold-by-known-hash, and finally
+  Archive-V2-by-slot; a known slot outside catalog coverage therefore returns
+  without a segment scan.
 
 Sixty minutes of correlation falsified the five-minute cold-maintenance wake as
-the recurring BFT burst trigger: it also runs during quiet windows. The
-15-second checkpoint retry loop is synchronized background load and a viable
-amplifier, but it also exists in quiet windows and is not proven to initiate
-the bursts.
-
-The exact trigger remains unresolved because current logs do not record enough
-proposal-receive, vote-receive, executor-delay, and storage-latency detail.
+the recurring BFT burst trigger: it also runs during quiet windows. Checkpoint
+failures remain an operational defect and possible load amplifier, but the
+current halt trigger is resolved by the measured oracle backlog and unbounded
+proposal execution described above. The separate US canary read starvation is
+also resolved in source and has its own no-object-read regression test; both
+fixes must pass the final four-validator release gate.
 
 ### 2.5 Cloudflare R2 custody baseline
 
@@ -173,7 +230,7 @@ canonical V2 corpus into another provider or an offline recovery system.
 Two buckets under one Cloudflare account do not satisfy the independent-provider
 requirement.
 
-### 2.6 Exact catalog and source boundary found on 2026-08-18
+### 2.6 Exact catalog and source boundary
 
 The fleet does not need a genesis rebuild. All four hosts carry the same valid
 terminal catalog root
@@ -200,6 +257,25 @@ its exact 67,192,599-byte object, SHA-256
 `e1039b46e644bd29a400b624888a118a1c9cf178e2210febcd1ba70538c97818`,
 was independently read back from both R2 buckets. The failed scratch build and
 journal remain preserved and must not be resumed against the live DB.
+
+Seven subsequent bounded snapshot/publish runs extended that same canonical
+chain to:
+
+- 317 deterministic segments covering through slot 11,588,999;
+- catalog root
+  `8eb1e234063af96017a0615817baedaf4162fac0f5e36ff5444236fb9ad7cf36`;
+- catalog SHA-256
+  `afdead0267ed5543736381d0e614b2a3e76c33b66ad8489fcc9e7e7d416c0dad`;
+- independently verified publication to both current R2 buckets.
+
+This catalog was sufficient to admit US with a temporary 200,000-slot hot
+bridge, but it is not self-maintaining. At a live tip around 11.781 million it
+has only several thousand slots of admission headroom. The next coordinated
+release stop must create one immutable, self-contained hot snapshot at a fixed
+tip. The network may resume immediately on the signed release while bounded
+10,000-slot tail segments are encoded from that stopped snapshot, uploaded and
+read back from both R2 copies, and appended to a new catalog through at least
+the stopped tip minus 50,000 slots. No live RocksDB iterator is permitted.
 
 v0.5.251 added a bounded `snapshot-hot` operation, but its first production
 run exposed that opening the stopped live RocksDB as root can perform recovery
@@ -247,7 +323,7 @@ the known incomplete EU checkpoints, all four capacity decisions are `Normal`,
 and the live role acceptance proves that historical reads do not perturb
 four-validator cadence.
 
-### 2.7 v0.5.257 qualification and current execution boundary
+### 2.7 v0.5.257 deployment and v0.5.258 execution boundary
 
 The clean, from-scratch hard gate completed on 2026-08-23 with INFO-level
 admission evidence enabled and no reused mutable validator state:
@@ -271,10 +347,52 @@ admission evidence enabled and no reused mutable validator state:
   all four validators at
   `e35fa837dcdfb989b1c0839d79c41bc575ecad84ff70b09ecae9a146b9c57da2`.
 
-This local qualification is necessary but is not deployment. Completion still
-requires a clean merge, signed v0.5.257 tag workflow, verified release artifact
-hashes, one coordinated four-host install/start, live cadence and role
-acceptance, and only then legacy/FUSE retirement and disk reclamation.
+That qualification produced signed v0.5.257 at commit
+`66979e24` and the signed release validator is installed on all four hosts.
+The recovery nevertheless exposed the separate proposal-workload defect, so
+v0.5.257 is the immediate signed rollback for the v0.5.258 transition rather
+than the final Track A anchor.
+
+The v0.5.258 candidate must not reach production until all of these hold:
+
+- the full four-validator local test passes hot/cold Archive V2 mode, fresh
+  join, a 96-transaction stopped-quorum backlog, one-validator outage,
+  own-state restart, coordinated all-validator restart, and strict final
+  public-history manifest parity;
+- all workspace tests, clippy, audit, deny, contract/genesis builds, SDK,
+  frontend, and deployment static gates pass from a clean candidate commit;
+- the tag workflow publishes release binaries, `SHA256SUMS`, and the detached
+  post-quantum checksum signature for that exact commit;
+- every installed and running binary is sourced from that signed release and
+  matches the verified hashes.
+
+The final local v0.5.258 qualification completed from clean genesis on
+2026-08-24. All four validators produced and voted; fresh full-archive,
+verified-cache, and consensus joins passed; source loss did not stop consensus;
+corrupt full-archive and cache objects were quarantined and repaired or
+refetched; individual and coordinated own-state restarts resumed from preserved
+state; and all four public-history manifests matched at checkpoint 76,000 with
+root `d1f415c452e51ffd08e31b6889c846650676a10aac313f865ceefb7b5c935924`.
+Independent Archive V2 build, mirror, and restore roots also matched at
+`ac4f20ae47de96f36a396114468ff6530a7aef453a838e1739fb2637cce8ee35`.
+The role/outage matrix ended at 78-79 blocks per 10 seconds. The stopped-quorum
+backlog gate admitted and finalized all 96 transfers, and the active validator
+logs proved repeated 15-entry blocks: fourteen default-budget transfers plus
+the mandatory parent certificate. The harness now tracks the active replacement
+log for each restarted validator and fails if it does not observe a
+multi-transaction backlog block, closing the original zero-evidence reporting
+gap.
+
+The local code, data-path, and quality gates are therefore complete. Remaining
+release gates are external and operational: merge the clean commit, obtain the
+signed workflow artifacts for that exact commit, verify the detached
+post-quantum checksum signature, and perform the coordinated fleet transition
+and live acceptance below.
+
+The current production oracle-disable drop-in is a temporary recovery hold. It
+must be byte-identical on all four hosts while v0.5.257 is live, then be removed
+during the coordinated v0.5.258 activation so the corrected defaults are tested
+as shipped. It is not a permanent configuration.
 
 The exact R2 audit remains a separate destructive gate. The full inventory is
 recorded in `memories/repo/evidence/v240-terminal/v05256-r2-full-inventory.tsv`.
@@ -435,6 +553,34 @@ Before source or fleet work:
 
 No later phase may weaken these gates.
 
+Current execution order is fixed:
+
+1. Keep the now-converged signed v0.5.257 fleet advancing while the identical
+   temporary oracle hold remains on all four hosts; immediately before the
+   transition, prove a common recent slot/hash again.
+2. Finish every v0.5.258 local and repository hard gate, merge the clean commit,
+   publish the signed tag, and verify release artifacts and rollback artifacts.
+3. At one coordinated stop, record the fixed tip/hash, materialize the exact
+   volatile SST links, and select the snapshot source by an exact source-backed
+   range audit. Create the bounded immutable hot snapshot only from that proven
+   complete validator (prefer EU over the US canary if both qualify), install
+   only signed v0.5.258 artifacts, remove the temporary oracle hold, and start
+   all four validators. Never assume the public seed is the complete source.
+4. Prove four-node convergence, artifact parity, effective 30/60/10 oracle
+   defaults, bounded proposal transaction counts, no mempool accumulation,
+   and 300-400 ms-class round-zero cadence.
+5. While the network runs, build and dual-publish the catalog tail from the
+   stopped snapshot, then stage the resulting catalog on every host.
+6. Perform one coordinated role activation as US/EU `verified_cache` and SEA/IN
+   `consensus`; prove deep-history parity, source-loss isolation, fixed-tip
+   equality, restart, and outage behavior.
+7. Retire legacy cold rows and emergency FUSE bridges in bounded host order,
+   verifying BFT and space after each unit. Restore checkpoint generation once
+   each host exceeds its safety floor.
+8. Re-inventory R2, seal the exact obsolete-object deletion manifest, obtain
+   explicit approval for that manifest SHA-256, delete only those keys, and
+   prove retained canonical inventory unchanged.
+
 ### A1. Ship cadence observability before guessing
 
 Create a signed, coordinated diagnostic release that records monotonic phase
@@ -497,8 +643,14 @@ must:
      work.
    - A known unsupported link/checkpoint operation becomes a typed state with
      exponential backoff and jitter, not an immediate fixed-period retry.
-   - Checkpoint construction must use only approved persistent local state or
-     a tested copy/reflink fallback; it must never mutate FUSE-backed SSTs.
+   - During the coordinated stop, replace only the audited hot-state SST links
+     to `/dev/shm` with verified regular files on the state filesystem. The
+     procedure is per-file: resolve a fixed link, reject an unexpected target,
+     copy without opening RocksDB, compare byte count and SHA-256, fsync the
+     replacement, atomically rename it over that exact link, and fsync the
+     directory. Abort before restart on any mismatch.
+   - Checkpoint construction must use only approved persistent local state; it
+     must never mutate or checkpoint through volatile/FUSE-backed SSTs.
    - One node's inability to create a checkpoint must not cause every peer to
      repeat full-replay discovery every 15 seconds.
 2. Stop legacy cold migration when Archive V2 runtime is disabled or when its
@@ -524,6 +676,13 @@ Run the strict four-validator local test with production-equivalent:
 - public RPC load and empty-mempool operation;
 - checkpoint and maintenance scheduling;
 - validator restart/catch-up and one-validator outage scenarios.
+
+The mandatory RG-403 liveness case additionally stops validators 2-4, proves
+that validator 1 cannot advance without quorum, admits 96 uniquely signed
+transfers, resumes validators 2-4, and requires all 96 transactions to finalize
+while each committed block respects the count-and-compute proposal budget (at
+most fourteen default-budget transfers plus one parent commit certificate).
+The cluster must reconverge and continue producing.
 
 Execute controlled comparisons:
 
@@ -558,14 +717,34 @@ taken about 1.4 seconds to build, and measured cross-region RTT can approach
 300 ms. A globally short full-proposal timeout would manufacture more round
 changes.
 
+For v0.5.258, the selected correction is deliberately bounded and
+consensus-compatible with the existing transaction/block wire format:
+
+- at most 16 pending user transactions, 17 total entries including the parent
+  certificate, and 2.8 million aggregate declared compute units per live BFT
+  proposal (fourteen default-budget transactions);
+- the parent commit certificate remains separate and mandatory;
+- the same count and compute limits are applied at every live proposal
+  construction site and before any received proposal is executed;
+- excess mempool work remains queued for later blocks rather than entering the
+  current round's speculative execution and peer validation budget;
+- built-in oracle ingress defaults return to 30-second minimum interval,
+  60-second maximum staleness, and 10-bps minimum price movement;
+- explicit operator overrides remain available, but production acceptance
+  records the effective values and rejects the former 5/15/1 defaults.
+
+This deliberately favors finality over unbounded burst TPS while retaining a
+useful multi-transaction block. Raising either consensus limit requires
+adversarial cost benchmarks and cross-host deterministic acceptance first.
+
 ### A5. Provision the final storage plane
 
 For the bounded existing-testnet transition in Section 3.5, first:
 
-- restore enough per-host free space for each exact role preflight to return
-  adaptive capacity action `Normal` (approximately one additional 10 GiB
-  archive-only offload on SEA and IN and two on EU at the measured boundary;
-  the exact plans and released bytes remain runtime gates, not assumptions);
+- preserve the current free-space runway and reject any role transition whose
+  exact adaptive-capacity preflight is not `Normal`;
+- use the signed Archive V2 retirement path, rather than another unbounded
+  emergency FUSE batch, to release the large legacy archives after parity;
 - mount the canonical primary and replica prefixes read-only as distinct source
   roots on US and EU using root-owned credentials and bounded 1 MiB buffering;
 - place the same catalog locally on all four hosts and separately quota US/EU
@@ -608,6 +787,14 @@ For every backed historical range and category:
 
 No original row is retired in this phase.
 
+For the immediate tail extension, use approximately 10,000-slot segments from
+11,589,000 through at least the stopped snapshot tip minus 50,000. Every segment
+must fit the 1 GiB source-object bound, be deterministically re-encoded and
+hash-compared, be verified after upload to both buckets, and advance the catalog
+by exactly one predecessor root. Publishing or local staging is resumable;
+same-key conflicts, a source gap, parent mismatch, catalog fork, or capacity
+decision other than `Normal` aborts the run.
+
 ### A7. Canary V2 reads and publish a rollback anchor
 
 Proceed in order:
@@ -648,10 +835,14 @@ Activation is a coordinated, signed configuration transition:
   enter BFT and commit a new common slot/hash.
 
 On the existing four-validator testnet, activate the exact Section 3.5 matrix:
-US/EU `verified_cache`, SEA/IN `consensus`. This keeps every voting process on
-the Archive V2 admission/read path without falsely advertising any current VPS
-as a local full archive. The later dedicated archive plane removes historical
-RPC from voting hosts entirely.
+US/EU `verified_cache`, SEA/IN `consensus`. Activation uses the newly extended
+catalog and the normal 100,000-slot hot window. US's temporary 200,000-slot
+bridge is not the final configuration. Start cache roles first, then consensus
+roles, and require all four to share a post-transition fixed slot/hash before
+retirement. This keeps every voting process on the Archive V2 admission/read
+path without falsely advertising any current VPS as a local full archive. The
+later dedicated archive plane removes historical RPC from voting hosts
+entirely.
 
 ### A9. Retire legacy data and remove emergency bridges
 
@@ -685,6 +876,15 @@ descriptor, mount, unit, rclone configuration, rollback, or recovery evidence
 depends on it and its replacement passes fixed-tip full/cache/legacy RPC parity.
 Canonical V2 segments, manifests, catalogs, and retirement receipts are not
 deletion candidates under this plan.
+
+The existing 1.85 TB provider total is therefore reduced only at the end of the
+dependency chain. First remove every live legacy SST reference and unit, then
+refresh both bucket inventories, subtract the retained canonical V2 chain and
+all still-required rollback objects, and produce a new full-key deletion
+manifest. The operator must approve that exact manifest SHA-256. Execution must
+use the fail-closed exact-delete helper, record every object result, and prove
+both a post-delete negative inventory for deleted keys and an unchanged positive
+inventory for every retained canonical key.
 
 ### A10. Performance and completion criteria
 

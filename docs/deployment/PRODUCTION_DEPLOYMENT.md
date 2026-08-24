@@ -14,8 +14,9 @@ Use this document as the canonical workflow for:
 
 This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
 
-Current testnet release candidate for this runbook is `v0.5.257`; keep signed
-`v0.5.250` as the immediate restart-safe anchor and retain `v0.5.240` as the
+Current testnet release candidate for this runbook is `v0.5.258`; keep signed
+`v0.5.257` as the immediate restart-safe anchor and rollback. Keep `v0.5.250`
+as prior signed restart-safe evidence, and retain `v0.5.240` as the
 Archive V2 recovery anchor. The candidate must not be
 installed until its exact tag workflow, attestations, checksum, and detached
 PQ signature pass. Both releases are Archive V2 dual-reader capable. Preserve signed
