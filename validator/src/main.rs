@@ -29691,19 +29691,21 @@ async fn run_validator() {
                     prepared_tip.saturating_sub(stability_start_slot),
                     last_network_progress_at.elapsed(),
                 );
-                match decision {
+                let admission_mode = match decision {
                     ResumeVotingAdmission::Stable => {
                         info!(
                             "✅ Returning validator proved passive tip tracking through {} slots over {}s; voting admission is ready",
                             prepared_tip.saturating_sub(stability_start_slot),
                             stability_started_at.elapsed().as_secs()
                         );
+                        "sustained-tip-tracking"
                     }
                     ResumeVotingAdmission::StalledNetworkRecovery => {
                         warn!(
                             "⚠️  Network tip has not advanced for {}s; admitting the tip-aligned returning validator to restore quorum",
                             last_network_progress_at.elapsed().as_secs()
                         );
+                        "exact-tip-stalled-quorum-recovery"
                     }
                     ResumeVotingAdmission::Wait => {
                         if resume_stability.take().is_some() {
@@ -29721,7 +29723,14 @@ async fn run_validator() {
                         time::sleep(Duration::from_millis(200)).await;
                         continue;
                     }
-                }
+                };
+                info!(
+                    event = "returning_validator_guarded_bft_readiness",
+                    admission_mode,
+                    prepared_tip,
+                    observed_tip = observed_after_readiness,
+                    "✅ Returning validator completed guarded BFT readiness"
+                );
             }
 
             if let Some(config) = deferred_archive_v2_config.take() {
@@ -43244,12 +43253,16 @@ mod tests {
         let final_readiness = section
             .find("Pre-consensus final BFT readiness gate")
             .expect("returning-validator final readiness call");
+        let readiness_event = section
+            .find("returning_validator_guarded_bft_readiness")
+            .expect("returning-validator guarded-readiness event");
         let voting = section
             .find("✅ Entering BFT consensus")
             .expect("BFT voting admission");
 
         assert!(stability < final_readiness);
-        assert!(final_readiness < voting);
+        assert!(final_readiness < readiness_event);
+        assert!(readiness_event < voting);
     }
 
     #[test]

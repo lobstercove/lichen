@@ -1753,7 +1753,7 @@ wait_for_returning_validator_voting_readiness() {
     rpc="$(rpc_port "$validator_num")"
 
     for _ in $(seq 1 300); do
-        if grep -q 'Returning validator proved passive tip tracking' "$output_log" \
+        if grep -q 'Returning validator completed guarded BFT readiness' "$output_log" \
             && grep -q 'Entering BFT consensus' "$output_log"; then
             start_slot="$(get_slot "$rpc")"
             break
@@ -1762,7 +1762,7 @@ wait_for_returning_validator_voting_readiness() {
     done
     [[ -n "${start_slot:-}" ]] || {
         tail -120 "$output_log"
-        fail "${phase} never completed passive voting-readiness admission"
+        fail "${phase} never completed guarded BFT-readiness admission"
     }
 
     # Admission itself exercises BFT startup readiness. Prove that the node
