@@ -822,11 +822,12 @@ impl StateStore {
     pub fn get_block_by_slot(&self, slot: u64) -> Result<Option<Block>, String> {
         // A freshly synchronized Archive V2 node can retain bootstrap-only hot
         // history until an independently authorized retirement removes it.
-        // Catalog-covered slots nevertheless belong to the admitted role's
-        // verified path, so those bootstrap bytes cannot bypass verified-cache
-        // source failures or a consensus role's deep-history denial. Established
-        // migration nodes retain the documented hot -> cold -> V2 read order.
-        if self.archive_v2_covers_slot(slot) {
+        // Catalog-covered slots belong exclusively to an admitted non-full
+        // role's verified path, so bootstrap bytes cannot bypass a verified-
+        // cache source failure or a consensus role's deep-history denial. Full
+        // archives retain the documented hot -> cold -> V2 order until legacy
+        // retirement removes those canonical fallback rows.
+        if self.archive_v2_exclusively_covers_slot(slot) {
             return self.archive_v2_block_by_slot(slot);
         }
 

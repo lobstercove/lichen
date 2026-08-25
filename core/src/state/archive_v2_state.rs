@@ -56,9 +56,17 @@ impl StateStore {
             .map(|reader| reader.status())
     }
 
-    pub(super) fn archive_v2_covers_slot(&self, slot: u64) -> bool {
+    /// Whether an admitted non-full role exclusively owns a catalog-covered
+    /// public-history read. Verified-cache and consensus nodes must not expose
+    /// bootstrap-only hot/cold bytes after admission. A full-archive node is
+    /// different: until legacy retirement removes those canonical rows, its
+    /// documented hot -> cold -> V2 order remains a local recovery path for a
+    /// quarantined or temporarily unavailable V2 object.
+    pub(super) fn archive_v2_exclusively_covers_slot(&self, slot: u64) -> bool {
         self.archive_v2_reader().is_some_and(|reader| {
-            reader.status().admitted_after_fresh_sync && reader.covers_slot(slot)
+            reader.status().admitted_after_fresh_sync
+                && reader.role() != ArchiveV2Role::FullArchive
+                && reader.covers_slot(slot)
         })
     }
 
@@ -885,6 +893,76 @@ mod tests {
         assert!(
             error.contains("consensus"),
             "consensus role must deny deep history instead of falling through to cold: {error}"
+        );
+    }
+
+    #[test]
+    fn admitted_full_archive_preserves_canonical_legacy_cold_fallback() {
+        let state_root = tempdir().unwrap();
+        let cold_root = tempdir().unwrap();
+        let archive_root = tempdir().unwrap();
+        let mut state = StateStore::open(state_root.path()).unwrap();
+        state.open_cold_store(cold_root.path()).unwrap();
+
+        let block = Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::hash(b"archive-v2-full-legacy-fallback-state"),
+            [0x27; 32],
+            Vec::new(),
+            1,
+        );
+        let block_hash = block.hash();
+        state.put_block(&block).unwrap();
+        state.migrate_to_cold(1).unwrap();
+
+        let identity = ArchiveV2Identity {
+            network_id: "full-legacy-fallback-testnet".to_string(),
+            genesis_hash: block_hash,
+        };
+        let (_, manifest) = ArchiveV2SegmentCodec::encode(
+            identity.clone(),
+            None,
+            Hash::default(),
+            &ArchiveV2SegmentContents::from_blocks(vec![block]),
+            &ArchiveV2CodecConfig {
+                target_frame_bytes: 1024 * 1024,
+                ..ArchiveV2CodecConfig::default()
+            },
+        )
+        .unwrap();
+        let mut catalog = ArchiveV2Catalog::empty(identity.clone()).unwrap();
+        catalog.append(manifest).unwrap();
+        let catalog_path = archive_root.path().join("catalog.av2");
+        catalog.store_atomic(&catalog_path).unwrap();
+
+        state.attach_archive_v2_reader(
+            ArchiveV2Reader::open(
+                identity,
+                &catalog_path,
+                ArchiveV2ReaderConfig {
+                    role: ArchiveV2Role::FullArchive,
+                    root: archive_root.path().to_path_buf(),
+                    cache_root: None,
+                    cache_quota_bytes: 0,
+                    max_decoded_segments: 1,
+                    allow_remote_fetch: false,
+                    sources: Vec::new(),
+                },
+            )
+            .unwrap(),
+        );
+        state.mark_archive_v2_admitted_after_fresh_sync().unwrap();
+
+        assert_eq!(
+            state.get_block_by_slot(0).unwrap().unwrap().hash(),
+            block_hash,
+            "an admitted full archive must preserve canonical legacy cold fallback until retirement"
+        );
+        assert_eq!(
+            state.archive_v2_status().unwrap().local_hits,
+            0,
+            "legacy fallback must not report a hit for the unavailable V2 object"
         );
     }
 

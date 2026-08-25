@@ -7,9 +7,13 @@ four validators with Archive V2 roles temporarily disabled. India was OOM-
 killed on 2026-08-25, caught the live tip after systemd restarted it, but is
 stranded outside BFT by the moving-rejoin regression; only three validators are
 currently voting and India's leader slots incur proposal timeouts. v0.5.261
-qualification is in progress. Final Archive V2 tail extension, role activation,
-legacy/FUSE retirement, and disk/memory reclamation remain open; deletion of
-R2 objects is not authorized.
+passed its complete local qualification on 2026-08-25, including the guarded
+checkpoint-78,000 Archive V2 corruption/repair tail described in section 2.9;
+it has not yet been merged, tagged, signed, or deployed. Final repository and
+release-workflow gates, coordinated fleet deployment, live rejoin/cadence
+acceptance, Archive V2 tail extension and role activation, legacy/FUSE
+retirement, and disk/memory reclamation remain open. Deletion of R2 objects is
+not authorized.
 **Scope:** `lichen-testnet-1`, the Archive V2 production topology, current
 four-validator cadence, and a future deterministic offline-validator design
 
@@ -140,6 +144,24 @@ in the intended final state.
   closing the prior tested-versus-shipped genesis-byte ordering gap. The gate
   assigns each validator a validated 64 MiB cache, an explicit 256 MiB aggregate
   block-cache budget, before the clean four-validator rerun.
+- The clean memory-bounded rerun completed the former crash boundary, all four
+  fresh joins and role joins, the 96-transaction backlog recovery, moving-gap
+  rejoin, own-state restarts, all-validator restart, public-history parity, and
+  deterministic Archive V2 build/mirror/restore parity. It then failed the
+  final runtime role matrix after correctly quarantining a deliberately
+  truncated full-archive segment: V4 remained voting and tip-aligned, but its
+  genesis RPC did not use the still-present canonical legacy cold fallback.
+  The root cause is a role-policy contradiction in slot routing, not consensus
+  or object-store latency. The admitted fresh-sync shortcut forced every role
+  directly to V2, while the separate legacy policy explicitly permits only
+  `full_archive` to retain hot -> cold -> V2 fallback until retirement. The
+  correction makes exclusive catalog routing apply only to `verified_cache`
+  and `consensus`; a focused regression and all nine Archive V2 state tests
+  pass. The guarded checkpoint-78,000 tail resume subsequently passed with
+  exit code 0: the deliberately corrupted full-archive object was quarantined,
+  canonical cold history remained available before retirement, replica repair
+  restored the object, and the chain produced 78 blocks in 10 seconds during
+  the fault. Section 2.9 records the complete evidence.
 - The Explorer's `Observed ... ms avg` value is not an arithmetic average. It
   is the upper median of at most 120 observer-side normalized block-arrival
   samples. It can therefore move from roughly 300 ms to roughly 1,000 ms when
@@ -568,6 +590,82 @@ v0.5.260 corrects only returning-validator passive admission:
   prove automatic BFT re-entry and authorship without freezing them, and then
   repeat the bounded snapshot procedure before Archive V2 tail construction.
 
+### 2.9 v0.5.261 clean-gate and resumed-tail qualification evidence
+
+The 2026-08-25 clean four-validator rerun used the exact release build, a
+64 MiB RocksDB cache per validator, the 50,000-slot hot/cold boundary, and
+authenticated local HTTPS Archive V2 sources. It established the following
+initial evidence before the final role-matrix failure:
+
+- retention passed at slot 52,508; bounded V1/V2 cold migrations completed
+  independently and the chain continued producing;
+- fresh V3 `full_archive`, `verified_cache`, and `consensus` joins started
+  without copied RocksDB, WAL, or genesis-wallet state, verified snapshot
+  manifests and state roots, reached the moving tip, preserved identity, and
+  enforced their deep-history capabilities;
+- authenticated source loss failed deep history closed without stopping
+  consensus and refetched after restoration;
+- fresh V4 crossed the former 16 GiB host-crash point, registered as the fourth
+  staked/routing validator, and produced after activation;
+- a 96-transaction paused-finality backlog fully finalized through bounded
+  proposals with a maximum observed block transaction count of 15;
+- V4 consumed a retained 140-slot live gap in the same process, then V4, V1,
+  and all four validators passed own-state restart checks;
+- all four public-history manifests matched root
+  `db92d3e5193768d55bc44f51399c823b1eb2e718da8cdb81f4fdfe1a10704846`;
+- all four stopped-state Archive V2 build/mirror/restore derivations matched
+  root `04deefdf7019e248376729c8a1eeaf8a83af20df2336906f2d9ccea350a6b3e4`.
+
+The first runtime role-matrix attempt then truncated one V4 segment by design.
+Startup quarantined object
+`7d0f66bfc4e219b09bb1bd8d4f259f60d833f111898cff26d6fa47717e6e30c7`,
+and V4 stayed voting and zero-drift, but `getBlock(0)` returned Archive V2
+unavailable instead of the canonical pre-retirement cold copy. The release
+was held before commit, tag, or deployment. The correction is deliberately
+role-scoped: admitted
+`verified_cache` and `consensus` nodes still force verified V2 capability
+semantics, while `full_archive` retains canonical hot/cold fallback until the
+authorized retirement phase removes those rows. After retirement, absence of
+legacy rows naturally returns the original fail-closed V2 error.
+
+Requalification then completed in the fixed order:
+
+1. the focused full-archive fallback regression, all nine Archive V2 state
+   tests, formatting, strict all-target/all-feature clippy, and the complete
+   workspace suite passed;
+2. the gate rebuilt the exact release binaries and resumed only after proving
+   all four independently owned states and checkpoint-78,000 public-history
+   root
+   `db92d3e5193768d55bc44f51399c823b1eb2e718da8cdb81f4fdfe1a10704846`;
+3. the resumed cluster produced 75 blocks in 10 seconds and converged within
+   one slot before the stopped-state audit;
+4. all four independently rebuilt, mirrored, and restored the safe immutable
+   range `0..28,208` at stopped tip `78,203`, yielding deterministic Archive V2
+   root
+   `4ff3435ba6626a0813cb4f02fc6e186070c4b3586b449f6c7091b13266e14162`;
+5. the mixed role matrix (`V1/V4 full_archive`, `V2 verified_cache`,
+   `V3 consensus`) converged, and the deliberately truncated V4 segment was
+   quarantined while the canonical pre-retirement cold copy served matching
+   genesis history; V4 remained zero-drift and the chain produced 78 blocks in
+   10 seconds during the corruption;
+6. replica-backed repair restored the full-archive object, V4 again admitted
+   at zero drift, and the chain produced 77 blocks in 10 seconds;
+7. verified-cache corruption was quarantined and refetched from its
+   authenticated source. Cached-source-outage and empty-cache-source-outage
+   restarts both remained zero-drift while deep uncached history failed closed;
+   the chain produced 70 and 56 blocks in 10 seconds in those scenarios;
+8. full/cache/consensus capabilities, cache persistence and bounds, source
+   outage isolation and recovery, catalog advancement, and final role
+   admission all passed. The final cadence check produced 55 blocks in 10
+   seconds, and the gate exited 0 after controlled cleanup.
+
+The candidate is therefore locally qualified, not deployed. The remaining
+order is: commit the exact clean diff, pass repository checks on that commit,
+merge, tag and verify the detached PQ-signed release artifacts, perform one
+coordinated four-host install, then execute live artifact/cadence/rejoin and
+Archive V2 activation gates A0-A10. No live mutation or R2 deletion is
+authorized by the local evidence alone.
+
 ## 3. Target Archive V2 Architecture
 
 Archive role and consensus membership are independent concerns. The preferred
@@ -727,8 +825,10 @@ Current execution order is fixed:
    count four active services as four voters: India remains passive until the
    corrected coordinated release. Immediately before the transition prove the
    three-voter chain and all four local tips share a common recent slot/hash.
-2. Finish every v0.5.261 local and repository hard gate, merge the clean commit,
-   publish the signed tag, and verify release artifacts and rollback artifacts.
+2. Preserve the completed v0.5.261 local qualification evidence from
+   checkpoint 78,000; commit its exact clean diff, pass repository checks on
+   that commit, then merge, publish the signed tag, and verify release and
+   rollback artifacts.
 3. Install only signed v0.5.261 artifacts in one coordinated four-host
    stop/install/start, then prove convergence, artifact parity, effective
    30/60/10 oracle defaults, bounded proposal transaction counts, and no
