@@ -3103,11 +3103,8 @@ fn pre_consensus_genesis_is_ready(
     !is_joining_network || public_genesis_probe()
 }
 
-fn needs_pre_consensus_tip_catch_up(current_slot: u64, network_slot: u64) -> bool {
-    // Peer gossip/RPC can report a live tip a few slots ahead while this node
-    // is actively applying blocks. Requiring exact equality here can keep a
-    // restarted validator in InitialSync forever on a healthy moving chain.
-    needs_bootstrap_slot_catch_up(current_slot, network_slot, PRE_CONSENSUS_CATCH_UP_TOLERANCE)
+fn needs_pre_consensus_tip_catch_up(current_slot: u64, network_slot: u64, tolerance: u64) -> bool {
+    needs_bootstrap_slot_catch_up(current_slot, network_slot, tolerance)
 }
 
 fn pre_consensus_sync_work_pending(
@@ -3115,15 +3112,20 @@ fn pre_consensus_sync_work_pending(
     pending_blocks: usize,
     current_slot: u64,
     network_slot: u64,
+    tracking_tolerance: u64,
 ) -> bool {
     // `is_actively_receiving` also reflects the sync manager's batch guard.
     // On a continuously advancing chain, a drained one-block batch can be
     // superseded before its delayed completion check clears that guard.  The
     // guard is not outstanding consensus work when the receive queue is empty
-    // and the canonical local tip has reached the authenticated network tip.
-    // Never relax actual tip parity: a validator that is even one slot behind,
-    // or that still has a queued block to apply, must remain outside BFT.
-    pending_blocks > 0 || (sync_active && current_slot < network_slot)
+    // and the canonical local tip remains inside the explicitly bounded
+    // passive-tracking window. Fresh joins and registration still pass zero
+    // tolerance. An already-staked returning validator may use the one-slot
+    // tracking tolerance only after it has advanced with the live chain for
+    // the complete stability interval.
+    pending_blocks > 0
+        || (sync_active
+            && needs_pre_consensus_tip_catch_up(current_slot, network_slot, tracking_tolerance))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3141,10 +3143,22 @@ fn resume_voting_admission(
     stability_advance: u64,
     network_progress_idle: Duration,
 ) -> ResumeVotingAdmission {
-    if sync_active || current_slot < network_slot {
+    if sync_active
+        || needs_pre_consensus_tip_catch_up(
+            current_slot,
+            network_slot,
+            PRE_CONSENSUS_RESUME_MAX_TRACKING_DRIFT,
+        )
+    {
         return ResumeVotingAdmission::Wait;
     }
+    // Stalled-quorum recovery is intentionally stricter than live tracking:
+    // when the observed chain is idle there is no reason to admit before exact
+    // canonical parity.
     if network_progress_idle >= Duration::from_secs(PRE_CONSENSUS_STALLED_RECOVERY_GRACE_SECS) {
+        if current_slot < network_slot {
+            return ResumeVotingAdmission::Wait;
+        }
         return ResumeVotingAdmission::StalledNetworkRecovery;
     }
     if stability_elapsed >= Duration::from_secs(PRE_CONSENSUS_RESUME_STABILITY_SECS)
@@ -29536,7 +29550,18 @@ async fn run_validator() {
                 .await;
             let sync_active = sync_manager_join.is_actively_receiving().await;
             let pending = sync_manager_join.pending_count().await;
-            if pre_consensus_sync_work_pending(sync_active, pending, current_slot, network_slot) {
+            let tracking_tolerance = if require_resume_stability {
+                PRE_CONSENSUS_RESUME_MAX_TRACKING_DRIFT
+            } else {
+                PRE_CONSENSUS_CATCH_UP_TOLERANCE
+            };
+            if pre_consensus_sync_work_pending(
+                sync_active,
+                pending,
+                current_slot,
+                network_slot,
+                tracking_tolerance,
+            ) {
                 info!(
                     "⏳ Waiting for catch-up batch to drain before consensus (current: {}, observed: {}, pending: {})",
                     current_slot, network_slot, pending
@@ -29550,12 +29575,12 @@ async fn run_validator() {
                 time::sleep(Duration::from_millis(200)).await;
                 continue;
             }
-            if needs_pre_consensus_tip_catch_up(current_slot, network_slot) {
+            if needs_pre_consensus_tip_catch_up(current_slot, network_slot, tracking_tolerance) {
                 info!(
                     "⏳ Syncing to voting-ready network tip before consensus (current: {}, network: {}, tolerance: {}, {} validators)",
                     current_slot,
                     network_slot,
-                    PRE_CONSENSUS_CATCH_UP_TOLERANCE,
+                    tracking_tolerance,
                     validator_count
                 );
                 drain_and_log_pre_consensus_bft_queues(
@@ -29607,15 +29632,12 @@ async fn run_validator() {
                 }
                 let sync_active_after_readiness = sync_manager_join.is_actively_receiving().await;
                 let pending_after_readiness = sync_manager_join.pending_count().await;
-                if prepared_tip != current_slot
-                    || pre_consensus_sync_work_pending(
-                        sync_active_after_readiness,
-                        pending_after_readiness,
-                        prepared_tip,
-                        observed_after_readiness,
-                    )
-                    || needs_pre_consensus_tip_catch_up(prepared_tip, observed_after_readiness)
-                {
+                let readiness_drift_exceeded = needs_pre_consensus_tip_catch_up(
+                    prepared_tip,
+                    observed_after_readiness,
+                    tracking_tolerance,
+                );
+                if readiness_drift_exceeded {
                     if resume_stability.take().is_some() {
                         info!(
                             "⏳ Returning validator stability proof reset after BFT readiness work (before: {}, current: {}, observed: {}, syncing: {})",
@@ -29634,28 +29656,45 @@ async fn run_validator() {
                     time::sleep(Duration::from_millis(200)).await;
                     continue;
                 }
+                if pre_consensus_sync_work_pending(
+                    sync_active_after_readiness,
+                    pending_after_readiness,
+                    prepared_tip,
+                    observed_after_readiness,
+                    tracking_tolerance,
+                ) {
+                    drain_and_log_pre_consensus_bft_queues(
+                        &mut proposal_rx,
+                        &mut prevote_rx,
+                        &mut precommit_rx,
+                        "pre-consensus BFT readiness pending work",
+                    );
+                    time::sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
 
                 let (stability_started_at, stability_start_slot) =
                     *resume_stability.get_or_insert_with(|| {
                         info!(
-                            "⏳ Returning validator is tip-aligned at slot {}; starting passive voting-readiness proof",
-                            current_slot
+                            "⏳ Returning validator is within {} slot(s) of the authenticated tip at slot {}; starting passive voting-readiness proof",
+                            PRE_CONSENSUS_RESUME_MAX_TRACKING_DRIFT,
+                            prepared_tip,
                         );
-                        (Instant::now(), current_slot)
+                        (Instant::now(), prepared_tip)
                     });
                 let decision = resume_voting_admission(
-                    current_slot,
-                    network_slot,
+                    prepared_tip,
+                    observed_after_readiness,
                     false,
                     stability_started_at.elapsed(),
-                    current_slot.saturating_sub(stability_start_slot),
+                    prepared_tip.saturating_sub(stability_start_slot),
                     last_network_progress_at.elapsed(),
                 );
                 match decision {
                     ResumeVotingAdmission::Stable => {
                         info!(
                             "✅ Returning validator proved passive tip tracking through {} slots over {}s; voting admission is ready",
-                            current_slot.saturating_sub(stability_start_slot),
+                            prepared_tip.saturating_sub(stability_start_slot),
                             stability_started_at.elapsed().as_secs()
                         );
                     }
@@ -29778,8 +29817,13 @@ async fn run_validator() {
                     .await;
                 let sync_active = sync_manager.is_actively_receiving().await;
                 let pending = sync_manager.pending_count().await;
-                if pre_consensus_sync_work_pending(sync_active, pending, current_slot, network_slot)
-                {
+                if pre_consensus_sync_work_pending(
+                    sync_active,
+                    pending,
+                    current_slot,
+                    network_slot,
+                    PRE_CONSENSUS_CATCH_UP_TOLERANCE,
+                ) {
                     info!(
                         "⏳ Registration confirmed; waiting for catch-up batch to drain before voting (current: {}, observed: {}, pending: {})",
                         current_slot, network_slot, pending
@@ -29794,7 +29838,11 @@ async fn run_validator() {
                     continue;
                 }
 
-                if needs_pre_consensus_tip_catch_up(current_slot, network_slot) {
+                if needs_pre_consensus_tip_catch_up(
+                    current_slot,
+                    network_slot,
+                    PRE_CONSENSUS_CATCH_UP_TOLERANCE,
+                ) {
                     info!(
                         "⏳ Registration confirmed; syncing to voting-ready network tip before voting (current: {}, network: {}, tolerance: {})",
                         current_slot,
@@ -42800,44 +42848,63 @@ mod tests {
     }
 
     #[test]
-    fn pre_consensus_tip_catch_up_requires_tip_parity_before_voting() {
+    fn pre_consensus_tip_catch_up_respects_the_explicit_tracking_tolerance() {
         let network_slot: u64 = 306_994;
         assert!(needs_pre_consensus_tip_catch_up(
             network_slot.saturating_sub(1),
-            network_slot
+            network_slot,
+            PRE_CONSENSUS_CATCH_UP_TOLERANCE,
+        ));
+        assert!(!needs_pre_consensus_tip_catch_up(
+            network_slot.saturating_sub(PRE_CONSENSUS_RESUME_MAX_TRACKING_DRIFT),
+            network_slot,
+            PRE_CONSENSUS_RESUME_MAX_TRACKING_DRIFT,
         ));
         assert!(needs_pre_consensus_tip_catch_up(
-            network_slot.saturating_sub(PRE_CONSENSUS_CATCH_UP_TOLERANCE),
-            network_slot + 1
-        ));
-        assert!(needs_pre_consensus_tip_catch_up(
-            network_slot.saturating_sub(PRE_CONSENSUS_CATCH_UP_TOLERANCE + 1),
-            network_slot
+            network_slot.saturating_sub(PRE_CONSENSUS_RESUME_MAX_TRACKING_DRIFT + 1),
+            network_slot,
+            PRE_CONSENSUS_RESUME_MAX_TRACKING_DRIFT,
         ));
         assert!(!needs_pre_consensus_tip_catch_up(
             network_slot,
-            network_slot
+            network_slot,
+            PRE_CONSENSUS_CATCH_UP_TOLERANCE,
         ));
         assert!(!needs_pre_consensus_tip_catch_up(
             network_slot + 1,
-            network_slot
+            network_slot,
+            PRE_CONSENSUS_CATCH_UP_TOLERANCE,
         ));
     }
 
     #[test]
-    fn drained_sync_guard_does_not_strand_a_tip_aligned_validator() {
-        assert!(pre_consensus_sync_work_pending(true, 1, 1_000, 1_000));
-        assert!(pre_consensus_sync_work_pending(true, 0, 999, 1_000));
-        assert!(!pre_consensus_sync_work_pending(true, 0, 1_000, 1_000));
-        assert!(!pre_consensus_sync_work_pending(true, 0, 1_001, 1_000));
-        assert!(!pre_consensus_sync_work_pending(false, 0, 1_000, 1_000));
+    fn drained_sync_guard_does_not_strand_a_bounded_live_tip_tracker() {
+        let tolerance = PRE_CONSENSUS_RESUME_MAX_TRACKING_DRIFT;
+        assert!(pre_consensus_sync_work_pending(
+            true, 1, 1_000, 1_000, tolerance
+        ));
+        assert!(!pre_consensus_sync_work_pending(
+            true, 0, 999, 1_000, tolerance
+        ));
+        assert!(pre_consensus_sync_work_pending(
+            true, 0, 998, 1_000, tolerance
+        ));
+        assert!(!pre_consensus_sync_work_pending(
+            true, 0, 1_000, 1_000, tolerance
+        ));
+        assert!(!pre_consensus_sync_work_pending(
+            true, 0, 1_001, 1_000, tolerance
+        ));
+        assert!(!pre_consensus_sync_work_pending(
+            false, 0, 1_000, 1_000, tolerance
+        ));
 
         let stable = Duration::from_secs(PRE_CONSENSUS_RESUME_STABILITY_SECS);
         assert_eq!(
             resume_voting_admission(
                 1_000,
                 1_000,
-                pre_consensus_sync_work_pending(true, 0, 1_000, 1_000),
+                pre_consensus_sync_work_pending(true, 0, 1_000, 1_000, tolerance),
                 stable,
                 PRE_CONSENSUS_RESUME_MIN_ADVANCE_SLOTS,
                 Duration::from_secs(1),
@@ -42848,12 +42915,12 @@ mod tests {
             resume_voting_admission(
                 999,
                 1_000,
-                pre_consensus_sync_work_pending(true, 0, 999, 1_000),
+                pre_consensus_sync_work_pending(true, 0, 999, 1_000, tolerance),
                 stable,
                 PRE_CONSENSUS_RESUME_MIN_ADVANCE_SLOTS,
                 Duration::from_secs(1),
             ),
-            ResumeVotingAdmission::Wait
+            ResumeVotingAdmission::Stable
         );
     }
 
@@ -42895,9 +42962,81 @@ mod tests {
     }
 
     #[test]
-    fn returning_validator_never_votes_while_behind_or_actively_syncing() {
+    fn continuously_moving_one_slot_lead_completes_the_passive_tracking_proof() {
+        let start_slot = 10_000u64;
+        for elapsed_secs in 0..PRE_CONSENSUS_RESUME_STABILITY_SECS {
+            let current_slot = start_slot + elapsed_secs + 1;
+            let network_slot = current_slot + PRE_CONSENSUS_RESUME_MAX_TRACKING_DRIFT;
+            let work_pending = pre_consensus_sync_work_pending(
+                true,
+                0,
+                current_slot,
+                network_slot,
+                PRE_CONSENSUS_RESUME_MAX_TRACKING_DRIFT,
+            );
+            assert!(!work_pending);
+            assert_eq!(
+                resume_voting_admission(
+                    current_slot,
+                    network_slot,
+                    work_pending,
+                    Duration::from_secs(elapsed_secs),
+                    current_slot.saturating_sub(start_slot),
+                    Duration::from_millis(100),
+                ),
+                ResumeVotingAdmission::Wait
+            );
+        }
+
+        let current_slot = start_slot + PRE_CONSENSUS_RESUME_STABILITY_SECS + 1;
+        let network_slot = current_slot + PRE_CONSENSUS_RESUME_MAX_TRACKING_DRIFT;
+        let work_pending = pre_consensus_sync_work_pending(
+            true,
+            0,
+            current_slot,
+            network_slot,
+            PRE_CONSENSUS_RESUME_MAX_TRACKING_DRIFT,
+        );
+        assert!(!work_pending);
+        assert_eq!(
+            resume_voting_admission(
+                current_slot,
+                network_slot,
+                work_pending,
+                Duration::from_secs(PRE_CONSENSUS_RESUME_STABILITY_SECS),
+                current_slot.saturating_sub(start_slot),
+                Duration::from_millis(100),
+            ),
+            ResumeVotingAdmission::Stable
+        );
+    }
+
+    #[test]
+    fn returning_validator_never_votes_outside_bounded_drift_or_with_sync_work() {
         let stable = Duration::from_secs(PRE_CONSENSUS_RESUME_STABILITY_SECS + 10);
         let idle = Duration::from_secs(PRE_CONSENSUS_STALLED_RECOVERY_GRACE_SECS + 10);
+        assert_eq!(
+            resume_voting_admission(
+                998,
+                1_000,
+                false,
+                stable,
+                PRE_CONSENSUS_RESUME_MIN_ADVANCE_SLOTS,
+                idle,
+            ),
+            ResumeVotingAdmission::Wait
+        );
+        assert_eq!(
+            resume_voting_admission(
+                999,
+                1_000,
+                false,
+                stable,
+                PRE_CONSENSUS_RESUME_MIN_ADVANCE_SLOTS,
+                Duration::from_secs(1),
+            ),
+            ResumeVotingAdmission::Stable
+        );
         assert_eq!(
             resume_voting_admission(
                 999,
@@ -43099,11 +43238,15 @@ mod tests {
     }
 
     #[test]
-    fn ahead_peer_still_routes_resume_through_tip_catch_up() {
+    fn one_slot_ahead_peer_routes_resume_through_bounded_passive_tracking() {
         assert!(!should_wait_for_pre_consensus_tip_observation(
             false, 582, 583, 0, 1, true, false,
         ));
-        assert!(needs_pre_consensus_tip_catch_up(582, 583));
+        assert!(!needs_pre_consensus_tip_catch_up(
+            582,
+            583,
+            PRE_CONSENSUS_RESUME_MAX_TRACKING_DRIFT,
+        ));
     }
 
     #[test]
