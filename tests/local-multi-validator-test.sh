@@ -31,6 +31,11 @@ export LESS='-FRX'
 export RUST_LOG="${LICHEN_TEST_RUST_LOG:-info}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BUILD_TARGET_DIR="${CARGO_TARGET_DIR:-${REPO_ROOT}/target}"
+if [[ "$BUILD_TARGET_DIR" != /* ]]; then
+    BUILD_TARGET_DIR="${REPO_ROOT}/${BUILD_TARGET_DIR}"
+fi
+RELEASE_BIN_DIR="${BUILD_TARGET_DIR}/release"
 MAX_VALIDATORS="${1:-4}"
 export LICHEN_LOCAL_VALIDATOR_COUNT="$MAX_VALIDATORS"
 WARMUP_SLOTS=100  # Must match ACTIVATION_WARMUP in validator/src/main.rs
@@ -63,6 +68,15 @@ export LICHEN_LOCAL_ARCHIVE_COLD="${LICHEN_LOCAL_ARCHIVE_COLD:-1}"
 export LICHEN_COLD_RETENTION_SLOTS="${LICHEN_COLD_RETENTION_SLOTS:-50000}"
 export LICHEN_COLD_MIGRATION_INTERVAL_SECS="${LICHEN_COLD_MIGRATION_INTERVAL_SECS:-5}"
 export LICHEN_LOCAL_SLOT_DURATION_MS="${LICHEN_LOCAL_SLOT_DURATION_MS:-5}"
+# Four independent validators must not each auto-size their RocksDB cache from
+# the host's full memory. The gate owns a bounded aggregate cache budget so its
+# Archive V2 snapshot/join phases remain valid on a 16 GB development host.
+export LICHEN_LOCAL_CACHE_SIZE_MB="${LICHEN_LOCAL_CACHE_SIZE_MB:-64}"
+if [[ ! "$LICHEN_LOCAL_CACHE_SIZE_MB" =~ ^[0-9]+$ ]] \
+    || (( 10#$LICHEN_LOCAL_CACHE_SIZE_MB < 16 || 10#$LICHEN_LOCAL_CACHE_SIZE_MB > 4096 )); then
+    echo "LICHEN_LOCAL_CACHE_SIZE_MB must be an integer within 16..4096" >&2
+    exit 2
+fi
 # Deep accelerated joins must retain the immutable checkpoint for the entire
 # exact verification + transfer. The production default remains two; eight is
 # within the validator's validated maximum and is local-gate-only.
@@ -715,7 +729,7 @@ print(candidate)
 
     for tx_num in $(seq 1 "$BACKLOG_REGRESSION_TXS"); do
         amount="$(printf '0.%06d' "$tx_num")"
-        if output="$("$REPO_ROOT/target/release/lichen" transfer \
+        if output="$("$RELEASE_BIN_DIR/lichen" transfer \
             "$recipient" "$amount" \
             --keypair "$wallet" \
             --rpc-url "http://127.0.0.1:${V1_RPC}" 2>&1)"; then
@@ -881,7 +895,7 @@ public_history_manifest_root() {
         manifest_cold_path="$(cold_path "$validator_num")"
     fi
     local args=(
-        "$REPO_ROOT/target/release/lichen-validator"
+        "$RELEASE_BIN_DIR/lichen-validator"
         --network testnet
         --dev-mode
         --db-path "$manifest_db_path"
@@ -960,7 +974,7 @@ archive_v2_source_finalized_slot() {
     local validator_num=$1
     local profile_json
     profile_json="$(
-        "$REPO_ROOT/target/release/lichen-archive-v2" profile-source \
+        "$RELEASE_BIN_DIR/lichen-archive-v2" profile-source \
             --state-dir "$(db_path "$validator_num")" \
             --cold-store "$(cold_path "$validator_num")" \
             --start-slot 0 \
@@ -983,7 +997,7 @@ verify_archive_v2_offline_matrix() {
     local validator_finalized_slot stopped_spread build_end required_archive_end
     local baseline_root=""
     local archive_root replica_root mirror_root restore_root build_json status_json catalog_root
-    local av2="$REPO_ROOT/target/release/lichen-archive-v2"
+    local av2="$RELEASE_BIN_DIR/lichen-archive-v2"
 
     # The validators advance beyond the common checkpoint while its immutable
     # public-history parity is being computed. Build from the actual stopped
@@ -1111,7 +1125,7 @@ refresh_archive_v2_runtime_catalog() {
     local offline_replica_root="${replica_root}.offline"
     local transient_replica=0
     local status_json genesis_hash catalog_end finalized_slot required_end build_start
-    local av2="$REPO_ROOT/target/release/lichen-archive-v2"
+    local av2="$RELEASE_BIN_DIR/lichen-archive-v2"
 
     # Fresh-role joins use separately prepared immutable catalogs. The runtime
     # matrix uses these node-owned roots and must append every newly finalized
@@ -1315,7 +1329,7 @@ start_archive_v2_https_source() {
 
 prepare_archive_v2_fresh_join_roots() {
     local checkpoint_slot current_slot build_end finality_depth genesis_hash
-    local av2="$REPO_ROOT/target/release/lichen-archive-v2"
+    local av2="$RELEASE_BIN_DIR/lichen-archive-v2"
     local source_root="/tmp/lichen-testnet/archive-v2-fresh-source"
     local replica_root="/tmp/lichen-testnet/archive-v2-fresh-replica"
     local full_root="/tmp/lichen-testnet/archive-v2-fresh-full-v3"
@@ -1846,7 +1860,7 @@ verify_archive_v2_runtime_role_matrix() {
     stop_validator_pid "${VALIDATOR_PIDS[4]:-}"
     wait_validator_resources_released 4 \
         || fail "V4 did not release resources before replica-backed segment repair"
-    "$REPO_ROOT/target/release/lichen-archive-v2" mirror \
+    "$RELEASE_BIN_DIR/lichen-archive-v2" mirror \
         --root "$v4_root" \
         --source "repair-source:region-source:${v4_source}" \
         --destination "repair-target:region-target:${v4_root}" \
@@ -2150,8 +2164,8 @@ fi
 
 if [[ "$SKIP_LOCAL_GATE_BUILD" == "1" ]]; then
     for binary in lichen lichen-genesis lichen-validator lichen-archive-v2; do
-        [[ -x "$REPO_ROOT/target/release/$binary" ]] \
-            || fail "LICHEN_SKIP_LOCAL_GATE_BUILD=1 requires target/release/$binary"
+        [[ -x "$RELEASE_BIN_DIR/$binary" ]] \
+            || fail "LICHEN_SKIP_LOCAL_GATE_BUILD=1 requires $RELEASE_BIN_DIR/$binary"
     done
     warn "Skipping release rebuild for a diagnostic run; this does not qualify as a release gate"
 else

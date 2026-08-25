@@ -310,22 +310,24 @@ EOF
 }
 
 assert_run_validator_reattaches_existing_cold_store() {
-    local fixture_root
+    local fixture_root custom_target_dir
     fixture_root="$(make_fixture_dir run-validator-cold-store)"
     fixture_root="$(cd "$fixture_root" && pwd)"
+    custom_target_dir="$fixture_root/custom-target"
 
     copy_repo_script "run-validator.sh" "$fixture_root"
     mkdir -p "$fixture_root/data/archive-7002" "$fixture_root/data/local-cluster"
-    mkdir -p "$fixture_root/target/release"
+    mkdir -p "$custom_target_dir/release"
     printf 'rocksdb\n' >"$fixture_root/data/archive-7002/CURRENT"
     printf 'fixture-custody-token\n' >"$fixture_root/data/local-cluster/custody-api-auth-token"
-    write_file_from_stdin "$fixture_root/target/release/lichen-validator" <<'EOF'
+write_file_from_stdin "$custom_target_dir/release/lichen-validator" <<'EOF'
 #!/usr/bin/env bash
+printf 'validator_bin=%s\n' "$0"
 printf '%s\n' "$*"
 printf 'custody_url=%s\n' "${CUSTODY_URL:-unset}"
 printf 'custody_token=%s\n' "${CUSTODY_API_AUTH_TOKEN:-unset}"
 EOF
-    chmod +x "$fixture_root/target/release/lichen-validator"
+    chmod +x "$custom_target_dir/release/lichen-validator"
 
     local output_file="$TMP_DIR/run-validator-cold-store.log"
     (
@@ -333,12 +335,22 @@ EOF
         env \
             LICHEN_LOCAL_DEV=1 \
             LICHEN_DISABLE_SUPERVISOR=1 \
+            LICHEN_LOCAL_CACHE_SIZE_MB=64 \
+            CARGO_TARGET_DIR=custom-target \
             ./run-validator.sh testnet 2
     ) >"$output_file" 2>&1
 
     assert_output_contains \
         "existing cold store attachment" \
         "--archive-mode --cold-store $fixture_root/data/archive-7002" \
+        "$output_file"
+    assert_output_contains \
+        "bounded local RocksDB cache" \
+        "--cache-size-mb 64" \
+        "$output_file"
+    assert_output_contains \
+        "custom Cargo target directory" \
+        "validator_bin=$custom_target_dir/release/lichen-validator" \
         "$output_file"
     assert_output_contains "local validator custody URL" 'custody_url=http://127.0.0.1:9105' "$output_file"
     assert_output_contains "local validator custody token" 'custody_token=fixture-custody-token' "$output_file"

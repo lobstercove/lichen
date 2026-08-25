@@ -797,6 +797,25 @@ impl StateBatch {
         Ok(())
     }
 
+    /// Advance or replace the canonical post-effects readiness frontier in the
+    /// same RocksDB batch as the per-slot completion marker.
+    pub fn set_post_block_effects_frontier(
+        &mut self,
+        slot: u64,
+        hash: &Hash,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let mut encoded = Vec::with_capacity(40);
+        encoded.extend_from_slice(&slot.to_le_bytes());
+        encoded.extend_from_slice(&hash.0);
+        self.batch
+            .put_cf(&cf, POST_BLOCK_EFFECTS_FRONTIER_KEY, encoded);
+        Ok(())
+    }
+
     pub fn register_evm_address(
         &mut self,
         evm_address: &[u8; 20],

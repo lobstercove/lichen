@@ -81,6 +81,11 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR"
 cd "$REPO_ROOT" || exit 1
+BUILD_TARGET_DIR="${CARGO_TARGET_DIR:-${REPO_ROOT}/target}"
+if [[ "$BUILD_TARGET_DIR" != /* ]]; then
+	BUILD_TARGET_DIR="${REPO_ROOT}/${BUILD_TARGET_DIR}"
+fi
+RELEASE_BIN_DIR="${BUILD_TARGET_DIR}/release"
 SIGNED_METADATA_KEYPAIR_FILE_DEFAULT="${REPO_ROOT}/keypairs/release-signing-key.json"
 
 require_local_dev() {
@@ -108,9 +113,9 @@ LOCAL_LISTEN_ADDR="${LICHEN_LOCAL_LISTEN_ADDR:-127.0.0.1}"
 VALIDATOR_KEYPAIR_FILE="${DB_PATH}/validator-keypair.json"
 GENESIS_WALLET_FILE="${DB_PATH}/genesis-wallet.json"
 LOCAL_SEEDS_FILE="${DB_PATH}/seeds.json"
-CLI_BIN="${REPO_ROOT}/target/release/lichen"
-GENESIS_BIN="${REPO_ROOT}/target/release/lichen-genesis"
-VALIDATOR_BIN="${REPO_ROOT}/target/release/lichen-validator"
+CLI_BIN="${RELEASE_BIN_DIR}/lichen"
+GENESIS_BIN="${RELEASE_BIN_DIR}/lichen-genesis"
+VALIDATOR_BIN="${RELEASE_BIN_DIR}/lichen-validator"
 GENESIS_WRAPPER="${REPO_ROOT}/scripts/generate-genesis.sh"
 SIGNED_METADATA_MANIFEST_FILE_DEFAULT="${REPO_ROOT}/signed-metadata-manifest-${NETWORK}.json"
 SERVICE_FLEET_CONFIG_FILE_DEFAULT="${REPO_ROOT}/service-fleet-${NETWORK}.json"
@@ -332,6 +337,17 @@ if [ "$NETWORK" = "testnet" ]; then
 	EXTRA_FLAGS="--dev-mode"
 else
 	EXTRA_FLAGS=""
+fi
+
+LOCAL_CACHE_SIZE_MB="${LICHEN_LOCAL_CACHE_SIZE_MB:-}"
+if [[ -n "$LOCAL_CACHE_SIZE_MB" ]]; then
+	if [[ ! "$LOCAL_CACHE_SIZE_MB" =~ ^[0-9]+$ ]] \
+		|| (( 10#$LOCAL_CACHE_SIZE_MB < 16 || 10#$LOCAL_CACHE_SIZE_MB > 4096 )); then
+		echo "LICHEN_LOCAL_CACHE_SIZE_MB must be an integer within 16..4096" >&2
+		exit 2
+	fi
+	EXTRA_FLAGS="$EXTRA_FLAGS --cache-size-mb $LOCAL_CACHE_SIZE_MB"
+	echo "RocksDB cache budget: ${LOCAL_CACHE_SIZE_MB} MB"
 fi
 
 if [[ "$LOCAL_ARCHIVE_V2_ROLE" == "verified-cache" || "$LOCAL_ARCHIVE_V2_ROLE" == "verified_cache" || "$LOCAL_ARCHIVE_V2_ROLE" == "consensus" ]]; then

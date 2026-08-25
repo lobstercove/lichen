@@ -1467,6 +1467,34 @@ impl StateStore {
         }
     }
 
+    /// Highest canonical slot whose complete post-block effects have been
+    /// durably certified. The block hash binds the frontier to one canonical
+    /// branch, so a same-height fork replacement cannot inherit readiness from
+    /// the block it replaced.
+    pub fn get_post_block_effects_frontier(&self) -> Result<Option<(u64, Hash)>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        match self.db.get_cf(&cf, POST_BLOCK_EFFECTS_FRONTIER_KEY) {
+            Ok(Some(data)) => {
+                if data.len() != 40 {
+                    return Err(format!(
+                        "Invalid post-block effects frontier length: expected 40, found {}",
+                        data.len()
+                    ));
+                }
+                let mut slot_bytes = [0u8; 8];
+                slot_bytes.copy_from_slice(&data[..8]);
+                let mut hash_bytes = [0u8; 32];
+                hash_bytes.copy_from_slice(&data[8..]);
+                Ok(Some((u64::from_le_bytes(slot_bytes), Hash(hash_bytes))))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(format!("Failed to load post-block effects frontier: {}", e)),
+        }
+    }
+
     pub fn set_post_block_effects_hash(&self, slot: u64, hash: &Hash) -> Result<(), String> {
         let cf = self
             .db

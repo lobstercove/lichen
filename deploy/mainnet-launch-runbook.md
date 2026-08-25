@@ -5,7 +5,7 @@ mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
 Written for the next mainnet package. Release candidate for this runbook is
-`v0.5.260`; keep `v0.5.258` as the signed restart-safe anchor and immediate
+`v0.5.261`; keep `v0.5.258` as the signed restart-safe anchor and immediate
 rollback. Keep `v0.5.257` and `v0.5.250` as prior signed restart-safe evidence,
 and retain `v0.5.240` as the Archive V2 recovery anchor. The candidate
 must not be used until its exact tag and signed artifacts pass the release
@@ -58,7 +58,7 @@ gates, independent review, and deployment approval pass.
   custody was lost; mainnet must launch from verified custody instead.
 - Do not deploy a release that changes consensus rules with a mixed-version
   rolling restart. The current safe anchor `v0.5.258` must remain available
-  until `v0.5.260` is signed, fully qualified, deployed, and explicitly
+  until `v0.5.261` is signed, fully qualified, deployed, and explicitly
   recorded as restart-safe. Retain
   `v0.5.240` separately as the Archive V2 recovery anchor.
 - Do not commit provider URLs, auth tokens, keypair passwords, custody seeds,
@@ -249,7 +249,7 @@ credentials, or keypair passwords.
 Use the signed release that passed CI. For the current package:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.260
+export LICHEN_RELEASE_TAG=v0.5.261
 export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
 ```
 

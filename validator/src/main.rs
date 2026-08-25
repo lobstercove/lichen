@@ -8319,8 +8319,101 @@ async fn apply_post_block_effects_after_store(
 
 fn mark_post_block_effects_complete(state: &StateStore, block: &Block) -> Result<(), String> {
     let mut batch = state.begin_batch_at_slot(block.header.slot);
-    batch.set_post_block_effects_hash(block.header.slot, &block.hash())?;
+    let block_hash = block.hash();
+    batch.set_post_block_effects_hash(block.header.slot, &block_hash)?;
+    batch.set_post_block_effects_frontier(block.header.slot, &block_hash)?;
     state.commit_batch(batch)
+}
+
+fn certify_post_block_effects_frontier(
+    state: &StateStore,
+    activation_slot: u64,
+    context: &str,
+) -> Result<u64, String> {
+    let tip = state.get_last_slot()?;
+    if tip == 0 || tip < activation_slot {
+        return Ok(tip);
+    }
+    let block = state.get_hot_block_by_slot(tip)?.ok_or_else(|| {
+        format!(
+            "{}: canonical tip {} is missing its hot stored block",
+            context, tip
+        )
+    })?;
+    if !tip_post_block_effects_complete(state, &block)? {
+        return Err(format!(
+            "{}: canonical tip {} does not have complete post-block effects",
+            context, tip
+        ));
+    }
+    let block_hash = block.hash();
+    let mut batch = state.begin_batch_at_slot(tip);
+    batch.set_post_block_effects_frontier(tip, &block_hash)?;
+    state.commit_batch(batch)?;
+    match state.get_post_block_effects_frontier()? {
+        Some((frontier_slot, frontier_hash))
+            if frontier_slot == tip && frontier_hash == block_hash =>
+        {
+            Ok(tip)
+        }
+        Some((frontier_slot, frontier_hash)) => Err(format!(
+            "{}: persisted post-block effects frontier {}:{} does not match canonical tip {}:{}",
+            context,
+            frontier_slot,
+            frontier_hash.to_hex(),
+            tip,
+            block_hash.to_hex()
+        )),
+        None => Err(format!(
+            "{}: post-block effects frontier was not persisted for canonical tip {}",
+            context, tip
+        )),
+    }
+}
+
+fn ensure_post_block_effects_frontier_before_bft(
+    state: &StateStore,
+    activation_slot: u64,
+    context: &str,
+) -> Result<u64, String> {
+    let tip = state.get_last_slot()?;
+    if tip == 0 || tip < activation_slot {
+        return Ok(tip);
+    }
+    let block = state.get_hot_block_by_slot(tip)?.ok_or_else(|| {
+        format!(
+            "{}: canonical tip {} is missing its hot stored block",
+            context, tip
+        )
+    })?;
+    let block_hash = block.hash();
+    match state.get_post_block_effects_frontier()? {
+        Some((frontier_slot, frontier_hash))
+            if frontier_slot == tip && frontier_hash == block_hash => {}
+        Some((frontier_slot, frontier_hash)) => {
+            return Err(format!(
+                "{}: post-block effects frontier {}:{} does not match canonical tip {}:{}",
+                context,
+                frontier_slot,
+                frontier_hash.to_hex(),
+                tip,
+                block_hash.to_hex()
+            ));
+        }
+        None => {
+            return Err(format!(
+                "{}: canonical tip {} has no post-block effects frontier",
+                context, tip
+            ));
+        }
+    }
+    if !tip_post_block_effects_complete(state, &block)? {
+        return Err(format!(
+            "{}: post-block effects frontier points to incomplete canonical tip {}",
+            context, tip
+        ));
+    }
+    Ok(tip)
 }
 
 fn record_post_block_state_commitment_anchor(state: &StateStore, block: &Block, context: &str) {
@@ -9256,110 +9349,6 @@ async fn recover_stored_block_post_effects_if_needed(
         context, block.header.slot
     );
     Ok(())
-}
-
-fn recent_post_block_effect_scan_start(
-    tip: u64,
-    verified_tip: u64,
-    activation_slot: u64,
-    window: u64,
-) -> (bool, u64) {
-    let initial_scan = verified_tip <= activation_slot.saturating_sub(1);
-    let first_slot = if initial_scan {
-        tip.saturating_sub(window.saturating_sub(1))
-            .max(activation_slot)
-    } else {
-        verified_tip.saturating_add(1).max(activation_slot)
-    };
-    (initial_scan, first_slot)
-}
-
-async fn ensure_recent_stored_post_block_effects_before_bft(
-    state: &StateStore,
-    validator_set: &Arc<RwLock<ValidatorSet>>,
-    stake_pool: &Arc<RwLock<StakePool>>,
-    runtime: PostBlockEffectsRuntime,
-    verified_tip: &mut u64,
-    window: u64,
-    context: &str,
-) -> Result<u64, String> {
-    let tip = state.get_last_slot()?;
-    if tip == 0 || tip < runtime.activation_slot {
-        *verified_tip = 0;
-        if tip > 0 {
-            *verified_tip = tip;
-        }
-        return Ok(0);
-    }
-    if tip <= *verified_tip {
-        return Ok(0);
-    }
-
-    let (initial_scan, first_slot) =
-        recent_post_block_effect_scan_start(tip, *verified_tip, runtime.activation_slot, window);
-    let mut repaired = 0u64;
-
-    for slot in first_slot..=tip {
-        let Some(block) = state.get_hot_block_by_slot(slot)? else {
-            if initial_scan {
-                continue;
-            }
-            return Err(format!(
-                "{}: canonical slot {} is missing its hot stored block while verifying post-block effects through tip {}",
-                context, slot, tip
-            ));
-        };
-        let repaired_block = if slot < tip {
-            // For an activated non-tip block, replay only independently
-            // idempotent economic effects. Replaying historical oracle hooks
-            // could apply current prices at old timestamps; the tip path
-            // reconciles cumulative non-economic state without claiming a
-            // comprehensive marker for this earlier block.
-            recover_stored_block_economic_effects_if_needed(
-                state,
-                validator_set,
-                stake_pool,
-                &block,
-                runtime.activation_slot,
-                runtime.min_validator_stake,
-                context,
-            )
-            .await?
-        } else {
-            let was_complete = tip_post_block_effects_complete(state, &block)?;
-            if !was_complete {
-                recover_stored_block_post_effects_if_needed(
-                    state,
-                    validator_set,
-                    stake_pool,
-                    &block,
-                    runtime,
-                    context,
-                )
-                .await?;
-            }
-            !was_complete
-        };
-        if repaired_block {
-            repaired = repaired.saturating_add(1);
-        }
-    }
-
-    let fresh_pool = state.get_stake_pool()?;
-    let mut live_pool = stake_pool.write().await;
-    *live_pool = fresh_pool;
-    drop(live_pool);
-    *verified_tip = tip;
-
-    if repaired > 0 {
-        ensure_tip_post_state_commitment_anchor(state)?;
-        info!(
-            "✅ {} completed deterministic post-block effects for {} stored block(s) before BFT continued (slots {}..{})",
-            context, repaired, first_slot, tip
-        );
-    }
-
-    Ok(repaired)
 }
 
 async fn activate_pending_validators_before_replay_height(
@@ -21715,6 +21704,23 @@ async fn run_validator() {
         error!("Failed startup recent post-block recovery: {}", e);
         std::process::exit(1);
     }
+    let _startup_post_effects_frontier = match certify_post_block_effects_frontier(
+        &state,
+        post_block_effects_activation_slot,
+        "Startup post-block effects certification",
+    ) {
+        Ok(slot) => {
+            info!(
+                "✅ Startup certified the canonical post-block effects frontier through slot {}",
+                slot
+            );
+            slot
+        }
+        Err(e) => {
+            error!("Failed startup post-block effects certification: {}", e);
+            std::process::exit(EXIT_CODE_FATAL_STARTUP);
+        }
+    };
     if let Err(e) = repair_active_sparse_state_commitment_before_tip_anchor(&state) {
         error!("Failed startup sparse state commitment repair: {}", e);
         std::process::exit(1);
@@ -29366,12 +29372,6 @@ async fn run_validator() {
     //  and timeout events, then executing the resulting ConsensusActions.
     // ═══════════════════════════════════════════════════════════════
 
-    // Track the canonical post-effect range that has been verified for BFT.
-    // Returning validators must complete the potentially expensive initial
-    // scan before their passive tip-tracking proof begins; otherwise the scan
-    // can stall that process immediately after it starts voting.
-    let mut bft_post_effects_verified_tip = post_block_effects_activation_slot.saturating_sub(1);
-
     // ── Pre-loop: Pre-consensus sync gate ──
     // Wait until we have the local validator state and are caught up before
     // entering the consensus loop.
@@ -29594,35 +29594,55 @@ async fn run_validator() {
             }
 
             if require_resume_stability {
-                // Exercise the same canonical readiness gate BFT uses while
-                // this validator is still passive. The first scan can be
-                // expensive on a recently caught-up RocksDB. Admission is
-                // valid only if the node remains tip-aligned after that work,
-                // not merely before it.
+                let (stability_started_at, stability_start_slot) =
+                    *resume_stability.get_or_insert_with(|| {
+                        info!(
+                            "⏳ Returning validator is within {} slot(s) of the authenticated tip at slot {}; starting passive voting-readiness proof",
+                            PRE_CONSENSUS_RESUME_MAX_TRACKING_DRIFT,
+                            current_slot,
+                        );
+                        (Instant::now(), current_slot)
+                    });
+                let tracking_decision = resume_voting_admission(
+                    current_slot,
+                    network_slot,
+                    false,
+                    stability_started_at.elapsed(),
+                    current_slot.saturating_sub(stability_start_slot),
+                    last_network_progress_at.elapsed(),
+                );
+                if tracking_decision == ResumeVotingAdmission::Wait {
+                    drain_and_log_pre_consensus_bft_queues(
+                        &mut proposal_rx,
+                        &mut prevote_rx,
+                        &mut precommit_rx,
+                        "returning-validator passive stability proof",
+                    );
+                    time::sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
+
+                // The receiver advances the durable post-effects frontier only
+                // after canonical block application and every deterministic
+                // post-block effect complete. Acquire the canonical lock once
+                // after passive tracking and prove that constant-time frontier
+                // against the exact locked tip before any vote is possible.
                 let prepared_tip = {
                     let _canonical_apply_guard = block_apply_lock.lock().await;
-                    if let Err(error) = ensure_recent_stored_post_block_effects_before_bft(
+                    match ensure_post_block_effects_frontier_before_bft(
                         &state,
-                        &validator_set,
-                        &stake_pool,
-                        PostBlockEffectsRuntime {
-                            activation_slot: post_block_effects_activation_slot,
-                            min_validator_stake,
-                            slot_duration_ms,
-                        },
-                        &mut bft_post_effects_verified_tip,
-                        RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW,
-                        "Pre-consensus BFT readiness gate",
-                    )
-                    .await
-                    {
-                        error!(
-                            "FATAL: returning validator failed pre-consensus BFT readiness gate: {}",
-                            error
-                        );
-                        return;
+                        post_block_effects_activation_slot,
+                        "Pre-consensus final BFT readiness gate",
+                    ) {
+                        Ok(tip) => tip,
+                        Err(error) => {
+                            error!(
+                                "FATAL: returning validator failed final pre-consensus BFT readiness gate: {}",
+                                error
+                            );
+                            return;
+                        }
                     }
-                    state.get_last_slot().unwrap_or(0)
                 };
                 let observed_after_readiness =
                     sync_manager_join.get_highest_seen().await.max(network_slot);
@@ -29632,56 +29652,37 @@ async fn run_validator() {
                 }
                 let sync_active_after_readiness = sync_manager_join.is_actively_receiving().await;
                 let pending_after_readiness = sync_manager_join.pending_count().await;
-                let readiness_drift_exceeded = needs_pre_consensus_tip_catch_up(
+                if needs_pre_consensus_tip_catch_up(
                     prepared_tip,
                     observed_after_readiness,
                     tracking_tolerance,
-                );
-                if readiness_drift_exceeded {
-                    if resume_stability.take().is_some() {
-                        info!(
-                            "⏳ Returning validator stability proof reset after BFT readiness work (before: {}, current: {}, observed: {}, syncing: {})",
-                            current_slot,
-                            prepared_tip,
-                            observed_after_readiness,
-                            sync_active_after_readiness,
-                        );
-                    }
-                    drain_and_log_pre_consensus_bft_queues(
-                        &mut proposal_rx,
-                        &mut prevote_rx,
-                        &mut precommit_rx,
-                        "pre-consensus BFT readiness catch-up",
-                    );
-                    time::sleep(Duration::from_millis(200)).await;
-                    continue;
-                }
-                if pre_consensus_sync_work_pending(
+                ) || pre_consensus_sync_work_pending(
                     sync_active_after_readiness,
                     pending_after_readiness,
                     prepared_tip,
                     observed_after_readiness,
                     tracking_tolerance,
                 ) {
+                    if resume_stability.take().is_some() {
+                        info!(
+                            "⏳ Returning validator stability proof reset after final BFT readiness work (before: {}, current: {}, observed: {}, syncing: {}, pending: {})",
+                            current_slot,
+                            prepared_tip,
+                            observed_after_readiness,
+                            sync_active_after_readiness,
+                            pending_after_readiness,
+                        );
+                    }
                     drain_and_log_pre_consensus_bft_queues(
                         &mut proposal_rx,
                         &mut prevote_rx,
                         &mut precommit_rx,
-                        "pre-consensus BFT readiness pending work",
+                        "final pre-consensus BFT readiness catch-up",
                     );
                     time::sleep(Duration::from_millis(200)).await;
                     continue;
                 }
 
-                let (stability_started_at, stability_start_slot) =
-                    *resume_stability.get_or_insert_with(|| {
-                        info!(
-                            "⏳ Returning validator is within {} slot(s) of the authenticated tip at slot {}; starting passive voting-readiness proof",
-                            PRE_CONSENSUS_RESUME_MAX_TRACKING_DRIFT,
-                            prepared_tip,
-                        );
-                        (Instant::now(), prepared_tip)
-                    });
                 let decision = resume_voting_admission(
                     prepared_tip,
                     observed_after_readiness,
@@ -29705,11 +29706,17 @@ async fn run_validator() {
                         );
                     }
                     ResumeVotingAdmission::Wait => {
+                        if resume_stability.take().is_some() {
+                            info!(
+                                "⏳ Returning validator stability proof reset after final BFT readiness decision (current: {}, observed: {})",
+                                prepared_tip, observed_after_readiness
+                            );
+                        }
                         drain_and_log_pre_consensus_bft_queues(
                             &mut proposal_rx,
                             &mut prevote_rx,
                             &mut precommit_rx,
-                            "returning-validator passive stability proof",
+                            "final pre-consensus BFT readiness decision",
                         );
                         time::sleep(Duration::from_millis(200)).await;
                         continue;
@@ -30089,21 +30096,11 @@ async fn run_validator() {
     }
     {
         let _canonical_apply_guard = block_apply_lock.lock().await;
-        if let Err(e) = ensure_recent_stored_post_block_effects_before_bft(
+        if let Err(e) = ensure_post_block_effects_frontier_before_bft(
             &state,
-            &validator_set,
-            &stake_pool,
-            PostBlockEffectsRuntime {
-                activation_slot: post_block_effects_activation_slot,
-                min_validator_stake,
-                slot_duration_ms,
-            },
-            &mut bft_post_effects_verified_tip,
-            RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW,
+            post_block_effects_activation_slot,
             "BFT startup post-effect gate",
-        )
-        .await
-        {
+        ) {
             error!("FATAL: failed BFT startup post-effect gate: {}", e);
             std::process::exit(1);
         }
@@ -30345,32 +30342,23 @@ async fn run_validator() {
     //
     // ── Main BFT event loop ──
     loop {
-        // Canonical post-effect gate: block receiver/sync stores the block
-        // before deterministic post-block effects so duplicate guards can see
-        // it. BFT must not read parent state for the next height until every
-        // newly observed stored block has complete post-effects, otherwise
-        // contract/stake roots can diverge on slower nodes.
+        // The canonical receiver/commit path advances the durable readiness
+        // frontier only after deterministic post-block effects complete. BFT
+        // checks that hash-bound frontier under the canonical lock before it
+        // reads parent state for the next height.
         let tip_slot = {
             let _canonical_apply_guard = block_apply_lock.lock().await;
-            if let Err(e) = ensure_recent_stored_post_block_effects_before_bft(
+            match ensure_post_block_effects_frontier_before_bft(
                 &state,
-                &validator_set,
-                &stake_pool,
-                PostBlockEffectsRuntime {
-                    activation_slot: post_block_effects_activation_slot,
-                    min_validator_stake,
-                    slot_duration_ms,
-                },
-                &mut bft_post_effects_verified_tip,
-                RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW,
+                post_block_effects_activation_slot,
                 "BFT pre-height post-effect gate",
-            )
-            .await
-            {
-                error!("FATAL: failed BFT pre-height post-effect gate: {}", e);
-                std::process::exit(1);
+            ) {
+                Ok(tip) => tip,
+                Err(e) => {
+                    error!("FATAL: failed BFT pre-height post-effect gate: {}", e);
+                    std::process::exit(1);
+                }
             }
-            state.get_last_slot().unwrap_or(0)
         };
 
         // Check if chain tip advanced (block received via sync/P2P outside of BFT)
@@ -31358,21 +31346,11 @@ async fn run_validator() {
                     }
                     {
                         let _canonical_apply_guard = block_apply_lock.lock().await;
-                        if let Err(e) = ensure_recent_stored_post_block_effects_before_bft(
+                        if let Err(e) = ensure_post_block_effects_frontier_before_bft(
                             &state,
-                            &validator_set,
-                            &stake_pool,
-                            PostBlockEffectsRuntime {
-                                activation_slot: post_block_effects_activation_slot,
-                                min_validator_stake,
-                                slot_duration_ms,
-                            },
-                            &mut bft_post_effects_verified_tip,
-                            RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW,
+                            post_block_effects_activation_slot,
                             "BFT post-commit post-effect gate",
-                        )
-                        .await
-                        {
+                        ) {
                             error!("FATAL: failed BFT post-commit post-effect gate: {}", e);
                             std::process::exit(1);
                         }
@@ -32348,7 +32326,11 @@ async fn execute_consensus_actions(
             if let Err(e) =
                 state.put_block_atomic(&block, Some(confirmed_slot), Some(finalized_slot))
             {
-                error!("Failed to store block at height {}: {e}", height);
+                error!(
+                    "FATAL: failed to durably store committed block at height {} before post-block effects: {e}",
+                    height
+                );
+                std::process::exit(1);
             }
             let store_ms = duration_millis_u64(store_started.elapsed());
 
@@ -35024,6 +35006,13 @@ mod tests {
         let hook_pos = section
             .find("apply_post_block_effects_after_store(")
             .expect("BFT shared post-store effects call");
+        let fatal_store_pos = section
+            .find("FATAL: failed to durably store committed block")
+            .expect("BFT storage failure must be fatal");
+        let fatal_exit_pos = section[fatal_store_pos..]
+            .find("std::process::exit(1);")
+            .map(|offset| fatal_store_pos + offset)
+            .expect("BFT storage failure must exit before post effects");
         let evm_pos = section
             .find("// EVM tx inclusion tracking")
             .expect("BFT EVM inclusion marker");
@@ -35031,6 +35020,10 @@ mod tests {
         assert!(
             store_pos < hook_pos,
             "BFT commit must store the block before deterministic post-block hooks"
+        );
+        assert!(
+            fatal_store_pos < fatal_exit_pos && fatal_exit_pos < hook_pos,
+            "BFT must fail closed before post effects when canonical storage fails"
         );
         assert!(
             hook_pos < evm_pos,
@@ -35097,12 +35090,8 @@ mod tests {
             .expect("BFT loop end marker");
         let section = &source[start..start + end];
 
-        assert!(
-            section.contains("Canonical post-effect gate"),
-            "BFT loop must verify canonical post-block effects before observing tip state"
-        );
         let gate_pos = section
-            .find("ensure_recent_stored_post_block_effects_before_bft(")
+            .find("ensure_post_block_effects_frontier_before_bft(")
             .expect("BFT loop must call the post-effect completion gate");
         let observed_tip_pos = section
             .find("let observed_tip = sync_manager.get_highest_seen().await;")
@@ -39208,26 +39197,24 @@ mod tests {
                 400,
             ))
             .expect("tip recovery must use hot history");
-        let mut verified_tip = 0;
         assert_eq!(
-            runtime
-                .block_on(ensure_recent_stored_post_block_effects_before_bft(
-                    &state,
-                    &validator_set,
-                    &stake_pool,
-                    PostBlockEffectsRuntime {
-                        activation_slot: 1,
-                        min_validator_stake: MIN_VALIDATOR_STAKE,
-                        slot_duration_ms: 400,
-                    },
-                    &mut verified_tip,
-                    16,
-                    "verified-cache outage BFT gate",
-                ))
-                .expect("BFT gate must use hot history"),
-            0
+            certify_post_block_effects_frontier(
+                &state,
+                1,
+                "verified-cache outage startup certification",
+            )
+            .expect("startup certification must use hot history"),
+            2
         );
-        assert_eq!(verified_tip, 2);
+        assert_eq!(
+            ensure_post_block_effects_frontier_before_bft(
+                &state,
+                1,
+                "verified-cache outage BFT gate",
+            )
+            .expect("BFT gate must use only the hot tip"),
+            2
+        );
         let status_after = state
             .archive_v2_status()
             .expect("reader status after recovery");
@@ -39236,7 +39223,7 @@ mod tests {
     }
 
     #[test]
-    fn bft_post_effect_gate_repairs_stale_parent_before_next_height() {
+    fn startup_recovery_repairs_stale_parent_before_frontier_certification() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let state = StateStore::open(temp_dir.path()).expect("open state");
         let parent_producer = Keypair::generate().pubkey();
@@ -39319,26 +39306,34 @@ mod tests {
         let stake_pool = Arc::new(RwLock::new(pool));
         let validator_set = Arc::new(RwLock::new(validator_set));
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let mut verified_tip = 6;
-
         let repaired = runtime
-            .block_on(ensure_recent_stored_post_block_effects_before_bft(
+            .block_on(recover_recent_stored_block_post_effects_if_needed(
                 &state,
                 &validator_set,
                 &stake_pool,
-                PostBlockEffectsRuntime {
+                RecentPostBlockRecoveryConfig {
                     activation_slot: 7,
                     min_validator_stake: MIN_VALIDATOR_STAKE,
-                    slot_duration_ms: 400,
+                    window: 16,
+                    history: RecentPostBlockRecoveryHistory::HotRetainedWindow {
+                        retention_slots: 16,
+                    },
                 },
-                &mut verified_tip,
-                16,
-                "test BFT gate",
+                "test startup recovery",
             ))
-            .expect("BFT gate recovery");
+            .expect("startup recovery");
 
         assert_eq!(repaired, 1);
-        assert_eq!(verified_tip, 8);
+        assert_eq!(
+            certify_post_block_effects_frontier(&state, 7, "test startup certification")
+                .expect("certify recovered frontier"),
+            8
+        );
+        assert_eq!(
+            ensure_post_block_effects_frontier_before_bft(&state, 7, "test BFT gate")
+                .expect("constant-time BFT frontier gate"),
+            8
+        );
         assert!(
             canonical_economic_block_effects_complete(&state, &parent_block)
                 .expect("parent economic effects complete"),
@@ -39376,35 +39371,31 @@ mod tests {
     }
 
     #[test]
-    fn initial_bft_post_effect_scan_is_bounded_to_the_recent_window() {
-        let activation_slot = 9_680_289;
-        let tip = 9_830_991;
-        let window = RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW;
-        let verified_tip = activation_slot - 1;
+    fn comprehensive_marker_and_frontier_commit_together() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let producer = Keypair::generate().pubkey();
+        let block = Block::new(
+            11,
+            Hash::hash(b"frontier-parent"),
+            Hash::hash(b"frontier-state"),
+            producer.0,
+            vec![],
+        );
 
-        let (initial_scan, first_slot) =
-            recent_post_block_effect_scan_start(tip, verified_tip, activation_slot, window);
-
-        assert!(initial_scan);
-        assert_eq!(first_slot, tip - window + 1);
-        assert_ne!(first_slot, activation_slot);
+        mark_post_block_effects_complete(&state, &block).expect("commit marker and frontier");
 
         assert_eq!(
-            recent_post_block_effect_scan_start(
-                activation_slot + 10,
-                verified_tip,
-                activation_slot,
-                window
-            ),
-            (true, activation_slot)
+            state
+                .get_post_block_effects_hash(11)
+                .expect("read comprehensive marker"),
+            Some(block.hash())
         );
         assert_eq!(
-            recent_post_block_effect_scan_start(tip, activation_slot, activation_slot, window),
-            (false, activation_slot + 1)
-        );
-        assert_eq!(
-            recent_post_block_effect_scan_start(tip, tip, activation_slot, window),
-            (false, tip + 1)
+            state
+                .get_post_block_effects_frontier()
+                .expect("read post-effects frontier"),
+            Some((11, block.hash()))
         );
     }
 
@@ -42848,6 +42839,69 @@ mod tests {
     }
 
     #[test]
+    fn post_effects_frontier_is_bound_to_the_canonical_tip_hash() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let producer = Keypair::generate().pubkey();
+        let block = Block::new(
+            7,
+            Hash::default(),
+            Hash::hash(b"frontier-state-a"),
+            producer.0,
+            vec![],
+        );
+        state
+            .put_block_atomic(&block, None, None)
+            .expect("store canonical block");
+        for result in [
+            state.set_stake_pool_production_hash(7, &block.hash()),
+            state.set_reward_distribution_hash(7, &block.hash()),
+            state.set_fee_distribution_hash(7, &block.hash()),
+            state.set_post_block_effects_hash(7, &block.hash()),
+        ] {
+            result.expect("store complete post-effects marker");
+        }
+
+        let missing =
+            ensure_post_block_effects_frontier_before_bft(&state, 7, "missing frontier gate")
+                .expect_err("a complete marker alone must not admit BFT");
+        assert!(missing.contains("has no post-block effects frontier"));
+        state
+            .put_metadata("post_effects_frontier_v1", b"malformed")
+            .expect("store malformed frontier");
+        let malformed = state
+            .get_post_block_effects_frontier()
+            .expect_err("malformed frontier must fail closed");
+        assert!(malformed.contains("Invalid post-block effects frontier length"));
+
+        assert_eq!(
+            certify_post_block_effects_frontier(&state, 7, "test certification")
+                .expect("certify frontier"),
+            7
+        );
+        assert_eq!(
+            ensure_post_block_effects_frontier_before_bft(&state, 7, "test BFT gate")
+                .expect("matching frontier"),
+            7
+        );
+
+        let replacement = Block::new(
+            7,
+            Hash::default(),
+            Hash::hash(b"frontier-state-b"),
+            producer.0,
+            vec![],
+        );
+        state
+            .put_block_atomic(&replacement, None, None)
+            .expect("replace canonical block");
+        let error =
+            ensure_post_block_effects_frontier_before_bft(&state, 7, "fork replacement BFT gate")
+                .expect_err("stale branch frontier must fail closed");
+        assert!(error.contains("does not match canonical tip"));
+    }
+
+    #[test]
     fn pre_consensus_tip_catch_up_respects_the_explicit_tracking_tolerance() {
         let network_slot: u64 = 306_994;
         assert!(needs_pre_consensus_tip_catch_up(
@@ -43175,7 +43229,7 @@ mod tests {
     }
 
     #[test]
-    fn returning_validator_completes_bft_readiness_before_stability_and_voting() {
+    fn returning_validator_brackets_passive_tracking_with_guarded_readiness() {
         let source = include_str!("main.rs");
         let start = source
             .find("// ── Pre-loop: Pre-consensus sync gate ──")
@@ -43184,18 +43238,50 @@ mod tests {
             .find("// ── Initialize BFT consensus engine ──")
             .expect("BFT init marker");
         let section = &source[start..start + end];
-        let readiness = section
-            .find("\"Pre-consensus BFT readiness gate\"")
-            .expect("returning-validator BFT readiness call");
         let stability = section
             .find("resume_stability.get_or_insert_with")
             .expect("returning-validator stability proof");
+        let final_readiness = section
+            .find("Pre-consensus final BFT readiness gate")
+            .expect("returning-validator final readiness call");
         let voting = section
             .find("✅ Entering BFT consensus")
             .expect("BFT voting admission");
 
-        assert!(readiness < stability);
-        assert!(stability < voting);
+        assert!(stability < final_readiness);
+        assert!(final_readiness < voting);
+    }
+
+    #[test]
+    fn moving_tip_admission_never_runs_historical_post_effect_scans() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("// ── Pre-loop: Pre-consensus sync gate ──")
+            .expect("pre-consensus sync marker");
+        let end = source[start..]
+            .find("// ── Initialize BFT consensus engine ──")
+            .expect("BFT init marker");
+        let section = &source[start..start + end];
+        assert!(section.contains("ensure_post_block_effects_frontier_before_bft("));
+        assert!(!section.contains("recover_recent_stored_block_post_effects_if_needed("));
+        assert!(!section.contains("RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW"));
+    }
+
+    #[test]
+    fn passive_tracking_waits_without_reacquiring_the_canonical_apply_lock() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("let tracking_decision = resume_voting_admission(")
+            .expect("passive tracking decision");
+        let end = source[start..]
+            .find("let prepared_tip = {")
+            .map(|offset| start + offset)
+            .expect("final readiness scope");
+        let passive_tracking = &source[start..end];
+
+        assert!(passive_tracking.contains("returning-validator passive stability proof"));
+        assert!(passive_tracking.contains("time::sleep(Duration::from_millis(200)).await;"));
+        assert!(!passive_tracking.contains("block_apply_lock.lock().await"));
     }
 
     #[test]

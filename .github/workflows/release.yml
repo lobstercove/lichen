@@ -275,18 +275,32 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
+      - name: Download genesis contract bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: genesis-contracts
+          path: release-contracts/contracts
+
+      - name: Stage the tested genesis contracts for binary embedding
+        shell: bash
+        run: |
+          set -euo pipefail
+          contract_count=0
+          while IFS= read -r wasm; do
+            relative="${wasm#release-contracts/contracts/}"
+            destination="contracts/${relative}"
+            mkdir -p "$(dirname "$destination")"
+            cp "$wasm" "$destination"
+            contract_count=$((contract_count + 1))
+          done < <(find release-contracts/contracts -type f -name '*.wasm' | sort)
+          test "$contract_count" -gt 0
+
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }} --bin lichen-validator --bin lichen-genesis --bin lichen --bin lichen-archive-v2 --bin zk-prove
 
       - name: Build Linux service binaries
         if: startsWith(matrix.os, 'ubuntu')
         run: cargo build --release --locked --target ${{ matrix.target }} --bin lichen-custody --bin lichen-faucet
-
-      - name: Download genesis contract bundle
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: genesis-contracts
-          path: release-contracts/contracts
 
       - name: Strip binary (Linux)
         if: startsWith(matrix.os, 'ubuntu') && matrix.target != 'aarch64-unknown-linux-gnu'
