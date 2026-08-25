@@ -5,6 +5,30 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.260] - 2026-08-25
+
+### Fixed
+- Allows an already-staked returning validator to complete its ten-second
+  passive voting-readiness proof while a healthy chain continues moving one
+  slot ahead. The node must advance at least three canonical slots, remain
+  inside the existing one-slot tracking bound, and have no queued block work;
+  material drift resets the proof.
+- Keeps fresh joins, post-registration admission, and stalled-quorum recovery
+  on exact canonical-tip parity. The bounded moving-tip allowance is restricted
+  to a known returning validator that has completed the canonical post-effects
+  readiness pass.
+- Prevents a drained one-block sync guard from being treated as outstanding
+  work inside that bounded tracking window while retaining fail-closed behavior
+  for a non-empty receive queue or a tip deficit beyond the configured bound.
+
+### Tests
+- Adds a continuous moving-network simulation covering every second of the
+  passive proof, one-slot drift admission, two-slot rejection, queued-work
+  rejection, and exact-tip-only stalled recovery.
+- Retains all 460 validator consensus, sync, WAL, Archive V2, restart, proposal
+  workload, and state-transition tests and the mandatory clean four-validator
+  Archive V2 outage/rejoin gate.
+
 ## [0.5.259] - 2026-08-24
 
 ### Fixed

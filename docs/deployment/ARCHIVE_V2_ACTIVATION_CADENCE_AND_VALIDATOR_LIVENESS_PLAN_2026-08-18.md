@@ -1,10 +1,10 @@
 # Archive V2 Activation, Cadence Recovery, And Validator Liveness Plan
 
 **Date:** 2026-08-18
-**Last updated:** 2026-08-24
-**Status:** Authoritative execution plan; signed v0.5.258 is live on all four
-validators with Archive V2 roles temporarily disabled, v0.5.259 rejoin
-qualification is in progress, and final Archive V2 tail extension, role
+**Last updated:** 2026-08-25
+**Status:** Authoritative execution plan; signed v0.5.259 is live on all four
+validators with Archive V2 roles temporarily disabled, its moving-tip rejoin
+gate failed live, v0.5.260 qualification is in progress, and final Archive V2 tail extension, role
 activation, legacy retirement, and R2 cleanup remain open
 **Scope:** `lichen-testnet-1`, the Archive V2 production topology, current
 four-validator cadence, and a future deterministic offline-validator design
@@ -27,13 +27,13 @@ ad-hoc production change.
 The fleet has safely recovered from the frozen v0.5.255 boundary but is not yet
 in the intended final state.
 
-- Signed v0.5.258 is installed and running on all four hosts from the exact
+- Signed v0.5.259 is installed and running on all four hosts from the exact
   release-workflow artifact. Every validator preserves its own key, signer,
   WAL, and state; all four serve the same advancing chain with zero service
-  restarts. The restored live cadence has approximately 300-400 ms medians and
-  bounded tails rather than the earlier repeating multi-second slowdown.
-  Signed v0.5.258 remains the rollback baseline for the coordinated v0.5.259
-  transition.
+  restarts. The live cadence still has approximately 300-400 ms medians but
+  unacceptable p99 and multi-second tails, so cadence acceptance remains open.
+  Signed v0.5.258 remains the coordinated rollback baseline until v0.5.260
+  passes moving-network rejoin acceptance.
 - The initial current-commit Archive V2 receipt fallback was real and
   v0.5.257 removed it from event fanout, but it was not the complete explanation
   for the production halt and multi-second cadence.
@@ -66,6 +66,13 @@ in the intended final state.
   stale guard can strand an exact-tip validator outside BFT until the network
   itself stalls. v0.5.259 distinguishes that drained guard from real sync work
   while retaining exact tip parity and a zero-pending-block requirement.
+- The v0.5.259 US outage canary then proved that exact-tip parity itself is not
+  a viable ten-second admission invariant on the production 300-ms moving
+  chain. US continuously applied authenticated blocks and kept an empty pending
+  queue, but the observed tip stayed one to three slots ahead; US entered BFT
+  only after a bounded frozen-tip recovery. No snapshot, catalog, or R2 object
+  was changed. v0.5.260 applies the already-defined one-slot passive tracking
+  bound while preserving exact parity for fresh joins and stalled recovery.
 - The Explorer's `Observed ... ms avg` value is not an arithmetic average. It
   is the upper median of at most 120 observer-side normalized block-arrival
   samples. It can therefore move from roughly 300 ms to roughly 1,000 ms when
@@ -92,7 +99,7 @@ Accordingly:
    remain unexplained or while Archive V2 role activation is disabled.
 2. Do not start reclaim attempt 799 or another emergency FUSE batch merely to
    conceal the capacity constraint.
-3. Complete the v0.5.259 hard gates, publish it through the signed release
+3. Complete the v0.5.260 hard gates, publish it through the signed release
    workflow, verify its detached post-quantum checksum signature, and deploy it
    through one coordinated four-host stop/install/start.
 4. Extend the canonical Archive V2 tail from a stopped immutable hot snapshot,
@@ -331,7 +338,7 @@ live commit notifications from Archive V2 receipt fallback, bounds shared
 mempool lock scope, accepts authenticated future-round evidence, and keeps a
 returning validator passive until sustained near-tip stability is proven.
 The signed v0.5.258 deployment removed the earlier runtime cadence regression,
-but activation remains blocked until v0.5.259 passes rejoin acceptance, the
+but activation remains blocked until v0.5.260 passes rejoin acceptance, the
 catalog tail reaches the current admission boundary, all four capacity
 decisions are `Normal`, and live role acceptance proves that historical reads
 do not perturb four-validator cadence.
@@ -420,6 +427,43 @@ the retained canonical set contains 1,272 objects totaling
 152,744,629,494 bytes. No object may be deleted until the live fleet no longer
 depends on legacy/FUSE data and the complete, unhashed-shortened candidate
 manifest SHA is presented for explicit operator approval.
+
+### 2.8 v0.5.259 live canary and v0.5.260 boundary
+
+Signed v0.5.259 is installed and running from the exact release artifact on all
+four validators. Post-deployment integrity sealed all seven executable hashes,
+the running validator hash, signed payloads, v0.5.258 rollbacks, keys, signer
+keys, environments, zero state symlinks, zero restarts, and a common fixed-slot
+hash. It also measured 150, 101, 100, and 95 validator-owned descriptors into
+the legacy R2/FUSE bridge on US, EU, SEA, and IN respectively. Cadence therefore
+remains explicitly unaccepted until that bridge is retired after Archive V2
+role admission.
+
+The first US-only immutable-snapshot canary stopped before creating a snapshot
+because its exact stopped-WAL guard observed one final live commit. Its recovery
+timer restarted US without changing the catalog or R2. The more important live
+result was deterministic: US continuously followed the network with an empty
+receive queue but could not hold exact observed-tip equality for ten seconds,
+so v0.5.259 never admitted it to BFT on the moving chain. A bounded SEA/IN pause
+froze the tip, US entered BFT through the existing exact-tip stalled-network
+path, SEA and IN restarted together, and all four validators resumed committing
+the same chain with zero service restarts. This is recovery evidence, not
+acceptance of v0.5.259.
+
+v0.5.260 corrects only returning-validator passive admission:
+
+- an already-staked validator must complete the canonical post-effects
+  readiness pass, track the authenticated moving tip for at least ten seconds,
+  and advance at least three canonical slots;
+- zero queued blocks remains mandatory and drift beyond one slot resets the
+  proof;
+- a drained sync-manager batch guard is ignored only inside that bounded
+  one-slot tracking window;
+- fresh joins, post-registration admission, and stalled-network quorum recovery
+  retain exact tip parity;
+- live acceptance must stop one validator while the other three continue,
+  prove automatic BFT re-entry and authorship without freezing them, and then
+  repeat the bounded snapshot procedure before Archive V2 tail construction.
 
 ## 3. Target Archive V2 Architecture
 
@@ -572,31 +616,34 @@ No later phase may weaken these gates.
 
 Current execution order is fixed:
 
-1. Keep the now-converged signed v0.5.258 fleet advancing with the shipped
-   oracle defaults and Archive V2 roles disabled; immediately before the
-   transition, prove a common recent slot/hash again.
-2. Finish every v0.5.259 local and repository hard gate, merge the clean commit,
+1. Keep the now-converged signed v0.5.259 fleet advancing with Archive V2 roles
+   disabled; immediately before the transition, prove a common recent
+   slot/hash again.
+2. Finish every v0.5.260 local and repository hard gate, merge the clean commit,
    publish the signed tag, and verify release artifacts and rollback artifacts.
-3. At one coordinated stop, record the fixed tip/hash, materialize the exact
-   volatile SST links, and select the snapshot source by an exact source-backed
-   range audit. Create the bounded immutable hot snapshot only from that proven
-   complete validator (prefer EU over the US canary if both qualify), install
-   only signed v0.5.259 artifacts, and start all four validators. Never assume
-   the public seed is the complete source.
-4. Prove four-node convergence, artifact parity, effective 30/60/10 oracle
-   defaults, bounded proposal transaction counts, no mempool accumulation,
-   and 300-400 ms-class round-zero cadence.
-5. While the network runs, build and dual-publish the catalog tail from the
-   stopped snapshot, then stage the resulting catalog on every host.
-6. Perform one coordinated role activation as US/EU `verified_cache` and SEA/IN
+3. Install only signed v0.5.260 artifacts in one coordinated four-host
+   stop/install/start, then prove convergence, artifact parity, effective
+   30/60/10 oracle defaults, bounded proposal transaction counts, and no
+   mempool accumulation.
+4. Run the moving-network outage/rejoin canary: stop one validator while the
+   other three continue, restart it, and prove automatic BFT re-entry, commits,
+   and authorship without freezing the surviving quorum.
+5. Stop the selected snapshot source, capture its final WAL boundary only after
+   the stop, and select it by an exact source-backed range audit. Create the
+   bounded immutable hot snapshot only from that proven complete validator;
+   never assume the public seed is the complete source.
+6. While the network runs, build and dual-publish only the missing catalog tail
+   from the stopped snapshot, then stage the resulting catalog on every host.
+7. Perform one coordinated role activation as US/EU `verified_cache` and SEA/IN
    `consensus`; prove deep-history parity, source-loss isolation, fixed-tip
    equality, restart, and outage behavior.
-7. Retire legacy cold rows and emergency FUSE bridges in bounded host order,
-   verifying BFT and space after each unit. Restore checkpoint generation once
-   each host exceeds its safety floor.
-8. Re-inventory R2, seal the exact obsolete-object deletion manifest, obtain
-   explicit approval for that manifest SHA-256, delete only those keys, and
-   prove retained canonical inventory unchanged.
+8. Retire legacy cold rows and emergency FUSE bridges in bounded host order,
+   verifying BFT, capacity, and cadence after each unit. Restore checkpoint
+   generation once each host exceeds its safety floor.
+9. Re-inventory R2 only after bridge retirement, seal the exact obsolete-object
+   deletion manifest, obtain explicit operator approval for that manifest
+   SHA-256, delete only those keys, and prove retained canonical inventory
+   unchanged. No R2 deletion is authorized by this execution phase.
 
 ### A1. Ship cadence observability before guessing
 
@@ -754,8 +801,7 @@ This deliberately favors finality over unbounded burst TPS while retaining a
 useful multi-transaction block. Raising either consensus limit requires
 adversarial cost benchmarks and cross-host deterministic acceptance first.
 
-For v0.5.259, the returning-validator correction is deliberately narrower than
-loosening the voting-ready tip tolerance:
+v0.5.259 attempted to retain exact voting-ready tip parity:
 
 - the local canonical tip must still be at or ahead of the authenticated
   observed network tip before voting admission can progress;
@@ -770,6 +816,22 @@ loosening the voting-ready tip tolerance:
 - live acceptance must stop one validator while the other three advance, then
   prove the returning validator enters BFT and commits without pausing the
   surviving quorum.
+
+The live canary falsified exact parity as a moving-network invariant. v0.5.260
+therefore uses the existing one-slot passive tracking bound, but does not make
+it an unconditional voting bypass:
+
+- only an already-staked returning validator can use the bounded tracking
+  path;
+- canonical readiness runs before the stability timer;
+- the node must advance at least three slots over at least ten seconds;
+- any queued block or drift beyond one slot blocks admission, and material
+  drift resets the timer;
+- fresh joins, registration, and stalled-network recovery still require exact
+  parity;
+- the clean local gate and live outage/rejoin gate must both prove automatic
+  BFT entry, local commits, and authorship while the other three validators
+  continue moving.
 
 This is compatible with voting-only `consensus`, remote-backed
 `verified_cache`, and persistent `full_archive` validators because consensus
