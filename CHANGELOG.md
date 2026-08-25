@@ -5,6 +5,29 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.262] - 2026-08-26
+
+### Fixed
+- Emits one structured `returning_validator_guarded_bft_readiness` event only
+  after the returning validator has verified the hash-bound canonical
+  post-effects frontier and completed either sustained moving-tip admission or
+  exact-tip stalled-quorum recovery. This makes the shared safety boundary
+  directly observable without treating either valid admission mode as the
+  other.
+- Makes the four-validator outage/corruption/repair gate require that shared
+  guarded-readiness event, BFT entry, and continued tip-aligned advancement.
+  The v0.5.261 release-hosted gate correctly blocked publication because its
+  assertion recognized only the sustained-moving-tip message even when the
+  repaired validator used the separately defined exact-tip recovery path and
+  was actively committing.
+
+### Tests
+- Retains the one-slot drift, empty receive queue, ten-second sustained
+  tracking, three-slot advance, exact-tip stalled recovery, canonical
+  post-effects frontier, and post-admission progress requirements.
+- Adds source-ordering coverage proving the common guarded-readiness event is
+  emitted after the final canonical frontier gate and before BFT voting.
+
 ## [0.5.261] - 2026-08-25
 
 ### Fixed

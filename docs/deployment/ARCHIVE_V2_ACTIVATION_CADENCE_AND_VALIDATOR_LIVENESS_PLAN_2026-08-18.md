@@ -1,19 +1,28 @@
 # Archive V2 Activation, Cadence Recovery, And Validator Liveness Plan
 
 **Date:** 2026-08-18
-**Last updated:** 2026-08-25
+**Last updated:** 2026-08-26
 **Status:** Authoritative execution plan; signed v0.5.260 is installed on all
 four validators with Archive V2 roles temporarily disabled. India was OOM-
 killed on 2026-08-25, caught the live tip after systemd restarted it, but is
 stranded outside BFT by the moving-rejoin regression; only three validators are
 currently voting and India's leader slots incur proposal timeouts. v0.5.261
 passed its complete local qualification on 2026-08-25, including the guarded
-checkpoint-78,000 Archive V2 corruption/repair tail described in section 2.9;
-it has not yet been merged, tagged, signed, or deployed. Final repository and
-release-workflow gates, coordinated fleet deployment, live rejoin/cadence
-acceptance, Archive V2 tail extension and role activation, legacy/FUSE
-retirement, and disk/memory reclamation remain open. Deletion of R2 objects is
-not authorized.
+checkpoint-78,000 Archive V2 corruption/repair tail described in section 2.9,
+and was merged and immutably tagged at
+`14335ea39b000d52a42461c3b2f4b8e061a1cdda`. Release workflow run
+`32887040579` passed the full quality/security, compiler-sandbox, and genesis
+bundle gates, then correctly blocked before artifacts when the independent
+four-validator gate found a readiness-observability assertion that recognized
+only sustained moving-tip admission. The repaired V4 had instead completed the
+separately valid exact-tip stalled-quorum path and was actively committing.
+v0.5.262 makes the shared hash-bound guarded-readiness boundary explicit for
+both safe admission outcomes; its focused ordering and both admission-mode
+tests pass, while complete requalification is in progress. No v0.5.261 artifact
+was published or deployed. Signed v0.5.262 artifacts, coordinated fleet
+deployment, live rejoin/cadence acceptance, Archive V2 tail extension and role
+activation, legacy/FUSE retirement, and disk/memory reclamation remain open.
+Deletion of R2 objects is not authorized.
 **Scope:** `lichen-testnet-1`, the Archive V2 production topology, current
 four-validator cadence, and a future deterministic offline-validator design
 
@@ -41,7 +50,7 @@ in the intended final state.
   tracked the same advancing chain, but only US, EU, and SEA remained current
   BFT voters. India's `6Xhs...` identity remained at last active slot
   12,043,989 while the other identities advanced beyond 12,048,000. Signed
-  v0.5.258 remains the coordinated rollback baseline until v0.5.261 passes
+  v0.5.258 remains the coordinated rollback baseline until v0.5.262 passes
   moving-network rejoin acceptance.
 - The initial current-commit Archive V2 receipt fallback was real and
   v0.5.257 removed it from event fanout, but it was not the complete explanation
@@ -162,6 +171,18 @@ in the intended final state.
   canonical cold history remained available before retirement, replica repair
   restored the object, and the chain produced 78 blocks in 10 seconds during
   the fault. Section 2.9 records the complete evidence.
+- The tagged v0.5.261 release workflow then reproduced the exact four-validator
+  scenario from clean hosted state. Quality/security, standalone workspaces,
+  dependency policy, genesis bundle, and compiler sandbox passed. During the
+  replica-backed V4 repair, V4 entered BFT and continued committing from slot
+  15,942 through at least 24,572, but the shell gate waited only for the
+  sustained-moving-tip log and ignored the exact-tip stalled-quorum recovery
+  outcome implemented by the same guarded admission state machine. The release
+  correctly failed before platform builds or draft artifacts. v0.5.262 emits
+  one structured guarded-readiness event after the canonical frontier check and
+  before BFT for either safe outcome; the gate still requires BFT entry and
+  post-admission tip-aligned advancement, so no queue, drift, duration, state,
+  or progress safety condition is weakened.
 - The Explorer's `Observed ... ms avg` value is not an arithmetic average. It
   is the upper median of at most 120 observer-side normalized block-arrival
   samples. It can therefore move from roughly 300 ms to roughly 1,000 ms when
@@ -197,7 +218,7 @@ Accordingly:
 2. Use only the bounded, content-hashed emergency headroom pass required to
    recover a validator that reached the fail-closed disk floor. Do not delete
    R2 objects or treat that temporary bridge as Archive V2 activation.
-3. Complete the v0.5.261 hard gates, publish it through the signed release
+3. Complete the v0.5.262 hard gates, publish it through the signed release
    workflow, verify its detached post-quantum checksum signature, and deploy it
    through one coordinated four-host stop/install/start.
 4. Extend the canonical Archive V2 tail from a stopped immutable hot snapshot,
@@ -463,7 +484,7 @@ live commit notifications from Archive V2 receipt fallback, bounds shared
 mempool lock scope, accepts authenticated future-round evidence, and keeps a
 returning validator passive until sustained near-tip stability is proven.
 The signed v0.5.258 deployment removed the earlier runtime cadence regression,
-but activation remains blocked until v0.5.261 passes rejoin acceptance, the
+but activation remains blocked until v0.5.262 passes rejoin acceptance, the
 catalog tail reaches the current admission boundary, all four capacity
 decisions are `Normal`, and live role acceptance proves that historical reads
 do not perturb four-validator cadence.
@@ -659,12 +680,17 @@ Requalification then completed in the fixed order:
    admission all passed. The final cadence check produced 55 blocks in 10
    seconds, and the gate exited 0 after controlled cleanup.
 
-The candidate is therefore locally qualified, not deployed. The remaining
-order is: commit the exact clean diff, pass repository checks on that commit,
-merge, tag and verify the detached PQ-signed release artifacts, perform one
-coordinated four-host install, then execute live artifact/cadence/rejoin and
-Archive V2 activation gates A0-A10. No live mutation or R2 deletion is
-authorized by the local evidence alone.
+The v0.5.261 candidate was therefore locally qualified and merged, but not
+released or deployed. Its tagged hosted gate later blocked on the
+admission-mode-specific log assertion described above even though V4 was
+actively committing. v0.5.262 retains the complete v0.5.261 state-machine and
+Archive V2 corrections and changes only the shared guarded-readiness evidence
+and its gate assertion. The remaining order is: pass complete repository and
+four-validator qualification on the exact v0.5.262 commit, merge, tag and
+verify detached PQ-signed release artifacts, perform one coordinated four-host
+install, then execute live artifact/cadence/rejoin and Archive V2 activation
+gates A0-A10. No live mutation or R2 deletion is authorized by local evidence
+alone.
 
 ## 3. Target Archive V2 Architecture
 
@@ -825,11 +851,10 @@ Current execution order is fixed:
    count four active services as four voters: India remains passive until the
    corrected coordinated release. Immediately before the transition prove the
    three-voter chain and all four local tips share a common recent slot/hash.
-2. Preserve the completed v0.5.261 local qualification evidence from
-   checkpoint 78,000; commit its exact clean diff, pass repository checks on
-   that commit, then merge, publish the signed tag, and verify release and
-   rollback artifacts.
-3. Install only signed v0.5.261 artifacts in one coordinated four-host
+2. Preserve the completed v0.5.261 checkpoint-78,000 qualification and failed
+   hosted-run evidence; complete the v0.5.262 exact-gate requalification, then
+   merge, publish its signed tag, and verify release and rollback artifacts.
+3. Install only signed v0.5.262 artifacts in one coordinated four-host
    stop/install/start, then prove convergence, artifact parity, effective
    30/60/10 oracle defaults, bounded proposal transaction counts, and no
    mempool accumulation.
