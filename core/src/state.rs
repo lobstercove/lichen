@@ -225,6 +225,7 @@ const CF_ACCOUNT_TXS: &str = "account_txs";
 const CF_SLOTS: &str = "slots";
 const CF_VALIDATORS: &str = "validators";
 const CF_STATS: &str = "stats";
+const POST_BLOCK_EFFECTS_FRONTIER_KEY: &[u8] = b"post_effects_frontier_v1";
 const CF_EVM_MAP: &str = "evm_map"; // EVM address → Native pubkey mapping
 const CF_EVM_ACCOUNTS: &str = "evm_accounts"; // EVM address → account info
 const CF_EVM_STORAGE: &str = "evm_storage"; // EVM address + slot → value

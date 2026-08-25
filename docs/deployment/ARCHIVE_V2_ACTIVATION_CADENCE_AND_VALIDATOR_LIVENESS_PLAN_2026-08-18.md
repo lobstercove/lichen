@@ -2,10 +2,18 @@
 
 **Date:** 2026-08-18
 **Last updated:** 2026-08-25
-**Status:** Authoritative execution plan; signed v0.5.259 is live on all four
-validators with Archive V2 roles temporarily disabled, its moving-tip rejoin
-gate failed live, v0.5.260 qualification is in progress, and final Archive V2 tail extension, role
-activation, legacy retirement, and R2 cleanup remain open
+**Status:** Authoritative execution plan; signed v0.5.260 is installed on all
+four validators with Archive V2 roles temporarily disabled. India was OOM-
+killed on 2026-08-25, caught the live tip after systemd restarted it, but is
+stranded outside BFT by the moving-rejoin regression; only three validators are
+currently voting and India's leader slots incur proposal timeouts. v0.5.261
+passed its complete local qualification on 2026-08-25, including the guarded
+checkpoint-78,000 Archive V2 corruption/repair tail described in section 2.9;
+it has not yet been merged, tagged, signed, or deployed. Final repository and
+release-workflow gates, coordinated fleet deployment, live rejoin/cadence
+acceptance, Archive V2 tail extension and role activation, legacy/FUSE
+retirement, and disk/memory reclamation remain open. Deletion of R2 objects is
+not authorized.
 **Scope:** `lichen-testnet-1`, the Archive V2 production topology, current
 four-validator cadence, and a future deterministic offline-validator design
 
@@ -27,13 +35,14 @@ ad-hoc production change.
 The fleet has safely recovered from the frozen v0.5.255 boundary but is not yet
 in the intended final state.
 
-- Signed v0.5.259 is installed and running on all four hosts from the exact
+- Signed v0.5.260 is installed and running on all four hosts from the exact
   release-workflow artifact. Every validator preserves its own key, signer,
-  WAL, and state; all four serve the same advancing chain with zero service
-  restarts. The live cadence still has approximately 300-400 ms medians but
-  unacceptable p99 and multi-second tails, so cadence acceptance remains open.
-  Signed v0.5.258 remains the coordinated rollback baseline until v0.5.260
-  passes moving-network rejoin acceptance.
+  WAL, and state. After India was OOM-killed and restarted, all four RPCs again
+  tracked the same advancing chain, but only US, EU, and SEA remained current
+  BFT voters. India's `6Xhs...` identity remained at last active slot
+  12,043,989 while the other identities advanced beyond 12,048,000. Signed
+  v0.5.258 remains the coordinated rollback baseline until v0.5.261 passes
+  moving-network rejoin acceptance.
 - The initial current-commit Archive V2 receipt fallback was real and
   v0.5.257 removed it from event fanout, but it was not the complete explanation
   for the production halt and multi-second cadence.
@@ -73,6 +82,86 @@ in the intended final state.
   only after a bounded frozen-tip recovery. No snapshot, catalog, or R2 object
   was changed. v0.5.260 applies the already-defined one-slot passive tracking
   bound while preserving exact parity for fresh joins and stalled recovery.
+- The v0.5.260 SEA capacity canary then exposed a distinct architectural
+  defect. After SEA reclaimed 16,102,768,640 local bytes and caught the moving
+  tip, the deterministic 4,096-block post-effects readiness scan still lived in
+  the moving admission and BFT lifecycle. During rejoin, that local historical
+  scan could consume the one-slot admission window before the passive proof
+  began, forcing the node back into catch-up on a continuously moving chain.
+  The same helper also performed a redundant stake-pool reload as each new tip
+  was verified. v0.5.261 removes historical scans from the live path. Startup
+  alone performs bounded crash recovery and certifies a durable
+  `(slot, block hash)` frontier; the marker and frontier advance atomically
+  after complete post-block effects, and BFT/rejoin check that frontier in
+  constant time under the canonical lock. The existing one-slot bound,
+  zero-pending requirement, ten-second duration, and three-slot advance
+  requirement remain unchanged.
+- The 2026-08-25 capacity incident provided a second live separation of causes.
+  India stopped fail-closed at the 5 GiB floor, then EU independently stopped
+  137 MB below that floor. With only two of four validators admitted, the chain
+  correctly could not finalize. India reclaimed 5,373,990,339 bytes through an
+  80-file archive-only activation of the already dual-readback R2 batch; no hot
+  state and no new R2 object operation were involved. EU reclaimed
+  4,023,726,080 bytes by removing only two unmounted and unopened v0.5.253/
+  v0.5.255 candidate caches after all 24 content-addressed objects were proven
+  present in the sealed full R2 inventory in both buckets. A later exact audit
+  removed 12 files from the stale, disabled EU
+  `archive-v2-consensus-testnet` candidate cache only after their names, sizes,
+  and payload identities matched both sealed R2 inventories and no runtime or
+  filesystem reference existed. That second cleanup reclaimed 1,422,680,064
+  physical bytes while preserving its catalog and retirement receipts; both R2
+  copies remain untouched. EU and India then entered BFT from their preserved
+  WALs. Existing future-round evidence made
+  them skip to the witnessed round, and all four committed slot 12,018,618
+  with hash prefix `b1bda05d` before normal round-zero production resumed.
+  This was a disk-capacity/no-quorum recovery, not an Archive V2 consensus
+  format failure and not an authorization to weaken the disk guard.
+- A later 2026-08-25 live audit tied the renewed cadence regression to both
+  rejoin state and the emergency FUSE bridge. The kernel recorded a global OOM
+  kill of India's validator at approximately 2,572,208 KiB anonymous RSS.
+  Systemd restarted the same signed binary and the node continued applying
+  authenticated blocks, but it never re-entered BFT. Peer state and prevote/
+  precommit timeout evidence showed `6Xhs...` missing while the other three
+  validators were current; repeated assigned leader slots therefore waited for
+  the proposal timeout. At the same time `/proc/meminfo` reported shared memory
+  of 13,111,268 KiB on US, 2,444,216 KiB on EU, 14,394,652 KiB on SEA, and
+  20,165,704 KiB on India, with 51, 17, 17, and 13 rclone/FUSE mounts
+  respectively. US and SEA had exhausted swap; India had no swap and only
+  about 1.5 GiB available. This is not an R2 object-read latency hypothesis:
+  the temporary bridge itself is consuming unsafe host memory and must be
+  retired after Archive V2 admission. Until then, the coordinated release uses
+  a measured RocksDB cache budget rather than the current 1,024 MiB setting.
+- The first recovered v0.5.261 local gate crossed the 50,000-slot retention
+  boundary and passed immutable Archive V2 source, full-archive, verified-cache,
+  consensus-role, source-outage, and restored-own-state V3 acceptance before a
+  fourth concurrent join exhausted the 16 GiB development host. The reboot
+  purged the temporary worktree and chain data, but the exact 30-file candidate
+  was recovered from the local session record into durable storage and passed
+  all 463 validator tests, full-workspace tests, strict clippy, cargo-audit,
+  cargo-deny, standalone compiler/SDK/fuzz checks, all 33 contract suites and
+  WASM builds, release/signer/archive/static QA, and diff checks again. Release
+  platform binaries now stage that exact tested WASM bundle before compilation,
+  closing the prior tested-versus-shipped genesis-byte ordering gap. The gate
+  assigns each validator a validated 64 MiB cache, an explicit 256 MiB aggregate
+  block-cache budget, before the clean four-validator rerun.
+- The clean memory-bounded rerun completed the former crash boundary, all four
+  fresh joins and role joins, the 96-transaction backlog recovery, moving-gap
+  rejoin, own-state restarts, all-validator restart, public-history parity, and
+  deterministic Archive V2 build/mirror/restore parity. It then failed the
+  final runtime role matrix after correctly quarantining a deliberately
+  truncated full-archive segment: V4 remained voting and tip-aligned, but its
+  genesis RPC did not use the still-present canonical legacy cold fallback.
+  The root cause is a role-policy contradiction in slot routing, not consensus
+  or object-store latency. The admitted fresh-sync shortcut forced every role
+  directly to V2, while the separate legacy policy explicitly permits only
+  `full_archive` to retain hot -> cold -> V2 fallback until retirement. The
+  correction makes exclusive catalog routing apply only to `verified_cache`
+  and `consensus`; a focused regression and all nine Archive V2 state tests
+  pass. The guarded checkpoint-78,000 tail resume subsequently passed with
+  exit code 0: the deliberately corrupted full-archive object was quarantined,
+  canonical cold history remained available before retirement, replica repair
+  restored the object, and the chain produced 78 blocks in 10 seconds during
+  the fault. Section 2.9 records the complete evidence.
 - The Explorer's `Observed ... ms avg` value is not an arithmetic average. It
   is the upper median of at most 120 observer-side normalized block-arrival
   samples. It can therefore move from roughly 300 ms to roughly 1,000 ms when
@@ -87,19 +176,28 @@ in the intended final state.
 - The existing read-only FUSE SST mounts are an emergency, dual-R2-backed
   legacy archive offload. They are not the final full-archive,
   verified-cache, and consensus role topology.
-- Current disk free space is runway, not completion. The 2026-08-23 read-only
-  audit measured approximately 41.7 GB free on US and 15.8-16.5 GB on the other
-  three hosts. EU and SEA still carry roughly 83-89 GB of legacy archive each,
-  in addition to roughly 84-86 GB of hot state. Those bytes are reclaimed only
-  after fleet-wide Archive V2 admission and fixed-tip parity, not before.
+- Current disk free space is runway, not completion. The latest 2026-08-25
+  read-only audit measured approximately 26.0 GB free on US, 9.34 GB on EU,
+  19.0 GB on SEA, and 9.31 GB on India. All four services tracked the advancing
+  chain, but India was not a current BFT voter; service health must not be
+  reported as four-validator consensus health. India retained zero hot-state
+  symlinks.
+  Legacy archive bytes are reclaimed permanently only after fleet-wide Archive
+  V2 admission and fixed-tip parity, not before.
+- The first stable live window after backlog drainage contained 31 commits over
+  30 intervals in 10,639 ms, an arithmetic average of 354.6 ms. Individual
+  round-zero intervals returned to roughly 288-442 ms. Explorer windows that
+  include the preceding no-quorum interval are expected to remain temporarily
+  inflated and are not release acceptance evidence.
 
 Accordingly:
 
 1. Do not call the recovery 100% complete while recurring BFT timeout bursts
    remain unexplained or while Archive V2 role activation is disabled.
-2. Do not start reclaim attempt 799 or another emergency FUSE batch merely to
-   conceal the capacity constraint.
-3. Complete the v0.5.260 hard gates, publish it through the signed release
+2. Use only the bounded, content-hashed emergency headroom pass required to
+   recover a validator that reached the fail-closed disk floor. Do not delete
+   R2 objects or treat that temporary bridge as Archive V2 activation.
+3. Complete the v0.5.261 hard gates, publish it through the signed release
    workflow, verify its detached post-quantum checksum signature, and deploy it
    through one coordinated four-host stop/install/start.
 4. Extend the canonical Archive V2 tail from a stopped immutable hot snapshot,
@@ -162,7 +260,7 @@ validator and disappeared from other proposer slots. The release correction
 therefore has two independent obligations: bound transaction work per proposal,
 and restore US before measuring steady-state four-validator cadence.
 
-### 2.3 What the source diff proves
+### 2.3 What the source and storage diff proves
 
 The v0.5.229-to-v0.5.250 comparison found no change in:
 
@@ -173,14 +271,41 @@ The v0.5.229-to-v0.5.250 comparison found no change in:
 - deployed `400/2000/1000/1000/60000 ms` timing configuration.
 
 The current block proposal path uses the hot transaction index and does not
-perform deep Archive V2 reads. No live `state-testnet` SST is backed by an
-Archive V2 FUSE mount. Active Archive V2 segment migration is also disabled.
-This rules out a direct Archive V2 state-read regression. The later live A/B
-recovery also ruled it out as the cause of the halt: holding the high-frequency
-oracle ingress restored cadence without changing the Archive V2 canary, source
-mounts, or legacy archive layout. Archive and checkpoint work can still amplify
-host pressure and must pass isolation gates, but the reproduced liveness defect
-is an unbounded proposal workload fed by overly aggressive oracle defaults.
+perform deep Archive V2 reads. The 2026-08-25 fleet placement audit found zero
+symlinked SSTs in `state-testnet` on every host; the emergency R2/FUSE links are
+confined to `archive-testnet` (US `1,896`, EU `1,523`, SEA `1,679`, India
+`1,436` before the recovery and `1,516` after the verified 80-file archive-only
+activation). Active Archive V2 segment migration is also disabled. This rules out
+R2 as a direct dependency of the current hot-state BFT readiness reads. A
+proposed India headroom plan that selected 154 hot-state SSTs was therefore
+aborted before local replacement, and all further emergency headroom plans are
+explicitly archive-only.
+
+The post-effect safety gate has a separate source-level regression history:
+
+- v0.5.224 introduced a process-local `verified_tip` cursor and a bounded
+  4,096-block recovery scan before BFT;
+- v0.5.234 constrained that scan to hot-retained blocks, correctly preventing
+  consensus recovery from falling through to cold history;
+- v0.5.257-v0.5.260 reused the scan inside returning-validator moving-tip
+  admission, where a complete local scan could outlive the one-slot drift
+  allowance and repeatedly send an otherwise caught-up validator back to sync;
+- each newly verified tip also reloaded the full stake pool even when no repair
+  occurred.
+
+v0.5.261 preserves the safety purpose but replaces the process-local cursor in
+live BFT with a persistent hash-bound frontier. Startup performs the historical
+crash-recovery scan once and certifies the frontier. Each successful block then
+commits its comprehensive effects marker and frontier in one RocksDB batch.
+Moving admission and BFT check only the exact canonical tip, its completion
+marker, and the frontier. A fork replacement, missing marker, malformed
+frontier, or failed block store fails closed.
+
+This gives three independently testable cadence classes rather than one vague
+"Archive V2 slowdown": proposal-work tails fixed in v0.5.258; moving-rejoin
+admission fixed in v0.5.261; and deterministic timeout slots while a validator
+is genuinely offline, which remain expected until the later versioned
+offline-validator design is implemented.
 
 ### 2.4 Background faults already identified
 
@@ -338,7 +463,7 @@ live commit notifications from Archive V2 receipt fallback, bounds shared
 mempool lock scope, accepts authenticated future-round evidence, and keeps a
 returning validator passive until sustained near-tip stability is proven.
 The signed v0.5.258 deployment removed the earlier runtime cadence regression,
-but activation remains blocked until v0.5.260 passes rejoin acceptance, the
+but activation remains blocked until v0.5.261 passes rejoin acceptance, the
 catalog tail reaches the current admission boundary, all four capacity
 decisions are `Normal`, and live role acceptance proves that historical reads
 do not perturb four-validator cadence.
@@ -465,6 +590,82 @@ v0.5.260 corrects only returning-validator passive admission:
   prove automatic BFT re-entry and authorship without freezing them, and then
   repeat the bounded snapshot procedure before Archive V2 tail construction.
 
+### 2.9 v0.5.261 clean-gate and resumed-tail qualification evidence
+
+The 2026-08-25 clean four-validator rerun used the exact release build, a
+64 MiB RocksDB cache per validator, the 50,000-slot hot/cold boundary, and
+authenticated local HTTPS Archive V2 sources. It established the following
+initial evidence before the final role-matrix failure:
+
+- retention passed at slot 52,508; bounded V1/V2 cold migrations completed
+  independently and the chain continued producing;
+- fresh V3 `full_archive`, `verified_cache`, and `consensus` joins started
+  without copied RocksDB, WAL, or genesis-wallet state, verified snapshot
+  manifests and state roots, reached the moving tip, preserved identity, and
+  enforced their deep-history capabilities;
+- authenticated source loss failed deep history closed without stopping
+  consensus and refetched after restoration;
+- fresh V4 crossed the former 16 GiB host-crash point, registered as the fourth
+  staked/routing validator, and produced after activation;
+- a 96-transaction paused-finality backlog fully finalized through bounded
+  proposals with a maximum observed block transaction count of 15;
+- V4 consumed a retained 140-slot live gap in the same process, then V4, V1,
+  and all four validators passed own-state restart checks;
+- all four public-history manifests matched root
+  `db92d3e5193768d55bc44f51399c823b1eb2e718da8cdb81f4fdfe1a10704846`;
+- all four stopped-state Archive V2 build/mirror/restore derivations matched
+  root `04deefdf7019e248376729c8a1eeaf8a83af20df2336906f2d9ccea350a6b3e4`.
+
+The first runtime role-matrix attempt then truncated one V4 segment by design.
+Startup quarantined object
+`7d0f66bfc4e219b09bb1bd8d4f259f60d833f111898cff26d6fa47717e6e30c7`,
+and V4 stayed voting and zero-drift, but `getBlock(0)` returned Archive V2
+unavailable instead of the canonical pre-retirement cold copy. The release
+was held before commit, tag, or deployment. The correction is deliberately
+role-scoped: admitted
+`verified_cache` and `consensus` nodes still force verified V2 capability
+semantics, while `full_archive` retains canonical hot/cold fallback until the
+authorized retirement phase removes those rows. After retirement, absence of
+legacy rows naturally returns the original fail-closed V2 error.
+
+Requalification then completed in the fixed order:
+
+1. the focused full-archive fallback regression, all nine Archive V2 state
+   tests, formatting, strict all-target/all-feature clippy, and the complete
+   workspace suite passed;
+2. the gate rebuilt the exact release binaries and resumed only after proving
+   all four independently owned states and checkpoint-78,000 public-history
+   root
+   `db92d3e5193768d55bc44f51399c823b1eb2e718da8cdb81f4fdfe1a10704846`;
+3. the resumed cluster produced 75 blocks in 10 seconds and converged within
+   one slot before the stopped-state audit;
+4. all four independently rebuilt, mirrored, and restored the safe immutable
+   range `0..28,208` at stopped tip `78,203`, yielding deterministic Archive V2
+   root
+   `4ff3435ba6626a0813cb4f02fc6e186070c4b3586b449f6c7091b13266e14162`;
+5. the mixed role matrix (`V1/V4 full_archive`, `V2 verified_cache`,
+   `V3 consensus`) converged, and the deliberately truncated V4 segment was
+   quarantined while the canonical pre-retirement cold copy served matching
+   genesis history; V4 remained zero-drift and the chain produced 78 blocks in
+   10 seconds during the corruption;
+6. replica-backed repair restored the full-archive object, V4 again admitted
+   at zero drift, and the chain produced 77 blocks in 10 seconds;
+7. verified-cache corruption was quarantined and refetched from its
+   authenticated source. Cached-source-outage and empty-cache-source-outage
+   restarts both remained zero-drift while deep uncached history failed closed;
+   the chain produced 70 and 56 blocks in 10 seconds in those scenarios;
+8. full/cache/consensus capabilities, cache persistence and bounds, source
+   outage isolation and recovery, catalog advancement, and final role
+   admission all passed. The final cadence check produced 55 blocks in 10
+   seconds, and the gate exited 0 after controlled cleanup.
+
+The candidate is therefore locally qualified, not deployed. The remaining
+order is: commit the exact clean diff, pass repository checks on that commit,
+merge, tag and verify the detached PQ-signed release artifacts, perform one
+coordinated four-host install, then execute live artifact/cadence/rejoin and
+Archive V2 activation gates A0-A10. No live mutation or R2 deletion is
+authorized by the local evidence alone.
+
 ## 3. Target Archive V2 Architecture
 
 Archive role and consensus membership are independent concerns. The preferred
@@ -540,8 +741,8 @@ approved bounded testnet transition is therefore:
 
 | Host | Archive V2 role | Deep-history source | Local cache |
 | --- | --- | --- | --- |
-| US | `verified_cache` | read-only primary and replica R2 source mounts | hard quota |
-| EU | `verified_cache` | read-only primary and replica R2 source mounts | hard quota |
+| US | `verified_cache` | authenticated primary and replica R2 HTTPS gateways | hard quota |
+| EU | `verified_cache` | authenticated primary and replica R2 HTTPS gateways | hard quota |
 | SEA | `consensus` | none | none |
 | IN | `consensus` | none | none |
 
@@ -562,6 +763,9 @@ This is a testnet exception, not the final production archive policy:
 - R2 loss may make historical RPC unavailable, but the implementation and
   acceptance tests must prove it cannot affect proposal, validation, voting,
   hot-state persistence, or BFT admission;
+- source access must use bounded authenticated HTTPS object reads, not mounted
+  R2 filesystems or remote SSTs; the emergency rclone/FUSE bridge is retired
+  after role activation and is not part of the final Archive V2 topology;
 - a scheduled, signed tail-publisher must keep the catalog ahead of every
   restart admission boundary; it publishes objects and manifests to both R2
   domains and publishes the catalog last only after dual read-back;
@@ -616,12 +820,16 @@ No later phase may weaken these gates.
 
 Current execution order is fixed:
 
-1. Keep the now-converged signed v0.5.259 fleet advancing with Archive V2 roles
-   disabled; immediately before the transition, prove a common recent
-   slot/hash again.
-2. Finish every v0.5.260 local and repository hard gate, merge the clean commit,
-   publish the signed tag, and verify release artifacts and rollback artifacts.
-3. Install only signed v0.5.260 artifacts in one coordinated four-host
+1. Keep the signed v0.5.260 fleet tracking with Archive V2 roles disabled;
+   preserve the verified India/EU headroom recovery and OOM evidence. Do not
+   count four active services as four voters: India remains passive until the
+   corrected coordinated release. Immediately before the transition prove the
+   three-voter chain and all four local tips share a common recent slot/hash.
+2. Preserve the completed v0.5.261 local qualification evidence from
+   checkpoint 78,000; commit its exact clean diff, pass repository checks on
+   that commit, then merge, publish the signed tag, and verify release and
+   rollback artifacts.
+3. Install only signed v0.5.261 artifacts in one coordinated four-host
    stop/install/start, then prove convergence, artifact parity, effective
    30/60/10 oracle defaults, bounded proposal transaction counts, and no
    mempool accumulation.

@@ -5,6 +5,42 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.261] - 2026-08-25
+
+### Fixed
+- Replaces live BFT and moving-rejoin historical post-effect scans with a
+  durable `(slot, block hash)` readiness frontier. The comprehensive completion
+  marker and frontier now commit atomically only after every deterministic
+  post-block effect succeeds, binding voting readiness to the exact canonical
+  branch rather than a process-local scan cursor.
+- Runs bounded historical crash recovery only during startup, certifies its
+  result against the canonical tip, and uses constant-time, hash-bound,
+  fail-closed frontier checks under the canonical apply lock before BFT starts,
+  before each height, after commit, and at final moving-tip admission. This
+  removes repeated historical reads and stake-pool reloads from the steady-state
+  consensus path while preserving the v0.5.260 passive stability, drift, and
+  pending-work admission boundaries.
+- Makes a failed atomic BFT block-store operation fatal before post-block
+  effects or the readiness frontier can advance, preventing a validator from
+  certifying effects for a block body that was not durably stored.
+
+### Tests
+- Adds fork-replacement, atomic marker/frontier, malformed/missing frontier,
+  startup recovery, snapshot round-trip, moving-admission ordering, no-live-
+  historical-scan, and BFT store-failure ordering regressions.
+- Bounds the four-validator gate to a 64 MB RocksDB cache per process instead
+  of allowing every validator to auto-size from the host's full memory. This
+  keeps the 50,000-slot Archive V2 join/restart gate within an explicit 256 MB
+  aggregate block-cache budget on 16 GB development machines.
+- Honors `CARGO_TARGET_DIR` in the local validator launcher and four-validator
+  gate so a clean release worktree uses one explicit build directory rather
+  than silently rebuilding or launching stale hard-coded binaries.
+- Stages the contract-gate WASM bundle before every signed platform binary is
+  compiled, ensuring the tested validator and shipped genesis/runtime binaries
+  embed the same contract bytes.
+- Passes all 463 validator consensus, sync, WAL, Archive V2, restart, proposal
+  workload, and state-transition tests plus the full workspace suite.
+
 ## [0.5.260] - 2026-08-25
 
 ### Fixed

@@ -201,9 +201,13 @@ for (const [packageName, importers] of Array.from(allPackages).sort()) {
 const releaseWorkflow = fs.readFileSync(repoPath('.github/workflows/release.yml'), 'utf8');
 const rollingReleaseDeploy = fs.readFileSync(repoPath('scripts/rolling-release-deploy.sh'), 'utf8');
 const archiveJob = extractWorkflowJob(releaseWorkflow, 'archive-parity-local-gate');
+const releaseBuildJob = extractWorkflowJob(releaseWorkflow, 'build');
 const setupNodeOffset = archiveJob.indexOf('actions/setup-node@');
 const npmCiOffset = archiveJob.indexOf('npm ci --ignore-scripts');
 const harnessOffset = archiveJob.indexOf('bash tests/local-multi-validator-test.sh 4');
+const contractDownloadOffset = releaseBuildJob.indexOf('name: Download genesis contract bundle');
+const contractStageOffset = releaseBuildJob.indexOf('name: Stage the tested genesis contracts for binary embedding');
+const releaseBinaryBuildOffset = releaseBuildJob.indexOf('name: Build release binary');
 assert(archiveJob.length > 0, 'release workflow defines the archive parity job');
 assert(setupNodeOffset >= 0, 'archive parity job installs pinned Node.js');
 assert(archiveJob.includes('node-version: "22"'), 'archive parity job uses Node.js 22');
@@ -223,6 +227,17 @@ assert(
 assert(
     harnessOffset >= 0,
     'release workflow runs the tracked four-validator harness',
+);
+assert(
+    contractDownloadOffset >= 0
+        && contractStageOffset > contractDownloadOffset
+        && releaseBinaryBuildOffset > contractStageOffset,
+    'signed platform binaries embed the exact contract bundle that passed the contract gate',
+);
+assert(
+    releaseBuildJob.includes('cp "$wasm" "$destination"')
+        && releaseBuildJob.includes('test "$contract_count" -gt 0'),
+    'release binary build fails closed when the tested contract bundle cannot be staged',
 );
 assert(
     releaseWorkflow.includes('--bin lichen-archive-v2')

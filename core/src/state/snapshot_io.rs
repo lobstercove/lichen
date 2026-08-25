@@ -5061,4 +5061,36 @@ mod manifest_tests {
             assert_eq!(actual, expected, "{} digest changed", expected.category);
         }
     }
+
+    #[test]
+    fn snapshot_stats_round_trip_preserves_post_effects_frontier() {
+        let source_dir = tempdir().unwrap();
+        let source = StateStore::open(source_dir.path()).unwrap();
+        let frontier_hash = Hash::hash(b"snapshot-post-effects-frontier");
+        let mut batch = source.begin_batch_at_slot(42);
+        batch
+            .set_post_block_effects_frontier(42, &frontier_hash)
+            .unwrap();
+        source.commit_batch(batch).unwrap();
+
+        let page = source
+            .export_snapshot_category_cursor_untracked("stats", None, 10_000)
+            .unwrap();
+        assert!(
+            page.entries
+                .iter()
+                .any(|(key, _)| key.as_slice() == POST_BLOCK_EFFECTS_FRONTIER_KEY),
+            "the durable readiness frontier must be present in network snapshots"
+        );
+
+        let restored_dir = tempdir().unwrap();
+        let restored = StateStore::open(restored_dir.path()).unwrap();
+        restored
+            .import_snapshot_category("stats", &page.entries)
+            .unwrap();
+        assert_eq!(
+            restored.get_post_block_effects_frontier().unwrap(),
+            Some((42, frontier_hash))
+        );
+    }
 }
