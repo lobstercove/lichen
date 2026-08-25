@@ -17,9 +17,11 @@ four-validator gate found a readiness-observability assertion that recognized
 only sustained moving-tip admission. The repaired V4 had instead completed the
 separately valid exact-tip stalled-quorum path and was actively committing.
 v0.5.262 makes the shared hash-bound guarded-readiness boundary explicit for
-both safe admission outcomes; its focused ordering and both admission-mode
-tests pass, while complete requalification is in progress. No v0.5.261 artifact
-was published or deployed. Signed v0.5.262 artifacts, coordinated fleet
+both safe admission outcomes. Its focused ordering and both admission-mode
+tests pass, and the complete exact hosted-equivalent four-validator gate passed
+on 2026-08-26 at slot 11,000 with all validators producing and identical final
+public-history manifests. No v0.5.261 artifact was published or deployed.
+Signed v0.5.262 artifacts, coordinated fleet
 deployment, live rejoin/cadence acceptance, Archive V2 tail extension and role
 activation, legacy/FUSE retirement, and disk/memory reclamation remain open.
 Deletion of R2 objects is not authorized.
@@ -685,12 +687,26 @@ released or deployed. Its tagged hosted gate later blocked on the
 admission-mode-specific log assertion described above even though V4 was
 actively committing. v0.5.262 retains the complete v0.5.261 state-machine and
 Archive V2 corrections and changes only the shared guarded-readiness evidence
-and its gate assertion. The remaining order is: pass complete repository and
-four-validator qualification on the exact v0.5.262 commit, merge, tag and
-verify detached PQ-signed release artifacts, perform one coordinated four-host
-install, then execute live artifact/cadence/rejoin and Archive V2 activation
-gates A0-A10. No live mutation or R2 deletion is authorized by local evidence
-alone.
+and its gate assertion.
+
+The exact hosted-equivalent v0.5.262 four-validator gate completed on
+2026-08-26 with exit 0. It repeated the full fresh-join, authenticated-source,
+corruption/refetch, source-outage, bounded backlog, live-gap, own-state restart,
+all-validator restart, Archive V2 build/mirror/restore, mixed-role, volume, and
+launchpad journeys. Both repaired-V4 admission paths emitted the shared guarded
+readiness evidence, entered BFT, remained within one slot, and continued
+committing; the chain produced 80 and 79 blocks in their respective ten-second
+checks. Launchpad completed 104 checks with zero failures, the post-activity V4
+restart regained canonical certificate parity, and all validators persisted
+slot 11,000. Their final hot+cold public-history manifests matched root
+`d35cf2631b99e65decae045251a5ad888b4e5d9472c181daa99652f84dd6a7c5`.
+The independent stopped-state Archive V2 build/mirror/restore root was
+`5dd51309a239822199de4bd6092b2e647ba1c43a8c89ffe7c317efdac48d514a`.
+
+The remaining order is: obtain all-green CI, merge, tag and verify detached
+PQ-signed v0.5.262 release artifacts, perform one coordinated four-host install,
+then execute live artifact/cadence/rejoin and Archive V2 activation gates
+A0-A10. No live mutation or R2 deletion is authorized by local evidence alone.
 
 ## 3. Target Archive V2 Architecture
 
@@ -852,8 +868,9 @@ Current execution order is fixed:
    corrected coordinated release. Immediately before the transition prove the
    three-voter chain and all four local tips share a common recent slot/hash.
 2. Preserve the completed v0.5.261 checkpoint-78,000 qualification and failed
-   hosted-run evidence; complete the v0.5.262 exact-gate requalification, then
-   merge, publish its signed tag, and verify release and rollback artifacts.
+   hosted-run evidence plus the completed v0.5.262 exact-gate requalification;
+   obtain all-green CI, then merge, publish its signed tag, and verify release
+   and rollback artifacts.
 3. Install only signed v0.5.262 artifacts in one coordinated four-host
    stop/install/start, then prove convergence, artifact parity, effective
    30/60/10 oracle defaults, bounded proposal transaction counts, and no

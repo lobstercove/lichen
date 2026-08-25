@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   post-effects frontier, and post-admission progress requirements.
 - Adds source-ordering coverage proving the common guarded-readiness event is
   emitted after the final canonical frontier gate and before BFT voting.
+- Passes the complete hosted-equivalent four-validator gate through fresh joins,
+  Archive V2 build/mirror/restore and mixed-role admission, corruption repair,
+  source outages, moving-network rejoin, restart, volume, and launchpad paths.
+  All four validators produced through slot 11,000 and matched final
+  public-history manifest root
+  `d35cf2631b99e65decae045251a5ad888b4e5d9472c181daa99652f84dd6a7c5`.
 
 ## [0.5.261] - 2026-08-25
 
