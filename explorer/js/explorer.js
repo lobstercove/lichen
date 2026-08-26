@@ -20,6 +20,8 @@ const SYSTEM_PROGRAM_ID = '11111111111111111111111111111111';
 const DASHBOARD_WS_CADENCE_WINDOW = 120;
 const DASHBOARD_WS_CADENCE_MIN_SAMPLES = 5;
 const DASHBOARD_WS_CADENCE_MAX_SLOT_DELTA = 32;
+const DASHBOARD_WS_TPS_WINDOW_MS = 60_000;
+const DASHBOARD_WS_TPS_MIN_OBSERVATION_MS = 5_000;
 let dashboardLatestSlot = 0;
 let dashboardLatestBlocksTopSlot = 0;
 let dashboardWsLastSlot = 0;
@@ -27,6 +29,10 @@ let dashboardWsLastObservedAt = 0;
 let dashboardWsCadenceSamples = [];
 let dashboardWsCadenceMedianMs = 0;
 let dashboardWsCadenceReady = false;
+let dashboardWsTpsSamples = [];
+let dashboardWsTps = 0;
+let dashboardWsPeakTps = 0;
+let dashboardWsTpsReady = false;
 
 function explorerNumber(value, fallback = 0) {
     const numeric = Number(value);
@@ -45,16 +51,41 @@ function updateDashboardLatestSlot(slot) {
     }
 }
 
-function updateDashboardCadenceLabels(observedMs, targetMs, source) {
+function updateDashboardCadenceLabels(observedMs, source) {
     const observed = explorerNumber(observedMs);
-    const target = explorerNumber(targetMs);
     const slotEl = document.getElementById('slotTimeLabel');
-    const targetEl = document.getElementById('slotTargetLabel');
     const sourceEl = document.getElementById('slotCadenceSource');
 
     if (slotEl && observed > 0) slotEl.textContent = Math.round(observed);
-    if (targetEl && target > 0) targetEl.textContent = Math.round(target);
     if (sourceEl && source) sourceEl.textContent = source;
+}
+
+function formatDashboardTps(value) {
+    const numeric = Math.max(0, explorerNumber(value));
+    if (numeric === 0) return '0';
+    if (numeric < 1) return numeric.toFixed(2);
+    if (numeric < 100) return numeric.toFixed(1);
+    return formatNumber(Math.round(numeric));
+}
+
+function updateDashboardTps(tps, peakTps, source) {
+    const tpsEl = document.getElementById('tpsValue');
+    const peakEl = document.getElementById('peakTps');
+    const sourceEl = document.getElementById('tpsSource');
+    if (tpsEl) tpsEl.textContent = formatDashboardTps(tps);
+    if (peakEl) peakEl.textContent = formatDashboardTps(peakTps);
+    if (sourceEl && source) sourceEl.textContent = source;
+}
+
+function calculateDashboardTotalStakeSpores(validators, mossStakePool) {
+    if (!Array.isArray(validators) || !mossStakePool || typeof mossStakePool !== 'object') {
+        return null;
+    }
+    const rawMossStake = Number(mossStakePool.total_licn_staked);
+    if (!Number.isFinite(rawMossStake) || rawMossStake < 0) return null;
+    return validators.reduce((sum, validator) => {
+        return sum + Math.max(0, explorerNumber(validator?.stake));
+    }, 0) + rawMossStake;
 }
 
 function resetDashboardWsCadence() {
@@ -63,6 +94,60 @@ function resetDashboardWsCadence() {
     dashboardWsCadenceSamples = [];
     dashboardWsCadenceMedianMs = 0;
     dashboardWsCadenceReady = false;
+    dashboardWsTpsSamples = [];
+    dashboardWsTps = 0;
+    dashboardWsPeakTps = 0;
+    dashboardWsTpsReady = false;
+}
+
+function observeDashboardWsTps(block, observedAt) {
+    const slot = Number(block?.slot);
+    const transactions = Number(block?.transactions ?? block?.transaction_count ?? 0);
+    const observedAtMs = Number(observedAt);
+    if (!Number.isSafeInteger(slot) || slot < 0) return null;
+    if (!Number.isSafeInteger(transactions) || transactions < 0) return null;
+    if (!Number.isFinite(observedAtMs) || observedAtMs < 0) return null;
+
+    const previous = dashboardWsTpsSamples[dashboardWsTpsSamples.length - 1];
+    if (previous && slot <= previous.slot) return null;
+    if (previous && slot - previous.slot > DASHBOARD_WS_CADENCE_MAX_SLOT_DELTA) {
+        dashboardWsTpsSamples = [];
+        dashboardWsTps = 0;
+        dashboardWsTpsReady = false;
+    }
+
+    dashboardWsTpsSamples.push({ slot, observedAt: observedAtMs, transactions });
+    const cutoff = observedAtMs - DASHBOARD_WS_TPS_WINDOW_MS;
+    while (dashboardWsTpsSamples.length > 1 && dashboardWsTpsSamples[0].observedAt < cutoff) {
+        dashboardWsTpsSamples.shift();
+    }
+
+    const first = dashboardWsTpsSamples[0];
+    const last = dashboardWsTpsSamples[dashboardWsTpsSamples.length - 1];
+    const observedSpanMs = Math.max(0, last.observedAt - first.observedAt);
+    dashboardWsTpsReady = dashboardWsTpsSamples.length >= 2
+        && observedSpanMs >= DASHBOARD_WS_TPS_MIN_OBSERVATION_MS;
+
+    if (dashboardWsTpsReady) {
+        const beforeLast = dashboardWsTpsSamples[dashboardWsTpsSamples.length - 2];
+        const finalSlotDelta = Math.max(1, last.slot - beforeLast.slot);
+        const finalIntervalMs = Math.max(1, (last.observedAt - beforeLast.observedAt) / finalSlotDelta);
+        const coveredMs = Math.min(DASHBOARD_WS_TPS_WINDOW_MS, observedSpanMs + finalIntervalMs);
+        const transactionCount = dashboardWsTpsSamples.reduce(
+            (sum, sample) => sum + sample.transactions,
+            0
+        );
+        dashboardWsTps = coveredMs > 0 ? transactionCount / (coveredMs / 1000) : 0;
+        dashboardWsPeakTps = Math.max(dashboardWsPeakTps, dashboardWsTps);
+        updateDashboardTps(dashboardWsTps, dashboardWsPeakTps, 'Live 60s');
+    }
+
+    return {
+        tps: dashboardWsTps,
+        peakTps: dashboardWsPeakTps,
+        samples: dashboardWsTpsSamples.length,
+        ready: dashboardWsTpsReady,
+    };
 }
 
 function observeDashboardWsBlock(block, observedAt = Date.now()) {
@@ -72,6 +157,7 @@ function observeDashboardWsBlock(block, observedAt = Date.now()) {
     // The notification already contains the canonical slot. Render it
     // immediately; REST remains a reconciliation path for tables and totals.
     updateDashboardLatestSlot(slot);
+    observeDashboardWsTps(block, observedAt);
 
     if (dashboardWsLastSlot > 0 && slot > dashboardWsLastSlot) {
         const slotDelta = slot - dashboardWsLastSlot;
@@ -99,8 +185,7 @@ function observeDashboardWsBlock(block, observedAt = Date.now()) {
         dashboardWsCadenceReady = true;
         updateDashboardCadenceLabels(
             dashboardWsCadenceMedianMs,
-            getNetworkConfig(currentNetwork).slotDurationMs,
-            'Live WS'
+            'Live'
         );
     }
 
@@ -648,11 +733,12 @@ async function updateDashboardStats() {
         const metrics = await rpc.getMetrics();
         if (metrics) {
             if (metrics.tps !== undefined) {
-                const tpsEl = document.getElementById('tpsValue');
-                if (tpsEl) tpsEl.textContent = formatNumber(Math.floor(metrics.tps));
-                const peakEl = document.getElementById('peakTps');
-                if (peakEl && metrics.peak_tps !== undefined) {
-                    peakEl.textContent = metrics.peak_tps.toFixed(1);
+                if (!dashboardWsTpsReady) {
+                    updateDashboardTps(
+                        metrics.tps,
+                        metrics.peak_tps ?? metrics.tps,
+                        'Node 60s'
+                    );
                 }
             }
             if (metrics.total_transactions !== undefined) {
@@ -687,14 +773,12 @@ async function updateDashboardStats() {
                 if (dashboardWsCadenceReady) {
                     updateDashboardCadenceLabels(
                         dashboardWsCadenceMedianMs,
-                        targetSlotMs || observedSlotMs,
-                        'Live WS'
+                        'Live'
                     );
                 } else {
                     updateDashboardCadenceLabels(
                         observedSlotMs || targetSlotMs,
-                        targetSlotMs || observedSlotMs,
-                        'Node observed'
+                        'Node'
                     );
                 }
             }
@@ -733,7 +817,10 @@ async function updateDashboardStats() {
         }
 
         // Get validators
-        const validatorsResult = await rpc.getValidators();
+        const [validatorsResult, mossStakePool] = await Promise.all([
+            rpc.getValidators(),
+            rpc.getMossStakePoolInfo(),
+        ]);
         if (validatorsResult) {
             const validators = validatorsResult.validators || [];
             const onlineCount = slot !== null
@@ -749,12 +836,10 @@ async function updateDashboardStats() {
             const validatorCountEl = document.getElementById('validatorCount');
             if (validatorCountEl) validatorCountEl.textContent = onlineCount;
 
-            // Calculate total stake from all validators
+            // Total stake combines validator stake and LICN held by MossStake.
             const totalStakeEl = document.getElementById('totalStake');
-            if (totalStakeEl && validatorsResult.validators) {
-                const totalStake = validatorsResult.validators.reduce((sum, v) => {
-                    return sum + explorerNumber(v.stake);
-                }, 0);
+            const totalStake = calculateDashboardTotalStakeSpores(validators, mossStakePool);
+            if (totalStakeEl && totalStake !== null) {
                 // Convert spores to LICN (1 LICN = 1B spores)
                 const totalStakeLICN = totalStake / SPORES_PER_LICN;
                 totalStakeEl.textContent = formatLicnAmount(totalStakeLICN);
@@ -773,7 +858,7 @@ async function updateDashboardStats() {
             chainStatusTopEl.textContent = 'Offline';
         }
         const resetMap = {
-            latestBlock: '—', tpsValue: '0', totalTxs: '—', txsToday: '',
+            latestBlock: '—', tpsValue: '0', peakTps: '0', tpsSource: 'Node 60s', totalTxs: '—', txsToday: '',
             activeAccounts: '—', accountBreakdown: '', totalBurned: '—',
             totalSupply: '—', totalMinted: '—',
             supplyChange: '',
@@ -781,7 +866,7 @@ async function updateDashboardStats() {
             shieldedBalance: formatLicnAmount(0), shieldedBalanceSpores: '0 spores', commitmentCount: '0',
             nullifierCount: '0', shieldedTxCount: '0',
             shieldedTxBreakdown: 'Shield: 0 | Unshield: 0 | Transfer: 0', merkleRoot: '0x0',
-            burnPctLabel: '—', slotTimeLabel: '—', slotTargetLabel: '—'
+            burnPctLabel: '—', slotTimeLabel: '—', slotCadenceSource: 'Node'
         };
         for (const [id, val] of Object.entries(resetMap)) {
             const el = document.getElementById(id);

@@ -74,9 +74,8 @@
                         <div class="stat-label">Latest Block</div>
                         <div class="stat-value" id="latestBlock">0</div>
                         <div class="stat-change positive" id="blockChange"><span
-                                id="slotCadenceSource">Node observed</span> <span
-                                id="slotTimeLabel">—</span>ms median · target <span
-                                id="slotTargetLabel">—</span>ms</div>
+                                id="slotCadenceSource">Node</span> <span
+                                id="slotTimeLabel">—</span>ms</div>
                     </div>
                 </div>
 
@@ -87,7 +86,8 @@
                     <div class="stat-content">
                         <div class="stat-label">TPS</div>
                         <div class="stat-value" id="tpsValue">0</div>
-                        <div class="stat-change" id="tpsChange">Peak: <span id="peakTps">0</span> TPS</div>
+                        <div class="stat-change" id="tpsChange"><span id="tpsSource">Node 60s</span> · Peak: <span
+                                id="peakTps">0</span> TPS</div>
                     </div>
                 </div>
 
@@ -168,7 +168,7 @@
                     <div class="stat-content">
                         <div class="stat-label">Total Stake</div>
                         <div class="stat-value" id="totalStake">—</div>
-                        <div class="stat-change">Across active validators</div>
+                        <div class="stat-change">Validators + Moss Stake</div>
                     </div>
                 </div>
 
@@ -362,7 +362,7 @@
     <script src="shared/env.js?v=20260322"></script>
     <script src="shared-config.js?v=20260322"></script>
     <script src="js/utils.js?v=20260322"></script>
-    <script src="js/explorer.js?v=20260826"></script>
+    <script src="js/explorer.js?v=20260826b"></script>
 </body>
 
 </html>

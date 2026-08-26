@@ -12,7 +12,7 @@ const explorerSource = fs.readFileSync(
     'utf8'
 );
 const elements = new Map(
-    ['latestBlock', 'slotTimeLabel', 'slotTargetLabel', 'slotCadenceSource']
+    ['latestBlock', 'slotTimeLabel', 'slotCadenceSource', 'tpsValue', 'peakTps', 'tpsSource']
         .map((id) => [id, { id, textContent: '' }])
 );
 const context = vm.createContext({
@@ -67,8 +67,7 @@ assert.deepStrictEqual(
 );
 assert.strictEqual(elements.get('latestBlock').textContent, '105');
 assert.strictEqual(elements.get('slotTimeLabel').textContent, 320);
-assert.strictEqual(elements.get('slotTargetLabel').textContent, 400);
-assert.strictEqual(elements.get('slotCadenceSource').textContent, 'Live WS');
+assert.strictEqual(elements.get('slotCadenceSource').textContent, 'Live');
 
 const normalized = vm.runInContext([
     'resetDashboardWsCadence();',
@@ -93,4 +92,34 @@ assert.deepStrictEqual(
 vm.runInContext('observeDashboardWsBlock({ slot: 242 }, 5100);', context);
 assert.strictEqual(elements.get('latestBlock').textContent, '243');
 
-console.log('Explorer live cadence: direct slot rendering, normalized median, and reset gates passed');
+const liveTps = vm.runInContext([
+    'resetDashboardWsCadence();',
+    'observeDashboardWsBlock({ slot: 300, transactions: 0 }, 1000);',
+    'observeDashboardWsBlock({ slot: 301, transactions: 1 }, 2000);',
+    'observeDashboardWsBlock({ slot: 302, transactions: 0 }, 3000);',
+    'observeDashboardWsBlock({ slot: 303, transactions: 1 }, 4000);',
+    'observeDashboardWsBlock({ slot: 304, transactions: 0 }, 5000);',
+    'observeDashboardWsBlock({ slot: 305, transactions: 1 }, 6000);',
+    'observeDashboardWsBlock({ slot: 306, transactions: 0 }, 7000);',
+    '({ tps: dashboardWsTps, peakTps: dashboardWsPeakTps, samples: dashboardWsTpsSamples.length, ready: dashboardWsTpsReady });',
+].join('\n'), context);
+assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(liveTps)),
+    { tps: 3 / 7, peakTps: 0.5, samples: 7, ready: true }
+);
+assert.strictEqual(elements.get('tpsValue').textContent, '0.43');
+assert.strictEqual(elements.get('peakTps').textContent, '0.50');
+assert.strictEqual(elements.get('tpsSource').textContent, 'Live 60s');
+
+assert.strictEqual(
+    vm.runInContext('formatDashboardTps(0.08)', context),
+    '0.08',
+    'fractional node TPS must not be floored to zero'
+);
+assert.strictEqual(
+    vm.runInContext('calculateDashboardTotalStakeSpores([{ stake: 100 }, { stake: 200 }], { total_licn_staked: 400 })', context),
+    700,
+    'dashboard total stake must include validator and Moss stake'
+);
+
+console.log('Explorer live cadence/TPS: direct WS rendering, normalized windows, and reset gates passed');

@@ -1112,11 +1112,18 @@ function validateFrontendInputGuards() {
             !explorerBlockSubscription[1].includes('updateLatestBlocks()') &&
             explorerJs.includes('const DASHBOARD_WS_CADENCE_WINDOW = 120;') &&
             explorerJs.includes('const DASHBOARD_WS_CADENCE_MIN_SAMPLES = 5;') &&
+            explorerJs.includes('const DASHBOARD_WS_TPS_WINDOW_MS = 60_000;') &&
+            explorerJs.includes('observeDashboardWsTps(block, observedAt);') &&
+            explorerJs.includes("updateDashboardTps(dashboardWsTps, dashboardWsPeakTps, 'Live 60s');") &&
+            explorerJs.includes('rpc.getMossStakePoolInfo()') &&
+            explorerJs.includes('calculateDashboardTotalStakeSpores(validators, mossStakePool)') &&
+            !explorerJs.includes('Math.floor(metrics.tps)') &&
             explorerJs.includes("sourceEl.textContent = source") &&
-            explorerJs.includes("'Live WS'") &&
-            explorerHtml.includes('id="slotCadenceSource">Node observed</span>') &&
-            explorerHtml.includes('ms median · target'),
-        'Explorer renders canonical WS slots directly, reports live median cadence, and coalesces REST reconciliation'
+            explorerHtml.includes('id="slotCadenceSource">Node</span>') &&
+            explorerHtml.includes('id="slotTimeLabel">—</span>ms') &&
+            explorerHtml.includes('Validators + Moss Stake') &&
+            !explorerHtml.includes('ms median · target'),
+        'Explorer renders canonical WS slots, live cadence/TPS, and validator-plus-Moss stake with coalesced REST reconciliation'
     );
 
     const nativeNumberHits = portals.flatMap((portal) => (
