@@ -504,7 +504,19 @@ impl WsState {
         Arc<DexEventBroadcaster>,
         Arc<PredictionEventBroadcaster>,
     ) {
-        let (event_tx, _) = broadcast::channel(WS_EVENT_CHANNEL_CAPACITY);
+        Self::new_with_event_sender(state, finality, event_sender())
+    }
+
+    pub fn new_with_event_sender(
+        state: StateStore,
+        finality: Option<FinalityTracker>,
+        event_tx: broadcast::Sender<Event>,
+    ) -> (
+        Self,
+        broadcast::Sender<Event>,
+        Arc<DexEventBroadcaster>,
+        Arc<PredictionEventBroadcaster>,
+    ) {
         let dex_broadcaster = Arc::new(DexEventBroadcaster::new(2048));
         let prediction_broadcaster = Arc::new(PredictionEventBroadcaster::new(1024));
         let ws_state = Self {
@@ -517,6 +529,14 @@ impl WsState {
         };
         (ws_state, event_tx, dex_broadcaster, prediction_broadcaster)
     }
+}
+
+/// Create the canonical event broadcaster before the WebSocket listener is
+/// bound. Producers can share this sender during startup; events sent before a
+/// listener subscribes are intentionally dropped by Tokio broadcast semantics.
+pub fn event_sender() -> broadcast::Sender<Event> {
+    let (event_tx, _) = broadcast::channel(WS_EVENT_CHANNEL_CAPACITY);
+    event_tx
 }
 
 /// Start WebSocket server
@@ -533,8 +553,26 @@ pub async fn start_ws_server(
     ),
     Box<dyn std::error::Error>,
 > {
+    start_ws_server_with_event_sender(state, port, finality, event_sender()).await
+}
+
+/// Start the WebSocket server using an existing canonical event broadcaster.
+pub async fn start_ws_server_with_event_sender(
+    state: StateStore,
+    port: u16,
+    finality: Option<FinalityTracker>,
+    event_tx: broadcast::Sender<Event>,
+) -> Result<
+    (
+        broadcast::Sender<Event>,
+        Arc<DexEventBroadcaster>,
+        Arc<PredictionEventBroadcaster>,
+        tokio::task::JoinHandle<()>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let (ws_state, event_tx, dex_broadcaster, prediction_broadcaster) =
-        WsState::new(state, finality);
+        WsState::new_with_event_sender(state, finality, event_tx);
 
     let app = Router::new()
         .route("/", get(ws_handler))
@@ -2799,6 +2837,19 @@ mod tests {
         let state = lichen_core::StateStore::open(tmp.path()).unwrap();
         let (ws_state, _event_tx, _dex_bc, _pred_bc) = WsState::new(state, None);
         assert_eq!(ws_state.active_connections.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn ws_state_reuses_precreated_event_sender() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = lichen_core::StateStore::open(tmp.path()).unwrap();
+        let event_tx = event_sender();
+        let mut event_rx = event_tx.subscribe();
+        let (_ws_state, returned_tx, _dex_bc, _pred_bc) =
+            WsState::new_with_event_sender(state, None, event_tx);
+
+        drop(returned_tx.send(Event::Slot(77)));
+        assert!(matches!(event_rx.try_recv(), Ok(Event::Slot(77))));
     }
 
     #[test]

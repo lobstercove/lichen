@@ -5969,6 +5969,29 @@ fn emit_program_and_nft_events(
     }
 }
 
+/// Publish the complete canonical-block WebSocket fanout after the block and
+/// its deterministic post-store effects are visible. Both local BFT commits
+/// and network-applied canonical blocks must use this helper so subscribers do
+/// not observe slot gaps when a validator catches up from a peer.
+fn emit_canonical_block_websocket_events(
+    state: &StateStore,
+    ws_event_tx: &tokio::sync::broadcast::Sender<lichen_rpc::ws::Event>,
+    block: &Block,
+) -> (u64, u64) {
+    let program_events_started = Instant::now();
+    emit_program_and_nft_events(state, ws_event_tx, block);
+    let program_events_ms = duration_millis_u64(program_events_started.elapsed());
+
+    let block_events_started = Instant::now();
+    drop(ws_event_tx.send(lichen_rpc::ws::Event::Block(
+        lichen_rpc::ws::BlockFanoutSummary::from_block(block),
+    )));
+    drop(ws_event_tx.send(lichen_rpc::ws::Event::Slot(block.header.slot)));
+    let block_events_ms = duration_millis_u64(block_events_started.elapsed());
+
+    (program_events_ms, block_events_ms)
+}
+
 fn emit_signature_status_events(
     state: &StateStore,
     ws_event_tx: &tokio::sync::broadcast::Sender<lichen_rpc::ws::Event>,
@@ -22116,6 +22139,10 @@ async fn run_validator() {
     let block_apply_lock = Arc::new(Mutex::new(()));
     let genesis_sync_in_progress = Arc::new(AtomicBool::new(false));
 
+    // Create one canonical event broadcaster before the receiver starts. The
+    // public listener still binds at its normal startup point below.
+    let canonical_ws_event_tx = lichen_rpc::ws::event_sender();
+
     // Start incoming block handler with voting
     if let Some(ref p2p_pm) = p2p_peer_manager {
         let state_for_blocks = state.clone();
@@ -22150,6 +22177,7 @@ async fn run_validator() {
         let bft_committing_for_blocks = bft_committing_slot.clone();
         let block_apply_lock_for_blocks = block_apply_lock.clone();
         let genesis_sync_in_progress_for_blocks = genesis_sync_in_progress.clone();
+        let ws_event_tx_for_blocks = canonical_ws_event_tx.clone();
         let block_receiver_handle = tokio::spawn(async move {
             info!("🔄 Block receiver started");
             // 1.7: Track (slot, validator) → block_hash to detect double-block equivocation
@@ -22302,6 +22330,11 @@ async fn run_validator() {
                                 slot_duration_ms,
                             )
                             .await;
+                            emit_canonical_block_websocket_events(
+                                &state_for_blocks,
+                                &ws_event_tx_for_blocks,
+                                &pending_block,
+                            );
                             tip_notify_for_blocks.notify_waiters();
                             maybe_create_checkpoint(
                                 &state_for_blocks,
@@ -24168,6 +24201,11 @@ async fn run_validator() {
                                 slot_duration_ms,
                             )
                             .await;
+                            emit_canonical_block_websocket_events(
+                                &state_for_blocks,
+                                &ws_event_tx_for_blocks,
+                                &block,
+                            );
                             // Wake BFT only after deterministic post-block effects
                             // have completed. The next height's state root includes
                             // parent block effects, so early notification can make a
@@ -24773,6 +24811,11 @@ async fn run_validator() {
                                         slot_duration_ms,
                                     )
                                     .await;
+                                    emit_canonical_block_websocket_events(
+                                        &state_for_blocks,
+                                        &ws_event_tx_for_blocks,
+                                        &block,
+                                    );
                                     maybe_create_checkpoint(
                                         &state_for_blocks,
                                         block_slot,
@@ -27927,10 +27970,16 @@ async fn run_validator() {
             }) as Arc<dyn lichen_rpc::P2PNetworkTrait>
         });
 
-    // Start WebSocket server FIRST so we can share its broadcasters with RPC
+    // Start WebSocket server FIRST so we can share its broadcasters with RPC.
+    // The pre-created event sender is also shared with canonical sync applies.
     let (ws_event_tx, ws_dex_broadcaster, ws_prediction_broadcaster, _ws_handle) =
-        match lichen_rpc::start_ws_server(state_for_ws, ws_port, Some(finality_tracker.clone()))
-            .await
+        match lichen_rpc::start_ws_server_with_event_sender(
+            state_for_ws,
+            ws_port,
+            Some(finality_tracker.clone()),
+            canonical_ws_event_tx.clone(),
+        )
+        .await
         {
             Ok(result) => {
                 info!("✅ WebSocket server starting on ws://0.0.0.0:{}", ws_port);
@@ -27941,15 +27990,17 @@ async fn run_validator() {
                     "Failed to start WebSocket server: {} — continuing without WebSocket",
                     e
                 );
-                // Create a dummy broadcast channel so the rest of the code can send events
-                // without checking — receivers simply don't exist.
-                let (dummy_tx, _) = tokio::sync::broadcast::channel::<lichen_rpc::ws::Event>(1);
                 let dummy_broadcaster =
                     std::sync::Arc::new(lichen_rpc::dex_ws::DexEventBroadcaster::new(1));
                 let dummy_pred =
                     std::sync::Arc::new(lichen_rpc::ws::PredictionEventBroadcaster::new(1));
                 let dummy_handle = tokio::spawn(async {});
-                (dummy_tx, dummy_broadcaster, dummy_pred, dummy_handle)
+                (
+                    canonical_ws_event_tx,
+                    dummy_broadcaster,
+                    dummy_pred,
+                    dummy_handle,
+                )
             }
         };
 
@@ -32410,17 +32461,8 @@ async fn execute_consensus_actions(
 
             // Emit program and NFT WebSocket events
             let event_fanout_started = Instant::now();
-            let program_events_started = Instant::now();
-            emit_program_and_nft_events(state, ws_event_tx, &block);
-            let program_events_ms = duration_millis_u64(program_events_started.elapsed());
-
-            // Broadcast block event to WebSocket subscribers
-            let block_events_started = Instant::now();
-            drop(ws_event_tx.send(lichen_rpc::ws::Event::Block(
-                lichen_rpc::ws::BlockFanoutSummary::from_block(&block),
-            )));
-            drop(ws_event_tx.send(lichen_rpc::ws::Event::Slot(height)));
-            let block_events_ms = duration_millis_u64(block_events_started.elapsed());
+            let (program_events_ms, block_events_ms) =
+                emit_canonical_block_websocket_events(state, ws_event_tx, &block);
 
             // DEX events + analytics bridge + SL/TP triggers
             let dex_events_started = Instant::now();
@@ -34942,6 +34984,34 @@ mod tests {
     }
 
     #[test]
+    fn canonical_block_websocket_helper_emits_block_then_slot() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let producer = Keypair::generate().pubkey();
+        let block = Block::new(42, Hash::default(), Hash::default(), producer.0, vec![]);
+        let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(8);
+
+        emit_canonical_block_websocket_events(&state, &event_tx, &block);
+
+        match event_rx.try_recv().expect("block event") {
+            lichen_rpc::ws::Event::Block(summary) => {
+                assert_eq!(summary.slot, 42);
+                assert_eq!(summary.hash, block.hash().to_hex());
+                assert_eq!(summary.transaction_count, 0);
+            }
+            event => panic!("expected block event, got {event:?}"),
+        }
+        match event_rx.try_recv().expect("slot event") {
+            lichen_rpc::ws::Event::Slot(slot) => assert_eq!(slot, 42),
+            event => panic!("expected slot event, got {event:?}"),
+        }
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
     fn block_receiver_chainable_sync_path_applies_post_hooks_once_after_store() {
         let source = include_str!("main.rs");
         let start = source
@@ -34961,6 +35031,9 @@ mod tests {
         let hook_pos = section
             .find("apply_post_block_effects_after_store(")
             .expect("post-store effects call");
+        let fanout_pos = section
+            .find("emit_canonical_block_websocket_events(")
+            .expect("canonical WebSocket fanout");
         let notify_pos = section
             .find("tip_notify_for_blocks.notify_waiters()")
             .expect("tip notification");
@@ -34974,8 +35047,8 @@ mod tests {
             "chainable sync must store the block before deterministic post-block hooks"
         );
         assert!(
-            hook_pos < notify_pos,
-            "chainable sync must not wake BFT before deterministic post-block hooks complete"
+            hook_pos < fanout_pos && fanout_pos < notify_pos,
+            "chainable sync must fan out after post-block hooks and before waking BFT"
         );
         assert_eq!(
             section
@@ -34983,6 +35056,13 @@ mod tests {
                 .count(),
             1,
             "chainable sync must apply post-block hooks exactly once"
+        );
+        assert_eq!(
+            section
+                .matches("emit_canonical_block_websocket_events(")
+                .count(),
+            1,
+            "chainable sync must emit canonical WebSocket events exactly once"
         );
         assert_eq!(
             section.matches("apply_block_effects(").count(),
@@ -35008,6 +35088,71 @@ mod tests {
             section.matches("reset_24h_stats_if_expired(").count(),
             0,
             "24h stats reset belongs inside the post-store hook wrapper"
+        );
+    }
+
+    #[test]
+    fn block_receiver_pending_path_fans_out_once_after_post_hooks() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("macro_rules! apply_pending_from_tip")
+            .expect("pending apply macro");
+        let relative_end = source[start..]
+            .find("// Priority select: drain sync-response blocks")
+            .expect("pending apply macro boundary");
+        let section = &source[start..start + relative_end];
+
+        let store_pos = section
+            .find(".put_block_atomic(&pending_block, None, None)")
+            .expect("pending canonical store");
+        let hook_pos = section
+            .find("apply_post_block_effects_after_store(")
+            .expect("pending post-store effects");
+        let fanout_pos = section
+            .find("emit_canonical_block_websocket_events(")
+            .expect("pending canonical WebSocket fanout");
+        let notify_pos = section
+            .find("tip_notify_for_blocks.notify_waiters()")
+            .expect("pending tip notification");
+
+        assert!(store_pos < hook_pos && hook_pos < fanout_pos && fanout_pos < notify_pos);
+        assert_eq!(
+            section
+                .matches("emit_canonical_block_websocket_events(")
+                .count(),
+            1,
+            "pending canonical application must fan out exactly once"
+        );
+    }
+
+    #[test]
+    fn block_receiver_fork_adoption_fans_out_once_after_post_hooks() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("// Store the replacement only after deterministic")
+            .expect("fork replacement store marker");
+        let relative_end = source[start..]
+            .find("// After replacing a block (fork adoption)")
+            .expect("fork replacement fanout boundary");
+        let section = &source[start..start + relative_end];
+
+        let store_pos = section
+            .find(".put_block_atomic(&block, None, None)")
+            .expect("replacement canonical store");
+        let hook_pos = section
+            .find("apply_post_block_effects_after_store(")
+            .expect("replacement post-store effects");
+        let fanout_pos = section
+            .find("emit_canonical_block_websocket_events(")
+            .expect("replacement canonical WebSocket fanout");
+
+        assert!(store_pos < hook_pos && hook_pos < fanout_pos);
+        assert_eq!(
+            section
+                .matches("emit_canonical_block_websocket_events(")
+                .count(),
+            1,
+            "fork adoption must fan out the replacement exactly once"
         );
     }
 
@@ -35038,6 +35183,9 @@ mod tests {
         let evm_pos = section
             .find("// EVM tx inclusion tracking")
             .expect("BFT EVM inclusion marker");
+        let fanout_pos = section
+            .find("emit_canonical_block_websocket_events(")
+            .expect("BFT canonical WebSocket fanout");
 
         assert!(
             store_pos < hook_pos,
@@ -35051,12 +35199,23 @@ mod tests {
             hook_pos < evm_pos,
             "BFT commit must complete post-block hooks before downstream inclusion/events"
         );
+        assert!(
+            evm_pos < fanout_pos,
+            "BFT commit must fan out only after downstream inclusion tracking"
+        );
         assert_eq!(
             section
                 .matches("apply_post_block_effects_after_store(")
                 .count(),
             1,
             "BFT commit must apply shared post-store hooks exactly once"
+        );
+        assert_eq!(
+            section
+                .matches("emit_canonical_block_websocket_events(")
+                .count(),
+            1,
+            "BFT commit must emit canonical WebSocket events exactly once"
         );
         assert_eq!(
             section.matches("apply_block_effects(").count(),
