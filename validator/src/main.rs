@@ -20430,6 +20430,14 @@ async fn run_validator() {
         }
     }
 
+    // Populate the initial archive telemetry cache before P2P, RPC, and BFT
+    // tasks exist. Later refreshes run only in the bounded maintenance blocking
+    // pool, so public status requests cannot turn RocksDB/FUSE metadata reads
+    // into consensus-runtime stalls.
+    if state.has_cold_storage() {
+        state.refresh_cold_migration_storage_metrics();
+    }
+
     // Force Merkle leaf cache rebuild on startup.  The incremental cache
     // (CF_MERKLE_LEAVES / CF_CONTRACT_MERKLE_LEAVES) might be stale if the
     // previous process was killed between account writes and dirty-marker
@@ -28272,6 +28280,11 @@ async fn run_validator() {
                                 filesystem_available_bytes(&data_dir_for_cold).unwrap_or(0);
                             let pass_state = state_for_cold.clone();
                             match tokio::task::spawn_blocking(move || {
+                                // Refresh archival telemetry only inside the
+                                // bounded maintenance blocking pool. The
+                                // cache-only RPC status path must never inspect
+                                // local or FUSE-backed SST metadata.
+                                pass_state.refresh_cold_migration_storage_metrics();
                                 let reclaim = pass_state.reclaim_migrated_hot_ranges(
                                     lichen_core::state::ColdReclaimLimits {
                                         max_ranges: config.reclaim_max_ranges,

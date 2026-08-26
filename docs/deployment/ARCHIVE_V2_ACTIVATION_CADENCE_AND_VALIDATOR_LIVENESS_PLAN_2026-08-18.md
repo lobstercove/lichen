@@ -2,29 +2,41 @@
 
 **Date:** 2026-08-18
 **Last updated:** 2026-08-26
-**Status:** Authoritative execution plan; signed v0.5.260 is installed on all
-four validators with Archive V2 roles temporarily disabled. India was OOM-
-killed on 2026-08-25, caught the live tip after systemd restarted it, but is
-stranded outside BFT by the moving-rejoin regression; only three validators are
-currently voting and India's leader slots incur proposal timeouts. v0.5.261
-passed its complete local qualification on 2026-08-25, including the guarded
-checkpoint-78,000 Archive V2 corruption/repair tail described in section 2.9,
-and was merged and immutably tagged at
-`14335ea39b000d52a42461c3b2f4b8e061a1cdda`. Release workflow run
-`32887040579` passed the full quality/security, compiler-sandbox, and genesis
-bundle gates, then correctly blocked before artifacts when the independent
-four-validator gate found a readiness-observability assertion that recognized
-only sustained moving-tip admission. The repaired V4 had instead completed the
-separately valid exact-tip stalled-quorum path and was actively committing.
-v0.5.262 makes the shared hash-bound guarded-readiness boundary explicit for
-both safe admission outcomes. Its focused ordering and both admission-mode
-tests pass, and the complete exact hosted-equivalent four-validator gate passed
-on 2026-08-26 at slot 11,000 with all validators producing and identical final
-public-history manifests. No v0.5.261 artifact was published or deployed.
-Signed v0.5.262 artifacts, coordinated fleet
-deployment, live rejoin/cadence acceptance, Archive V2 tail extension and role
-activation, legacy/FUSE retirement, and disk/memory reclamation remain open.
-Deletion of R2 objects is not authorized.
+**Status:** Authoritative execution plan. Signed v0.5.262 at
+`3a06fe00eb3c78a6f921da08d159e88730655d8a` is installed and running on all
+four validators from the release-workflow artifact; installed/running hashes,
+keys, signers, WALs, and signed v0.5.260 rollback artifacts have been verified.
+The coordinated deployment and the live one-validator outage/moving-network
+rejoin gate passed with all four validators voting and authoring afterward.
+The subsequent live cadence gate failed: the fleet advanced only a few hundred
+slots during its 15-minute 1,200-slot deadline and repeatedly entered later BFT
+rounds despite three connected peers and `NRestarts=0` on every host.
+
+The 2026-08-26 live audit identified a direct Archive V2-era request-path
+regression. Public `getHealth` and `getMetrics` synchronously called
+`cold_migration_status()`, which refreshed RocksDB metadata for every hot and
+cold column family once per ten seconds. On the transition fleet that operation
+opens or inspects roughly 1,400-1,900 read-only R2/FUSE-backed cold SST links,
+blocked validator Tokio workers in kernel I/O, and amplified proposal/vote
+timeouts. An uncached EU probe took 224.761 ms while the immediate cached probe
+took 0.634 ms; the uncached call accumulated about 4.44 CPU-seconds of full I/O
+stall across the host during that interval. The correction makes public status
+cache-only and permits metadata sampling only inside the bounded cold-
+maintenance blocking pool. The v0.5.263 candidate has passed the complete local
+quality, security, supply-chain, contract, frontend, release-build, and clean
+four-validator gates. It is not yet committed, tagged, signed, or deployed;
+hosted release gates and live cadence acceptance still must pass before it can
+become the final release.
+
+Authenticated Archive V2 HTTPS gateways are healthy on all four hosts, but
+validator roles remain disabled and `archive_v2.enabled=false`. The current
+dual-R2 catalog has 317 segments through slot 11,588,999 and therefore needs a
+new immutable stopped-source tail through the activation boundary. US has
+about 26 GiB free; EU and IN have about 5-6 GiB and SEA about 15 GiB, so the
+low-space hosts require one-at-a-time, source-backed capacity bootstrap before
+role admission. Legacy cold/FUSE data remains live and must not be removed
+until its exact V2 replacement and each host's rejoin are proven. Deletion of
+R2 objects is not authorized.
 **Scope:** `lichen-testnet-1`, the Archive V2 production topology, current
 four-validator cadence, and a future deterministic offline-validator design
 
@@ -43,8 +55,32 @@ ad-hoc production change.
 
 ## 1. Executive Decision
 
-The fleet has safely recovered from the frozen v0.5.255 boundary but is not yet
-in the intended final state.
+The fleet is safe and live on signed v0.5.262, but it is not yet production-
+complete because the strict cadence gate failed and Archive V2 roles and
+legacy retirement remain open.
+
+### 1.1 Current decision
+
+- Preserve the completed cache-only archive-status correction and its proof
+  that neither `getHealth` nor `getMetrics` performs RocksDB/FUSE metadata I/O.
+- Preserve the all-green mandatory clean four-validator v0.5.263 evidence, then
+  create a new immutable signed release only if hosted quality, security,
+  outage, rejoin, and Archive V2 gates independently pass.
+- Coordinated-deploy that one release, then extend the dual-R2 catalog from one
+  stopped immutable source snapshot. Do not perform another genesis rebuild or
+  full R2 readback.
+- Bootstrap and retire legacy cold/FUSE data one validator at a time, retaining
+  the other three-vote quorum and proving exact rejoin after each host. Activate
+  US/EU as `verified_cache` and SEA/IN as `consensus` only after their capacity
+  decisions pass without weakening reserves.
+- Repeat the strict 1,000-commit cadence gate after legacy/FUSE retirement, then
+  observe the stable fleet before publishing the release and making the final
+  Explorer Total Stake change.
+- Preserve both R2 buckets. Their later cleanup requires a separate exact-key,
+  content-hashed deletion manifest and explicit approval; it is outside the
+  current authorized execution.
+
+### 1.2 Recovery chronology retained for audit
 
 - Signed v0.5.260 is installed and running on all four hosts from the exact
   release-workflow artifact. Every validator preserves its own key, signer,
@@ -220,7 +256,7 @@ Accordingly:
 2. Use only the bounded, content-hashed emergency headroom pass required to
    recover a validator that reached the fail-closed disk floor. Do not delete
    R2 objects or treat that temporary bridge as Archive V2 activation.
-3. Complete the v0.5.262 hard gates, publish it through the signed release
+3. Complete the v0.5.263 hosted hard gates, publish it through the signed release
    workflow, verify its detached post-quantum checksum signature, and deploy it
    through one coordinated four-host stop/install/start.
 4. Extend the canonical Archive V2 tail from a stopped immutable hot snapshot,
@@ -703,10 +739,61 @@ slot 11,000. Their final hot+cold public-history manifests matched root
 The independent stopped-state Archive V2 build/mirror/restore root was
 `5dd51309a239822199de4bd6092b2e647ba1c43a8c89ffe7c317efdac48d514a`.
 
-The remaining order is: obtain all-green CI, merge, tag and verify detached
-PQ-signed v0.5.262 release artifacts, perform one coordinated four-host install,
-then execute live artifact/cadence/rejoin and Archive V2 activation gates
-A0-A10. No live mutation or R2 deletion is authorized by local evidence alone.
+That v0.5.262 qualification was followed by all-green CI, merge, detached
+PQ-signed release artifacts, and one coordinated four-host install. Artifact
+parity and the live outage/rejoin gate passed; the strict live cadence gate then
+failed and led to the cache-only telemetry correction qualified below.
+
+### 2.10 v0.5.263 cache-only telemetry qualification evidence
+
+The v0.5.263 candidate isolates the final measured request-path regression:
+public archive status reads return the cached snapshot, the initial storage
+sample runs before networking starts, and later RocksDB metadata refreshes run
+only inside the existing bounded cold-maintenance blocking pool. Consensus,
+wire formats, proposer selection, and timeout policy are unchanged.
+
+The candidate passed formatting, all-target/all-feature clippy, the full
+workspace test suite, dependency audit and policy, standalone compiler/SDK/fuzz
+checks, all 33 contract builds and tests, frontend and deployment QA, and the
+release build. Its complete clean four-validator gate then exited 0 on
+2026-08-26 and proved:
+
+1. empty-state V2, V3, and V4 joins, unique identities, guarded admission, and
+   moving-tip catch-up;
+2. bounded cold migration and authenticated immutable Archive V2 history while
+   finality continued;
+3. full-archive, verified-cache, and consensus-only role behavior, including
+   deep-history boundaries, source outage isolation, corrupt segment/cache
+   quarantine, and authenticated replica repair;
+4. complete finalization of a 96-transaction paused-finality backlog with at
+   most 15 transactions in a committed block;
+5. a 140-slot same-process live-gap recovery, V4 and V1 own-state restarts, a
+   coordinated four-validator restart, and a post-user-activity V4 restart;
+6. 140/140 strict volume checks and 104/104 launchpad/governance checks;
+7. equal canonical certificates after restart and identical post-journey
+   hot+cold public-history manifest root
+   `f10274262fff36833a766b9556810a134a5f456e862d5e81b4c2404a91895c60`
+   across all four validators at checkpoint slot 11,000; and
+8. deterministic stopped-state Archive V2 build/mirror/restore root
+   `458dc65fafc0254f81ae3e604a747b180b45f143740c29ece4a8e19ca09aed8f`
+   across all four validators.
+
+An earlier invocation of the same candidate was rejected as invalid evidence
+after transaction receipt waits observed synchronized stale tips. All four
+validator logs contained identical 660-, 463-, 992-, and 931-second wall-clock
+gaps. macOS power logs independently recorded matching 662-, 465-, 995-, and
+934-second sleep intervals. Normal block execution resumed immediately after
+each wake. The qualifying rerun therefore started from clean genesis under an
+explicit system-sleep inhibitor and completed without stale-tip or receipt
+failures; no timeout was raised and no blockchain code was changed to mask the
+invalid host-sleep run.
+
+The remaining order is: commit from the clean release worktree, obtain all-
+green hosted CI, merge, tag, and verify detached PQ-signed v0.5.263 artifacts;
+perform one coordinated four-host install; then execute live artifact, cadence,
+outage/rejoin, catalog-tail, capacity-bootstrap, role-activation, FUSE
+retirement, and final stability gates A0-A10. No live mutation or R2 deletion
+is authorized by local evidence alone.
 
 ## 3. Target Archive V2 Architecture
 
@@ -862,37 +949,39 @@ No later phase may weaken these gates.
 
 Current execution order is fixed:
 
-1. Keep the signed v0.5.260 fleet tracking with Archive V2 roles disabled;
-   preserve the verified India/EU headroom recovery and OOM evidence. Do not
-   count four active services as four voters: India remains passive until the
-   corrected coordinated release. Immediately before the transition prove the
-   three-voter chain and all four local tips share a common recent slot/hash.
-2. Preserve the completed v0.5.261 checkpoint-78,000 qualification and failed
-   hosted-run evidence plus the completed v0.5.262 exact-gate requalification;
-   obtain all-green CI, then merge, publish its signed tag, and verify release
-   and rollback artifacts.
-3. Install only signed v0.5.262 artifacts in one coordinated four-host
-   stop/install/start, then prove convergence, artifact parity, effective
-   30/60/10 oracle defaults, bounded proposal transaction counts, and no
-   mempool accumulation.
-4. Run the moving-network outage/rejoin canary: stop one validator while the
-   other three continue, restart it, and prove automatic BFT re-entry, commits,
-   and authorship without freezing the surviving quorum.
-5. Stop the selected snapshot source, capture its final WAL boundary only after
+1. Preserve the signed v0.5.262 deployment, outage/rejoin, failed cadence, and
+   RPC/FUSE diagnosis evidence. Keep all four validators live and voting while
+   the corrective release is qualified; do not weaken timeouts or reserves.
+2. Preserve the completed cache-only archive-status implementation and its
+   all-green local tests; public health and metrics requests cannot trigger a
+   RocksDB/FUSE storage refresh.
+3. Commit the clean v0.5.263 candidate, pass every hosted hard release gate,
+   create and verify the immutable signed release, and perform one coordinated
+   four-host stop/install/start. Prove convergence, artifact parity, preserved
+   keys/WALs, bounded proposals, and the moving-network outage/rejoin
+   acceptance again.
+4. Stop the selected snapshot source, capture its final WAL boundary only after
    the stop, and select it by an exact source-backed range audit. Create the
    bounded immutable hot snapshot only from that proven complete validator;
    never assume the public seed is the complete source.
-6. While the network runs, build and dual-publish only the missing catalog tail
+5. While the network runs, build and dual-publish only the missing catalog tail
    from the stopped snapshot, then stage the resulting catalog on every host.
+6. Bootstrap low-space hosts and retire legacy cold/FUSE dependencies one
+   validator at a time. Preserve three-vote finality, prove that each stopped
+   host rejoins from its own WAL, and require normal capacity admission after
+   every bounded unit.
 7. Perform one coordinated role activation as US/EU `verified_cache` and SEA/IN
    `consensus`; prove deep-history parity, source-loss isolation, fixed-tip
-   equality, restart, and outage behavior.
-8. Retire legacy cold rows and emergency FUSE bridges in bounded host order,
-   verifying BFT, capacity, and cadence after each unit. Restore checkpoint
-   generation once each host exceeds its safety floor.
-9. Re-inventory R2 only after bridge retirement, seal the exact obsolete-object
-   deletion manifest, obtain explicit operator approval for that manifest
-   SHA-256, delete only those keys, and prove retained canonical inventory
+   equality, restart, outage behavior, and zero legacy/FUSE descriptors.
+8. Repeat the 1,000-consecutive-commit live cadence gate, require all four
+   validators to author, and begin the documented stable-observation window.
+9. Publish the signed release and final evidence only after those gates pass;
+   then update Explorer Total Stake to include validator plus Moss stake with
+   subtitle `Validators + Moss Stake` and deploy that presentation-only change.
+10. Re-inventory R2 only after bridge retirement and stable acceptance. Prepare
+   an exact obsolete-object deletion manifest, but do not execute it without
+   explicit operator approval of that manifest SHA-256. Any later authorized
+   cleanup must delete only those keys and prove retained canonical inventory
    unchanged. No R2 deletion is authorized by this execution phase.
 
 ### A1. Ship cadence observability before guessing

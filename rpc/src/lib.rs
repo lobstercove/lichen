@@ -21828,6 +21828,11 @@ mod tests {
         );
         assert_eq!(payload["archive_v2"]["enabled"], false);
         assert_eq!(payload["archive_v2"]["affects_consensus_readiness"], false);
+        assert_eq!(
+            payload["archive_migration"]["status"]["storage_sample_unix_millis"],
+            serde_json::Value::Null,
+            "getHealth must return cached archive telemetry without synchronously inspecting SST metadata"
+        );
     }
 
     #[tokio::test]
