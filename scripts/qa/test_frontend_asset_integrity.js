@@ -1085,6 +1085,7 @@ function validateFrontendInputGuards() {
     const explorerBlocksJs = fs.readFileSync(path.join(repoRoot, 'explorer', 'js', 'blocks.js'), 'utf8');
     const explorerBlocksHtml = fs.readFileSync(path.join(repoRoot, 'explorer', 'blocks.html'), 'utf8');
     const explorerJs = fs.readFileSync(path.join(repoRoot, 'explorer', 'js', 'explorer.js'), 'utf8');
+    const explorerHtml = fs.readFileSync(path.join(repoRoot, 'explorer', 'index.html'), 'utf8');
     const faucetJs = fs.readFileSync(path.join(repoRoot, 'faucet', 'faucet.js'), 'utf8');
     const faucetHtml = fs.readFileSync(path.join(repoRoot, 'faucet', 'index.html'), 'utf8');
     const marketplaceBrowseJs = fs.readFileSync(path.join(repoRoot, 'marketplace', 'js', 'browse.js'), 'utf8');
@@ -1099,6 +1100,24 @@ function validateFrontendInputGuards() {
     const walletJs = fs.readFileSync(path.join(repoRoot, 'wallet', 'js', 'wallet.js'), 'utf8');
     const extensionPopupJs = fs.readFileSync(path.join(repoRoot, 'wallet', 'extension', 'src', 'popup', 'popup.js'), 'utf8');
     const extensionFullJs = fs.readFileSync(path.join(repoRoot, 'wallet', 'extension', 'src', 'pages', 'full.js'), 'utf8');
+    const explorerBlockSubscription = explorerJs.match(
+        /ws\.subscribe\('subscribeBlocks', \(block\) => \{([\s\S]*?)\n\s*\}\);/
+    );
+
+    assert(
+        explorerBlockSubscription &&
+            explorerBlockSubscription[1].includes('observeDashboardWsBlock(block, lastWsBlockTime);') &&
+            explorerBlockSubscription[1].includes('scheduleWsDashboardRefresh();') &&
+            !explorerBlockSubscription[1].includes('updateDashboardStats()') &&
+            !explorerBlockSubscription[1].includes('updateLatestBlocks()') &&
+            explorerJs.includes('const DASHBOARD_WS_CADENCE_WINDOW = 120;') &&
+            explorerJs.includes('const DASHBOARD_WS_CADENCE_MIN_SAMPLES = 5;') &&
+            explorerJs.includes("sourceEl.textContent = source") &&
+            explorerJs.includes("'Live WS'") &&
+            explorerHtml.includes('id="slotCadenceSource">Node observed</span>') &&
+            explorerHtml.includes('ms median · target'),
+        'Explorer renders canonical WS slots directly, reports live median cadence, and coalesces REST reconciliation'
+    );
 
     const nativeNumberHits = portals.flatMap((portal) => (
         getPortalSourceFiles(portal)
