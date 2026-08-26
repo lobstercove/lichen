@@ -137,7 +137,10 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{info, warn};
 
 // Re-export WebSocket types
-pub use ws::{start_ws_server, Event as WsEvent};
+pub use ws::{
+    event_sender as ws_event_sender, start_ws_server, start_ws_server_with_event_sender,
+    Event as WsEvent,
+};
 
 pub(crate) fn pq_signature_json(signature: &PqSignature) -> serde_json::Value {
     serde_json::to_value(signature).unwrap_or(serde_json::Value::Null)

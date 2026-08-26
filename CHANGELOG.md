@@ -5,6 +5,25 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.264] - 2026-08-26
+
+### Fixed
+- Publishes the same canonical block, transaction, account, program, NFT, and
+  slot WebSocket fanout for peer-synced, pending-gap, and fork-adopted blocks as
+  for local BFT commits. A validator that catches up by one block no longer
+  creates an Explorer slot gap or drops that block's live transaction count.
+- Creates one canonical WebSocket event broadcaster before the block receiver
+  starts while retaining the listener's existing bind point and readiness
+  timing.
+- Reports Explorer cadence as `Live <N>ms`, calculates live TPS from a rolling
+  60-second window of canonical WebSocket block summaries, and reports total
+  stake as validator stake plus Moss stake.
+
+### Tests
+- Adds functional block-before-slot fanout coverage and source-order guards for
+  direct sync, pending-gap application, and fork adoption. Each path must emit
+  exactly once after deterministic post-block effects complete.
+
 ## [0.5.263] - 2026-08-26
 
 ### Fixed
