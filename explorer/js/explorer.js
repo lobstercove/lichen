@@ -17,8 +17,16 @@ function getNetworkConfig(name) {
 let RPC_URL = getNetworkConfig(currentNetwork).rpc;
 let WS_URL = getNetworkConfig(currentNetwork).ws;
 const SYSTEM_PROGRAM_ID = '11111111111111111111111111111111';
+const DASHBOARD_WS_CADENCE_WINDOW = 120;
+const DASHBOARD_WS_CADENCE_MIN_SAMPLES = 5;
+const DASHBOARD_WS_CADENCE_MAX_SLOT_DELTA = 32;
 let dashboardLatestSlot = 0;
 let dashboardLatestBlocksTopSlot = 0;
+let dashboardWsLastSlot = 0;
+let dashboardWsLastObservedAt = 0;
+let dashboardWsCadenceSamples = [];
+let dashboardWsCadenceMedianMs = 0;
+let dashboardWsCadenceReady = false;
 
 function explorerNumber(value, fallback = 0) {
     const numeric = Number(value);
@@ -35,6 +43,73 @@ function updateDashboardLatestSlot(slot) {
     if (latestBlockEl) {
         latestBlockEl.textContent = formatSlot(numericSlot);
     }
+}
+
+function updateDashboardCadenceLabels(observedMs, targetMs, source) {
+    const observed = explorerNumber(observedMs);
+    const target = explorerNumber(targetMs);
+    const slotEl = document.getElementById('slotTimeLabel');
+    const targetEl = document.getElementById('slotTargetLabel');
+    const sourceEl = document.getElementById('slotCadenceSource');
+
+    if (slotEl && observed > 0) slotEl.textContent = Math.round(observed);
+    if (targetEl && target > 0) targetEl.textContent = Math.round(target);
+    if (sourceEl && source) sourceEl.textContent = source;
+}
+
+function resetDashboardWsCadence() {
+    dashboardWsLastSlot = 0;
+    dashboardWsLastObservedAt = 0;
+    dashboardWsCadenceSamples = [];
+    dashboardWsCadenceMedianMs = 0;
+    dashboardWsCadenceReady = false;
+}
+
+function observeDashboardWsBlock(block, observedAt = Date.now()) {
+    const slot = Number(block?.slot);
+    if (!Number.isSafeInteger(slot) || slot < 0) return null;
+
+    // The notification already contains the canonical slot. Render it
+    // immediately; REST remains a reconciliation path for tables and totals.
+    updateDashboardLatestSlot(slot);
+
+    if (dashboardWsLastSlot > 0 && slot > dashboardWsLastSlot) {
+        const slotDelta = slot - dashboardWsLastSlot;
+        const elapsedMs = observedAt - dashboardWsLastObservedAt;
+        if (slotDelta <= DASHBOARD_WS_CADENCE_MAX_SLOT_DELTA && elapsedMs > 0) {
+            dashboardWsCadenceSamples.push(elapsedMs / slotDelta);
+            if (dashboardWsCadenceSamples.length > DASHBOARD_WS_CADENCE_WINDOW) {
+                dashboardWsCadenceSamples.shift();
+            }
+        } else {
+            dashboardWsCadenceSamples = [];
+            dashboardWsCadenceMedianMs = 0;
+            dashboardWsCadenceReady = false;
+        }
+    }
+
+    if (slot > dashboardWsLastSlot) {
+        dashboardWsLastSlot = slot;
+        dashboardWsLastObservedAt = observedAt;
+    }
+
+    if (dashboardWsCadenceSamples.length >= DASHBOARD_WS_CADENCE_MIN_SAMPLES) {
+        const sorted = [...dashboardWsCadenceSamples].sort((a, b) => a - b);
+        dashboardWsCadenceMedianMs = sorted[Math.floor(sorted.length / 2)];
+        dashboardWsCadenceReady = true;
+        updateDashboardCadenceLabels(
+            dashboardWsCadenceMedianMs,
+            getNetworkConfig(currentNetwork).slotDurationMs,
+            'Live WS'
+        );
+    }
+
+    return {
+        slot,
+        samples: dashboardWsCadenceSamples.length,
+        observedMs: dashboardWsCadenceMedianMs,
+        ready: dashboardWsCadenceReady,
+    };
 }
 
 // RPC Client (from actual Lichen RPC implementation)
@@ -609,10 +684,19 @@ async function updateDashboardStats() {
             const observedSlotMs = explorerNumber(metrics.observed_block_interval_ms);
             const targetSlotMs = explorerNumber(metrics.cadence_target_ms ?? metrics.slot_duration_ms);
             if (observedSlotMs > 0 || targetSlotMs > 0) {
-                const slotEl = document.getElementById('slotTimeLabel');
-                const targetEl = document.getElementById('slotTargetLabel');
-                if (slotEl) slotEl.textContent = Math.round(observedSlotMs || targetSlotMs);
-                if (targetEl) targetEl.textContent = Math.round(targetSlotMs || observedSlotMs);
+                if (dashboardWsCadenceReady) {
+                    updateDashboardCadenceLabels(
+                        dashboardWsCadenceMedianMs,
+                        targetSlotMs || observedSlotMs,
+                        'Live WS'
+                    );
+                } else {
+                    updateDashboardCadenceLabels(
+                        observedSlotMs || targetSlotMs,
+                        targetSlotMs || observedSlotMs,
+                        'Node observed'
+                    );
+                }
             }
         }
 
@@ -943,6 +1027,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let lastWsBlockTime = 0;
     let staleCheckInterval = null;
     let staleStrikeCount = 0;
+    let wsDashboardRefreshTimer = null;
     // Poll REST as a continuous background regardless of WS — ensures
     // the dashboard always shows fresh data even during chain stalls
     let backgroundPolling = null;
@@ -972,6 +1057,18 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 10000); // Every 10s as a safety net
     };
     startBackgroundPolling();
+
+    // Coalesce expensive REST table reconciliation. At 400 ms cadence the
+    // slot counter still renders every notification, while block/transaction
+    // tables refresh at most once per second.
+    const scheduleWsDashboardRefresh = () => {
+        if (wsDashboardRefreshTimer || !isDashboard) return;
+        wsDashboardRefreshTimer = setTimeout(() => {
+            wsDashboardRefreshTimer = null;
+            updateLatestBlocks();
+            updateLatestTransactions();
+        }, 1000);
+    };
 
     // Stale data detector: if WS is "connected" but no block event
     // has arrived in WS_STALE_THRESHOLD ms, force a REST poll and
@@ -1017,22 +1114,23 @@ document.addEventListener('DOMContentLoaded', () => {
         // on every reconnect automatically.  Calling subscribe() inside
         // onOpen would push a duplicate to `desired` on every reconnect,
         // eventually exceeding the server's per-connection subscription limit.
-        ws.subscribe('subscribeBlocks', () => {
+        ws.subscribe('subscribeBlocks', (block) => {
             lastWsBlockTime = Date.now();
-            updateLatestBlocks();
-            updateLatestTransactions();
-            updateDashboardStats();
+            observeDashboardWsBlock(block, lastWsBlockTime);
+            scheduleWsDashboardRefresh();
         });
 
         ws.onOpen(() => {
             stopPolling();
             lastWsBlockTime = Date.now();
             staleStrikeCount = 0;
+            resetDashboardWsCadence();
             startStaleCheck();
         });
 
         ws.onClose(() => {
             stopStaleCheck();
+            resetDashboardWsCadence();
             startPolling();
         });
 
