@@ -462,7 +462,7 @@ assert(
 assert(
   productionReleasePair &&
     productionReleasePair[1] === `v${validatorVersion}` &&
-    productionReleasePair[2] === 'v0.5.258' &&
+    productionReleasePair[2] === 'v0.5.262' &&
     /Preserve signed\s+`v0\.5\.225` as\s+pre-change evidence/.test(productionDeployment) &&
     productionDeployment.includes('This destructive checklist does not apply to the current July testnet') &&
     productionDeployment.includes('in-place archive repair and coordinated resume') &&

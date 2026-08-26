@@ -386,7 +386,7 @@ impl StateStore {
         Ok(metrics)
     }
 
-    fn refresh_cold_migration_storage_metrics(&self) -> Result<(), String> {
+    fn refresh_cold_migration_storage_metrics_inner(&self) -> Result<(), String> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -431,6 +431,24 @@ impl StateStore {
         status.storage_metrics_error = None;
         status.storage_families = families;
         Ok(())
+    }
+
+    /// Refresh the archival storage sample from a caller that is already
+    /// isolated from latency-sensitive work.
+    ///
+    /// RocksDB column-family metadata can open or inspect every SST. On a
+    /// transition fleet where immutable cold SSTs are read through FUSE, this
+    /// operation can block on remote storage. It must therefore run only from
+    /// the bounded maintenance blocking pool, never from an RPC handler or a
+    /// consensus executor task.
+    pub fn refresh_cold_migration_storage_metrics(&self) {
+        if let Err(error) = self.refresh_cold_migration_storage_metrics_inner() {
+            let mut status = self
+                .cold_migration_status
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            status.storage_metrics_error = Some(error);
+        }
     }
 
     fn cold_physical_bytes_for_rows(&self, rows: &MigrationRows) -> Result<u64, String> {
@@ -1942,13 +1960,10 @@ impl StateStore {
     }
 
     pub fn cold_migration_status(&self) -> ColdMigrationStatus {
-        if let Err(error) = self.refresh_cold_migration_storage_metrics() {
-            let mut status = self
-                .cold_migration_status
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            status.storage_metrics_error = Some(error);
-        }
+        // Status retrieval is intentionally cache-only. Public getHealth and
+        // getMetrics requests share the validator's Tokio runtime with BFT;
+        // synchronously refreshing RocksDB metadata here previously allowed a
+        // monitoring request to block consensus on remote/FUSE cold SST I/O.
         self.cold_migration_status
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -2041,6 +2056,28 @@ mod tests {
         let mut state = StateStore::open(&hot).expect("open hot");
         state.open_cold_store(&cold).expect("open cold");
         state
+    }
+
+    #[test]
+    fn status_reads_are_cache_only_and_maintenance_refresh_is_explicit() {
+        let root = tempdir().unwrap();
+        let state = open_store(root.path());
+
+        let initial = state.cold_migration_status();
+        assert!(initial.storage_sample_unix_millis.is_none());
+        assert!(initial.storage_families.is_empty());
+
+        state.refresh_cold_migration_storage_metrics();
+        let sampled = state.cold_migration_status();
+        assert!(sampled.storage_sample_unix_millis.is_some());
+        assert!(!sampled.storage_families.is_empty());
+
+        let cached = state.cold_migration_status();
+        assert_eq!(
+            cached.storage_sample_unix_millis,
+            sampled.storage_sample_unix_millis
+        );
+        assert_eq!(cached.storage_families, sampled.storage_families);
     }
 
     fn run_to_cursor(state: &StateStore, cutoff: u64) {

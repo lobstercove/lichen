@@ -5,6 +5,40 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.263] - 2026-08-26
+
+### Fixed
+- Makes cold-migration status retrieval cache-only. Public `getHealth` and
+  `getMetrics` requests can no longer synchronously inspect RocksDB
+  column-family metadata or touch legacy R2/FUSE-backed cold SSTs on a
+  validator's Tokio consensus runtime.
+- Samples archival storage metadata once during pre-network startup and then
+  only from the existing bounded cold-maintenance blocking pool. This retains
+  operator telemetry without allowing monitoring traffic to create proposal,
+  prevote, or precommit stalls.
+
+### Tests
+- Adds a core regression proving status reads do not create or advance a
+  storage sample and that an explicit maintenance refresh populates a stable
+  cached snapshot.
+- Extends RPC readiness coverage to require `getHealth` to return cached
+  archive telemetry without triggering an SST metadata refresh.
+- Passes the complete clean four-validator gate through empty-state joins,
+  bounded cold migration, authenticated Archive V2 history, all runtime roles,
+  corruption quarantine and replica repair, source outages, a 96-transaction
+  paused-finality backlog, live-gap recovery, individual and coordinated
+  restarts, and post-activity public-history parity. The strict volume journey
+  passed 140/140 checks and the launchpad journey passed 104/104 checks. All
+  validators persisted slot 11,000 and matched final public-history root
+  `f10274262fff36833a766b9556810a134a5f456e862d5e81b4c2404a91895c60`.
+
+### Operations
+- Records the signed v0.5.262 four-host deployment and outage/rejoin success,
+  the failed live cadence gate, the measured uncached-versus-cached health
+  latency, the current Archive V2/R2/capacity boundary, and the revised
+  release, catalog-tail, capacity-bootstrap, role-activation, retirement, and
+  final Explorer execution order.
+
 ## [0.5.262] - 2026-08-26
 
 ### Fixed
