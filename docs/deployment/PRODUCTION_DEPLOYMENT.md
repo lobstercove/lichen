@@ -19,7 +19,10 @@ Current testnet release candidate for this runbook is `v0.5.263`; keep signed
 and `v0.5.258` as prior signed restart-safe evidence, and retain `v0.5.240` as
 the Archive V2 recovery anchor. The candidate must not be
 installed until its exact tag workflow, attestations, checksum, and detached
-PQ signature pass. Both releases are Archive V2 dual-reader capable. Preserve signed
+PQ signature pass. Both releases are Archive V2 dual-reader capable. Before
+legacy retirement, also preserve signed schema-3-capable `v0.5.238` at
+`671ed6c110d56dafba0e01f6ba64a841a4f83218` as the prior rollback anchor.
+Preserve signed
 `v0.5.225` as pre-change evidence, but do not restart it on the mature activated
 testnet because it contains the initial post-effects replay-boundary defect.
 Neither `v0.5.229` nor any pre-schema-3 anchor can be used after required legacy
@@ -39,6 +42,17 @@ The exact live-fleet completion and cadence plan is
 It records the bounded US/EU verified-cache plus SEA/IN consensus-role
 transition, stable tail-building procedure, dual-R2 publication order, storage
 gates, and the separate future offline-validator consensus design.
+
+`v0.5.240` exposes `full_archive`, `verified_cache`, and `consensus` Archive V2
+roles. Every role requires independent consensus/recovery data, a complete
+verified catalog, and at least 50,000 recent slots. A full archive keeps every
+segment locally; a verified cache requires an explicit cache root, nonzero
+quota, and at least one authenticated directory or HTTPS source; a consensus
+node advertises no deep history and accepts no cache/source settings. Role
+transitions fail while build, mirror, or retirement work is active, and
+full-archive demotion requires replica-policy proof. Archive-source outage is
+never a consensus dependency. A 200 GB root is not approved for mainnet or
+indefinite archive growth.
 
 Restriction schema activation policy: [RESTRICTION_SCHEMA_ACTIVATION.md](RESTRICTION_SCHEMA_ACTIVATION.md). RG-804 activation is testnet-only, uses `scripts/activate-restriction-schema-testnet.sh`, requires explicit owner approval for that exact activation, stops validators only long enough to set the shipped state-root schema flag, and records per-host sync evidence. It is not a reset path and must not copy chain state.
 
@@ -2738,10 +2752,17 @@ activity green.
 
 Also, the wiped validator's new pubkey registers as a separate entry in the validator set. With N+1 validators and only N-1 online (original minus the ghost), BFT quorum (2/3+) may be unreachable.
 
-**Current release behavior**: `v0.5.240` is the signed testnet release target and
-`v0.5.225` is the preserved signed pre-change binary, not a restartable
-rollback. It preserves the recovery and storage safeguards established by
-`v0.5.229` and adds the signed Archive V2 retrofit gates. The earlier release fixes the inclusive
+**Current release behavior**: `v0.5.240` is the signed testnet release target;
+signed `v0.5.238` is the immediate schema-3-capable rollback before legacy
+retirement, while `v0.5.225` is evidence rather than a restartable rollback.
+`v0.5.240` preserves the recovery and storage safeguards established by
+`v0.5.229`, adds the signed Archive V2 retrofit gates and explicit runtime
+roles, treats transient measured growth as an archive/checkpoint pause rather
+than a false consensus-fatal condition, permits a headroom-checked 8 GiB
+retirement reclaim input, and allows a stopped read-only retrofit source to
+retain the absolute 5 GiB floor without an extra percentage reserve. Writable
+Archive V2 staging and two-copy retirement peak headroom remain mandatory. The
+earlier release fixes the inclusive
 initial post-effects recovery boundary and retains the exact-testnet 5 GiB
 runtime reserve plus the 50,000-slot default hot-history window; mainnet and
 unclassified production retain the 10 GiB reserve, and all backed historical
