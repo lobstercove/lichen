@@ -31,7 +31,7 @@ use lichen_core::zk::MerkleTree;
 use lichen_core::zk::{
     circuits::shield::ShieldCircuit, circuits::transfer::TransferCircuit,
     circuits::unshield::UnshieldCircuit, commitment_hash, nullifier_hash, recipient_hash,
-    recipient_preimage_from_bytes, Prover, TREE_DEPTH,
+    recipient_preimage_from_bytes, ProofType, Prover, TREE_DEPTH,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -84,6 +84,29 @@ fn api_err(msg: &str) -> Response {
         .into_response()
 }
 
+fn api_unavailable(msg: &str) -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ApiResponse::<()> {
+            success: false,
+            data: None,
+            error: Some(msg.to_string()),
+        }),
+    )
+        .into_response()
+}
+
+fn proof_rpc_disabled(proof_type: ProofType) -> RpcError {
+    RpcError {
+        code: -32090,
+        message: format!(
+            "{} proof generation is unavailable: {}",
+            proof_type.as_str(),
+            lichen_core::zk::PROOF_SCHEME_ACCEPTANCE_DISABLED_REASON
+        ),
+    }
+}
+
 fn api_not_found(msg: &str) -> Response {
     (
         StatusCode::NOT_FOUND,
@@ -99,21 +122,94 @@ fn api_not_found(msg: &str) -> Response {
 fn shielded_note_payload_fields(
     state: &lichen_core::StateStore,
     index: u64,
+    commitment: &[u8; 32],
 ) -> Result<(Option<String>, Option<String>), String> {
     let Some(payload) = state.get_shielded_note_payload(index)? else {
         return Ok((None, None));
     };
     let parsed: serde_json::Value = serde_json::from_slice(&payload)
         .map_err(|e| format!("Invalid shielded note payload at index {}: {}", index, e))?;
-    let encrypted_note = parsed
+    let object = parsed
+        .as_object()
+        .ok_or_else(|| format!("Shielded note payload at index {} must be an object", index))?;
+    let encrypted_note = object
         .get("encrypted_note")
         .and_then(|value| value.as_str())
-        .map(ToOwned::to_owned);
-    let ephemeral_pk = parsed
+        .ok_or_else(|| {
+            format!(
+                "Shielded note payload at index {} lacks encrypted_note",
+                index
+            )
+        })?;
+    if !encrypted_note.starts_with("a1:") || encrypted_note.len() > 4096 {
+        return Err(format!(
+            "Shielded note payload at index {} has invalid encrypted_note",
+            index
+        ));
+    }
+    let ephemeral_pk = object
         .get("ephemeral_pk")
         .and_then(|value| value.as_str())
-        .map(ToOwned::to_owned);
-    Ok((encrypted_note, ephemeral_pk))
+        .ok_or_else(|| {
+            format!(
+                "Shielded note payload at index {} lacks ephemeral_pk",
+                index
+            )
+        })?;
+    let ephemeral_bytes = hex::decode(ephemeral_pk).map_err(|error| {
+        format!(
+            "Shielded note payload at index {} has invalid ephemeral_pk: {}",
+            index, error
+        )
+    })?;
+    if ephemeral_bytes.len() != 32 {
+        return Err(format!(
+            "Shielded note payload at index {} has non-32-byte ephemeral_pk",
+            index
+        ));
+    }
+    let payload_commitment = object
+        .get("commitment")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("Shielded note payload at index {} lacks commitment", index))?;
+    let payload_commitment_bytes = hex::decode(payload_commitment).map_err(|error| {
+        format!(
+            "Shielded note payload at index {} has invalid commitment: {}",
+            index, error
+        )
+    })?;
+    if payload_commitment_bytes.as_slice() != commitment {
+        return Err(format!(
+            "Shielded note payload at index {} conflicts with its commitment",
+            index
+        ));
+    }
+
+    Ok((
+        Some(encrypted_note.to_owned()),
+        Some(ephemeral_pk.to_owned()),
+    ))
+}
+
+fn validate_shielded_pool_metadata(
+    pool: &lichen_core::zk::ShieldedPoolState,
+) -> Result<(), String> {
+    if pool.commitment_count > lichen_core::zk::TREE_CAPACITY {
+        return Err(format!(
+            "Shielded commitment count {} exceeds tree capacity {}",
+            pool.commitment_count,
+            lichen_core::zk::TREE_CAPACITY
+        ));
+    }
+    if pool.merkle_root == [0u8; 32]
+        || !lichen_core::zk::merkle::is_canonical_scalar_bytes(&pool.merkle_root)
+    {
+        return Err("Shielded pool has an invalid Merkle root".to_string());
+    }
+    if pool.commitment_count == 0 && pool.merkle_root != MerkleTree::empty_root() {
+        return Err("Empty shielded pool has a conflicting Merkle root".to_string());
+    }
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -132,6 +228,9 @@ struct PoolStateResponse {
     unshield_count: u64,
     transfer_count: u64,
     zk_scheme: String,
+    proof_acceptance_enabled: bool,
+    operations_available: bool,
+    status: String,
 }
 
 #[derive(Serialize)]
@@ -203,19 +302,29 @@ struct SubmitBody {
 /// GET /pool — full shielded pool state
 async fn rest_get_pool_state(State(state): State<Arc<RpcState>>) -> Response {
     match state.state.get_shielded_pool_state() {
-        Ok(pool) => ApiResponse::ok(PoolStateResponse {
-            merkle_root: hex::encode(pool.merkle_root),
-            commitment_count: pool.commitment_count,
-            total_shielded: pool.total_shielded,
-            total_shielded_licn: format!("{:.9}", pool.total_shielded as f64 / 1_000_000_000.0),
-            nullifier_count: pool.nullifier_count,
-            shield_count: pool.shield_count,
-            unshield_count: pool.unshield_count,
-            transfer_count: pool.transfer_count,
-            zk_scheme: lichen_core::zk::ZkSchemeVersion::Plonky3FriPoseidon2
-                .as_str()
-                .to_string(),
-        }),
+        Ok(pool) => {
+            if let Err(error) = validate_shielded_pool_metadata(&pool) {
+                return api_err(&error);
+            }
+            ApiResponse::ok(PoolStateResponse {
+                merkle_root: hex::encode(pool.merkle_root),
+                commitment_count: pool.commitment_count,
+                total_shielded: pool.total_shielded,
+                total_shielded_licn: format!("{:.9}", pool.total_shielded as f64 / 1_000_000_000.0),
+                nullifier_count: pool.nullifier_count,
+                shield_count: pool.shield_count,
+                unshield_count: pool.unshield_count,
+                transfer_count: pool.transfer_count,
+                zk_scheme: lichen_core::zk::ZkSchemeVersion::Plonky3FriPoseidon2
+                    .as_str()
+                    .to_string(),
+                proof_acceptance_enabled: lichen_core::zk::proof_acceptance_enabled(
+                    &ProofType::Shield,
+                ),
+                operations_available: false,
+                status: "disabled_insecure_verifier".to_string(),
+            })
+        }
         Err(e) => api_err(&format!("Failed to get pool state: {}", e)),
     }
 }
@@ -223,10 +332,15 @@ async fn rest_get_pool_state(State(state): State<Arc<RpcState>>) -> Response {
 /// GET /merkle-root — current Merkle root and leaf count
 async fn rest_get_merkle_root(State(state): State<Arc<RpcState>>) -> Response {
     match state.state.get_shielded_pool_state() {
-        Ok(pool) => ApiResponse::ok(MerkleRootResponse {
-            merkle_root: hex::encode(pool.merkle_root),
-            commitment_count: pool.commitment_count,
-        }),
+        Ok(pool) => {
+            if let Err(error) = validate_shielded_pool_metadata(&pool) {
+                return api_err(&error);
+            }
+            ApiResponse::ok(MerkleRootResponse {
+                merkle_root: hex::encode(pool.merkle_root),
+                commitment_count: pool.commitment_count,
+            })
+        }
         Err(e) => api_err(&format!("Failed to get merkle root: {}", e)),
     }
 }
@@ -241,6 +355,9 @@ async fn rest_get_merkle_path(
         Ok(p) => p,
         Err(e) => return api_err(&format!("Failed to get pool state: {}", e)),
     };
+    if let Err(error) = validate_shielded_pool_metadata(&pool) {
+        return api_err(&error);
+    }
 
     if index >= pool.commitment_count {
         return api_not_found(&format!(
@@ -261,14 +378,24 @@ async fn rest_get_merkle_path(
         for i in cache.0..pool.commitment_count {
             match state.state.get_shielded_commitment(i) {
                 Ok(Some(comm)) => {
-                    cache.2.insert(comm);
+                    if let Err(error) = cache.2.try_insert(comm) {
+                        return api_err(error);
+                    }
                 }
-                Ok(None) => break,
+                Ok(None) => {
+                    return api_err(&format!(
+                        "Missing shielded commitment at index {} (expected {})",
+                        i, pool.commitment_count
+                    ))
+                }
                 Err(e) => return api_err(&format!("Failed to load commitment {}: {}", i, e)),
             }
         }
         cache.0 = pool.commitment_count;
         cache.1 = pool.merkle_root;
+    }
+    if cache.2.leaf_count() != pool.commitment_count || cache.2.root() != pool.merkle_root {
+        return api_err("Shielded commitment tree conflicts with pool metadata");
     }
 
     match cache.2.proof(index) {
@@ -313,6 +440,9 @@ async fn rest_get_commitments(
         Ok(p) => p,
         Err(e) => return api_err(&format!("Failed to get pool state: {}", e)),
     };
+    if let Err(error) = validate_shielded_pool_metadata(&pool) {
+        return api_err(&error);
+    }
 
     let from = query.from.unwrap_or(0);
     let limit = query.limit.unwrap_or(100).min(1000);
@@ -322,16 +452,29 @@ async fn rest_get_commitments(
     // to build merkle proofs should use the /merkle-path endpoint instead.
     // Cap 'from' to at most 10,000 entries before the latest commitment.
     let min_from = pool.commitment_count.saturating_sub(10_000);
-    let from = from.max(min_from);
-
-    let end = pool.commitment_count.min(from.saturating_add(limit));
-    let mut entries = Vec::with_capacity((end - from) as usize);
+    let from = from.max(min_from).min(pool.commitment_count);
+    let end = from
+        .checked_add(limit)
+        .ok_or_else(|| "Shielded commitment page end overflow".to_string())
+        .map(|end| end.min(pool.commitment_count));
+    let end = match end {
+        Ok(end) => end,
+        Err(error) => return api_err(&error),
+    };
+    let capacity = match usize::try_from(end - from) {
+        Ok(capacity) => capacity,
+        Err(_) => return api_err("Shielded commitment page exceeds platform limits"),
+    };
+    let mut entries = Vec::with_capacity(capacity);
 
     for i in from..end {
         match state.state.get_shielded_commitment(i) {
             Ok(Some(comm)) => {
                 let (encrypted_note, ephemeral_pk) =
-                    shielded_note_payload_fields(&state.state, i).unwrap_or((None, None));
+                    match shielded_note_payload_fields(&state.state, i, &comm) {
+                        Ok(fields) => fields,
+                        Err(error) => return api_err(&error),
+                    };
                 entries.push(CommitmentEntry {
                     index: i,
                     commitment: hex::encode(comm),
@@ -339,7 +482,12 @@ async fn rest_get_commitments(
                     ephemeral_pk,
                 });
             }
-            Ok(None) => break,
+            Ok(None) => {
+                return api_err(&format!(
+                    "Missing shielded commitment at index {} (expected {})",
+                    i, pool.commitment_count
+                ))
+            }
             Err(e) => return api_err(&format!("Failed to read commitment {}: {}", i, e)),
         }
     }
@@ -384,6 +532,20 @@ async fn submit_shielded_tx(
     type_name: &str,
 ) -> Response {
     use base64::{engine::general_purpose, Engine as _};
+
+    let proof_type = match expected_type {
+        23 => ProofType::Shield,
+        24 => ProofType::Unshield,
+        25 => ProofType::Transfer,
+        _ => return api_err("Unsupported shielded instruction type"),
+    };
+    if !lichen_core::zk::proof_acceptance_enabled(&proof_type) {
+        return api_unavailable(&format!(
+            "Shielded {} is unavailable: {}",
+            type_name,
+            lichen_core::zk::PROOF_SCHEME_ACCEPTANCE_DISABLED_REASON
+        ));
+    }
 
     // Decode base64
     let tx_bytes = match general_purpose::STANDARD.decode(tx_base64) {
@@ -452,6 +614,11 @@ pub(crate) async fn handle_get_shielded_pool_state(
             message: format!("Database error: {}", e),
         })?;
 
+    validate_shielded_pool_metadata(&pool).map_err(|message| RpcError {
+        code: -32000,
+        message,
+    })?;
+
     Ok(shielded_pool_stats_json(&pool))
 }
 
@@ -468,6 +635,11 @@ pub(crate) async fn handle_get_shielded_merkle_root(
             code: -32000,
             message: format!("Database error: {}", e),
         })?;
+
+    validate_shielded_pool_metadata(&pool).map_err(|message| RpcError {
+        code: -32000,
+        message,
+    })?;
 
     Ok(serde_json::json!({
         "merkleRoot": hex::encode(pool.merkle_root),
@@ -503,6 +675,11 @@ pub(crate) async fn handle_get_shielded_merkle_path(
             message: format!("Database error: {}", e),
         })?;
 
+    validate_shielded_pool_metadata(&pool).map_err(|message| RpcError {
+        code: -32000,
+        message,
+    })?;
+
     if index >= pool.commitment_count {
         return Err(RpcError {
             code: -32001,
@@ -524,9 +701,20 @@ pub(crate) async fn handle_get_shielded_merkle_path(
         for i in cache.0..pool.commitment_count {
             match state.state.get_shielded_commitment(i) {
                 Ok(Some(comm)) => {
-                    cache.2.insert(comm);
+                    cache.2.try_insert(comm).map_err(|message| RpcError {
+                        code: -32000,
+                        message: message.to_string(),
+                    })?;
                 }
-                Ok(None) => break,
+                Ok(None) => {
+                    return Err(RpcError {
+                        code: -32000,
+                        message: format!(
+                            "Missing shielded commitment at index {} (expected {})",
+                            i, pool.commitment_count
+                        ),
+                    })
+                }
                 Err(e) => {
                     return Err(RpcError {
                         code: -32000,
@@ -537,6 +725,12 @@ pub(crate) async fn handle_get_shielded_merkle_path(
         }
         cache.0 = pool.commitment_count;
         cache.1 = pool.merkle_root;
+    }
+    if cache.2.leaf_count() != pool.commitment_count || cache.2.root() != pool.merkle_root {
+        return Err(RpcError {
+            code: -32000,
+            message: "Shielded commitment tree conflicts with pool metadata".to_string(),
+        });
     }
 
     let path = cache.2.proof(index).ok_or_else(|| RpcError {
@@ -605,6 +799,11 @@ pub(crate) async fn handle_get_shielded_commitments(
             message: format!("Database error: {}", e),
         })?;
 
+    validate_shielded_pool_metadata(&pool).map_err(|message| RpcError {
+        code: -32000,
+        message,
+    })?;
+
     let (from, limit) = if let Some(ref p) = params {
         let obj = p
             .as_array()
@@ -627,16 +826,30 @@ pub(crate) async fn handle_get_shielded_commitments(
     };
 
     let min_from = pool.commitment_count.saturating_sub(10_000);
-    let from = from.max(min_from);
-
-    let end = pool.commitment_count.min(from.saturating_add(limit));
-    let mut entries = Vec::with_capacity((end.saturating_sub(from)) as usize);
+    let from = from.max(min_from).min(pool.commitment_count);
+    let end = from
+        .checked_add(limit)
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Shielded commitment page end overflow".to_string(),
+        })?
+        .min(pool.commitment_count);
+    let capacity = usize::try_from(end - from).map_err(|_| RpcError {
+        code: -32000,
+        message: "Shielded commitment page exceeds platform limits".to_string(),
+    })?;
+    let mut entries = Vec::with_capacity(capacity);
 
     for i in from..end {
         match state.state.get_shielded_commitment(i) {
             Ok(Some(comm)) => {
                 let (encrypted_note, ephemeral_pk) =
-                    shielded_note_payload_fields(&state.state, i).unwrap_or((None, None));
+                    shielded_note_payload_fields(&state.state, i, &comm).map_err(|message| {
+                        RpcError {
+                            code: -32000,
+                            message,
+                        }
+                    })?;
                 let mut entry = serde_json::json!({
                     "index": i,
                     "commitment": hex::encode(comm),
@@ -649,7 +862,15 @@ pub(crate) async fn handle_get_shielded_commitments(
                 }
                 entries.push(entry);
             }
-            Ok(None) => break,
+            Ok(None) => {
+                return Err(RpcError {
+                    code: -32000,
+                    message: format!(
+                        "Missing shielded commitment at index {} (expected {})",
+                        i, pool.commitment_count
+                    ),
+                })
+            }
             Err(e) => {
                 return Err(RpcError {
                     code: -32000,
@@ -673,6 +894,10 @@ pub(crate) async fn handle_compute_shield_commitment(
     _state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
+    if !lichen_core::zk::proof_acceptance_enabled(&ProofType::Shield) {
+        return Err(proof_rpc_disabled(ProofType::Shield));
+    }
+
     let obj = first_param_object(params.as_ref()).ok_or_else(|| RpcError {
         code: -32602,
         message: "Invalid params: expected [{ amount, blinding }]".to_string(),
@@ -703,6 +928,10 @@ pub(crate) async fn handle_compute_shield_nullifier(
     _state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
+    if !lichen_core::zk::proof_acceptance_enabled(&ProofType::Unshield) {
+        return Err(proof_rpc_disabled(ProofType::Unshield));
+    }
+
     let obj = first_param_object(params.as_ref()).ok_or_else(|| RpcError {
         code: -32602,
         message: "Invalid params: expected [{ serial, spending_key }]".to_string(),
@@ -739,6 +968,10 @@ pub(crate) async fn handle_generate_shield_proof(
     _state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
+    if !lichen_core::zk::proof_acceptance_enabled(&ProofType::Shield) {
+        return Err(proof_rpc_disabled(ProofType::Shield));
+    }
+
     let obj = first_param_object(params.as_ref()).ok_or_else(|| RpcError {
         code: -32602,
         message: "Invalid params: expected [{ amount, blinding }]".to_string(),
@@ -788,6 +1021,10 @@ pub(crate) async fn handle_generate_unshield_proof(
     _state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
+    if !lichen_core::zk::proof_acceptance_enabled(&ProofType::Unshield) {
+        return Err(proof_rpc_disabled(ProofType::Unshield));
+    }
+
     let obj = first_param_object(params.as_ref()).ok_or_else(|| RpcError {
         code: -32602,
         message: "Invalid params: expected unshield witness object".to_string(),
@@ -930,6 +1167,10 @@ pub(crate) async fn handle_generate_transfer_proof(
     _state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
+    if !lichen_core::zk::proof_acceptance_enabled(&ProofType::Transfer) {
+        return Err(proof_rpc_disabled(ProofType::Transfer));
+    }
+
     let obj = first_param_object(params.as_ref()).ok_or_else(|| RpcError {
         code: -32602,
         message: "Invalid params: expected transfer witness object".to_string(),
@@ -1279,6 +1520,9 @@ fn shielded_pool_stats_json(pool: &lichen_core::zk::ShieldedPoolState) -> serde_
         "unshieldCount": pool.unshield_count,
         "transferCount": pool.transfer_count,
         "zkScheme": zk_scheme,
+        "proofAcceptanceEnabled": lichen_core::zk::proof_acceptance_enabled(&ProofType::Shield),
+        "operationsAvailable": false,
+        "status": "disabled_insecure_verifier",
     })
 }
 
@@ -1351,12 +1595,18 @@ mod tests {
             unshield_count: 1,
             transfer_count: 4,
             zk_scheme: "plonky3-fri-poseidon2".to_string(),
+            proof_acceptance_enabled: false,
+            operations_available: false,
+            status: "disabled_insecure_verifier".to_string(),
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["commitmentCount"], 42);
         assert_eq!(json["totalShielded"], 1_000_000_000u64);
         assert_eq!(json["merkleRoot"], "abc123");
         assert_eq!(json["zkScheme"], "plonky3-fri-poseidon2");
+        assert_eq!(json["proofAcceptanceEnabled"], false);
+        assert_eq!(json["operationsAvailable"], false);
+        assert_eq!(json["status"], "disabled_insecure_verifier");
     }
 
     #[test]

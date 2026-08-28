@@ -631,6 +631,10 @@ PopupLichenProvider.prototype.sendTransaction = function (transaction) {
     return this._request({ method: 'licn_sendTransaction', params: [{ transaction: transaction }] }, { entry: 'sign' });
 };
 
+PopupLichenProvider.prototype.signMessage = function (message) {
+    return this._request({ method: 'licn_signMessage', params: [{ message: message }] }, { entry: 'sign' });
+};
+
 function getPopupLichenProvider() {
     if (!walletPopupProviderInstance) {
         walletPopupProviderInstance = new PopupLichenProvider();
@@ -1084,6 +1088,20 @@ LichenWallet.prototype.sendTransaction = async function (instructions) {
             blockhash: blockhash,
         },
     }));
+};
+
+LichenWallet.prototype.signMessage = async function (message) {
+    if (!this.address) {
+        throw new Error('Connect a wallet before signing messages');
+    }
+    if (typeof message !== 'string' || !message) {
+        throw new Error('A non-empty message is required');
+    }
+    var provider = await this._resolveTransactionProvider();
+    if (!provider || typeof provider.signMessage !== 'function') {
+        throw new Error('Connected wallet provider does not support message signing');
+    }
+    return provider.signMessage(message);
 };
 
 LichenWallet.prototype._openWalletModal = function () {

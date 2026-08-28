@@ -1,6 +1,6 @@
 {
   "contract": "sporevault",
-  "version": "1.0",
+  "version": "3.0",
   "functions": [
     {
       "name": "initialize",
@@ -21,6 +21,7 @@
     {
       "name": "add_strategy",
       "opcode": 1,
+      "description": "Adds the single supported ThallLend strategy. LP and staking strategy identifiers fail closed until real adapters exist.",
       "params": [
         {
           "name": "caller_ptr",
@@ -85,6 +86,7 @@
     {
       "name": "harvest",
       "opcode": 4,
+      "description": "When unpaused, permissionlessly synchronizes real ThallLend custody, realizes the 10% performance fee on new lending yield, accrues the deterministic 2% annualized management fee, and rebalances to the configured lending allocation.",
       "params": [],
       "result_semantics": {
         "kind": "return_code",
@@ -96,7 +98,9 @@
     {
       "name": "get_vault_stats",
       "opcode": 5,
+      "description": "Returns total assets, total shares, share price, strategy count, net yield earned, and all realized protocol fees as six little-endian u64 values.",
       "params": [],
+      "readonly": true,
       "result_semantics": {
         "kind": "return_code",
         "success_codes": [
@@ -113,6 +117,7 @@
           "type": "Pubkey"
         }
       ],
+      "readonly": true,
       "result_semantics": {
         "kind": "return_code",
         "success_codes": [
@@ -129,6 +134,7 @@
           "type": "u64"
         }
       ],
+      "readonly": true,
       "result_semantics": {
         "kind": "return_code",
         "success_codes": [
@@ -312,6 +318,7 @@
     {
       "name": "set_protocol_addresses",
       "opcode": 17,
+      "description": "Configures the immutable ThallLend adapter address. A non-zero LichenSwap address is rejected because this single-asset vault has no LP adapter.",
       "params": [
         {
           "name": "caller_ptr",
@@ -344,6 +351,89 @@
         {
           "name": "token_ptr",
           "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "rebalance",
+      "opcode": 19,
+      "description": "When unpaused, permissionlessly synchronizes real ThallLend custody, accrues published performance and management fees, and rebalances to the configured lending allocation.",
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "migrate_accounting_v2",
+      "opcode": 20,
+      "description": "One-time admin migration that activates v2 only after real idle and ThallLend balances match independently audited expectations.",
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "expected_idle_assets",
+          "type": "u64"
+        },
+        {
+          "name": "expected_lending_assets",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_vault_status",
+      "opcode": 21,
+      "description": "Returns 23 little-endian u64 values covering accounting/configuration validity, real liquid custody coverage, fee policy, risk tier, and target timing constants.",
+      "params": [],
+      "readonly": true,
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "retire_legacy_strategy",
+      "opcode": 22,
+      "description": "Paused pre-v2 migration primitive that retires one legacy strategy only when its type, allocation, and deployed values exactly match independently captured source data.",
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "index",
+          "type": "u64"
+        },
+        {
+          "name": "expected_type",
+          "type": "u8"
+        },
+        {
+          "name": "expected_allocation",
+          "type": "u64"
+        },
+        {
+          "name": "expected_deployed",
+          "type": "u64"
         }
       ],
       "result_semantics": {

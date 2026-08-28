@@ -87,8 +87,11 @@ impl TxProcessor {
         if price == 0 {
             return Err("OracleAttestation: price must be > 0".to_string());
         }
-        if decimals > 18 {
-            return Err("OracleAttestation: decimals must be 0..=18".to_string());
+        if decimals != ORACLE_PRICE_DECIMALS {
+            return Err(format!(
+                "OracleAttestation: decimals must equal canonical scale {}",
+                ORACLE_PRICE_DECIMALS
+            ));
         }
 
         if ix.accounts.is_empty() {
@@ -123,9 +126,11 @@ impl TxProcessor {
             current_slot,
         )?;
 
-        let attestations =
+        let attestations = current_active_oracle_attestations(
+            &pool,
             self.state
-                .get_oracle_attestations(asset, current_slot, ORACLE_STALENESS_SLOTS)?;
+                .get_oracle_attestations(asset, current_slot, ORACLE_STALENESS_SLOTS)?,
+        );
 
         let total_active_stake = pool.active_stake();
         if total_active_stake == 0 {
@@ -133,15 +138,16 @@ impl TxProcessor {
         }
 
         let attested_stake: u128 = attestations.iter().map(|a| a.stake as u128).sum();
-        let threshold = (total_active_stake as u128) * 2 / 3;
         let active_validators = pool.active_validators().len();
         let min_attestors = if active_validators <= 1 { 1 } else { 2 };
-        if attested_stake >= threshold && attestations.len() >= min_attestors {
+        if oracle_stake_quorum_reached(attested_stake, total_active_stake as u128)
+            && attestations.len() >= min_attestors
+        {
             let consensus_price = compute_stake_weighted_median(&attestations);
             self.state.put_oracle_consensus_price(
                 asset,
                 consensus_price,
-                decimals,
+                ORACLE_PRICE_DECIMALS,
                 current_slot,
                 attestations.len() as u32,
             )?;

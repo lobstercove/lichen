@@ -1403,7 +1403,7 @@ fn test_stakepool_delegation_after_graduation() {
     // Produce many blocks and distribute rewards to fully vest the validator
     for slot in 1..=500 {
         pool.distribute_block_reward(&validator.pubkey(), slot, false, GENESIS_SUPPLY_SPORES);
-        pool.record_block_produced(&validator.pubkey());
+        pool.record_block_produced(&validator.pubkey()).unwrap();
     }
     // Try delegation — should succeed once fully vested
     let result = pool.delegate(delegator.pubkey(), &validator.pubkey(), 5_000);
@@ -1424,7 +1424,7 @@ fn test_stakepool_undelegate() {
     // Fully vest validator through block production
     for slot in 1..=500 {
         pool.distribute_block_reward(&validator.pubkey(), slot, false, GENESIS_SUPPLY_SPORES);
-        pool.record_block_produced(&validator.pubkey());
+        pool.record_block_produced(&validator.pubkey()).unwrap();
     }
     let delegate_result = pool.delegate(delegator.pubkey(), &validator.pubkey(), 5_000);
     if delegate_result.is_ok() {

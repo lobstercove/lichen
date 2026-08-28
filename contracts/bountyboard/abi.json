@@ -1,6 +1,6 @@
 {
   "contract": "bountyboard",
-  "version": "1.0",
+  "version": "2.0",
   "functions": [
     {
       "name": "create_bounty",
@@ -101,6 +101,7 @@
     {
       "name": "get_bounty",
       "opcode": 4,
+      "readonly": true,
       "params": [
         {
           "name": "bounty_id",
@@ -234,6 +235,7 @@
     {
       "name": "get_bounty_count",
       "opcode": 11,
+      "readonly": true,
       "params": [],
       "result_semantics": {
         "kind": "return_value"
@@ -294,7 +296,342 @@
     {
       "name": "get_platform_stats",
       "opcode": 15,
+      "readonly": true,
       "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "set_fee_treasury",
+      "opcode": 16,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "treasury_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "withdraw_platform_fees",
+      "opcode": 17,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "token_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_platform_fees",
+      "opcode": 18,
+      "readonly": true,
+      "params": [
+        {
+          "name": "token_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "migrate_bounty_token",
+      "opcode": 19,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "bounty_id",
+          "type": "u64"
+        },
+        {
+          "name": "token_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_bounty_terms",
+      "opcode": 20,
+      "readonly": true,
+      "params": [
+        {
+          "name": "bounty_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0,
+          1
+        ]
+      }
+    },
+    {
+      "name": "get_submission",
+      "opcode": 21,
+      "readonly": true,
+      "params": [
+        {
+          "name": "bounty_id",
+          "type": "u64"
+        },
+        {
+          "name": "submission_idx",
+          "type": "u8"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0,
+          1
+        ]
+      }
+    },
+    {
+      "name": "update_work",
+      "opcode": 22,
+      "params": [
+        {
+          "name": "bounty_id",
+          "type": "u64"
+        },
+        {
+          "name": "submission_idx",
+          "type": "u8"
+        },
+        {
+          "name": "worker_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "proof_hash_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "begin_accounting_v2_migration",
+      "opcode": 23,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "expected_bounty_count",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "migrate_accounting_v2_bounty",
+      "opcode": 24,
+      "params": [
+        {
+          "name": "bounty_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "complete_accounting_v2_migration",
+      "opcode": 25,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "expected_escrow",
+          "type": "u64"
+        },
+        {
+          "name": "expected_platform_fees",
+          "type": "u64"
+        },
+        {
+          "name": "expected_total_liability",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_accounting_migration_status",
+      "opcode": 26,
+      "readonly": true,
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_accounting_health",
+      "opcode": 27,
+      "readonly": true,
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_bounty_migration_record",
+      "opcode": 28,
+      "readonly": true,
+      "params": [
+        {
+          "name": "bounty_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "propose_admin",
+      "opcode": 29,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "new_admin_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "accept_admin",
+      "opcode": 30,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_admin_transition",
+      "opcode": 31,
+      "readonly": true,
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_bounty_count_exact",
+      "opcode": 32,
+      "readonly": true,
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "cancel_admin_proposal",
+      "opcode": 33,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        }
+      ],
       "result_semantics": {
         "kind": "return_code",
         "success_codes": [

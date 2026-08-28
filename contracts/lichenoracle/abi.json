@@ -1,10 +1,12 @@
 {
   "contract": "lichenoracle",
   "version": "1.0",
+  "description": "Validator-native fixed8 price oracle with strict stake quorum, five-minute slot freshness, commit-reveal randomness, and bounded multi-attester data proofs. Price-feeder mutations are legacy genesis-only operations once consensus-managed mode is active.",
   "functions": [
     {
       "name": "initialize_oracle",
       "opcode": 0,
+      "description": "Initializes the contract once; the transaction signer must equal owner_ptr.",
       "params": [
         {
           "name": "owner_ptr",
@@ -21,6 +23,7 @@
     {
       "name": "add_price_feeder",
       "opcode": 1,
+      "description": "Legacy genesis-only feeder authorization. Returns code 7 after consensus-managed mode is active.",
       "params": [
         {
           "name": "feeder_ptr",
@@ -28,7 +31,8 @@
         },
         {
           "name": "asset_ptr",
-          "type": "Pubkey"
+          "type": "bytes",
+          "length_field": "asset_len"
         },
         {
           "name": "asset_len",
@@ -45,6 +49,7 @@
     {
       "name": "set_authorized_attester",
       "opcode": 2,
+      "description": "Owner-only authorization for the separate bounded data-attestation subsystem.",
       "params": [
         {
           "name": "attester_ptr",
@@ -52,7 +57,7 @@
         },
         {
           "name": "authorized",
-          "type": "u64"
+          "type": "u32"
         }
       ],
       "result_semantics": {
@@ -65,6 +70,7 @@
     {
       "name": "submit_price",
       "opcode": 3,
+      "description": "Legacy genesis-only fixed8 price submission. Returns code 22 after consensus-managed mode is active; live prices are finalized by the native validator oracle.",
       "params": [
         {
           "name": "feeder_ptr",
@@ -72,7 +78,8 @@
         },
         {
           "name": "asset_ptr",
-          "type": "Pubkey"
+          "type": "bytes",
+          "length_field": "asset_len"
         },
         {
           "name": "asset_len",
@@ -97,10 +104,12 @@
     {
       "name": "get_price",
       "opcode": 4,
+      "description": "Writes price u64, source slot u64, and decimals u8. Returns 1 on success, 2 for stale/future/noncanonical data, and 0 when absent.",
       "params": [
         {
           "name": "asset_ptr",
-          "type": "Pubkey"
+          "type": "bytes",
+          "length_field": "asset_len"
         },
         {
           "name": "asset_len",
@@ -120,10 +129,12 @@
     },
     {
       "name": "get_price_value",
+      "description": "Cross-contract canonical quote lookup. Sets 17-byte return_data on success: fixed8 price (u64 LE), consensus source slot (u64 LE), and decimals (u8, exactly 8); returns 2 for stale, future, or noncanonical data.",
       "params": [
         {
           "name": "asset_ptr",
-          "type": "Pubkey"
+          "type": "bytes",
+          "length_field": "asset_len"
         },
         {
           "name": "asset_len",
@@ -140,6 +151,7 @@
     {
       "name": "commit_randomness",
       "opcode": 5,
+      "description": "Commits H(requester || secret || seed) for deterministic post-commit block entropy.",
       "params": [
         {
           "name": "requester_ptr",
@@ -164,6 +176,7 @@
     {
       "name": "reveal_randomness",
       "opcode": 6,
+      "description": "Reveals the committed secret after a later block entropy slot and writes random value u64 plus entropy slot u64.",
       "params": [
         {
           "name": "requester_ptr",
@@ -188,6 +201,7 @@
     {
       "name": "request_randomness",
       "opcode": 7,
+      "description": "Deprecated insecure one-step randomness entrypoint; always fails closed.",
       "params": [
         {
           "name": "requester_ptr",
@@ -208,13 +222,14 @@
     {
       "name": "get_randomness",
       "opcode": 8,
+      "description": "Returns only the result bound to the exact requester and seed; no cross-seed fallback is allowed.",
       "params": [
         {
           "name": "requester_ptr",
           "type": "Pubkey"
         },
         {
-          "name": "_seed",
+          "name": "seed",
           "type": "u64"
         },
         {
@@ -232,6 +247,7 @@
     {
       "name": "submit_attestation",
       "opcode": 9,
+      "description": "Submits a hash-bound payload of at most 32 bytes from an owner-authorized attester; duplicate attesters are rejected.",
       "params": [
         {
           "name": "attester_ptr",
@@ -243,7 +259,8 @@
         },
         {
           "name": "data_ptr",
-          "type": "Pubkey"
+          "type": "bytes",
+          "length_field": "data_len"
         },
         {
           "name": "data_len",
@@ -260,6 +277,7 @@
     {
       "name": "verify_attestation",
       "opcode": 10,
+      "description": "Returns 1 only when the stored proof has at least min_signatures distinct authorized attesters.",
       "params": [
         {
           "name": "data_hash_ptr",
@@ -267,7 +285,7 @@
         },
         {
           "name": "min_signatures",
-          "type": "u64"
+          "type": "u8"
         }
       ],
       "result_semantics": {
@@ -277,6 +295,7 @@
     {
       "name": "get_attestation_data",
       "opcode": 11,
+      "description": "Writes signature count u8, source slot u64, and the exact 32-byte zero-padded attested payload.",
       "params": [
         {
           "name": "data_hash_ptr",
@@ -297,10 +316,12 @@
     {
       "name": "query_oracle",
       "opcode": 12,
+      "description": "Compatibility query router for price, random, and attestation lookups.",
       "params": [
         {
           "name": "query_type_ptr",
-          "type": "Pubkey"
+          "type": "bytes",
+          "length_field": "query_type_len"
         },
         {
           "name": "query_type_len",
@@ -308,7 +329,8 @@
         },
         {
           "name": "param_ptr",
-          "type": "Pubkey"
+          "type": "bytes",
+          "length_field": "param_len"
         },
         {
           "name": "param_len",
@@ -329,10 +351,12 @@
     {
       "name": "get_aggregated_price",
       "opcode": 13,
+      "description": "Returns the already-finalized native stake-weighted median in the legacy price-plus-count shape; num_feeds must be nonzero but does not trigger a second aggregation.",
       "params": [
         {
           "name": "asset_ptr",
-          "type": "Pubkey"
+          "type": "bytes",
+          "length_field": "asset_len"
         },
         {
           "name": "asset_len",
@@ -357,6 +381,7 @@
     {
       "name": "get_oracle_stats",
       "opcode": 14,
+      "description": "Writes compatibility query, legacy feed, and bounded attestation counters as three little-endian u64 values.",
       "params": [
         {
           "name": "result_ptr",
@@ -373,6 +398,7 @@
     {
       "name": "initialize",
       "opcode": 15,
+      "description": "Alias of initialize_oracle.",
       "params": [
         {
           "name": "owner_ptr",
@@ -389,6 +415,7 @@
     {
       "name": "register_feed",
       "opcode": 16,
+      "description": "Alias of legacy add_price_feeder; disabled after consensus-managed activation.",
       "params": [
         {
           "name": "feeder_ptr",
@@ -396,7 +423,8 @@
         },
         {
           "name": "asset_ptr",
-          "type": "Pubkey"
+          "type": "bytes",
+          "length_field": "asset_len"
         },
         {
           "name": "asset_len",
@@ -413,6 +441,7 @@
     {
       "name": "get_feed_count",
       "opcode": 17,
+      "description": "Returns the legacy compatibility feed count, not native consensus feed health.",
       "params": [],
       "result_semantics": {
         "kind": "return_value"
@@ -421,6 +450,7 @@
     {
       "name": "get_feed_list",
       "opcode": 18,
+      "description": "Returns the legacy compatibility feed count in return_data.",
       "params": [],
       "result_semantics": {
         "kind": "return_code",
@@ -432,6 +462,7 @@
     {
       "name": "add_reporter",
       "opcode": 19,
+      "description": "Legacy reporter metadata operation; disabled with code 7 in consensus-managed mode and does not authorize native price publication.",
       "params": [
         {
           "name": "caller_ptr",
@@ -452,6 +483,7 @@
     {
       "name": "remove_reporter",
       "opcode": 20,
+      "description": "Legacy reporter metadata operation; disabled with code 7 in consensus-managed mode.",
       "params": [
         {
           "name": "caller_ptr",
@@ -472,6 +504,7 @@
     {
       "name": "set_update_interval",
       "opcode": 21,
+      "description": "Legacy feeder interval in slots, bounded to 1..750; disabled with code 7 in consensus-managed mode.",
       "params": [
         {
           "name": "caller_ptr",
@@ -492,6 +525,7 @@
     {
       "name": "mo_pause",
       "opcode": 22,
+      "description": "Owner-only pause for legacy submissions and bounded data attestations; native price health reports paused until resumed.",
       "params": [
         {
           "name": "caller_ptr",
@@ -508,6 +542,7 @@
     {
       "name": "mo_unpause",
       "opcode": 23,
+      "description": "Owner-only resume for bounded data attestations and legacy mode where applicable.",
       "params": [
         {
           "name": "caller_ptr",

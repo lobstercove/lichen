@@ -10,7 +10,7 @@ pub(super) fn handle_version(rpc_url: &str, json_output: bool) -> Result<()> {
         "consensus": "Tendermint BFT",
         "signing": "ML-DSA-65",
         "contracts": "WASM (Rust → wasm32-unknown-unknown)",
-        "zk": "Plonky3 STARK",
+        "zk": "disabled (legacy scheme 0x01 lacks constrained private-witness verification)",
         "native_token": "LICN",
         "spores_per_licn": 1_000_000_000u64,
         "rpc_url": rpc_url,
@@ -42,7 +42,7 @@ pub(super) fn handle_version(rpc_url: &str, json_output: bool) -> Result<()> {
         println!("Consensus:   Tendermint BFT (400ms slots)");
         println!("Signing:     ML-DSA-65");
         println!("Contracts:   WASM (Rust → wasm32-unknown-unknown)");
-        println!("ZK Proofs:   Plonky3 STARK");
+        println!("Shielded:    disabled (legacy proof scheme 0x01)");
         println!("Token:       LICN (1 LICN = 1,000,000,000 spores)");
         println!();
         println!("RPC (current): {}", rpc_url);

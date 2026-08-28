@@ -12,12 +12,13 @@
 #![cfg_attr(target_arch = "wasm32", no_main)]
 
 extern crate alloc;
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
 use lichen_sdk::{
-    bytes_to_u64, call_contract, get_caller, get_contract_address, get_timestamp, get_value,
-    is_native_token, log_info, receive_token_or_native, storage_get, storage_set,
-    transfer_token_or_native, u64_to_bytes, Address, CrossCall, Pool,
+    balance_of_token_or_native, bytes_to_u64, call_contract, encode_layout_args, get_caller,
+    get_contract_address, get_timestamp, get_value, is_native_token, log_info,
+    receive_token_or_native, storage_get, storage_set, transfer_token_or_native, u64_to_bytes,
+    Address, CrossCall, Pool,
 };
 
 // ============================================================================
@@ -33,6 +34,7 @@ const DEFAULT_PROTOCOL_FEE_SHARE: u64 = 1667; // 1/6 of swap fee
 
 /// Max flash loan: 90% of reserves
 const MAX_FLASH_LOAN_PERCENT: u64 = 90;
+const MAX_FLASH_CALLBACK_DATA_LEN: u32 = 128;
 
 /// TWAP storage keys
 const TWAP_CUMULATIVE_A_KEY: &[u8] = b"twap_cum_a";
@@ -97,6 +99,22 @@ fn reentrancy_exit() {
     storage_set(REENTRANCY_KEY, &[0u8]);
 }
 
+struct ScopedReentrancyGuard;
+
+impl Drop for ScopedReentrancyGuard {
+    fn drop(&mut self) {
+        reentrancy_exit();
+    }
+}
+
+fn scoped_reentrancy_enter() -> Option<ScopedReentrancyGuard> {
+    if reentrancy_enter() {
+        Some(ScopedReentrancyGuard)
+    } else {
+        None
+    }
+}
+
 /// G17-02: Transfer tokens out from the pool's self-custody.
 /// token_addr: contract address of the token to transfer.
 /// to: recipient address.
@@ -142,10 +160,19 @@ fn required_native_input(
 
 /// Reconstruct pool state from persistent storage.
 /// Called at the start of every entry point (except initialize).
-fn load_pool() -> Pool {
+fn load_pool() -> Option<Pool> {
+    let token_a = storage_get(b"token_a").filter(|token| token.len() == 32)?;
+    let token_b = storage_get(b"token_b").filter(|token| token.len() == 32)?;
+    if token_a == token_b || (token_a.iter().all(|byte| *byte == 0) && token_b.iter().all(|byte| *byte == 0)) {
+        log_info("LichenSwap pool token configuration is invalid");
+        return None;
+    }
     let mut pool = Pool::new(Address::new([0u8; 32]), Address::new([0u8; 32]));
-    pool.load().expect("Failed to load pool state");
-    pool
+    if pool.load().is_err() {
+        log_info("Failed to load LichenSwap pool state");
+        return None;
+    }
+    Some(pool)
 }
 
 // ============================================================================
@@ -163,7 +190,9 @@ fn twap_update() {
 
     if last_update == 0 {
         // First call — just record current time and reserves
-        let pool = load_pool();
+        let Some(pool) = load_pool() else {
+            return;
+        };
         storage_set(TWAP_LAST_UPDATE_KEY, &u64_to_bytes(now));
         storage_set(TWAP_LAST_RESERVE_A_KEY, &u64_to_bytes(pool.reserve_a));
         storage_set(TWAP_LAST_RESERVE_B_KEY, &u64_to_bytes(pool.reserve_b));
@@ -210,7 +239,9 @@ fn twap_update() {
     }
 
     // Snapshot current reserves for next interval
-    let pool = load_pool();
+    let Some(pool) = load_pool() else {
+        return;
+    };
     storage_set(TWAP_LAST_UPDATE_KEY, &u64_to_bytes(now));
     storage_set(TWAP_LAST_RESERVE_A_KEY, &u64_to_bytes(pool.reserve_a));
     storage_set(TWAP_LAST_RESERVE_B_KEY, &u64_to_bytes(pool.reserve_b));
@@ -281,9 +312,17 @@ pub extern "C" fn initialize(token_a_ptr: *const u8, token_b_ptr: *const u8) {
         core::ptr::copy_nonoverlapping(token_b_ptr, token_b_addr.as_mut_ptr(), 32);
         let token_b = Address(token_b_addr);
 
+        if token_a == token_b {
+            log_info("LichenSwap pool requires two distinct token addresses");
+            return;
+        }
+
         // Pool::initialize calls save() which now persists token addresses too
         let mut pool = Pool::new(token_a, token_b);
-        pool.initialize(token_a, token_b).expect("Init failed");
+        if pool.initialize(token_a, token_b).is_err() {
+            log_info("LichenSwap pool initialization failed");
+            return;
+        }
 
         // SECURITY FIX: Set caller as admin, not token_a address
         let caller = get_caller();
@@ -322,7 +361,13 @@ pub extern "C" fn add_liquidity(
             return 0;
         }
 
-        let mut pool = load_pool();
+        let mut pool = match load_pool() {
+            Some(pool) => pool,
+            None => {
+                reentrancy_exit();
+                return 0;
+            }
+        };
         let native_required =
             match required_native_input(&pool.token_a.0, amount_a, &pool.token_b.0, amount_b) {
                 Some(required) => required,
@@ -394,7 +439,13 @@ pub extern "C" fn remove_liquidity(
             return 0;
         }
 
-        let mut pool = load_pool();
+        let mut pool = match load_pool() {
+            Some(pool) => pool,
+            None => {
+                reentrancy_exit();
+                return 0;
+            }
+        };
         match pool.remove_liquidity(provider, liquidity, min_amount_a, min_amount_b) {
             Ok((amount_a, amount_b)) => {
                 log_info("Liquidity removed successfully");
@@ -443,7 +494,13 @@ pub extern "C" fn swap_a_for_b(amount_a_in: u64, min_amount_b_out: u64) -> u64 {
     }
 
     // AUDIT-FIX 3.20: Load pool once, use for both price impact check and swap
-    let mut pool = load_pool();
+    let mut pool = match load_pool() {
+        Some(pool) => pool,
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
 
     // v2: Price impact guard
     if !check_price_impact(pool.reserve_a, pool.reserve_b, amount_a_in) {
@@ -541,7 +598,13 @@ pub extern "C" fn swap_b_for_a(amount_b_in: u64, min_amount_a_out: u64) -> u64 {
     }
 
     // AUDIT-FIX 3.20: Load pool once, use for both price impact check and swap
-    let mut pool = load_pool();
+    let mut pool = match load_pool() {
+        Some(pool) => pool,
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
 
     // v2: Price impact guard
     if !check_price_impact(pool.reserve_b, pool.reserve_a, amount_b_in) {
@@ -638,7 +701,10 @@ pub extern "C" fn swap_b_for_a_with_deadline(
 /// Get quote for swap (how much output for given input)
 #[no_mangle]
 pub extern "C" fn get_quote(amount_in: u64, is_a_to_b: u32) -> u64 {
-    let pool = load_pool();
+    let pool = match load_pool() {
+        Some(pool) => pool,
+        None => return 0,
+    };
 
     if is_a_to_b == 1 {
         pool.get_amount_out(amount_in, pool.reserve_a, pool.reserve_b)
@@ -651,7 +717,16 @@ pub extern "C" fn get_quote(amount_in: u64, is_a_to_b: u32) -> u64 {
 #[no_mangle]
 pub extern "C" fn get_reserves(out_a_ptr: *mut u8, out_b_ptr: *mut u8) {
     unsafe {
-        let pool = load_pool();
+        let pool = match load_pool() {
+            Some(pool) => pool,
+            None => {
+                let out_a_slice = core::slice::from_raw_parts_mut(out_a_ptr, 8);
+                out_a_slice.copy_from_slice(&0u64.to_le_bytes());
+                let out_b_slice = core::slice::from_raw_parts_mut(out_b_ptr, 8);
+                out_b_slice.copy_from_slice(&0u64.to_le_bytes());
+                return;
+            }
+        };
 
         let out_a_slice = core::slice::from_raw_parts_mut(out_a_ptr, 8);
         out_a_slice.copy_from_slice(&pool.reserve_a.to_le_bytes());
@@ -669,7 +744,9 @@ pub extern "C" fn get_liquidity_balance(provider_ptr: *const u8) -> u64 {
         core::ptr::copy_nonoverlapping(provider_ptr, provider_addr.as_mut_ptr(), 32);
         let provider = Address(provider_addr);
 
-        load_pool().get_liquidity_balance(provider)
+        load_pool()
+            .map(|pool| pool.get_liquidity_balance(provider))
+            .unwrap_or(0)
     }
 }
 
@@ -725,6 +802,7 @@ fn fl_get_fee() -> u64 {
         .unwrap_or(0)
 }
 
+#[cfg(test)]
 fn fl_store_loan(token_is_a: bool, amount: u64, fee: u64) {
     fl_set_active(true);
     storage_set(FL_TOKEN_IS_A_KEY, &[token_is_a as u8]);
@@ -738,82 +816,147 @@ fn fl_clear() {
     storage_set(FL_FEE_KEY, &u64_to_bytes(0));
 }
 
-/// Borrow tokens via flash loan. Must call `flash_loan_repay` in the same tx.
-/// Reserves are NOT decremented until repay succeeds (atomic loan model).
-/// Returns the amount lent (0 on failure).
+/// Disabled legacy two-call flash-loan entry point. It could commit an outgoing
+/// transfer without a transaction-level repayment postcondition.
 #[no_mangle]
-pub extern "C" fn flash_loan_borrow(amount: u64, token_is_a: u32) -> u64 {
+pub extern "C" fn flash_loan_borrow(_amount: u64, _token_is_a: u32) -> u64 {
+    log_info("Legacy flash_loan_borrow is disabled; use flash_loan_execute");
+    0
+}
+
+/// Execute an atomic flash loan through the receiver callback
+/// `on_lichen_flash_loan(initiator, token, amount, fee, data, data_len)`.
+#[no_mangle]
+pub extern "C" fn flash_loan_execute(
+    receiver_ptr: *const u8,
+    amount: u64,
+    token_is_a: u32,
+    data_ptr: *const u8,
+    data_len: u32,
+) -> u32 {
+    if amount == 0 || (token_is_a != 0 && token_is_a != 1) {
+        return 1;
+    }
+    if data_len > MAX_FLASH_CALLBACK_DATA_LEN {
+        log_info("Flash callback data is too large");
+        return 5;
+    }
     if is_ms_paused() {
         log_info("LichenSwap is paused");
-        return 0;
-    }
-    if !reentrancy_enter() {
-        log_info("Reentrancy detected");
-        return 0;
+        return 20;
     }
     if fl_is_active() {
-        log_info("Flash loan already active");
-        reentrancy_exit();
-        return 0;
+        log_info("A legacy flash loan must be settled before flash execution");
+        return 2;
     }
-
-    let pool = load_pool();
-    let reserve = if token_is_a == 1 {
-        pool.reserve_a
-    } else {
-        pool.reserve_b
+    let _reentrancy_guard = match scoped_reentrancy_enter() {
+        Some(guard) => guard,
+        None => {
+            log_info("Reentrancy detected");
+            return 21;
+        }
     };
 
-    if amount == 0 || amount > reserve {
-        log_info("Flash loan: invalid amount or insufficient reserves");
-        reentrancy_exit();
-        return 0;
+    let mut receiver = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(receiver_ptr, receiver.as_mut_ptr(), 32);
+    }
+    let self_addr = get_contract_address();
+    if receiver.iter().all(|byte| *byte == 0) || receiver == self_addr.0 {
+        log_info("Flash receiver must be a separate executable contract");
+        return 6;
+    }
+    let mut callback_data = vec![0u8; data_len as usize];
+    if data_len > 0 {
+        unsafe {
+            core::ptr::copy_nonoverlapping(data_ptr, callback_data.as_mut_ptr(), data_len as usize);
+        }
     }
 
-    // v2: Cap flash loans at MAX_FLASH_LOAN_PERCENT of reserves
+    let mut pool = match load_pool() {
+        Some(pool) => pool,
+        None => return 35,
+    };
+    let (token, reserve) = if token_is_a == 1 {
+        (pool.token_a, pool.reserve_a)
+    } else {
+        (pool.token_b, pool.reserve_b)
+    };
     let max_loan = ((reserve as u128) * (MAX_FLASH_LOAN_PERCENT as u128) / 100) as u64;
     if amount > max_loan {
-        log_info("Flash loan exceeds maximum (90% of reserves)");
-        reentrancy_exit();
-        return 0;
+        log_info("Flash loan exceeds pool liquidity cap");
+        return 3;
     }
-
-    // AUDIT-FIX NEW-M2: u128 intermediate prevents overflow for large flash loans;
-    // round-up ensures protocol always collects at least 1 spore fee.
-    let fee = ((amount as u128 * FLASH_LOAN_FEE_BPS as u128 + 9999) / 10000) as u64;
-    let fee = if fee == 0 { 1 } else { fee };
-    if reserve.checked_add(fee).is_none() {
-        log_info("Flash loan fee would overflow reserves");
-        reentrancy_exit();
-        return 0;
-    }
-
-    // Store loan metadata WITHOUT modifying reserves
-    // Reserves only change when repay succeeds (atomic guarantee)
-    fl_store_loan(token_is_a == 1, amount, fee);
-
-    // G17-02: Transfer borrowed tokens to borrower
-    let borrower = get_caller();
-    let token_addr = if token_is_a == 1 {
-        pool.token_a.0
-    } else {
-        pool.token_b.0
+    let fee = get_flash_loan_fee(amount);
+    let new_reserve = match reserve.checked_add(fee) {
+        Some(value) => value,
+        None => {
+            log_info("Flash loan fee would overflow reserves");
+            return 4;
+        }
     };
-    if transfer_out(&token_addr, &borrower.0, amount) != 0 {
-        log_info("Flash loan token transfer failed");
-        fl_clear();
-        reentrancy_exit();
-        return 0;
+    let starting_balance = match balance_of_token_or_native(token, self_addr) {
+        Ok(balance) if balance >= amount => balance,
+        _ => {
+            log_info("Pool custody balance is unavailable or insufficient");
+            return 31;
+        }
+    };
+
+    if transfer_out(&token.0, &receiver, amount) != 0 {
+        log_info("Flash loan transfer failed");
+        return 32;
     }
 
-    // Store the borrow timestamp for staleness detection
-    let timestamp = get_timestamp();
-    storage_set(b"fl_borrow_time", &u64_to_bytes(timestamp));
+    let initiator = get_caller();
+    let amount_bytes = amount.to_le_bytes();
+    let fee_bytes = fee.to_le_bytes();
+    let data_len_bytes = data_len.to_le_bytes();
+    let callback_args = match encode_layout_args(&[
+        &initiator.0,
+        &token.0,
+        &amount_bytes,
+        &fee_bytes,
+        &callback_data,
+        &data_len_bytes,
+    ]) {
+        Ok(args) => args,
+        Err(_) => return 33,
+    };
+    if call_contract(CrossCall::new(
+        Address(receiver),
+        "on_lichen_flash_loan",
+        callback_args,
+    ))
+    .is_err()
+    {
+        log_info("Flash loan callback failed");
+        return 33;
+    }
 
-    log_info("Flash loan issued (reserves held until repay)");
-    // Keep reentrancy guard ACTIVE to prevent any pool mutations until repay
-    // Do NOT call reentrancy_exit() — borrower must call flash_loan_repay
-    amount
+    let required_balance = match starting_balance.checked_add(fee) {
+        Some(value) => value,
+        None => return 4,
+    };
+    match balance_of_token_or_native(token, self_addr) {
+        Ok(ending_balance) if ending_balance >= required_balance => {}
+        _ => {
+            log_info("Flash loan callback did not restore principal and fee");
+            return 34;
+        }
+    }
+
+    twap_update();
+    if token_is_a == 1 {
+        pool.reserve_a = new_reserve;
+    } else {
+        pool.reserve_b = new_reserve;
+    }
+    if pool.save().is_err() {
+        return 35;
+    }
+    log_info("Atomic flash loan completed");
+    0
 }
 
 /// Repay flash loan. Must return borrowed amount + fee.
@@ -825,14 +968,6 @@ pub extern "C" fn flash_loan_repay(repay_amount: u64) -> u32 {
     if !fl_is_active() {
         log_info("No active flash loan to repay");
         return 1;
-    }
-
-    // G17-02: Verify attached value covers repayment
-    let attached = get_value();
-    if attached < repay_amount {
-        log_info("Insufficient value for flash loan repayment");
-        // Don't clear loan — borrower can retry
-        return 3;
     }
 
     let loan_amount = fl_get_amount();
@@ -856,9 +991,23 @@ pub extern "C" fn flash_loan_repay(repay_amount: u64) -> u32 {
         return 2;
     }
 
+    let mut pool = match load_pool() {
+        Some(pool) => pool,
+        None => return 3,
+    };
+    let token = if token_is_a {
+        pool.token_a
+    } else {
+        pool.token_b
+    };
+    let payer = get_caller();
+    if !receive_token_or_native(token, payer, get_contract_address(), required).unwrap_or(false) {
+        log_info("Flash loan repayment custody transfer failed");
+        return 3;
+    }
+
     // Success: add ONLY the fee to reserves (the principal was never removed)
-    let mut pool = load_pool();
-    let fee_collected = repay_amount.saturating_sub(loan_amount);
+    let fee_collected = loan_fee;
     if token_is_a {
         pool.reserve_a = match pool.reserve_a.checked_add(fee_collected) {
             Some(value) => value,
@@ -913,7 +1062,10 @@ pub extern "C" fn flash_loan_abort() -> u32 {
     // Deduct borrowed amount from reserves to match actual token balances
     let loan_amount = fl_get_amount();
     let token_is_a = fl_get_token_is_a();
-    let mut pool = load_pool();
+    let mut pool = match load_pool() {
+        Some(pool) => pool,
+        None => return 2,
+    };
     if token_is_a {
         pool.reserve_a = pool.reserve_a.saturating_sub(loan_amount);
     } else {
@@ -1407,6 +1559,22 @@ mod tests {
     }
 
     #[test]
+    fn test_uninitialized_and_same_token_pools_fail_closed() {
+        setup();
+        let provider = [3u8; 32];
+        test_mock::set_caller(provider);
+        test_mock::set_value(2_000_000);
+        assert_eq!(add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0), 0);
+        assert_eq!(get_pool_count(), 0);
+        assert!(test_mock::get_storage(b"token_a").is_none());
+
+        let same = [1u8; 32];
+        initialize(same.as_ptr(), same.as_ptr());
+        assert_eq!(get_pool_count(), 0);
+        assert!(load_pool().is_none());
+    }
+
+    #[test]
     fn test_add_liquidity_first_provider() {
         setup();
         let token_a = [1u8; 32];
@@ -1858,9 +2026,12 @@ mod tests {
         test_mock::set_value(2_000_000);
         add_liquidity([3u8; 32].as_ptr(), 1_000_000, 1_000_000, 0);
 
-        // Try to flash loan 95% of reserves
-        let out = flash_loan_borrow(950_000, 1);
-        assert_eq!(out, 0, "Flash loan >90% should be rejected");
+        let receiver = [4u8; 32];
+        assert_eq!(
+            flash_loan_execute(receiver.as_ptr(), 950_000, 1, [].as_ptr(), 0),
+            3,
+            "Flash loan >90% should be rejected"
+        );
     }
 
     #[test]
@@ -1875,10 +2046,17 @@ mod tests {
         test_mock::set_value(2_000_000);
         add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
 
-        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
-        let out = flash_loan_borrow(100_000, 1);
-        assert_eq!(out, 0, "false token transfer status must fail borrow");
-        assert!(!fl_is_active(), "failed borrow must clear loan state");
+        let receiver = [4u8; 32];
+        test_mock::set_cross_call_responses(std::vec![
+            u64_to_bytes(1_000_000).to_vec(),
+            2u32.to_le_bytes().to_vec(),
+        ]);
+        assert_eq!(
+            flash_loan_execute(receiver.as_ptr(), 100_000, 1, [].as_ptr(), 0),
+            32,
+            "false token transfer status must fail borrow"
+        );
+        assert_eq!(test_mock::get_storage(REENTRANCY_KEY), Some(vec![0]));
     }
 
     #[test]
@@ -1890,10 +2068,12 @@ mod tests {
         storage_set(b"reserve_a", &u64_to_bytes(u64::MAX));
         storage_set(b"reserve_b", &u64_to_bytes(1_000_000));
 
-        let borrower = [4u8; 32];
-        test_mock::set_caller(borrower);
-        let out = flash_loan_borrow(1, 1);
-        assert_eq!(out, 0, "borrow must fail if fee would overflow reserve");
+        let receiver = [4u8; 32];
+        assert_eq!(
+            flash_loan_execute(receiver.as_ptr(), 1, 1, [].as_ptr(), 0),
+            4,
+            "borrow must fail if fee would overflow reserve"
+        );
         assert!(!fl_is_active());
     }
 
@@ -2092,7 +2272,7 @@ mod tests {
     }
 
     #[test]
-    fn test_flash_loan_borrow_transfers() {
+    fn test_atomic_flash_loan_executes_and_collects_fee() {
         setup();
         let token_a = [1u8; 32];
         let token_b = [2u8; 32];
@@ -2103,16 +2283,87 @@ mod tests {
         test_mock::set_value(2_000_000);
         add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
 
-        // Borrow 50% of reserves (within cap)
-        let borrowed = flash_loan_borrow(500_000, 1);
+        let receiver = [4u8; 32];
+        let fee = get_flash_loan_fee(500_000);
+        test_mock::set_cross_call_responses(std::vec![
+            u64_to_bytes(1_000_000).to_vec(),
+            0u32.to_le_bytes().to_vec(),
+            0u32.to_le_bytes().to_vec(),
+            u64_to_bytes(1_000_000 + fee).to_vec(),
+        ]);
         assert_eq!(
-            borrowed, 500_000,
-            "Should borrow successfully with token transfer"
+            flash_loan_execute(receiver.as_ptr(), 500_000, 1, [].as_ptr(), 0),
+            0
+        );
+        assert_eq!(load_pool().expect("initialized pool").reserve_a, 1_000_000 + fee);
+        assert_eq!(test_mock::get_storage(REENTRANCY_KEY), Some(vec![0]));
+    }
+
+    #[test]
+    fn test_atomic_flash_loan_rejects_underpayment() {
+        setup();
+        let token_a = [1u8; 32];
+        let token_b = [2u8; 32];
+        initialize(token_a.as_ptr(), token_b.as_ptr());
+
+        let provider = [3u8; 32];
+        test_mock::set_caller(provider);
+        test_mock::set_value(2_000_000);
+        add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
+
+        let receiver = [4u8; 32];
+        let fee = get_flash_loan_fee(100_000);
+        test_mock::set_cross_call_responses(std::vec![
+            u64_to_bytes(1_000_000).to_vec(),
+            0u32.to_le_bytes().to_vec(),
+            0u32.to_le_bytes().to_vec(),
+            u64_to_bytes(1_000_000 + fee - 1).to_vec(),
+        ]);
+        assert_eq!(
+            flash_loan_execute(receiver.as_ptr(), 100_000, 1, [].as_ptr(), 0),
+            34
+        );
+        assert_eq!(load_pool().expect("initialized pool").reserve_a, 1_000_000);
+        assert_eq!(test_mock::get_storage(REENTRANCY_KEY), Some(vec![0]));
+    }
+
+    #[test]
+    fn test_atomic_flash_loan_validates_receiver_asset_and_callback_data() {
+        setup();
+        let token_a = [1u8; 32];
+        let token_b = [2u8; 32];
+        initialize(token_a.as_ptr(), token_b.as_ptr());
+
+        let zero = [0u8; 32];
+        assert_eq!(
+            flash_loan_execute(zero.as_ptr(), 1, 1, [].as_ptr(), 0),
+            6
+        );
+        assert_eq!(
+            flash_loan_execute([0xCCu8; 32].as_ptr(), 1, 1, [].as_ptr(), 0),
+            6
+        );
+
+        let receiver = [4u8; 32];
+        assert_eq!(
+            flash_loan_execute(receiver.as_ptr(), 1, 2, [].as_ptr(), 0),
+            1
+        );
+        let oversized = [0u8; MAX_FLASH_CALLBACK_DATA_LEN as usize + 1];
+        assert_eq!(
+            flash_loan_execute(
+                receiver.as_ptr(),
+                1,
+                1,
+                oversized.as_ptr(),
+                oversized.len() as u32,
+            ),
+            5
         );
     }
 
     #[test]
-    fn test_flash_loan_repay_insufficient_value() {
+    fn test_legacy_flash_repay_pulls_tokens_for_upgrade_unwind() {
         setup();
         let token_a = [1u8; 32];
         let token_b = [2u8; 32];
@@ -2123,41 +2374,12 @@ mod tests {
         test_mock::set_value(2_000_000);
         add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
 
-        // Borrow
-        let borrowed = flash_loan_borrow(100_000, 1);
-        assert_eq!(borrowed, 100_000);
-
-        // Try to repay with insufficient value
         let fee = get_flash_loan_fee(100_000);
         let repay_total = 100_000 + fee;
-        test_mock::set_value(repay_total / 2); // insufficient
-        let result = flash_loan_repay(repay_total);
-        assert_eq!(
-            result, 3,
-            "Should fail with insufficient value for repayment"
-        );
-    }
-
-    #[test]
-    fn test_flash_loan_borrow_repay_cycle() {
-        setup();
-        let token_a = [1u8; 32];
-        let token_b = [2u8; 32];
-        initialize(token_a.as_ptr(), token_b.as_ptr());
-
-        let provider = [3u8; 32];
-        test_mock::set_caller(provider);
-        test_mock::set_value(2_000_000);
-        add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
-
-        // Borrow 100k of token A
-        let borrowed = flash_loan_borrow(100_000, 1);
-        assert_eq!(borrowed, 100_000);
-
-        // Repay with fee
-        let fee = get_flash_loan_fee(100_000);
-        let repay_total = 100_000 + fee;
-        test_mock::set_value(repay_total);
+        fl_store_loan(true, 100_000, fee);
+        storage_set(REENTRANCY_KEY, &[1]);
+        test_mock::set_caller([4u8; 32]);
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
         let result = flash_loan_repay(repay_total);
         assert_eq!(result, 0, "Flash loan repay should succeed");
 
@@ -2170,6 +2392,15 @@ mod tests {
             1_000_000 + fee,
             "Reserve A should increase by flash loan fee"
         );
+        assert!(!fl_is_active());
+        assert_eq!(test_mock::get_storage(REENTRANCY_KEY), Some(vec![0]));
+    }
+
+    #[test]
+    fn test_legacy_flash_borrow_is_disabled() {
+        setup();
+        assert_eq!(flash_loan_borrow(100_000, 1), 0);
+        assert!(!fl_is_active());
     }
 
     #[test]

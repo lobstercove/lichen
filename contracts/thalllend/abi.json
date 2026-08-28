@@ -1,6 +1,6 @@
 {
   "contract": "thalllend",
-  "version": "1.0",
+  "version": "3.0",
   "functions": [
     {
       "name": "initialize",
@@ -81,6 +81,7 @@
     {
       "name": "repay",
       "opcode": 4,
+      "description": "Repays up to the current indexed debt, returns the exact consumed amount in return data, and refunds any unused native LICN atomically.",
       "params": [
         {
           "name": "borrower_ptr",
@@ -101,6 +102,7 @@
     {
       "name": "liquidate",
       "opcode": 5,
+      "description": "Liquidates an unhealthy position subject to the 50% close factor and collateral-backed bonus cap. Return data is seized_collateral(8) followed by exact_repayment_consumed(8); unused native LICN is refunded atomically.",
       "params": [
         {
           "name": "liquidator_ptr",
@@ -152,6 +154,7 @@
     {
       "name": "flash_borrow",
       "opcode": 8,
+      "description": "Disabled legacy two-step flash-loan entry point; always fails closed. Use flash_execute.",
       "params": [
         {
           "name": "borrower_ptr",
@@ -172,6 +175,7 @@
     {
       "name": "flash_repay",
       "opcode": 9,
+      "description": "Upgrade-only unwind path for a pre-upgrade active legacy flash loan.",
       "params": [
         {
           "name": "borrower_ptr",
@@ -388,6 +392,59 @@
           "type": "u64"
         }
       ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "flash_execute",
+      "opcode": 23,
+      "description": "Atomically transfers a flash loan to an executable receiver, invokes on_lichen_flash_loan, and verifies real custody returned with the fee before commit.",
+      "params": [
+        {
+          "name": "receiver_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "data_ptr",
+          "type": "bytes_with_len"
+        },
+        {
+          "name": "data_len",
+          "type": "u32"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_rate_model",
+      "opcode": 24,
+      "description": "Returns rate_scale, slots_per_year, base_rate_per_slot, current_rate_per_slot, current_annual_bps, utilization_kink_pct, and max_rate_per_slot as seven little-endian u64 values.",
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_market_status",
+      "opcode": 25,
+      "description": "Returns pause, custody, oracle, cap, reserve, collateral, and liquidation configuration as ten little-endian u64 values.",
+      "params": [],
       "result_semantics": {
         "kind": "return_code",
         "success_codes": [

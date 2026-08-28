@@ -29,6 +29,8 @@ const BYTES32_WORDS: usize = 8;
 
 /// Tree depth: supports 2^20 = ~1 million commitments.
 pub const TREE_DEPTH: usize = 20;
+/// Maximum number of commitment leaves representable by the fixed-depth tree.
+pub const TREE_CAPACITY: u64 = 1u64 << TREE_DEPTH;
 
 fn poseidon2_hasher() -> NativeHasher {
     NativeHasher::new(default_goldilocks_poseidon2_8())
@@ -54,7 +56,7 @@ fn digest_to_bytes(digest: [Goldilocks; 4]) -> [u8; 32] {
     output
 }
 
-pub(crate) fn is_canonical_scalar_bytes(bytes: &[u8; 32]) -> bool {
+pub fn is_canonical_scalar_bytes(bytes: &[u8; 32]) -> bool {
     for (candidate, modulus) in bytes.iter().zip(CANONICAL_SCALAR_MODULUS_LE.iter()).rev() {
         if candidate < modulus {
             return true;
@@ -165,11 +167,19 @@ impl MerkleTree {
         hashes
     }
 
-    pub fn insert(&mut self, leaf: [u8; 32]) -> u64 {
+    pub fn try_insert(&mut self, leaf: [u8; 32]) -> Result<u64, &'static str> {
         let index = self.leaves.len() as u64;
+        if index >= TREE_CAPACITY {
+            return Err("shielded commitment tree capacity exceeded");
+        }
         self.leaves.push(leaf);
         self.rebuild_path(index as usize);
-        index
+        Ok(index)
+    }
+
+    pub fn insert(&mut self, leaf: [u8; 32]) -> u64 {
+        self.try_insert(leaf)
+            .expect("shielded commitment tree capacity exceeded")
     }
 
     pub fn root(&self) -> [u8; 32] {

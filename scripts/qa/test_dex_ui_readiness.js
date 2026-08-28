@@ -259,6 +259,28 @@ assert(
         && updateMarginInfo.includes('notional'),
     'margin risk summary is driven by amount, price, collateral, and liquidation fields'
 );
+const requiredCrossDepositRaw = extractFunctionBody(dexJs, 'requiredCrossDepositRaw');
+const loadCrossMarginAccount = extractFunctionBody(dexJs, 'loadCrossMarginAccount');
+const adjustCrossCollateral = extractFunctionBody(dexJs, 'adjustCrossCollateral');
+assert(
+    dexJs.includes("api.get(`/margin/cross-account/${wallet.address}`)")
+        && loadCrossMarginAccount.includes('marginCrossEquityDeficit')
+        && loadCrossMarginAccount.includes('marginCrossInitialRequired')
+        && requiredCrossDepositRaw.includes('marginCrossInitialRequired')
+        && requiredCrossDepositRaw.includes('marginCrossEquity')
+        && requiredCrossDepositRaw.includes('marginCrossEquityDeficit')
+        && dexJs.includes("if (btn.dataset.mtype === 'cross' && !state.marginCrossEnabled)")
+        && dexJs.includes("state.marginType === 'cross' ? crossMarginDeposit : isolatedMarginDeposit")
+        && dexJs.includes("prepareTokenPull(MARGIN_COLLATERAL_SYMBOL, contracts.dex_margin, marginDeposit)")
+        && dexJs.includes('pos.crossCollateral')
+        && dexJs.includes("? 'Portfolio'")
+        && dexHtml.includes('id="crossDepositBtn"')
+        && dexHtml.includes('id="crossWithdrawBtn"')
+        && adjustCrossCollateral.includes("action === 'deposit' ? 47 : 48")
+        && adjustCrossCollateral.includes('buildCrossCollateralArgs(opcode, wallet.address, amountRaw)')
+        && !dexJs.includes('const crossMarginDeposit = isolatedMarginDeposit'),
+    'cross margin uses live bounded portfolio equity, incremental deposits, and dedicated shared-collateral operations'
+);
 assert(!dexJs.includes('localStorage.dexPortfolioCache'), 'portfolio summary does not show fake local 24h deltas');
 
 const applyWalletGateAll = extractFunctionBody(dexJs, 'applyWalletGateAll');
@@ -336,8 +358,11 @@ assert(
         && dexJs.includes('prepareTokenPull(tokenA, contracts.dex_amm, rawA)')
         && dexJs.includes('prepareTokenPull(tokenB, contracts.dex_amm, rawB)')
         && dexJs.includes("prepareTokenPull('lUSD', contracts.prediction_market, tradeAmountRaw)")
-        && dexJs.includes("namedCallIx(contracts.sporepump, 'buy'")
-        && dexJs.includes("namedCallIx(contracts.sporepump, 'sell'")
+        && dexJs.includes("'buy_with_min_output'")
+        && dexJs.includes("'sell_with_min_output'")
+        && dexJs.includes("side === 'buy' ? 'quote' : 'sell-quote'")
+        && dexJs.includes('?amount_raw=${inputRaw}')
+        && dexJs.includes('const minimumOutput = quote.outputRaw')
         && dexJs.includes("namedCallIx(contracts.sporepump, 'create_token_with_metadata'"),
     'DEX frontend pulls native/token collateral before signed trade, margin, pool, prediction, and launch actions'
 );

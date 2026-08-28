@@ -508,6 +508,10 @@ class Connection:
         """Get aggregated SporePay streaming statistics."""
         return await self._rpc("getSporePayStats")
 
+    async def get_sporepump_stats(self) -> Dict[str, Any]:
+        """Get exact SporePump launchpad accounting statistics."""
+        return await self._rpc("getSporePumpStats")
+
     async def get_thalllend_stats(self) -> Dict[str, Any]:
         """Get aggregated ThallLend lending statistics."""
         return await self._rpc("getThallLendStats")

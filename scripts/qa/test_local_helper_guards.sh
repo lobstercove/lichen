@@ -370,11 +370,41 @@ assert_run_validator_uses_current_dynamic_identity_setup() {
         echo "❌ run-validator identity setup: canonical identity command missing"
         exit 1
     fi
+    for required_guard in \
+        'LICHEN_LOCAL_GENESIS_VALIDATOR_COUNT' \
+        'GENESIS_ARGS+=(--initial-validator' \
+        'cmp -s "$DB_PATH/genesis.json" "$local_genesis_file"' \
+        'install -m 0644 "$DB_PATH/genesis.json" "$local_genesis_file"'; do
+        if ! grep -Fq -- "$required_guard" "$ROOT_DIR/run-validator.sh"; then
+            echo "❌ run-validator genesis quorum: missing guard: $required_guard"
+            exit 1
+        fi
+    done
     if grep -Eq '"\$CLI_BIN"[[:space:]]+init([[:space:]]|$)' "$ROOT_DIR/run-validator.sh"; then
         echo "❌ run-validator identity setup: removed init command remains"
         exit 1
     fi
     echo "✅ run-validator dynamic canonical identity setup"
+}
+
+assert_local_multi_validator_gate_requires_genesis_quorum() {
+    local script="$ROOT_DIR/tests/local-multi-validator-test.sh"
+    local required_guard
+
+    for required_guard in \
+        'export LICHEN_LOCAL_GENESIS_VALIDATOR_COUNT="$MAX_VALIDATORS"' \
+        'get_epoch_active_validator_count' \
+        '"$EPOCH_ACTIVE_CNT" -eq "$MAX_VALIDATORS"' \
+        'RG-403 could not establish a no-quorum backlog window' \
+        'gate_exit_status=$?' \
+        'trap - EXIT' \
+        'exit "$gate_exit_status"'; do
+        if ! grep -Fq -- "$required_guard" "$script"; then
+            echo "❌ local multi-validator genesis quorum: missing guard: $required_guard"
+            exit 1
+        fi
+    done
+    echo "✅ local multi-validator gate requires a real frozen-epoch quorum"
 }
 
 assert_run_validator_preserves_incomplete_primary_state() {
@@ -678,6 +708,7 @@ assert_start_local_stack_clears_peer_trust_state
 assert_start_local_3validators_clears_peer_trust_state
 assert_run_validator_reattaches_existing_cold_store
 assert_run_validator_uses_current_dynamic_identity_setup
+assert_local_multi_validator_gate_requires_genesis_quorum
 assert_run_validator_preserves_incomplete_primary_state
 assert_current_health_rpc_surface
 assert_current_e2e_transaction_protocol
@@ -686,4 +717,4 @@ assert_local_archive_parity_uses_immutable_checkpoints
 assert_sdk_tests_preserve_failure_status
 
 echo "============================================================"
-echo "Local helper guards: 14 passed, 0 failed"
+echo "Local helper guards: 15 passed, 0 failed"

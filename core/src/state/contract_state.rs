@@ -238,6 +238,45 @@ impl StateStore {
         Ok(results)
     }
 
+    /// Iterate only the storage keys beginning with `storage_prefix` for one
+    /// contract. RocksDB seeks directly to the composite program/key prefix,
+    /// so callers do not need to scan unrelated contract state.
+    pub fn get_contract_storage_entries_with_prefix(
+        &self,
+        program: &Pubkey,
+        storage_prefix: &[u8],
+        limit: usize,
+    ) -> Result<KvEntries, String> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let cf = self
+            .db
+            .cf_handle(CF_CONTRACT_STORAGE)
+            .ok_or_else(|| "Contract storage CF not found".to_string())?;
+
+        let mut prefix = Vec::with_capacity(32 + storage_prefix.len());
+        prefix.extend_from_slice(&program.0);
+        prefix.extend_from_slice(storage_prefix);
+        let iter = self.db.iterator_cf(
+            &cf,
+            rocksdb::IteratorMode::From(&prefix, Direction::Forward),
+        );
+
+        let mut results = Vec::new();
+        for item in iter {
+            let (key, value) = item.map_err(|e| format!("Iterator error: {}", e))?;
+            if !key.starts_with(&prefix) {
+                break;
+            }
+            results.push((key[32..].to_vec(), value.to_vec()));
+            if results.len() >= limit {
+                break;
+            }
+        }
+        Ok(results)
+    }
+
     /// Count canonical storage entries and aggregate value bytes for a contract.
     pub fn get_contract_storage_stats(
         &self,

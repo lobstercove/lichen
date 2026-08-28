@@ -165,6 +165,8 @@ docs/*
 !docs/audits/
 docs/audits/*
 !docs/audits/MAINNET_READINESS_DEEP_AUDIT_2026-07-10.md
+!docs/audits/SHIELDED_SCHEME_0X01_FAIL_CLOSED_AND_TRANSITION_PLAN_2026-08-28.md
+!docs/audits/V0.5.264_PRODUCTION_READINESS_2026-08-28.md
 !docs/deployment/
 docs/deployment/*
 !docs/deployment/ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md
@@ -172,6 +174,7 @@ docs/deployment/*
 !docs/deployment/STORAGE_PHYSICAL_AND_CODE_AUDIT_2026-07-23.md
 !docs/deployment/ARCHIVE_V2_RELEASE_READINESS_2026-07-27.md
 !docs/deployment/ARCHIVE_V2_ACTIVATION_CADENCE_AND_VALIDATOR_LIVENESS_PLAN_2026-08-18.md
+!docs/deployment/LICHENAUCTION_V3_MIGRATION.md
 infra/
 internal-docs/
 FIX_PLAN.md

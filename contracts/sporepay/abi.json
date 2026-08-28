@@ -1,6 +1,6 @@
 {
   "contract": "sporepay",
-  "version": "1.0",
+  "version": "3.0",
   "functions": [
     {
       "name": "create_stream",
@@ -375,6 +375,114 @@
         {
           "name": "self_addr_ptr",
           "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "begin_accounting_v3_migration",
+      "opcode": 20,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "expected_stream_count",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "migrate_accounting_v3_stream",
+      "opcode": 21,
+      "params": [
+        {
+          "name": "stream_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "complete_accounting_v3_migration",
+      "opcode": 22,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "expected_liability",
+          "type": "u64"
+        },
+        {
+          "name": "expected_unpaid",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_sender_stream_ids",
+      "opcode": 23,
+      "params": [
+        {
+          "name": "sender_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "cursor",
+          "type": "u64"
+        },
+        {
+          "name": "limit",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_recipient_stream_ids",
+      "opcode": 24,
+      "params": [
+        {
+          "name": "recipient_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "cursor",
+          "type": "u64"
+        },
+        {
+          "name": "limit",
+          "type": "u64"
         }
       ],
       "result_semantics": {

@@ -80,6 +80,7 @@
         uri = uri.trim();
         if (!uri) return gradientFromHash(seed || 'nft');
         if (uri.startsWith('linear-gradient')) return uri;
+        if (uri.startsWith('moss://') && typeof window.resolveMossUri === 'function') return window.resolveMossUri(uri) || gradientFromHash(seed || 'nft');
         if (uri.startsWith('ipfs://')) return 'https://ipfs.io/ipfs/' + uri.slice('ipfs://'.length);
         if (uri.startsWith('http://') || uri.startsWith('https://')) return uri;
         return gradientFromHash(seed || 'nft');
@@ -362,7 +363,9 @@
                     : '<div style="width:100%;height:100%;background:' + gradientFromHash(nft.id || nft.name || '') + ';display:flex;align-items:center;justify-content:center;font-size:48px;opacity:0.5;">\uD83D\uDDBC\uFE0F</div>';
 
                 var actionHtml = '';
-                if (currentWallet) {
+                if (nft.settlement_ready === false) {
+                    actionHtml = '<button class="nft-action" disabled>Migration Pending</button>';
+                } else if (currentWallet) {
                     actionHtml = '<button class="nft-action" data-browse-action="buy" data-browse-href="' + escapeHtml(listingHref) + '" data-nft-id="' + escapedNftId + '">Buy Now</button>';
                 } else {
                     actionHtml = '<button class="nft-action" data-browse-action="connect" style="opacity:0.7;">Connect to Buy</button>';
@@ -400,7 +403,9 @@
                     var rarityClass = escapeHtml((nft.rarity || 'Common').toLowerCase());
 
                     var actionHtml = '';
-                    if (currentWallet) {
+                    if (nft.settlement_ready === false) {
+                        actionHtml = '<button class="btn btn-secondary btn-small" disabled>Migration Pending</button>';
+                    } else if (currentWallet) {
                         actionHtml = '<button class="btn btn-primary btn-small" data-browse-action="buy" data-browse-href="' + escapeHtml(listHref) + '" data-nft-id="' + escapeHtml(nft.id || '') + '">Buy</button>';
                     } else {
                         actionHtml = '<button class="btn btn-secondary btn-small" data-browse-action="connect">Connect</button>';

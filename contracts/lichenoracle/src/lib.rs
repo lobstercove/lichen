@@ -21,9 +21,37 @@ use lichen_sdk::{
 // price (8) + timestamp (8) + decimals (1) + feeder (32)
 const PRICE_FEED_SIZE: usize = 49;
 const MAX_ASSET_BYTES: usize = 64;
-const MAX_ATTESTATION_DATA_BYTES: usize = 1024;
+// The compatibility getter returns a fixed 32-byte payload. Reject larger
+// values instead of accepting and silently truncating them on retrieval.
+const MAX_ATTESTATION_DATA_BYTES: usize = 32;
 const MAX_QUERY_TYPE_BYTES: usize = 32;
-const MAX_PRICE_DECIMALS: u8 = 18;
+const CANONICAL_PRICE_DECIMALS: u8 = 8;
+const MAX_PRICE_STALENESS_SLOTS: u64 = 750;
+const MAX_LEGACY_UPDATE_INTERVAL_SLOTS: u64 = MAX_PRICE_STALENESS_SLOTS;
+
+fn consensus_managed() -> bool {
+    storage_get(b"oracle_consensus_managed")
+        .and_then(|value| value.first().copied())
+        == Some(1)
+}
+
+fn legacy_update_interval() -> u64 {
+    storage_get(b"update_interval")
+        .map(|value| bytes_to_u64(&value))
+        .filter(|interval| (1..=MAX_LEGACY_UPDATE_INTERVAL_SLOTS).contains(interval))
+        .unwrap_or(1)
+}
+
+fn canonical_feed_is_fresh(feed: &[u8], current_slot: u64) -> bool {
+    if feed.len() < PRICE_FEED_SIZE
+        || bytes_to_u64(&feed[0..8]) == 0
+        || feed[16] != CANONICAL_PRICE_DECIMALS
+    {
+        return false;
+    }
+    let source_slot = bytes_to_u64(&feed[8..16]);
+    source_slot <= current_slot && current_slot - source_slot <= MAX_PRICE_STALENESS_SLOTS
+}
 
 fn read_address32(ptr: *const u8) -> Option<[u8; 32]> {
     if ptr.is_null() {
@@ -150,6 +178,11 @@ pub extern "C" fn add_price_feeder(
 ) -> u32 {
     log_info("Adding price feeder...");
 
+    if consensus_managed() {
+        log_info("Legacy price-feeder administration is disabled");
+        return 7;
+    }
+
     let feeder = match read_address32(feeder_ptr) {
         Some(v) => v,
         None => {
@@ -223,6 +256,10 @@ pub extern "C" fn submit_price(
     price: u64,
     decimals: u8,
 ) -> u32 {
+    if consensus_managed() {
+        log_info("Legacy price submission is disabled");
+        return 22;
+    }
     // AUDIT-FIX P2: Enforce pause on submit_price
     if is_mo_paused() {
         log_info("Oracle is paused");
@@ -239,7 +276,7 @@ pub extern "C" fn submit_price(
             return 98;
         }
     };
-    if price == 0 || decimals > MAX_PRICE_DECIMALS {
+    if price == 0 || decimals != CANONICAL_PRICE_DECIMALS {
         log_info("submit_price rejected: invalid price or decimals");
         reentrancy_exit();
         return 3;
@@ -281,6 +318,18 @@ pub extern "C" fn submit_price(
     }
 
     let timestamp = get_timestamp();
+    let asset_name = core::str::from_utf8(&asset).unwrap_or("?");
+    let price_key = alloc::format!("price_{}", asset_name);
+    if let Some(previous) = storage_get(price_key.as_bytes()) {
+        if previous.len() >= PRICE_FEED_SIZE {
+            let previous_slot = bytes_to_u64(&previous[8..16]);
+            if timestamp.saturating_sub(previous_slot) < legacy_update_interval() {
+                log_info("submit_price rejected: update interval not elapsed");
+                reentrancy_exit();
+                return 8;
+            }
+        }
+    }
 
     // Build price feed
     let mut feed = Vec::with_capacity(PRICE_FEED_SIZE);
@@ -290,24 +339,12 @@ pub extern "C" fn submit_price(
     feed.extend_from_slice(&feeder); // 17-48: feeder
 
     // Store price (both canonical key and indexed key for aggregation)
-    let asset_name = core::str::from_utf8(&asset).unwrap_or("?");
-    let price_key = alloc::format!("price_{}", asset_name);
     storage_set(price_key.as_bytes(), &feed);
     // Also store as feed index 0 so get_aggregated_price can find it
     let indexed_key = alloc::format!("price_{}_0", asset_name);
     storage_set(indexed_key.as_bytes(), &feed);
 
-    log_info("Price updated!");
-    log_info(&alloc::format!(
-        "   Asset: {}",
-        core::str::from_utf8(&asset).unwrap_or("?")
-    ));
-    let scale = 10u64.pow(decimals as u32);
-    log_info(&alloc::format!(
-        "   Price: {}.{}",
-        price / scale,
-        price % scale
-    ));
+    log_info("Price updated");
 
     reentrancy_exit();
     0
@@ -327,12 +364,10 @@ pub extern "C" fn get_price(asset_ptr: *const u8, asset_len: u32, result_ptr: *m
 
     match storage_get(key.as_bytes()) {
         Some(feed) if feed.len() >= PRICE_FEED_SIZE => {
-            // Check staleness (reject if > 1 hour old)
-            // AUDIT-FIX CON-01: get_timestamp() returns slot number, not seconds.
-            // At 400ms/slot, 1 hour = 3_600_000ms / 400ms = 9_000 slots.
-            let timestamp = bytes_to_u64(&feed[8..16]);
+            // Timestamps are slots. Native consensus refreshes unchanged quotes
+            // every minute and the contract fails closed after five minutes.
             let now = get_timestamp();
-            if now.saturating_sub(timestamp) > 9_000 {
+            if !canonical_feed_is_fresh(&feed, now) {
                 log_info(" Price data stale");
                 // AUDIT-FIX M20: return 2 for stale (distinct from 0 = not found)
                 return 2;
@@ -363,14 +398,16 @@ pub extern "C" fn get_price_value(asset_ptr: *const u8, asset_len: u32) -> u32 {
 
     match storage_get(key.as_bytes()) {
         Some(feed) if feed.len() >= PRICE_FEED_SIZE => {
-            let timestamp = bytes_to_u64(&feed[8..16]);
             let now = get_timestamp();
-            if now.saturating_sub(timestamp) > 9_000 {
+            if !canonical_feed_is_fresh(&feed, now) {
                 log_info(" Price data stale");
                 return 2;
             }
 
-            lichen_sdk::set_return_data(&feed[0..8]);
+            // Return the same canonical price/source-slot/decimals tuple used
+            // by get_price so downstream contracts cannot refresh an old
+            // quote's timestamp merely by mirroring it.
+            lichen_sdk::set_return_data(&feed[0..17]);
             bump_stat(b"stats_queries");
             0
         }
@@ -749,7 +786,7 @@ pub extern "C" fn request_randomness(_requester_ptr: *const u8, _seed: u64) -> u
 }
 
 #[no_mangle]
-pub extern "C" fn get_randomness(requester_ptr: *const u8, _seed: u64, result_ptr: *mut u8) -> u32 {
+pub extern "C" fn get_randomness(requester_ptr: *const u8, seed: u64, result_ptr: *mut u8) -> u32 {
     let requester = match read_address32(requester_ptr) {
         Some(v) => v,
         None => return 0,
@@ -758,9 +795,22 @@ pub extern "C" fn get_randomness(requester_ptr: *const u8, _seed: u64, result_pt
         return 0;
     }
 
-    let seed_key = randomness_seed_result_key(&requester, _seed);
+    let seed_key = randomness_seed_result_key(&requester, seed);
     let legacy_key = randomness_result_key(&requester);
-    let result = storage_get(seed_key.as_bytes()).or_else(|| storage_get(legacy_key.as_bytes()));
+    let result = storage_get(seed_key.as_bytes()).or_else(|| {
+        // The legacy result key omitted the seed. Bind its fallback lookup to
+        // the matching revealed commit so an arbitrary seed cannot retrieve a
+        // different requester's latest result.
+        let commit_key = randomness_commit_key(&requester);
+        let commit = storage_get(commit_key.as_bytes())?;
+        if commit.len() < 49
+            || bytes_to_u64(&commit[32..40]) != seed
+            || commit.get(48).copied() != Some(1)
+        {
+            return None;
+        }
+        storage_get(legacy_key.as_bytes())
+    });
 
     match result {
         Some(data) if data.len() >= 16 => {
@@ -792,6 +842,11 @@ pub extern "C" fn submit_attestation(
     data_len: u32,
 ) -> u32 {
     log_info("Submitting attestation...");
+
+    if is_mo_paused() {
+        log_info("Oracle is paused");
+        return 0;
+    }
 
     let attester = match read_address32(attester_ptr) {
         Some(v) => v,
@@ -1028,8 +1083,6 @@ pub extern "C" fn get_aggregated_price(
     num_feeds: u8,
     result_ptr: *mut u8,
 ) -> u32 {
-    log_info("Computing aggregated price...");
-
     let asset = match read_asset(asset_ptr, asset_len) {
         Some(v) => v,
         None => return 0,
@@ -1037,57 +1090,27 @@ pub extern "C" fn get_aggregated_price(
     if result_ptr.is_null() {
         return 0;
     }
-    let asset_str = core::str::from_utf8(&asset).unwrap_or("?");
-
-    // SECURITY-FIX: Use u128 accumulator to prevent overflow when summing prices
-    let mut total_price = 0u128;
-    let mut valid_feeds = 0u8;
-
-    // Query multiple feeds
-    let mut total_feeds_found = 0u8;
-    for i in 0..num_feeds {
-        let key = alloc::format!("price_{}_{}", asset_str, i);
-
-        if let Some(feed) = storage_get(key.as_bytes()) {
-            if feed.len() >= PRICE_FEED_SIZE {
-                total_feeds_found = total_feeds_found.saturating_add(1);
-                let timestamp = bytes_to_u64(&feed[8..16]);
-                let now = get_timestamp();
-
-                // Only include fresh feeds (< 1 hour)
-                // AUDIT-FIX CON-01: slot-based threshold (9000 slots ≈ 1h at 400ms/slot)
-                if now.saturating_sub(timestamp) <= 9_000 {
-                    let price = bytes_to_u64(&feed[0..8]);
-                    total_price += price as u128;
-                    valid_feeds = valid_feeds.saturating_add(1);
-                }
-            }
-        }
-    }
-
-    if valid_feeds == 0 {
-        // AUDIT-FIX M20: distinguish "no feeds at all" (0) from "all feeds stale" (2)
-        if total_feeds_found > 0 {
-            log_info("All price feeds stale");
-            return 2;
-        }
-        log_info("No valid price feeds");
+    if num_feeds == 0 {
         return 0;
     }
+    let asset_str = core::str::from_utf8(&asset).unwrap_or("?");
+    let key = alloc::format!("price_{}", asset_str);
+    let feed = match storage_get(key.as_bytes()) {
+        Some(feed) if feed.len() >= PRICE_FEED_SIZE => feed,
+        _ => return 0,
+    };
+    if !canonical_feed_is_fresh(&feed, get_timestamp()) {
+        return 2;
+    }
+    let finalized_price = bytes_to_u64(&feed[0..8]);
 
-    // Calculate median/average
-    let avg_price = (total_price / valid_feeds as u128) as u64;
-
-    // Return: price (8) + valid_feeds (1)
+    // The native validator oracle has already computed the stake-weighted
+    // median. Preserve this legacy shape without averaging storage aliases.
     let mut out = [0u8; 9];
-    out[..8].copy_from_slice(&u64_to_bytes(avg_price));
-    out[8] = valid_feeds;
+    out[..8].copy_from_slice(&u64_to_bytes(finalized_price));
+    out[8] = 1;
     write_bytes(result_ptr, &out);
     bump_stat(b"stats_queries");
-
-    log_info("Aggregated price computed!");
-    log_info(&alloc::format!("   Price: {}", avg_price));
-    log_info(&alloc::format!("   Feeds: {}", valid_feeds));
 
     1
 }
@@ -1167,7 +1190,9 @@ pub extern "C" fn get_feed_list() -> u32 {
 /// Tests expect `add_reporter`
 #[no_mangle]
 pub extern "C" fn add_reporter(caller_ptr: *const u8, reporter_ptr: *const u8) -> u32 {
-    // Delegates to add_price_feeder with a synthetic asset name
+    if consensus_managed() {
+        return 7;
+    }
     let caller = match read_address32(caller_ptr) {
         Some(v) => v,
         None => return 2,
@@ -1194,6 +1219,9 @@ pub extern "C" fn add_reporter(caller_ptr: *const u8, reporter_ptr: *const u8) -
 /// Tests expect `remove_reporter`
 #[no_mangle]
 pub extern "C" fn remove_reporter(caller_ptr: *const u8, reporter_ptr: *const u8) -> u32 {
+    if consensus_managed() {
+        return 7;
+    }
     let caller = match read_address32(caller_ptr) {
         Some(v) => v,
         None => return 2,
@@ -1220,6 +1248,9 @@ pub extern "C" fn remove_reporter(caller_ptr: *const u8, reporter_ptr: *const u8
 /// Tests expect `set_update_interval`
 #[no_mangle]
 pub extern "C" fn set_update_interval(caller_ptr: *const u8, interval: u64) -> u32 {
+    if consensus_managed() {
+        return 7;
+    }
     let caller = match read_address32(caller_ptr) {
         Some(v) => v,
         None => return 2,
@@ -1232,6 +1263,9 @@ pub extern "C" fn set_update_interval(caller_ptr: *const u8, interval: u64) -> u
     let owner = storage_get(b"oracle_owner").unwrap_or_default();
     if caller[..] != owner[..] {
         return 1;
+    }
+    if !(1..=MAX_LEGACY_UPDATE_INTERVAL_SLOTS).contains(&interval) {
+        return 3;
     }
     storage_set(b"update_interval", &u64_to_bytes(interval));
     log_info("Update interval set");
@@ -1411,14 +1445,14 @@ mod tests {
                 asset.as_ptr(),
                 asset.len() as u32,
                 42_000_000,
-                6
+                CANONICAL_PRICE_DECIMALS
             ),
             0
         );
     }
 
     #[test]
-    fn test_submit_price_rejects_zero_price_and_excessive_decimals() {
+    fn test_submit_price_rejects_zero_price_and_noncanonical_decimals() {
         setup();
         let owner = [1u8; 32];
         initialize_oracle(owner.as_ptr());
@@ -1429,7 +1463,13 @@ mod tests {
         test_mock::set_caller(feeder);
 
         assert_eq!(
-            submit_price(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32, 0, 6),
+            submit_price(
+                feeder.as_ptr(),
+                asset.as_ptr(),
+                asset.len() as u32,
+                0,
+                CANONICAL_PRICE_DECIMALS,
+            ),
             3
         );
         assert_eq!(
@@ -1438,7 +1478,7 @@ mod tests {
                 asset.as_ptr(),
                 asset.len() as u32,
                 42_000_000,
-                MAX_PRICE_DECIMALS + 1,
+                CANONICAL_PRICE_DECIMALS - 1,
             ),
             3
         );
@@ -1462,7 +1502,7 @@ mod tests {
                 asset.as_ptr(),
                 asset.len() as u32,
                 42_000_000,
-                6
+                CANONICAL_PRICE_DECIMALS
             ),
             6
         );
@@ -1475,7 +1515,13 @@ mod tests {
         let asset = b"UNKNOWN";
         test_mock::set_caller(feeder);
         assert_eq!(
-            submit_price(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32, 100, 2),
+            submit_price(
+                feeder.as_ptr(),
+                asset.as_ptr(),
+                asset.len() as u32,
+                100,
+                CANONICAL_PRICE_DECIMALS,
+            ),
             5
         );
     }
@@ -1495,7 +1541,7 @@ mod tests {
             asset.as_ptr(),
             asset.len() as u32,
             42_000_000,
-            6,
+            CANONICAL_PRICE_DECIMALS,
         );
         let mut result = [0u8; 17];
         assert_eq!(
@@ -1521,15 +1567,54 @@ mod tests {
             asset.as_ptr(),
             asset.len() as u32,
             42_000_000,
-            6,
+            CANONICAL_PRICE_DECIMALS,
         );
-        test_mock::set_timestamp(1000 + 9001); // stale (> 9000 slots)
+        test_mock::set_timestamp(1000 + MAX_PRICE_STALENESS_SLOTS + 1);
         let mut result = [0u8; 17];
         // AUDIT-FIX M20: stale now returns 2 (distinct from 0 = not found)
         assert_eq!(
             get_price(asset.as_ptr(), asset.len() as u32, result.as_mut_ptr()),
             2
         );
+    }
+
+    #[test]
+    fn test_price_reads_reject_future_and_noncanonical_feeds() {
+        setup();
+        let asset = b"LICN";
+        let mut feed = Vec::with_capacity(PRICE_FEED_SIZE);
+        feed.extend_from_slice(&u64_to_bytes(10_000_000));
+        feed.extend_from_slice(&u64_to_bytes(101));
+        feed.push(CANONICAL_PRICE_DECIMALS);
+        feed.extend_from_slice(&[9u8; 32]);
+        storage_set(b"price_LICN", &feed);
+        test_mock::set_timestamp(100);
+
+        let mut result = [0u8; 17];
+        assert_eq!(
+            get_price(asset.as_ptr(), asset.len() as u32, result.as_mut_ptr()),
+            2
+        );
+        assert_eq!(get_price_value(asset.as_ptr(), asset.len() as u32), 2);
+        let mut aggregated = [0u8; 9];
+        assert_eq!(
+            get_aggregated_price(
+                asset.as_ptr(),
+                asset.len() as u32,
+                1,
+                aggregated.as_mut_ptr()
+            ),
+            2
+        );
+
+        feed[8..16].copy_from_slice(&u64_to_bytes(100));
+        feed[16] = CANONICAL_PRICE_DECIMALS + 1;
+        storage_set(b"price_LICN", &feed);
+        assert_eq!(
+            get_price(asset.as_ptr(), asset.len() as u32, result.as_mut_ptr()),
+            2
+        );
+        assert_eq!(get_price_value(asset.as_ptr(), asset.len() as u32), 2);
     }
 
     #[test]
@@ -1558,11 +1643,71 @@ mod tests {
             asset.as_ptr(),
             asset.len() as u32,
             42_000_000,
-            6,
+            CANONICAL_PRICE_DECIMALS,
         );
 
         assert_eq!(get_price_value(asset.as_ptr(), asset.len() as u32), 0);
-        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 42_000_000);
+        let returned = test_mock::get_return_data();
+        assert_eq!(returned.len(), 17);
+        assert_eq!(bytes_to_u64(&returned[0..8]), 42_000_000);
+        assert_eq!(bytes_to_u64(&returned[8..16]), get_timestamp());
+        assert_eq!(returned[16], CANONICAL_PRICE_DECIMALS);
+    }
+
+    #[test]
+    fn test_consensus_managed_mode_disables_legacy_price_writes() {
+        setup();
+        let owner = [1u8; 32];
+        let feeder = [2u8; 32];
+        let asset = b"LICN";
+        initialize_oracle(owner.as_ptr());
+        test_mock::set_caller(owner);
+        assert_eq!(
+            add_price_feeder(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32),
+            0
+        );
+        storage_set(b"oracle_consensus_managed", &[1u8]);
+
+        assert_eq!(
+            add_price_feeder([3u8; 32].as_ptr(), asset.as_ptr(), asset.len() as u32),
+            7
+        );
+        test_mock::set_caller(feeder);
+        assert_eq!(
+            submit_price(
+                feeder.as_ptr(),
+                asset.as_ptr(),
+                asset.len() as u32,
+                10_000_000,
+                CANONICAL_PRICE_DECIMALS,
+            ),
+            22
+        );
+        assert_eq!(test_mock::get_storage(b"price_LICN"), None);
+        assert_eq!(add_reporter(owner.as_ptr(), [4u8; 32].as_ptr()), 7);
+        assert_eq!(remove_reporter(owner.as_ptr(), [4u8; 32].as_ptr()), 7);
+        assert_eq!(set_update_interval(owner.as_ptr(), 5), 7);
+    }
+
+    #[test]
+    fn test_aggregated_price_returns_finalized_canonical_quote() {
+        setup();
+        let asset = b"wSOL";
+        let mut feed = Vec::with_capacity(PRICE_FEED_SIZE);
+        feed.extend_from_slice(&u64_to_bytes(14_500_000_000));
+        feed.extend_from_slice(&u64_to_bytes(100));
+        feed.push(CANONICAL_PRICE_DECIMALS);
+        feed.extend_from_slice(&[9u8; 32]);
+        storage_set(b"price_wSOL", &feed);
+        test_mock::set_timestamp(101);
+
+        let mut result = [0u8; 9];
+        assert_eq!(
+            get_aggregated_price(asset.as_ptr(), asset.len() as u32, 4, result.as_mut_ptr()),
+            1
+        );
+        assert_eq!(bytes_to_u64(&result[..8]), 14_500_000_000);
+        assert_eq!(result[8], 1);
     }
 
     #[test]
@@ -1644,6 +1789,11 @@ mod tests {
         assert_eq!(get_randomness(requester.as_ptr(), seed, stored.as_mut_ptr()), 1);
         assert_eq!(bytes_to_u64(&stored[0..8]), expected);
         assert_eq!(bytes_to_u64(&stored[8..16]), 11);
+        assert_eq!(
+            get_randomness(requester.as_ptr(), seed + 1, stored.as_mut_ptr()),
+            0,
+            "a seed must never fall back to another request's legacy result"
+        );
     }
 
     #[test]
@@ -1810,6 +1960,30 @@ mod tests {
         );
         assert_eq!(verify_attestation(data_hash.as_ptr(), 1), 1);
         assert_eq!(verify_attestation(data_hash.as_ptr(), 0), 0);
+    }
+
+    #[test]
+    fn test_submit_attestation_rejects_payload_that_cannot_be_retrieved_losslessly() {
+        setup();
+        let owner = [1u8; 32];
+        let attester = [2u8; 32];
+        initialize_oracle(owner.as_ptr());
+        test_mock::set_caller(owner);
+        assert_eq!(set_authorized_attester(attester.as_ptr(), 1), 0);
+
+        let data = [9u8; MAX_ATTESTATION_DATA_BYTES + 1];
+        let data_hash = sha256(&data);
+        test_mock::set_caller(attester);
+        assert_eq!(
+            submit_attestation(
+                attester.as_ptr(),
+                data_hash.as_ptr(),
+                data.as_ptr(),
+                data.len() as u32,
+            ),
+            0
+        );
+        assert_eq!(verify_attestation(data_hash.as_ptr(), 1), 0);
     }
 
     #[test]
@@ -1987,7 +2161,7 @@ mod tests {
             asset.as_ptr(),
             asset.len() as u32,
             42_000_000,
-            6,
+            CANONICAL_PRICE_DECIMALS,
         );
         assert_eq!(result, 20, "submit_price must fail when oracle is paused");
     }

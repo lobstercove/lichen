@@ -1,10 +1,9 @@
-//! End-to-end prove/verify roundtrip tests.
+//! End-to-end proof-generation and fail-closed verification tests.
 //!
 //! These tests run the native STARK pipeline:
 //! 1. Build a circuit with valid witnesses
 //! 2. Generate a Plonky3 proof envelope
-//! 3. Verify the proof with the validator-side verifier
-//! 4. Reject tampered public inputs
+//! 3. Confirm the validator-side verifier rejects the unconstrained scheme
 
 #[cfg(test)]
 mod tests {
@@ -107,10 +106,13 @@ mod tests {
         assert!(zk_proof.public_inputs.is_empty());
         assert!(!zk_proof.proof_bytes.is_empty());
 
-        let valid = Verifier::new()
-            .verify(&zk_proof)
-            .expect("verification call failed");
-        assert!(valid, "valid shield proof should verify");
+        assert!(matches!(
+            Verifier::new().verify(&zk_proof),
+            Err(crate::zk::ShieldedError::DisabledProofScheme {
+                proof_type: ProofType::Shield,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -124,10 +126,7 @@ mod tests {
 
         zk_proof.stark_public_inputs[0] = zk_proof.stark_public_inputs[0].saturating_add(1);
 
-        let valid = Verifier::new()
-            .verify(&zk_proof)
-            .expect("verification call failed");
-        assert!(!valid, "tampered public input should fail verification");
+        assert!(Verifier::new().verify(&zk_proof).is_err());
     }
 
     #[test]
@@ -144,8 +143,13 @@ mod tests {
         assert!(zk_proof.public_inputs.is_empty());
         assert!(!zk_proof.proof_bytes.is_empty());
 
-        let valid = Verifier::new().verify(&zk_proof).expect("verify unshield");
-        assert!(valid, "valid unshield proof should verify");
+        assert!(matches!(
+            Verifier::new().verify(&zk_proof),
+            Err(crate::zk::ShieldedError::DisabledProofScheme {
+                proof_type: ProofType::Unshield,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -157,8 +161,7 @@ mod tests {
         zk_proof.stark_public_inputs[BYTES32_GOLDILOCKS_WORDS] =
             zk_proof.stark_public_inputs[BYTES32_GOLDILOCKS_WORDS].saturating_add(1);
 
-        let valid = Verifier::new().verify(&zk_proof).expect("verify unshield");
-        assert!(!valid, "wrong nullifier should fail verification");
+        assert!(Verifier::new().verify(&zk_proof).is_err());
     }
 
     #[test]
@@ -175,8 +178,13 @@ mod tests {
         assert!(zk_proof.public_inputs.is_empty());
         assert!(!zk_proof.proof_bytes.is_empty());
 
-        let valid = Verifier::new().verify(&zk_proof).expect("verify transfer");
-        assert!(valid, "valid transfer proof should verify");
+        assert!(matches!(
+            Verifier::new().verify(&zk_proof),
+            Err(crate::zk::ShieldedError::DisabledProofScheme {
+                proof_type: ProofType::Transfer,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -189,8 +197,7 @@ mod tests {
         zk_proof.stark_public_inputs[commitment_c_index] =
             zk_proof.stark_public_inputs[commitment_c_index].saturating_add(1);
 
-        let valid = Verifier::new().verify(&zk_proof).expect("verify transfer");
-        assert!(!valid, "tampered output commitment should fail");
+        assert!(Verifier::new().verify(&zk_proof).is_err());
     }
 
     #[test]
@@ -204,7 +211,6 @@ mod tests {
         let decoded = deserialize_stark_proof(&zk_proof.proof_bytes).expect("decode stark proof");
         drop(decoded);
 
-        let valid = Verifier::new().verify(&zk_proof).expect("verify shield");
-        assert!(valid, "deserialized STARK proof should still verify");
+        assert!(Verifier::new().verify(&zk_proof).is_err());
     }
 }

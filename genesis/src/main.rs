@@ -8,6 +8,7 @@ use flate2::{write::GzEncoder, Compression};
 use lichen_core::codec::serialize_legacy_bincode;
 use lichen_core::consensus::{
     StakePool, BOOTSTRAP_GRANT_AMOUNT, FOUNDING_CLIFF_SECONDS, FOUNDING_VEST_TOTAL_SECONDS,
+    STAKING_V2_ACTIVATION_SLOT_METADATA_KEY,
 };
 use lichen_core::keypair_file::{
     copy_secure_file, load_keypair_with_password_policy, plaintext_keypair_allowed_for_local_dev,
@@ -81,11 +82,7 @@ fn build_genesis_state_bundle(
     let stake_pool = state.get_stake_pool()?;
     categories.push(GenesisStateCategory {
         name: "stake_pool".to_string(),
-        entries: vec![(
-            b"pool".to_vec(),
-            serialize_legacy_bincode(&stake_pool, "genesis stake pool")
-                .map_err(|e| format!("Failed to serialize stake pool: {}", e))?,
-        )],
+        entries: vec![(b"pool".to_vec(), stake_pool.storage_bytes()?)],
     });
 
     let mossstake_pool = state.get_mossstake_pool()?;
@@ -1546,10 +1543,21 @@ fn main() {
         );
         std::process::exit(1);
     }
+    if let Err(err) = stake_pool.initialize_staking_v2(0, &initial_validators) {
+        error!("Failed to initialize Staking V2 at genesis: {}", err);
+        std::process::exit(1);
+    }
     if let Err(err) = state.put_stake_pool(&stake_pool) {
         error!("Failed to persist initial stake pool: {}", err);
         std::process::exit(1);
     }
+    if let Err(err) =
+        state.put_metadata(STAKING_V2_ACTIVATION_SLOT_METADATA_KEY, &0u64.to_le_bytes())
+    {
+        error!("Failed to persist Staking V2 genesis activation: {}", err);
+        std::process::exit(1);
+    }
+    info!("  ✓ Staking V2 active from genesis");
 
     // Store founding symbionts vesting schedule (CF_STATS, not in state root)
     if let Some(fm_dw) = wallet
@@ -1615,13 +1623,19 @@ fn main() {
         error!("Failed to seed oracle: {}", err);
         std::process::exit(1);
     };
-    genesis_seed_margin_prices(&state, &genesis_pubkey, genesis_timestamp, gp);
+    if let Err(err) = genesis_seed_margin_prices(&state, &genesis_pubkey, 0, gp) {
+        error!("Failed to seed margin prices: {}", err);
+        std::process::exit(1);
+    }
     if let Err(err) = genesis_seed_analytics_prices(&state, &genesis_pubkey, genesis_timestamp, gp)
     {
         error!("Failed to seed mandatory genesis analytics prices: {}", err);
         std::process::exit(1);
     };
-    genesis_seed_consensus_oracle_prices(&state, 0, gp);
+    if let Err(err) = genesis_seed_consensus_oracle_prices(&state, 0, gp) {
+        error!("Failed to seed consensus oracle prices: {}", err);
+        std::process::exit(1);
+    }
 
     // ════════════════════════════════════════════════════════════════════
     // GENESIS IDENTITIES & ACHIEVEMENTS

@@ -25,8 +25,14 @@ impl NFT {
 
     /// Initialize NFT collection
     pub fn initialize(&mut self, minter: Address) -> NftResult<()> {
+        if minter.0 == [0u8; 32] {
+            return Err(ContractError::Custom("Minter cannot be zero"));
+        }
         // Set minter (can mint new tokens)
         let key = Self::minter_key();
+        if storage_get(&key).is_some() {
+            return Err(ContractError::Custom("NFT already initialized"));
+        }
         storage_set(&key, minter.0.as_slice());
 
         // Initialize counter
@@ -37,10 +43,23 @@ impl NFT {
 
     /// Mint new NFT
     pub fn mint(&mut self, to: Address, token_id: u64, metadata_uri: &[u8]) -> NftResult<()> {
+        if to.0 == [0u8; 32] {
+            return Err(ContractError::Custom("Recipient cannot be zero"));
+        }
         // Check if token already exists
         if self.exists(token_id) {
             return Err(ContractError::Custom("Token already exists"));
         }
+
+        // Validate every fallible counter before writing owner or metadata.
+        let current_minted = Self::read_u64_exact(b"total_minted")?;
+        let new_minted = current_minted
+            .checked_add(1)
+            .ok_or(ContractError::Custom("Total minted overflow"))?;
+        let recipient_balance = Self::read_u64_exact(&Self::balance_key(to))?;
+        let new_recipient_balance = recipient_balance
+            .checked_add(1)
+            .ok_or(ContractError::Custom("Recipient balance overflow"))?;
 
         // Set owner
         let owner_key = Self::owner_key(token_id);
@@ -51,26 +70,45 @@ impl NFT {
         storage_set(&metadata_key, metadata_uri);
 
         // Increment total minted (read from storage to handle fresh WASM instances)
-        let current_minted = match storage_get(b"total_minted") {
-            Some(bytes) => bytes_to_u64(&bytes),
-            None => 0,
-        };
-        let new_minted = current_minted + 1;
         self.total_minted = new_minted;
         storage_set(b"total_minted", &u64_to_bytes(new_minted));
 
         // Increment owner's balance
-        self.increment_balance(to)?;
+        storage_set(&Self::balance_key(to), &u64_to_bytes(new_recipient_balance));
 
         Ok(())
     }
 
     /// Transfer NFT
     pub fn transfer(&self, from: Address, to: Address, token_id: u64) -> NftResult<()> {
+        if from.0 == [0u8; 32] || to.0 == [0u8; 32] {
+            return Err(ContractError::Custom("Transfer address cannot be zero"));
+        }
         // Verify ownership
         let current_owner = self.owner_of(token_id)?;
         if current_owner.0 != from.0 {
             return Err(ContractError::Unauthorized);
+        }
+
+        let from_balance = Self::read_u64_exact(&Self::balance_key(from))?;
+        if from_balance == 0 {
+            return Err(ContractError::InsufficientFunds);
+        }
+        let to_balance = Self::read_u64_exact(&Self::balance_key(to))?;
+        let new_to_balance = if from == to {
+            to_balance
+        } else {
+            to_balance
+                .checked_add(1)
+                .ok_or(ContractError::Custom("Recipient balance overflow"))?
+        };
+
+        // ERC-721 authorization is token-owner specific. It must never follow
+        // the token to a new owner, including through the direct transfer path.
+        storage_set(&Self::approval_key(token_id), &[]);
+
+        if from == to {
+            return Ok(());
         }
 
         // Update owner
@@ -78,8 +116,8 @@ impl NFT {
         storage_set(&owner_key, to.0.as_slice());
 
         // Update balances
-        self.decrement_balance(from)?;
-        self.increment_balance(to)?;
+        storage_set(&Self::balance_key(from), &u64_to_bytes(from_balance - 1));
+        storage_set(&Self::balance_key(to), &u64_to_bytes(new_to_balance));
 
         Ok(())
     }
@@ -111,11 +149,7 @@ impl NFT {
 
     /// Get balance (number of NFTs owned)
     pub fn balance_of(&self, owner: Address) -> u64 {
-        let key = Self::balance_key(owner);
-        match storage_get(&key) {
-            Some(bytes) => bytes_to_u64(&bytes),
-            None => 0,
-        }
+        Self::read_u64_exact(&Self::balance_key(owner)).unwrap_or(0)
     }
 
     /// Approve spender for specific token
@@ -125,10 +159,17 @@ impl NFT {
         if current_owner.0 != owner.0 {
             return Err(ContractError::Unauthorized);
         }
+        if spender == owner {
+            return Err(ContractError::Custom("Owner cannot approve itself"));
+        }
 
         // Set approval
         let key = Self::approval_key(token_id);
-        storage_set(&key, spender.0.as_slice());
+        if spender.0 == [0u8; 32] {
+            storage_set(&key, &[]);
+        } else {
+            storage_set(&key, spender.0.as_slice());
+        }
 
         Ok(())
     }
@@ -154,6 +195,9 @@ impl NFT {
         operator: Address,
         approved: bool,
     ) -> NftResult<()> {
+        if owner.0 == [0u8; 32] || operator.0 == [0u8; 32] || owner == operator {
+            return Err(ContractError::Custom("Invalid NFT operator approval"));
+        }
         let key = Self::operator_approval_key(owner, operator);
         storage_set(&key, &[if approved { 1 } else { 0 }]);
         Ok(())
@@ -163,7 +207,7 @@ impl NFT {
     pub fn is_approved_for_all(&self, owner: Address, operator: Address) -> bool {
         let key = Self::operator_approval_key(owner, operator);
         match storage_get(&key) {
-            Some(bytes) => !bytes.is_empty() && bytes[0] == 1,
+            Some(bytes) => bytes.as_slice() == [1u8],
             None => false,
         }
     }
@@ -208,6 +252,10 @@ impl NFT {
         if current_owner.0 != owner.0 {
             return Err(ContractError::Unauthorized);
         }
+        let owner_balance = Self::read_u64_exact(&Self::balance_key(owner))?;
+        if owner_balance == 0 {
+            return Err(ContractError::InsufficientFunds);
+        }
 
         // Clear owner
         let owner_key = Self::owner_key(token_id);
@@ -222,7 +270,7 @@ impl NFT {
         storage_set(&approval_key, &[]);
 
         // Decrement balance
-        self.decrement_balance(owner)?;
+        storage_set(&Self::balance_key(owner), &u64_to_bytes(owner_balance - 1));
 
         Ok(())
     }
@@ -273,26 +321,79 @@ impl NFT {
         b"minter".to_vec()
     }
 
-    fn increment_balance(&self, owner: Address) -> NftResult<()> {
-        let key = Self::balance_key(owner);
-        let balance = match storage_get(&key) {
-            Some(bytes) => bytes_to_u64(&bytes),
-            None => 0,
-        };
-        storage_set(&key, &u64_to_bytes(balance + 1));
-        Ok(())
+    fn read_u64_exact(key: &[u8]) -> NftResult<u64> {
+        match storage_get(key) {
+            Some(bytes) if bytes.len() == 8 => Ok(bytes_to_u64(&bytes)),
+            Some(_) => Err(ContractError::Custom("Malformed NFT counter")),
+            None => Ok(0),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_mock;
+
+    fn initialized_nft() -> NFT {
+        test_mock::reset();
+        let mut nft = NFT::new("Test", "TNFT");
+        nft.initialize(Address([1u8; 32])).expect("initialize");
+        nft
     }
 
-    fn decrement_balance(&self, owner: Address) -> NftResult<()> {
-        let key = Self::balance_key(owner);
-        let balance = match storage_get(&key) {
-            Some(bytes) => bytes_to_u64(&bytes),
-            None => 0,
-        };
-        if balance == 0 {
-            return Err(ContractError::InsufficientFunds);
-        }
-        storage_set(&key, &u64_to_bytes(balance - 1));
-        Ok(())
+    #[test]
+    fn direct_transfer_clears_stale_token_approval() {
+        let mut nft = initialized_nft();
+        let owner = Address([2u8; 32]);
+        let approved = Address([3u8; 32]);
+        let recipient = Address([4u8; 32]);
+        nft.mint(owner, 7, b"moss://metadata").expect("mint");
+        nft.approve(owner, approved, 7).expect("approve");
+
+        nft.transfer(owner, recipient, 7).expect("owner transfer");
+        assert_eq!(nft.owner_of(7).expect("owner"), recipient);
+        assert_eq!(nft.get_approved(7), None);
+        assert!(nft.transfer_from(approved, recipient, owner, 7).is_err());
+        assert_eq!(nft.owner_of(7).expect("owner remains"), recipient);
+    }
+
+    #[test]
+    fn mint_validates_counters_before_writing_token_state() {
+        let mut nft = initialized_nft();
+        storage_set(b"total_minted", &[1u8]);
+        assert!(nft.mint(Address([2u8; 32]), 1, b"metadata").is_err());
+        assert!(!nft.exists(1));
+
+        storage_set(b"total_minted", &u64_to_bytes(0));
+        let balance_key = NFT::balance_key(Address([2u8; 32]));
+        storage_set(&balance_key, &u64_to_bytes(u64::MAX));
+        assert!(nft.mint(Address([2u8; 32]), 2, b"metadata").is_err());
+        assert!(!nft.exists(2));
+    }
+
+    #[test]
+    fn transfer_rejects_malformed_balance_before_owner_change() {
+        let mut nft = initialized_nft();
+        let owner = Address([2u8; 32]);
+        let recipient = Address([3u8; 32]);
+        nft.mint(owner, 1, b"metadata").expect("mint");
+        storage_set(&NFT::balance_key(owner), &[1u8]);
+
+        assert!(nft.transfer(owner, recipient, 1).is_err());
+        assert_eq!(nft.owner_of(1).expect("owner remains"), owner);
+    }
+
+    #[test]
+    fn zero_approval_revokes_and_operator_self_approval_is_rejected() {
+        let mut nft = initialized_nft();
+        let owner = Address([2u8; 32]);
+        let approved = Address([3u8; 32]);
+        nft.mint(owner, 1, b"metadata").expect("mint");
+        nft.approve(owner, approved, 1).expect("approve");
+        nft.approve(owner, Address([0u8; 32]), 1).expect("revoke");
+        assert_eq!(nft.get_approved(1), None);
+        assert!(nft.approve(owner, owner, 1).is_err());
+        assert!(nft.set_approval_for_all(owner, owner, true).is_err());
     }
 }

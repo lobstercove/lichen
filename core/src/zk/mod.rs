@@ -1,13 +1,14 @@
 //! Lichen Zero-Knowledge Proof Module
 //!
-//! The live shield, unshield, and transfer proof path runs on the native
-//! Plonky3 STARK backend. Any remaining witness-adapter helpers are private to
-//! proof tooling and are not part of validator or RPC verification.
+//! The legacy shield, unshield, and transfer format uses a native Plonky3
+//! STARK envelope. Scheme 0x01 is retained for decoding and regression fixtures
+//! but is rejected by the validator because its AIR did not constrain private
+//! witnesses.
 //!
-//! Current live backend:
+//! Historical format and local tooling:
 //! - Poseidon2/Goldilocks commitments and Merkle nodes over canonical 32-byte values
 //! - Hash-derived shielded spending/viewing keys and nullifiers
-//! - Plonky3 FRI proofs for shield/unshield/transfer circuits
+//! - Legacy Plonky3 FRI proof envelopes for shield/unshield/transfer fixtures
 //! - ChaCha20-Poly1305 for note encryption
 
 pub mod air;
@@ -39,7 +40,7 @@ pub use air::{
 pub use keys::{ShieldedKeypair, SpendingKey, ViewingKey};
 pub use merkle::{
     commitment_hash, nullifier_hash, poseidon_hash_pair, random_scalar_bytes, recipient_hash,
-    recipient_preimage_from_bytes, MerklePath, MerkleTree, TREE_DEPTH,
+    recipient_preimage_from_bytes, MerklePath, MerkleTree, TREE_CAPACITY, TREE_DEPTH,
 };
 pub use note::{EncryptedNote, Note, Nullifier};
 pub use pedersen::{CommitmentSecret, ValueCommitment};
@@ -50,7 +51,8 @@ pub use verifier::Verifier;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum ZkSchemeVersion {
-    /// Native Plonky3 STARK proof using FRI over Goldilocks with Poseidon2.
+    /// Legacy Plonky3 STARK proof using FRI over Goldilocks with Poseidon2.
+    /// This scheme identifier is decoded but not accepted.
     #[default]
     Plonky3FriPoseidon2 = 0x01,
 }
@@ -97,6 +99,16 @@ impl ProofType {
     }
 }
 
+/// Scheme `0x01` envelopes remain decodable for state and wire compatibility,
+/// but no proof type is accepted until its private-witness constraints have an
+/// independently reviewed verifier implementation.
+pub const PROOF_SCHEME_ACCEPTANCE_DISABLED_REASON: &str =
+    "proof scheme 0x01 lacks constrained private-witness verification";
+
+pub fn proof_acceptance_enabled(_proof_type: &ProofType) -> bool {
+    false
+}
+
 /// A scheme-versioned shielded proof envelope.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ZkProof {
@@ -105,9 +117,9 @@ pub struct ZkProof {
     /// Which circuit this proof is for
     pub proof_type: ProofType,
     /// Legacy serialized public-input slot retained for backward-compatible
-    /// encoding. The live Plonky3 path leaves this empty.
+    /// encoding. The legacy Plonky3 format leaves this empty.
     pub public_inputs: Vec<[u8; 32]>,
-    /// Canonical Goldilocks public-input words for the live Plonky3 path.
+    /// Canonical Goldilocks public-input words for the legacy Plonky3 format.
     #[serde(default)]
     pub stark_public_inputs: Vec<u64>,
     /// Which proof backend encoded `proof_bytes`.
@@ -217,6 +229,13 @@ pub enum ShieldedError {
     InvalidCommitment,
     /// Proof used a scheme that the active verifier backend cannot process yet
     UnsupportedProofScheme(ZkSchemeVersion),
+    /// Proof used a recognized scheme whose constraints are not safe for the
+    /// requested proof type. Retaining the version identifier permits existing
+    /// envelopes to decode while validator acceptance remains fail-closed.
+    DisabledProofScheme {
+        scheme: ZkSchemeVersion,
+        proof_type: ProofType,
+    },
     /// Serialization error
     SerializationError(String),
     /// Pool overflow
@@ -243,6 +262,12 @@ impl std::fmt::Display for ShieldedError {
             Self::UnsupportedProofScheme(scheme) => {
                 write!(f, "unsupported proof scheme: {}", scheme)
             }
+            Self::DisabledProofScheme { scheme, proof_type } => write!(
+                f,
+                "proof scheme {} is disabled for {} until a constrained verifier is activated",
+                scheme,
+                proof_type.as_str()
+            ),
             Self::SerializationError(msg) => write!(f, "serialization error: {}", msg),
             Self::PoolOverflow => write!(f, "shielded pool balance overflow"),
         }

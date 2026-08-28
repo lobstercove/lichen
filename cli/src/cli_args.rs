@@ -43,7 +43,7 @@ pub(super) enum CodegenLang {
 #[command(
     long_about = "Lichen CLI — command-line interface for Lichen, a Layer 1 blockchain\n\
     built by agents, for agents. Tendermint BFT consensus, 400ms slots,\n\
-    WASM smart contracts, ML-DSA-65 signing, ZK privacy (Plonky3 STARK).\n\n\
+    WASM smart contracts and ML-DSA-65 signing. Shielded proof scheme 0x01 is disabled.\n\n\
     Native token: LICN (1 LICN = 1,000,000,000 spores)\n\
     Run 'lichen fees' for current fee schedule\n\n\
     Mainnet RPC: https://rpc.lichen.network\n\
@@ -382,6 +382,16 @@ pub(super) enum ValidatorCommands {
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
+
+    /// Queue a Staking V2 commission change in basis points
+    SetCommission {
+        /// Commission in basis points (500 = 5.00%)
+        commission_bps: u64,
+
+        /// Keypair file for the validator account
+        #[arg(short, long)]
+        keypair: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -390,6 +400,10 @@ pub(super) enum StakeCommands {
     Add {
         /// Amount in spores to stake
         amount: u64,
+
+        /// Validator receiving the delegation; defaults to your own identity
+        #[arg(short, long)]
+        validator: Option<String>,
 
         /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
@@ -400,6 +414,10 @@ pub(super) enum StakeCommands {
     Remove {
         /// Amount in spores to unstake
         amount: u64,
+
+        /// Validator from which to remove your exact delegation; defaults to your own identity
+        #[arg(short, long)]
+        validator: Option<String>,
 
         /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]

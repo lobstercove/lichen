@@ -212,7 +212,7 @@
       "result_semantics": {
         "kind": "return_code",
         "success_codes": [
-          0
+          1
         ]
       }
     },
@@ -236,7 +236,7 @@
       "result_semantics": {
         "kind": "return_code",
         "success_codes": [
-          0
+          1
         ]
       }
     },
@@ -403,6 +403,125 @@
           0
         ]
       }
+    },
+    {
+      "name": "get_approved",
+      "opcode": 21,
+      "params": [
+        {
+          "name": "token_id",
+          "type": "u64"
+        }
+      ],
+      "readonly": true,
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          1
+        ]
+      }
+    },
+    {
+      "name": "set_approval_for_all",
+      "opcode": 22,
+      "params": [
+        {
+          "name": "owner_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "operator_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "approved",
+          "type": "u32"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          1
+        ]
+      }
+    },
+    {
+      "name": "is_approved_for_all",
+      "opcode": 23,
+      "params": [
+        {
+          "name": "owner_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "operator_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "readonly": true,
+      "result_semantics": {
+        "kind": "return_value"
+      }
+    },
+    {
+      "name": "royalty_info",
+      "opcode": 24,
+      "params": [
+        {
+          "name": "token_id",
+          "type": "u64"
+        }
+      ],
+      "readonly": true,
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          1
+        ]
+      }
+    },
+    {
+      "name": "propose_admin",
+      "opcode": 25,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "next_admin_ptr", "type": "Pubkey" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [1] }
+    },
+    {
+      "name": "accept_admin",
+      "opcode": 26,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [1] }
+    },
+    {
+      "name": "set_mint_authority",
+      "opcode": 27,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "mint_authority_ptr", "type": "Pubkey" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [1] }
+    },
+    {
+      "name": "set_royalty_config",
+      "opcode": 28,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "recipient_ptr", "type": "Pubkey" },
+        { "name": "bps", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [1] }
+    },
+    {
+      "name": "get_collection_config",
+      "opcode": 29,
+      "params": [],
+      "readonly": true,
+      "result_semantics": { "kind": "return_code", "success_codes": [1] }
     }
   ]
 }

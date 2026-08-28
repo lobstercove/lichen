@@ -8,11 +8,11 @@ use crate::signing::{
     maybe_versioned_signing_bytes, DOMAIN_PRECOMMIT, DOMAIN_PREVOTE, DOMAIN_PROPOSAL,
 };
 use crate::{
-    Block, CommitSignature, Hash, Instruction, Message, PqSignature, Pubkey, Transaction,
-    TransactionType,
+    Block, BlockHeader, CommitSignature, Hash, Instruction, Message, PqSignature, Pubkey,
+    Transaction, TransactionType,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 // ============================================================================
@@ -70,17 +70,32 @@ pub fn canonical_validator_powers(
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
 ) -> Vec<CanonicalValidatorPower> {
-    validator_set
-        .sorted_validators()
-        .into_iter()
-        .map(|validator| CanonicalValidatorPower {
-            validator: validator.pubkey,
-            power: stake_pool
-                .get_stake(&validator.pubkey)
-                .map(StakeInfo::total_stake)
-                .unwrap_or(0),
-        })
-        .collect()
+    let validators = validator_set.sorted_validators();
+    if stake_pool.staking_v2_state().is_some() {
+        validators
+            .into_iter()
+            .filter(|validator| !validator.pending_activation)
+            .filter_map(|validator| {
+                stake_pool
+                    .staking_v2_consensus_power(&validator.pubkey)
+                    .map(|power| CanonicalValidatorPower {
+                        validator: validator.pubkey,
+                        power,
+                    })
+            })
+            .collect()
+    } else {
+        validators
+            .into_iter()
+            .map(|validator| CanonicalValidatorPower {
+                validator: validator.pubkey,
+                power: stake_pool
+                    .get_stake(&validator.pubkey)
+                    .map(StakeInfo::total_stake)
+                    .unwrap_or(0),
+            })
+            .collect()
+    }
 }
 
 pub fn canonical_validator_powers_hash(powers: &[CanonicalValidatorPower]) -> Hash {
@@ -374,6 +389,14 @@ pub const INFLATION_DECAY_RATE_BPS: u64 = 1500;
 /// always earn meaningful rewards regardless of chain age.
 pub const TERMINAL_INFLATION_RATE_BPS: u64 = 15;
 
+/// Target share of circulating supply securing consensus (67.00%).
+///
+/// The dynamic staking budget reaches the inflation ceiling only when effective
+/// bonded stake reaches this target. Below the target, issuance scales linearly
+/// with bonded stake. This prevents a small early staking cohort from receiving
+/// the entire network inflation budget while preserving an incentive to bond.
+pub const TARGET_BONDED_STAKE_BPS: u64 = 6_700;
+
 /// Slots per year (assuming 400ms per slot = ~78.8M slots/year)
 pub const SLOTS_PER_YEAR: u64 = 78_840_000;
 
@@ -454,7 +477,89 @@ pub fn compute_epoch_mint(epoch_start_slot: u64, total_supply: u64) -> u64 {
     (numerator / denominator) as u64
 }
 
+/// Return the effective bonded stake required to reach the epoch inflation
+/// ceiling. The result rounds up so integer truncation cannot mint the full
+/// ceiling while the network is fractionally below the configured target.
+pub fn target_bonded_stake(total_supply: u64) -> u64 {
+    if total_supply == 0 {
+        return 0;
+    }
+
+    let numerator = (total_supply as u128).saturating_mul(TARGET_BONDED_STAKE_BPS as u128);
+    numerator
+        .saturating_add(9_999)
+        .checked_div(10_000)
+        .unwrap_or(0)
+        .min(u64::MAX as u128) as u64
+}
+
+/// Compute the dynamic epoch security budget for effective bonded stake.
+///
+/// The existing inflation curve remains the hard issuance ceiling. Below the
+/// target bonded ratio, the budget scales linearly with effective stake:
+///
+/// `budget = ceiling * effective_stake / target_bonded_stake`
+///
+/// This produces the same gross base reward rate per effective LICN for native
+/// self-stake, direct delegation, and liquid stake. Any difference in net yield
+/// must come from explicit validator performance or bounded commission, not a
+/// hard-coded product allocation. Issuance not assigned by this function is not
+/// minted.
+pub fn compute_epoch_security_budget(
+    epoch_start_slot: u64,
+    total_supply: u64,
+    effective_stake: u64,
+) -> Result<u64, String> {
+    if effective_stake > total_supply {
+        return Err(format!(
+            "effective bonded stake {} exceeds total supply {}",
+            effective_stake, total_supply
+        ));
+    }
+
+    let ceiling = compute_epoch_mint(epoch_start_slot, total_supply);
+    if ceiling == 0 || effective_stake == 0 {
+        return Ok(0);
+    }
+
+    let target = target_bonded_stake(total_supply);
+    if target == 0 || effective_stake >= target {
+        return Ok(ceiling);
+    }
+
+    Ok(
+        ((ceiling as u128).saturating_mul(effective_stake as u128) / target as u128)
+            .min(u64::MAX as u128) as u64,
+    )
+}
+
+/// Split a reward budget between two stake classes without a fixed product
+/// percentage. The second class receives its exact floor-proportional share and
+/// the first class receives the deterministic remainder, so the output always
+/// sums to `reward_budget` without mint dust.
+pub fn split_reward_budget_by_stake(
+    reward_budget: u64,
+    first_stake: u64,
+    second_stake: u64,
+) -> Result<(u64, u64), String> {
+    let total_stake = first_stake
+        .checked_add(second_stake)
+        .ok_or_else(|| "stake-class total overflow".to_string())?;
+    if reward_budget == 0 || total_stake == 0 {
+        return Ok((0, 0));
+    }
+
+    let second_reward = ((reward_budget as u128).saturating_mul(second_stake as u128)
+        / total_stake as u128)
+        .min(u64::MAX as u128) as u64;
+    Ok((reward_budget.saturating_sub(second_reward), second_reward))
+}
+
 /// Split one epoch's inflation between active stakers and the MossStake pool.
+///
+/// Legacy policy used by settled testnet epochs before the coordinated staking
+/// V2 activation. New epochs must use [`compute_epoch_security_budget`] and
+/// [`split_reward_budget_by_stake`] instead of this fixed product percentage.
 pub fn split_epoch_mint(epoch_start_slot: u64, total_supply: u64) -> (u64, u64) {
     let epoch_mint = compute_epoch_mint(epoch_start_slot, total_supply);
     if epoch_mint == 0 {
@@ -570,10 +675,12 @@ pub fn read_consensus_oracle_price_from_state(
     let price = state.get_oracle_consensus_price(asset).ok()??;
     let current_slot = state.get_last_slot().unwrap_or(price.slot);
 
-    if current_slot.saturating_sub(price.slot) > crate::processor::ORACLE_STALENESS_SLOTS {
+    if price.slot > current_slot
+        || current_slot - price.slot > crate::processor::ORACLE_STALENESS_SLOTS
+    {
         return None;
     }
-    if price.price == 0 || price.decimals > 18 {
+    if price.price == 0 || price.decimals != crate::processor::ORACLE_PRICE_DECIMALS {
         return None;
     }
 
@@ -716,6 +823,77 @@ pub enum BootstrapStatus {
 /// Maximum stake per validator (1,000,000 LICN — $100,000 at $0.10/LICN)
 pub const MAX_VALIDATOR_STAKE: u64 = 1_000_000 * 1_000_000_000; // 1M LICN in spores
 
+/// Coordinated epoch boundary for the stake-weighted reward and owned
+/// delegation rules. Absence preserves legacy replay behavior on deployed
+/// chains; fresh networks set the boundary at genesis.
+pub const STAKING_V2_ACTIVATION_SLOT_METADATA_KEY: &str = "staking_v2_activation_slot";
+
+/// Default validator commission on delegated rewards (5.00%).
+pub const DEFAULT_VALIDATOR_COMMISSION_BPS: u64 = 500;
+
+/// Maximum validator commission allowed by Staking V2 (10.00%).
+pub const MAX_VALIDATOR_COMMISSION_BPS: u64 = 1_000;
+
+/// A validator commission change cannot move by more than 1.00 percentage
+/// point at a single epoch boundary.
+pub const MAX_VALIDATOR_COMMISSION_CHANGE_BPS_PER_EPOCH: u64 = 100;
+
+/// Commission changes are visible for two complete epochs before activation.
+pub const VALIDATOR_COMMISSION_CHANGE_DELAY_EPOCHS: u64 = 2;
+
+/// A validator's effective stake cannot exceed five times its self-bond.
+pub const MAX_VALIDATOR_EFFECTIVE_STAKE_MULTIPLIER: u64 = 5;
+
+/// Protocol-owned delegator identity used for every MossStake allocation.
+/// No private key exists for this deterministic SHA-256-derived address.
+pub const MOSSSTAKE_PROTOCOL_DELEGATOR: Pubkey = Pubkey([
+    0x26, 0x61, 0x36, 0x2e, 0x2a, 0x1d, 0x78, 0xe2, 0x6f, 0x06, 0xe7, 0xdd, 0x9d, 0xa0, 0x74, 0x82,
+    0x67, 0xd1, 0xdc, 0xe5, 0x06, 0x13, 0x08, 0x37, 0x83, 0x3f, 0x08, 0x3c, 0x39, 0x75, 0x1d, 0xa5,
+]);
+
+/// Mature-network validator saturation cap (5.00% of active effective stake).
+pub const MATURE_VALIDATOR_SATURATION_BPS: u64 = 500;
+
+/// Deterministic saturation ceiling. Small validator sets start with a looser
+/// cap and linearly converge to 5% at 20 validators, while never dropping
+/// below the equal-share weight required by the active set.
+pub fn validator_saturation_cap_bps(active_validators: usize) -> Result<u64, String> {
+    if active_validators == 0 {
+        return Err("validator saturation requires an active validator".to_string());
+    }
+    if active_validators >= 20 {
+        return Ok(MATURE_VALIDATOR_SATURATION_BPS);
+    }
+    let remaining = 20u64.saturating_sub(active_validators as u64);
+    let linear = MATURE_VALIDATOR_SATURATION_BPS
+        .checked_add(
+            9_500u64
+                .checked_mul(remaining)
+                .ok_or_else(|| "validator saturation interpolation overflow".to_string())?
+                / 19,
+        )
+        .ok_or_else(|| "validator saturation cap overflow".to_string())?;
+    let equal_share = 10_000u64.div_ceil(active_validators as u64);
+    Ok(linear.max(equal_share).min(10_000))
+}
+
+fn mul_div_ceil_u64(left: u64, right: u64, denominator: u64) -> Result<u64, String> {
+    if denominator == 0 {
+        return Err("ceiling division denominator cannot be zero".to_string());
+    }
+    let numerator = (left as u128)
+        .checked_mul(right as u128)
+        .ok_or_else(|| "ceiling multiplication overflow".to_string())?;
+    let quotient = numerator.div_ceil(denominator as u128);
+    u64::try_from(quotient).map_err(|_| "ceiling division exceeds u64".to_string())
+}
+
+/// Version of the consensus-committed Staking V2 epoch accounting state.
+/// Version 2 adds frozen owner exposure required for deterministic slashing.
+pub const STAKING_V2_STATE_VERSION: u8 = 2;
+
+const STAKE_POOL_STORAGE_V2_MAGIC: &[u8; 8] = b"LICHSP2\0";
+
 /// Unstake cooldown period (7 days in slots at 400ms/slot)
 /// H11 fix: was 604,800 (=seconds in 7 days, only 2.8 days at 400ms/slot)
 pub const UNSTAKE_COOLDOWN_SLOTS: u64 = 1_512_000; // 7 * 24 * 60 * 60 * 1000 / 400
@@ -817,6 +995,314 @@ pub struct UnstakeRequest {
     pub staker: Pubkey,
     pub amount: u64,
     pub unlock_slot: u64, // When unstake completes
+}
+
+/// One delegator credit in a preflighted Staking V2 epoch plan.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DelegatorEpochReward {
+    pub delegator: Pubkey,
+    pub amount: u64,
+}
+
+/// Exact reward accounting for one validator before any state is mutated.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ValidatorEpochRewardPlan {
+    pub validator: Pubkey,
+    pub base_reward: u64,
+    pub performance_bps: u64,
+    pub performance_adjusted_reward: u64,
+    pub self_bond_reward: u64,
+    pub delegation_gross_reward: u64,
+    pub commission_reward: u64,
+    pub delegator_rewards: Vec<DelegatorEpochReward>,
+}
+
+/// Complete Staking V2 epoch plan. `performance_unminted` remains outside
+/// supply; it is not reassigned from unavailable validators to other operators.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EpochSecurityRewardPlan {
+    pub reward_budget: u64,
+    pub assigned_reward: u64,
+    pub performance_unminted: u64,
+    pub validators: Vec<ValidatorEpochRewardPlan>,
+}
+
+/// Applied validator and delegator credits for one Staking V2 epoch.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ValidatorEpochRewardSettlement {
+    pub validator: Pubkey,
+    pub planned_operator_reward: u64,
+    pub liquid_operator_reward: u64,
+    pub bootstrap_debt_payment: u64,
+    pub delegator_rewards: Vec<DelegatorEpochReward>,
+}
+
+/// Complete applied settlement. Bootstrap debt repayment is intentionally not
+/// minted to a spendable account and is reported separately from performance
+/// reductions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EpochSecurityRewardSettlement {
+    pub plan: EpochSecurityRewardPlan,
+    pub total_minted: u64,
+    pub bootstrap_debt_unminted: u64,
+    pub validators: Vec<ValidatorEpochRewardSettlement>,
+}
+
+/// Delayed validator commission change. Only one change can be pending for a
+/// validator, which keeps notices unambiguous for delegators.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingValidatorCommission {
+    pub commission_bps: u64,
+    pub activation_epoch: u64,
+}
+
+/// Consensus-committed validator commission schedule.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ValidatorCommissionState {
+    pub current_bps: u64,
+    pub pending: Option<PendingValidatorCommission>,
+    pub last_activated_epoch: u64,
+}
+
+impl ValidatorCommissionState {
+    fn new(current_epoch: u64) -> Self {
+        Self {
+            current_bps: DEFAULT_VALIDATOR_COMMISSION_BPS,
+            pending: None,
+            last_activated_epoch: current_epoch,
+        }
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.current_bps > MAX_VALIDATOR_COMMISSION_BPS {
+            return Err(format!(
+                "validator commission {} exceeds maximum {}",
+                self.current_bps, MAX_VALIDATOR_COMMISSION_BPS
+            ));
+        }
+        if let Some(pending) = &self.pending {
+            if pending.commission_bps > MAX_VALIDATOR_COMMISSION_BPS {
+                return Err(format!(
+                    "pending validator commission {} exceeds maximum {}",
+                    pending.commission_bps, MAX_VALIDATOR_COMMISSION_BPS
+                ));
+            }
+            if pending.activation_epoch <= self.last_activated_epoch {
+                return Err("pending validator commission does not activate in the future".into());
+            }
+            if self.current_bps.abs_diff(pending.commission_bps)
+                > MAX_VALIDATOR_COMMISSION_CHANGE_BPS_PER_EPOCH
+            {
+                return Err(format!(
+                    "pending validator commission changes by more than {} basis points",
+                    MAX_VALIDATOR_COMMISSION_CHANGE_BPS_PER_EPOCH
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Stake-time accumulator for one reward owner. `weighted_slot_spores` stores
+/// exact `spores * active_slots` and is checkpointed only when stake changes or
+/// an epoch closes, avoiding per-slot writes for delegators.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EpochStakeAccumulator {
+    pub amount: u64,
+    pub weighted_slot_spores: u128,
+    pub last_checkpoint_slot: u64,
+}
+
+impl EpochStakeAccumulator {
+    fn new(amount: u64, epoch_start_slot: u64) -> Self {
+        Self {
+            amount,
+            weighted_slot_spores: 0,
+            last_checkpoint_slot: epoch_start_slot,
+        }
+    }
+
+    fn checkpoint(&mut self, slot: u64) -> Result<(), String> {
+        let elapsed = slot.checked_sub(self.last_checkpoint_slot).ok_or_else(|| {
+            format!(
+                "stake checkpoint moved backwards from {} to {}",
+                self.last_checkpoint_slot, slot
+            )
+        })?;
+        let accrued = (self.amount as u128)
+            .checked_mul(elapsed as u128)
+            .ok_or_else(|| "stake-time multiplication overflow".to_string())?;
+        self.weighted_slot_spores = self
+            .weighted_slot_spores
+            .checked_add(accrued)
+            .ok_or_else(|| "stake-time accumulator overflow".to_string())?;
+        self.last_checkpoint_slot = slot;
+        Ok(())
+    }
+
+    fn set_amount(&mut self, slot: u64, amount: u64) -> Result<(), String> {
+        self.checkpoint(slot)?;
+        self.amount = amount;
+        Ok(())
+    }
+
+    fn average_amount(&self, epoch_end_slot: u64, epoch_start_slot: u64) -> Result<u64, String> {
+        let duration = epoch_end_slot
+            .checked_sub(epoch_start_slot)
+            .ok_or_else(|| "epoch reward interval moved backwards".to_string())?;
+        if duration == 0 {
+            return Err("epoch reward interval cannot be empty".to_string());
+        }
+        let mut closed = self.clone();
+        closed.checkpoint(epoch_end_slot)?;
+        u64::try_from(closed.weighted_slot_spores / duration as u128)
+            .map_err(|_| "average epoch stake exceeds u64".to_string())
+    }
+}
+
+/// Epoch accounting for one validator and every exact reward owner delegated
+/// to it. The production baseline is cumulative only as a compact checkpoint;
+/// completed-epoch performance always uses the baseline delta.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ValidatorEpochAccounting {
+    pub validator: Pubkey,
+    pub self_bond: EpochStakeAccumulator,
+    pub delegations: BTreeMap<Pubkey, EpochStakeAccumulator>,
+    pub production_baseline: u64,
+    /// Effective BFT voting power frozen at the epoch boundary.
+    pub consensus_power: u64,
+    pub leader_weight: u64,
+    pub commission_bps: u64,
+}
+
+/// Exact owner liabilities that supplied one validator's frozen voting power
+/// at an epoch boundary. These snapshots are retained through the complete V2
+/// evidence window so active and cooling-down stake can be slashed pro rata.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ValidatorSlashExposure {
+    pub self_bond: u64,
+    pub delegations: BTreeMap<Pubkey, u64>,
+}
+
+impl ValidatorSlashExposure {
+    pub fn total(&self) -> Result<u64, String> {
+        self.delegations
+            .values()
+            .try_fold(self.self_bond, |total, amount| {
+                total
+                    .checked_add(*amount)
+                    .ok_or_else(|| "validator slash exposure overflow".to_string())
+            })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EpochSlashExposureSnapshot {
+    pub epoch: u64,
+    pub start_slot: u64,
+    pub validators: BTreeMap<Pubkey, ValidatorSlashExposure>,
+}
+
+/// Exact account-class debit produced by one deterministic V2 slash.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StakingV2SlashOwnerLoss {
+    pub owner: Pubkey,
+    pub active_stake: u64,
+    pub cooling_down_stake: u64,
+}
+
+impl StakingV2SlashOwnerLoss {
+    pub fn total(&self) -> Result<u64, String> {
+        self.active_stake
+            .checked_add(self.cooling_down_stake)
+            .ok_or_else(|| "slash owner loss overflow".to_string())
+    }
+}
+
+/// Stake-pool side of a V2 equivocation settlement. MossStake is returned as
+/// a separate pooled liability because its active positions and pending exits
+/// are committed in `MossStakePool`, not native account classifications.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StakingV2SlashSettlement {
+    pub validator: Pubkey,
+    pub offense_epoch: u64,
+    pub slash_percent: u64,
+    pub owner_losses: Vec<StakingV2SlashOwnerLoss>,
+    pub mossstake_requested_loss: u64,
+}
+
+impl StakingV2SlashSettlement {
+    pub fn native_loss(&self) -> Result<u64, String> {
+        self.owner_losses.iter().try_fold(0u64, |total, loss| {
+            total
+                .checked_add(loss.total()?)
+                .ok_or_else(|| "native slash settlement overflow".to_string())
+        })
+    }
+}
+
+/// Consensus-committed Staking V2 accounting embedded in the stake-pool hash.
+/// `None` on `StakePool` preserves the exact legacy hash and storage encoding.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StakingV2EpochState {
+    pub version: u8,
+    pub activation_slot: u64,
+    pub current_epoch: u64,
+    pub epoch_start_slot: u64,
+    pub validators: BTreeMap<Pubkey, ValidatorEpochAccounting>,
+    pub commissions: BTreeMap<Pubkey, ValidatorCommissionState>,
+    pub last_settled_epoch: Option<u64>,
+    /// Current and previous frozen-owner snapshots required to cover the
+    /// complete proof-submission window.
+    pub slash_exposure_snapshots: BTreeMap<u64, EpochSlashExposureSnapshot>,
+}
+
+/// Average reward ownership for one validator across a completed epoch.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ValidatorEpochStakeWeight {
+    pub validator: Pubkey,
+    pub average_self_bond: u64,
+    pub average_delegations: Vec<(Pubkey, u64)>,
+}
+
+impl ValidatorEpochStakeWeight {
+    pub fn average_effective_stake(&self) -> Result<u64, String> {
+        self.average_delegations
+            .iter()
+            .try_fold(self.average_self_bond, |total, (_, amount)| {
+                total
+                    .checked_add(*amount)
+                    .ok_or_else(|| "average validator stake overflow".to_string())
+            })
+    }
+}
+
+/// Immutable reward denominator and ownership snapshot for one completed
+/// epoch. Amounts are exact floor averages of stake-time accumulators.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EpochStakeWeightSnapshot {
+    pub epoch: u64,
+    pub start_slot: u64,
+    pub end_slot: u64,
+    pub validators: Vec<ValidatorEpochStakeWeight>,
+}
+
+impl EpochStakeWeightSnapshot {
+    pub fn effective_stake(&self) -> Result<u64, String> {
+        self.validators.iter().try_fold(0u64, |total, validator| {
+            total
+                .checked_add(validator.average_effective_stake()?)
+                .ok_or_else(|| "average epoch effective stake overflow".to_string())
+        })
+    }
+}
+
+/// Complete deterministic inputs used by an epoch reward settlement.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StakingV2EpochRewardInputs {
+    pub stake_weights: EpochStakeWeightSnapshot,
+    pub performance_bps: BTreeMap<Pubkey, u64>,
+    pub commission_bps: BTreeMap<Pubkey, u64>,
 }
 
 /// Stake information for a validator
@@ -1160,7 +1646,9 @@ impl StakeInfo {
             validator: self.validator,
             staker, // M5 fix: track staker identity
             amount,
-            unlock_slot: current_slot + UNSTAKE_COOLDOWN_SLOTS,
+            unlock_slot: current_slot
+                .checked_add(UNSTAKE_COOLDOWN_SLOTS)
+                .ok_or_else(|| "Validator unstake cooldown deadline overflow".to_string())?,
         })
     }
 }
@@ -1245,6 +1733,31 @@ pub struct StakePool {
     /// Number of bootstrap grants issued so far (monotonically increasing, 0..200)
     #[serde(default)]
     bootstrap_grants_issued: u64,
+    /// Present only after the coordinated Staking V2 activation transition.
+    /// Legacy pools keep this `None`, preserving their exact canonical hash.
+    #[serde(default)]
+    staking_v2_state: Option<StakingV2EpochState>,
+}
+
+/// Exact pre-V2 RocksDB representation. Keep field order and serde adapters
+/// unchanged so a pre-activation node can still be rolled back to the signed
+/// legacy binary without rewriting its stake-pool row.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StakePoolStorageV1 {
+    stakes: HashMap<Pubkey, StakeInfo>,
+    total_staked: u64,
+    total_slashed: u64,
+    unstake_requests: HashMap<(Pubkey, Pubkey), UnstakeRequest>,
+    #[serde(default)]
+    delegations: HashMap<Pubkey, HashMap<Pubkey, u64>>,
+    #[serde(
+        default,
+        serialize_with = "fingerprint_serde::serialize",
+        deserialize_with = "fingerprint_serde::deserialize"
+    )]
+    fingerprint_registry: HashMap<[u8; 32], Pubkey>,
+    #[serde(default)]
+    bootstrap_grants_issued: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1257,6 +1770,19 @@ struct StakePoolSnapshotV1 {
     unstake_requests: Vec<((Pubkey, Pubkey), UnstakeRequest)>,
     delegations: Vec<(Pubkey, Vec<(Pubkey, u64)>)>,
     fingerprint_registry: Vec<([u8; 32], Pubkey)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StakePoolSnapshotV2 {
+    version: u8,
+    total_staked: u64,
+    total_slashed: u64,
+    bootstrap_grants_issued: u64,
+    stakes: Vec<StakeInfo>,
+    unstake_requests: Vec<((Pubkey, Pubkey), UnstakeRequest)>,
+    delegations: Vec<(Pubkey, Vec<(Pubkey, u64)>)>,
+    fingerprint_registry: Vec<([u8; 32], Pubkey)>,
+    staking_v2_state: StakingV2EpochState,
 }
 
 impl Default for StakePool {
@@ -1275,7 +1801,1113 @@ impl StakePool {
             delegations: HashMap::new(),
             fingerprint_registry: HashMap::new(),
             bootstrap_grants_issued: 0,
+            staking_v2_state: None,
         }
+    }
+
+    /// Validate stake totals, delegation ownership, pending requests, and
+    /// fingerprint ownership without changing state.
+    pub fn validate_invariants(&self) -> Result<(), String> {
+        let mut computed_total = 0u64;
+        for (validator, info) in &self.stakes {
+            if info.validator != *validator {
+                return Err(format!(
+                    "stake key {} does not match embedded validator {}",
+                    validator, info.validator
+                ));
+            }
+            if info.amount > MAX_VALIDATOR_STAKE {
+                return Err(format!(
+                    "validator {} self-bond {} exceeds maximum {}",
+                    validator, info.amount, MAX_VALIDATOR_STAKE
+                ));
+            }
+            let total = info
+                .amount
+                .checked_add(info.delegated_amount)
+                .ok_or_else(|| format!("validator {validator} effective stake overflow"))?;
+            if info.is_active && total < MIN_VALIDATOR_STAKE {
+                return Err(format!(
+                    "active validator {} has stake {} below minimum {}",
+                    validator, total, MIN_VALIDATOR_STAKE
+                ));
+            }
+            computed_total = computed_total
+                .checked_add(total)
+                .ok_or_else(|| "network stake total overflow".to_string())?;
+
+            let delegated_total = match self.delegations.get(validator) {
+                Some(entries) if entries.is_empty() => {
+                    return Err(format!("validator {validator} has an empty delegation map"));
+                }
+                Some(entries) => {
+                    let mut total = 0u64;
+                    for (delegator, amount) in entries {
+                        if delegator == validator {
+                            return Err(format!(
+                                "validator {validator} self-bond is duplicated as delegation"
+                            ));
+                        }
+                        if *amount == 0 {
+                            return Err(format!(
+                                "validator {validator} has zero delegation from {delegator}"
+                            ));
+                        }
+                        total = total.checked_add(*amount).ok_or_else(|| {
+                            format!("validator {validator} delegation total overflow")
+                        })?;
+                    }
+                    total
+                }
+                None => 0,
+            };
+            if delegated_total != info.delegated_amount {
+                return Err(format!(
+                    "validator {} delegated stake mismatch: entries={}, recorded={}",
+                    validator, delegated_total, info.delegated_amount
+                ));
+            }
+
+            if info.machine_fingerprint != [0u8; 32]
+                && self.fingerprint_registry.get(&info.machine_fingerprint) != Some(validator)
+            {
+                return Err(format!(
+                    "validator {validator} fingerprint is not owned in the registry"
+                ));
+            }
+        }
+
+        for validator in self.delegations.keys() {
+            if !self.stakes.contains_key(validator) {
+                return Err(format!(
+                    "delegations reference unknown validator {validator}"
+                ));
+            }
+        }
+        if computed_total != self.total_staked {
+            return Err(format!(
+                "stake-pool total mismatch: entries={}, recorded={}",
+                computed_total, self.total_staked
+            ));
+        }
+
+        for ((validator, staker), request) in &self.unstake_requests {
+            if request.validator != *validator || request.staker != *staker {
+                return Err(format!(
+                    "unstake key ({validator}, {staker}) does not match embedded request ({}, {})",
+                    request.validator, request.staker
+                ));
+            }
+            if request.amount == 0 {
+                return Err(format!(
+                    "unstake request ({validator}, {staker}) has zero amount"
+                ));
+            }
+        }
+
+        for (fingerprint, validator) in &self.fingerprint_registry {
+            if *fingerprint == [0u8; 32] {
+                return Err("zero machine fingerprint is registered".to_string());
+            }
+            let info = self.stakes.get(validator).ok_or_else(|| {
+                format!("fingerprint registry references unknown validator {validator}")
+            })?;
+            if info.machine_fingerprint != *fingerprint {
+                return Err(format!(
+                    "fingerprint registry entry for {validator} differs from stake entry"
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validate additional Staking V2 concentration limits.
+    pub fn validate_v2_invariants(&self) -> Result<(), String> {
+        self.validate_invariants()?;
+        for (validator, info) in &self.stakes {
+            // An equivocation slash deactivates the operator immediately. Its
+            // delegators remain recorded so they can exit safely, and therefore
+            // may temporarily exceed the self-bond multiplier until they do.
+            if !info.is_active {
+                continue;
+            }
+            let maximum = info
+                .amount
+                .checked_mul(MAX_VALIDATOR_EFFECTIVE_STAKE_MULTIPLIER)
+                .ok_or_else(|| format!("validator {validator} V2 cap overflow"))?;
+            if info.total_stake() > maximum {
+                return Err(format!(
+                    "validator {} effective stake {} exceeds V2 cap {}",
+                    validator,
+                    info.total_stake(),
+                    maximum
+                ));
+            }
+        }
+        if let Some(state) = &self.staking_v2_state {
+            self.validate_staking_v2_state(state)?;
+        }
+        Ok(())
+    }
+
+    fn validate_staking_v2_state(&self, state: &StakingV2EpochState) -> Result<(), String> {
+        if state.version != STAKING_V2_STATE_VERSION {
+            return Err(format!(
+                "unsupported Staking V2 state version {}",
+                state.version
+            ));
+        }
+        if !state.activation_slot.is_multiple_of(SLOTS_PER_EPOCH) {
+            return Err("Staking V2 activation is not an epoch boundary".to_string());
+        }
+        if state.epoch_start_slot != epoch_start_slot(state.current_epoch) {
+            return Err(format!(
+                "Staking V2 epoch start {} does not match epoch {}",
+                state.epoch_start_slot, state.current_epoch
+            ));
+        }
+        if state.activation_slot > state.epoch_start_slot {
+            return Err("Staking V2 activation is after the current epoch start".to_string());
+        }
+        if state
+            .last_settled_epoch
+            .is_some_and(|epoch| epoch > state.current_epoch)
+        {
+            return Err("Staking V2 last-settled epoch is in the future".to_string());
+        }
+
+        for (validator, commission) in &state.commissions {
+            commission
+                .validate()
+                .map_err(|error| format!("validator {validator} commission state: {error}"))?;
+        }
+
+        let oldest_retained = state
+            .current_epoch
+            .saturating_sub(SLASHING_V2_EVIDENCE_WINDOW_EPOCHS);
+        if state.slash_exposure_snapshots.len() > (SLASHING_V2_EVIDENCE_WINDOW_EPOCHS as usize + 1)
+        {
+            return Err("too many Staking V2 slash-exposure snapshots retained".to_string());
+        }
+        let current_exposure = state
+            .slash_exposure_snapshots
+            .get(&state.current_epoch)
+            .ok_or_else(|| "current Staking V2 slash-exposure snapshot is missing".to_string())?;
+        for (epoch, snapshot) in &state.slash_exposure_snapshots {
+            if snapshot.epoch != *epoch {
+                return Err(format!(
+                    "slash-exposure snapshot key {} differs from embedded epoch {}",
+                    epoch, snapshot.epoch
+                ));
+            }
+            if snapshot.start_slot != epoch_start_slot(*epoch) {
+                return Err(format!(
+                    "slash-exposure epoch {} has invalid start slot {}",
+                    epoch, snapshot.start_slot
+                ));
+            }
+            if *epoch < oldest_retained || *epoch > state.current_epoch {
+                return Err(format!(
+                    "slash-exposure epoch {} is outside retained range {}..={}",
+                    epoch, oldest_retained, state.current_epoch
+                ));
+            }
+            for (validator, exposure) in &snapshot.validators {
+                if exposure.self_bond == 0 {
+                    return Err(format!(
+                        "validator {validator} has zero self-bond slash exposure in epoch {epoch}"
+                    ));
+                }
+                if exposure
+                    .delegations
+                    .iter()
+                    .any(|(delegator, amount)| delegator == validator || *amount == 0)
+                {
+                    return Err(format!(
+                        "validator {validator} has invalid delegated slash exposure in epoch {epoch}"
+                    ));
+                }
+                exposure.total()?;
+            }
+        }
+        if current_exposure.validators.len() != state.validators.len() {
+            return Err(
+                "current slash-exposure validator set differs from epoch accounting".to_string(),
+            );
+        }
+
+        let active_effective_stake =
+            state.validators.keys().try_fold(0u64, |total, validator| {
+                let stake = self.stakes.get(validator).ok_or_else(|| {
+                    format!("Staking V2 accounting references unknown validator {validator}")
+                })?;
+                total
+                    .checked_add(stake.total_stake())
+                    .ok_or_else(|| "active Staking V2 stake overflow".to_string())
+            })?;
+        let saturation_bps = validator_saturation_cap_bps(state.validators.len())?;
+        let saturation_limit = mul_div_ceil_u64(active_effective_stake, saturation_bps, 10_000)?;
+
+        for (validator, accounting) in &state.validators {
+            if accounting.validator != *validator {
+                return Err(format!(
+                    "Staking V2 validator key {} does not match accounting owner {}",
+                    validator, accounting.validator
+                ));
+            }
+            if accounting.leader_weight == 0 {
+                return Err(format!(
+                    "validator {validator} has zero epoch leader weight"
+                ));
+            }
+            if accounting.consensus_power == 0 {
+                return Err(format!(
+                    "validator {validator} has zero epoch consensus power"
+                ));
+            }
+            let exposure = current_exposure.validators.get(validator).ok_or_else(|| {
+                format!("validator {validator} is missing current slash exposure")
+            })?;
+            if exposure.total()? != accounting.consensus_power {
+                return Err(format!(
+                    "validator {} slash exposure {} differs from frozen power {}",
+                    validator,
+                    exposure.total()?,
+                    accounting.consensus_power
+                ));
+            }
+            if accounting.self_bond.last_checkpoint_slot < state.epoch_start_slot {
+                return Err(format!(
+                    "validator {validator} self-bond checkpoint predates the epoch"
+                ));
+            }
+            let stake = self.stakes.get(validator).ok_or_else(|| {
+                format!("Staking V2 accounting references unknown validator {validator}")
+            })?;
+            if stake.total_stake() > saturation_limit {
+                return Err(format!(
+                    "validator {} effective stake {} exceeds network saturation limit {}",
+                    validator,
+                    stake.total_stake(),
+                    saturation_limit
+                ));
+            }
+            if accounting.self_bond.amount != stake.amount {
+                return Err(format!(
+                    "validator {} self-bond accounting mismatch: state={}, pool={}",
+                    validator, accounting.self_bond.amount, stake.amount
+                ));
+            }
+            if accounting.production_baseline > stake.blocks_produced {
+                return Err(format!(
+                    "validator {validator} production baseline exceeds cumulative production"
+                ));
+            }
+            let commission = state.commissions.get(validator).ok_or_else(|| {
+                format!("validator {validator} has no committed commission schedule")
+            })?;
+            if accounting.commission_bps != commission.current_bps {
+                return Err(format!(
+                    "validator {} epoch commission {} differs from current schedule {}",
+                    validator, accounting.commission_bps, commission.current_bps
+                ));
+            }
+
+            let current_delegations = self.delegations.get(validator);
+            for (delegator, accumulator) in &accounting.delegations {
+                if *delegator == *validator {
+                    return Err(format!(
+                        "validator {validator} self-bond is duplicated in epoch delegations"
+                    ));
+                }
+                if accumulator.last_checkpoint_slot < state.epoch_start_slot {
+                    return Err(format!(
+                        "validator {validator} delegation checkpoint for {delegator} predates the epoch"
+                    ));
+                }
+                let current = current_delegations
+                    .and_then(|entries| entries.get(delegator))
+                    .copied()
+                    .unwrap_or(0);
+                if accumulator.amount != current {
+                    return Err(format!(
+                        "validator {} delegation accounting mismatch for {}: state={}, pool={}",
+                        validator, delegator, accumulator.amount, current
+                    ));
+                }
+            }
+            if let Some(current_delegations) = current_delegations {
+                for (delegator, amount) in current_delegations {
+                    if accounting
+                        .delegations
+                        .get(delegator)
+                        .map(|entry| entry.amount)
+                        != Some(*amount)
+                    {
+                        return Err(format!(
+                            "validator {validator} current delegation from {delegator} is absent from epoch accounting"
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn build_epoch_accounting(
+        &self,
+        validator: Pubkey,
+        epoch_start: u64,
+        commission_bps: u64,
+    ) -> Result<ValidatorEpochAccounting, String> {
+        let stake = self
+            .stakes
+            .get(&validator)
+            .ok_or_else(|| format!("active validator {validator} has no stake entry"))?;
+        if !stake.is_active || !stake.meets_minimum() {
+            return Err(format!(
+                "validator {validator} is not reward-eligible at epoch start"
+            ));
+        }
+        let delegations = self
+            .delegations
+            .get(&validator)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .map(|(delegator, amount)| {
+                        (*delegator, EpochStakeAccumulator::new(*amount, epoch_start))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let leader_weight = integer_sqrt(stake.total_stake().min(MAX_VALIDATOR_STAKE))
+            .checked_add(1)
+            .ok_or_else(|| "epoch leader weight overflow".to_string())?;
+        Ok(ValidatorEpochAccounting {
+            validator,
+            self_bond: EpochStakeAccumulator::new(stake.amount, epoch_start),
+            delegations,
+            production_baseline: stake.blocks_produced,
+            consensus_power: stake.total_stake(),
+            leader_weight,
+            commission_bps,
+        })
+    }
+
+    fn build_slash_exposure_snapshot(
+        epoch: u64,
+        start_slot: u64,
+        validators: &BTreeMap<Pubkey, ValidatorEpochAccounting>,
+    ) -> Result<EpochSlashExposureSnapshot, String> {
+        let mut exposures = BTreeMap::new();
+        for (validator, accounting) in validators {
+            let delegations = accounting
+                .delegations
+                .iter()
+                .filter_map(|(delegator, accumulator)| {
+                    (accumulator.amount > 0).then_some((*delegator, accumulator.amount))
+                })
+                .collect();
+            let exposure = ValidatorSlashExposure {
+                self_bond: accounting.self_bond.amount,
+                delegations,
+            };
+            if exposure.total()? != accounting.consensus_power {
+                return Err(format!(
+                    "validator {} slash exposure does not match frozen consensus power",
+                    validator
+                ));
+            }
+            exposures.insert(*validator, exposure);
+        }
+        Ok(EpochSlashExposureSnapshot {
+            epoch,
+            start_slot,
+            validators: exposures,
+        })
+    }
+
+    /// Initialize Staking V2 exactly once at a coordinated epoch boundary.
+    pub fn initialize_staking_v2(
+        &mut self,
+        activation_slot: u64,
+        active_validators: &[Pubkey],
+    ) -> Result<(), String> {
+        if self.staking_v2_state.is_some() {
+            return Err("Staking V2 state is already initialized".to_string());
+        }
+        if !activation_slot.is_multiple_of(SLOTS_PER_EPOCH) {
+            return Err("Staking V2 activation must be an epoch boundary".to_string());
+        }
+        self.validate_v2_invariants()?;
+
+        let current_epoch = slot_to_epoch(activation_slot);
+        let mut validators = BTreeMap::new();
+        let mut commissions = BTreeMap::new();
+        let mut seen = HashSet::with_capacity(active_validators.len());
+        for validator in active_validators {
+            if !seen.insert(*validator) {
+                return Err(format!("duplicate active validator {validator}"));
+            }
+            let commission = ValidatorCommissionState::new(current_epoch);
+            validators.insert(
+                *validator,
+                self.build_epoch_accounting(*validator, activation_slot, commission.current_bps)?,
+            );
+            commissions.insert(*validator, commission);
+        }
+        if validators.is_empty() {
+            return Err("Staking V2 cannot initialize without active validators".to_string());
+        }
+        let current_exposure =
+            Self::build_slash_exposure_snapshot(current_epoch, activation_slot, &validators)?;
+        let slash_exposure_snapshots = BTreeMap::from([(current_epoch, current_exposure)]);
+
+        self.staking_v2_state = Some(StakingV2EpochState {
+            version: STAKING_V2_STATE_VERSION,
+            activation_slot,
+            current_epoch,
+            epoch_start_slot: activation_slot,
+            validators,
+            commissions,
+            last_settled_epoch: current_epoch.checked_sub(1),
+            slash_exposure_snapshots,
+        });
+        self.validate_v2_invariants()
+    }
+
+    pub fn staking_v2_state(&self) -> Option<&StakingV2EpochState> {
+        self.staking_v2_state.as_ref()
+    }
+
+    /// Return the epoch-frozen proposer weight for a Staking V2 validator.
+    /// `None` means either V2 is inactive or the validator is outside the
+    /// active set committed for the current epoch.
+    pub fn staking_v2_leader_weight(&self, validator: &Pubkey) -> Option<u64> {
+        self.staking_v2_state
+            .as_ref()?
+            .validators
+            .get(validator)
+            .map(|accounting| accounting.leader_weight)
+    }
+
+    /// Return BFT voting power frozen for the current Staking V2 epoch.
+    pub fn staking_v2_consensus_power(&self, validator: &Pubkey) -> Option<u64> {
+        self.staking_v2_state
+            .as_ref()?
+            .validators
+            .get(validator)
+            .map(|accounting| accounting.consensus_power)
+    }
+
+    pub fn mossstake_allocations(&self) -> BTreeMap<Pubkey, u64> {
+        self.delegations
+            .iter()
+            .filter_map(|(validator, entries)| {
+                entries
+                    .get(&MOSSSTAKE_PROTOCOL_DELEGATOR)
+                    .copied()
+                    .map(|amount| (*validator, amount))
+            })
+            .collect()
+    }
+
+    pub fn mossstake_allocation_total(&self) -> Result<u64, String> {
+        self.mossstake_allocations()
+            .values()
+            .try_fold(0u64, |total, amount| {
+                total
+                    .checked_add(*amount)
+                    .ok_or_else(|| "MossStake allocation total overflow".to_string())
+            })
+    }
+
+    /// Maximum additional direct delegation currently accepted by one
+    /// validator under both the five-times-self-bond bound and the dynamic
+    /// network saturation bound. `None` means Staking V2 is not active.
+    pub fn staking_v2_delegation_capacity(
+        &self,
+        validator: &Pubkey,
+    ) -> Result<Option<u64>, String> {
+        let Some(state) = &self.staking_v2_state else {
+            return Ok(None);
+        };
+        if !state.validators.contains_key(validator) {
+            return Err(format!(
+                "validator {validator} is not active in the current Staking V2 epoch"
+            ));
+        }
+        let info = self
+            .stakes
+            .get(validator)
+            .ok_or_else(|| format!("validator {validator} has no stake entry"))?;
+        let current = info.total_stake();
+        let self_bond_limit = info
+            .amount
+            .checked_mul(MAX_VALIDATOR_EFFECTIVE_STAKE_MULTIPLIER)
+            .ok_or_else(|| format!("validator {validator} delegation capacity overflow"))?;
+        let maximum_addition = self_bond_limit.saturating_sub(current);
+        if maximum_addition == 0 {
+            return Ok(Some(0));
+        }
+
+        let active_effective_stake = state.validators.keys().try_fold(0u64, |total, active| {
+            let stake = self.stakes.get(active).ok_or_else(|| {
+                format!("Staking V2 accounting references unknown validator {active}")
+            })?;
+            total
+                .checked_add(stake.total_stake())
+                .ok_or_else(|| "active Staking V2 stake overflow".to_string())
+        })?;
+        let saturation_bps = validator_saturation_cap_bps(state.validators.len())?;
+        let accepts = |additional: u64| -> Result<bool, String> {
+            let final_validator_stake = current
+                .checked_add(additional)
+                .ok_or_else(|| "validator delegation candidate overflow".to_string())?;
+            let final_active_stake = active_effective_stake
+                .checked_add(additional)
+                .ok_or_else(|| "network delegation candidate overflow".to_string())?;
+            let network_limit = mul_div_ceil_u64(final_active_stake, saturation_bps, 10_000)?;
+            Ok(final_validator_stake <= network_limit)
+        };
+        if !accepts(0)? {
+            return Err(format!(
+                "validator {validator} already exceeds the Staking V2 saturation limit"
+            ));
+        }
+
+        let mut low = 0u64;
+        let mut high = maximum_addition;
+        while low < high {
+            let middle = low + (high - low).div_ceil(2);
+            if accepts(middle)? {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
+        }
+        Ok(Some(low))
+    }
+
+    /// Plan exact MossStake backing allocations by least saturation. Existing
+    /// Moss allocations are removed from the base before capacity is measured;
+    /// validator self-bond and direct delegations retain priority.
+    pub fn plan_mossstake_allocations(
+        &self,
+        target_backing: u64,
+        active_validators: &[Pubkey],
+    ) -> Result<BTreeMap<Pubkey, u64>, String> {
+        if active_validators.is_empty() {
+            return Err("MossStake allocation requires active validators".to_string());
+        }
+        let mut validators = active_validators.to_vec();
+        validators.sort_by_key(|validator| validator.0);
+        for pair in validators.windows(2) {
+            if pair[0] == pair[1] {
+                return Err(format!("duplicate MossStake validator {}", pair[0]));
+            }
+        }
+
+        let mut bases = BTreeMap::new();
+        let mut active_base_total = 0u64;
+        for validator in &validators {
+            let info = self
+                .stakes
+                .get(validator)
+                .ok_or_else(|| format!("MossStake validator {validator} has no stake entry"))?;
+            if !info.is_active || !info.meets_minimum() {
+                return Err(format!(
+                    "MossStake validator {validator} is not reward-eligible"
+                ));
+            }
+            let existing_moss = self
+                .delegations
+                .get(validator)
+                .and_then(|entries| entries.get(&MOSSSTAKE_PROTOCOL_DELEGATOR))
+                .copied()
+                .unwrap_or(0);
+            let base = info
+                .total_stake()
+                .checked_sub(existing_moss)
+                .ok_or_else(|| format!("validator {validator} Moss allocation underflow"))?;
+            active_base_total = active_base_total
+                .checked_add(base)
+                .ok_or_else(|| "MossStake active base overflow".to_string())?;
+            bases.insert(*validator, (base, info.amount));
+        }
+
+        let final_active_stake = active_base_total
+            .checked_add(target_backing)
+            .ok_or_else(|| "MossStake final active stake overflow".to_string())?;
+        let saturation_bps = validator_saturation_cap_bps(validators.len())?;
+        let network_limit = mul_div_ceil_u64(final_active_stake, saturation_bps, 10_000)?;
+        let mut limits = BTreeMap::new();
+        let mut total_capacity = 0u64;
+        for validator in &validators {
+            let (base, self_bond) = bases
+                .get(validator)
+                .copied()
+                .ok_or_else(|| "MossStake base disappeared".to_string())?;
+            let self_bond_limit = self_bond
+                .checked_mul(MAX_VALIDATOR_EFFECTIVE_STAKE_MULTIPLIER)
+                .ok_or_else(|| format!("validator {validator} Moss capacity overflow"))?;
+            let maximum = self_bond_limit.min(network_limit);
+            let capacity = maximum.saturating_sub(base);
+            total_capacity = total_capacity
+                .checked_add(capacity)
+                .ok_or_else(|| "MossStake capacity total overflow".to_string())?;
+            limits.insert(*validator, (base, maximum, capacity));
+        }
+        if target_backing > total_capacity {
+            return Err(format!(
+                "MossStake backing {} exceeds deterministic validator capacity {}",
+                target_backing, total_capacity
+            ));
+        }
+        if target_backing == 0 {
+            return Ok(BTreeMap::new());
+        }
+
+        const RATIO_SCALE: u64 = 1_000_000_000_000_000_000;
+        let allocation_total_at_ratio = |ratio: u64| -> Result<u64, String> {
+            validators.iter().try_fold(0u64, |total, validator| {
+                let (base, maximum, capacity) = limits
+                    .get(validator)
+                    .copied()
+                    .ok_or_else(|| "MossStake limit disappeared".to_string())?;
+                let saturated =
+                    ((maximum as u128).saturating_mul(ratio as u128) / RATIO_SCALE as u128) as u64;
+                let allocation = saturated.saturating_sub(base).min(capacity);
+                total
+                    .checked_add(allocation)
+                    .ok_or_else(|| "MossStake ratio allocation overflow".to_string())
+            })
+        };
+
+        let mut low = 0u64;
+        let mut high = RATIO_SCALE;
+        while low < high {
+            let middle = low + (high - low).div_ceil(2);
+            if allocation_total_at_ratio(middle)? <= target_backing {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
+        }
+
+        let mut allocations = BTreeMap::new();
+        let mut allocated = 0u64;
+        for validator in &validators {
+            let (base, maximum, capacity) = limits
+                .get(validator)
+                .copied()
+                .ok_or_else(|| "MossStake limit disappeared".to_string())?;
+            let saturated =
+                ((maximum as u128).saturating_mul(low as u128) / RATIO_SCALE as u128) as u64;
+            let allocation = saturated.saturating_sub(base).min(capacity);
+            if allocation > 0 {
+                allocations.insert(*validator, allocation);
+            }
+            allocated = allocated
+                .checked_add(allocation)
+                .ok_or_else(|| "MossStake planned allocation overflow".to_string())?;
+        }
+        let mut remaining = target_backing
+            .checked_sub(allocated)
+            .ok_or_else(|| "MossStake allocation remainder underflow".to_string())?;
+        let maximum_rounding_remainder = (validators.len() as u64)
+            .checked_mul(20)
+            .ok_or_else(|| "MossStake rounding bound overflow".to_string())?;
+        if remaining > maximum_rounding_remainder {
+            return Err(format!(
+                "MossStake allocator residual {} exceeds deterministic rounding bound {}",
+                remaining, maximum_rounding_remainder
+            ));
+        }
+        while remaining > 0 {
+            let mut candidates: Vec<_> = validators
+                .iter()
+                .filter_map(|validator| {
+                    let (base, maximum, capacity) = limits.get(validator).copied()?;
+                    let allocation = allocations.get(validator).copied().unwrap_or(0);
+                    (allocation < capacity).then_some((*validator, base, maximum, allocation))
+                })
+                .collect();
+            candidates.sort_by(|left, right| {
+                let left_numerator = (left.1 as u128) + (left.3 as u128);
+                let right_numerator = (right.1 as u128) + (right.3 as u128);
+                left_numerator
+                    .saturating_mul(right.2 as u128)
+                    .cmp(&right_numerator.saturating_mul(left.2 as u128))
+                    .then_with(|| left.0 .0.cmp(&right.0 .0))
+            });
+            let Some((validator, _, _, _)) = candidates.first().copied() else {
+                return Err("MossStake allocator exhausted capacity early".to_string());
+            };
+            let entry = allocations.entry(validator).or_insert(0);
+            *entry = entry
+                .checked_add(1)
+                .ok_or_else(|| "MossStake allocation increment overflow".to_string())?;
+            remaining -= 1;
+        }
+        Ok(allocations)
+    }
+
+    /// Atomically replace every protocol-owned MossStake delegation with the
+    /// deterministic least-saturated allocation for `target_backing`.
+    pub fn rebalance_mossstake_allocations(
+        &mut self,
+        target_backing: u64,
+        active_validators: &[Pubkey],
+        execution_slot: u64,
+    ) -> Result<BTreeMap<Pubkey, u64>, String> {
+        let allocations = self.plan_mossstake_allocations(target_backing, active_validators)?;
+        let mut updated = self.clone();
+        let existing_validators: Vec<_> = updated.delegations.keys().copied().collect();
+        let mut affected: HashSet<Pubkey> = HashSet::new();
+        for validator in existing_validators {
+            let existing = updated
+                .delegations
+                .get_mut(&validator)
+                .and_then(|entries| entries.remove(&MOSSSTAKE_PROTOCOL_DELEGATOR))
+                .unwrap_or(0);
+            if existing > 0 {
+                let info = updated.stakes.get_mut(&validator).ok_or_else(|| {
+                    format!("MossStake allocation references unknown validator {validator}")
+                })?;
+                info.delegated_amount = info
+                    .delegated_amount
+                    .checked_sub(existing)
+                    .ok_or_else(|| "MossStake validator delegation underflow".to_string())?;
+                info.is_active = info.meets_minimum();
+                updated.total_staked = updated
+                    .total_staked
+                    .checked_sub(existing)
+                    .ok_or_else(|| "MossStake network stake underflow".to_string())?;
+                affected.insert(validator);
+            }
+            if updated
+                .delegations
+                .get(&validator)
+                .is_some_and(HashMap::is_empty)
+            {
+                updated.delegations.remove(&validator);
+            }
+        }
+
+        for (validator, amount) in &allocations {
+            let info = updated
+                .stakes
+                .get_mut(validator)
+                .ok_or_else(|| format!("MossStake validator {validator} disappeared"))?;
+            info.delegated_amount = info
+                .delegated_amount
+                .checked_add(*amount)
+                .ok_or_else(|| "MossStake validator delegation overflow".to_string())?;
+            info.is_active = info.meets_minimum();
+            updated.total_staked = updated
+                .total_staked
+                .checked_add(*amount)
+                .ok_or_else(|| "MossStake network stake overflow".to_string())?;
+            updated
+                .delegations
+                .entry(*validator)
+                .or_default()
+                .insert(MOSSSTAKE_PROTOCOL_DELEGATOR, *amount);
+            affected.insert(*validator);
+        }
+        for validator in affected {
+            updated.checkpoint_staking_v2_validator_inner(&validator, execution_slot)?;
+        }
+        updated.validate_v2_invariants()?;
+        if updated.mossstake_allocation_total()? != target_backing {
+            return Err("MossStake allocation does not reconcile to backing".to_string());
+        }
+        *self = updated;
+        Ok(allocations)
+    }
+
+    /// Checkpoint current pool ownership after an atomic stake mutation. Zeroed
+    /// entries remain until epoch close so their earlier stake-time is retained.
+    pub fn checkpoint_staking_v2_validator(
+        &mut self,
+        validator: &Pubkey,
+        execution_slot: u64,
+    ) -> Result<(), String> {
+        self.checkpoint_staking_v2_validator_inner(validator, execution_slot)?;
+        self.validate_v2_invariants()
+    }
+
+    fn checkpoint_staking_v2_validator_inner(
+        &mut self,
+        validator: &Pubkey,
+        execution_slot: u64,
+    ) -> Result<(), String> {
+        let Some(state) = self.staking_v2_state.as_ref() else {
+            return Ok(());
+        };
+        if execution_slot < state.epoch_start_slot {
+            return Err("Staking V2 checkpoint predates current epoch".to_string());
+        }
+        if !state.validators.contains_key(validator) {
+            return Err(format!(
+                "validator {validator} is not active in current Staking V2 epoch"
+            ));
+        }
+
+        let stake = self
+            .stakes
+            .get(validator)
+            .ok_or_else(|| format!("validator {validator} disappeared during checkpoint"))?;
+        let self_bond = stake.amount;
+        let current_delegations = self.delegations.get(validator).cloned().unwrap_or_default();
+        let state = self
+            .staking_v2_state
+            .as_mut()
+            .ok_or_else(|| "Staking V2 state disappeared during checkpoint".to_string())?;
+        let accounting = state
+            .validators
+            .get_mut(validator)
+            .ok_or_else(|| "Staking V2 validator accounting disappeared".to_string())?;
+        accounting.self_bond.set_amount(execution_slot, self_bond)?;
+
+        let mut owners: HashSet<Pubkey> = accounting.delegations.keys().copied().collect();
+        owners.extend(current_delegations.keys().copied());
+        for delegator in owners {
+            let amount = current_delegations.get(&delegator).copied().unwrap_or(0);
+            accounting
+                .delegations
+                .entry(delegator)
+                .or_insert_with(|| EpochStakeAccumulator::new(0, state.epoch_start_slot))
+                .set_amount(execution_slot, amount)?;
+        }
+        Ok(())
+    }
+
+    /// Build the immutable completed-epoch denominator, commission, and
+    /// production inputs. This does not mutate state.
+    pub fn staking_v2_epoch_reward_inputs(
+        &self,
+        epoch_end_slot: u64,
+    ) -> Result<StakingV2EpochRewardInputs, String> {
+        self.validate_v2_invariants()?;
+        let state = self
+            .staking_v2_state
+            .as_ref()
+            .ok_or_else(|| "Staking V2 state is not initialized".to_string())?;
+        let expected_end = state
+            .epoch_start_slot
+            .checked_add(SLOTS_PER_EPOCH)
+            .ok_or_else(|| "Staking V2 epoch end overflow".to_string())?;
+        if epoch_end_slot != expected_end {
+            return Err(format!(
+                "Staking V2 epoch {} closes at {}, not {}",
+                state.current_epoch, expected_end, epoch_end_slot
+            ));
+        }
+
+        let total_leader_weight = state.validators.values().try_fold(0u64, |total, entry| {
+            total
+                .checked_add(entry.leader_weight)
+                .ok_or_else(|| "epoch leader-weight total overflow".to_string())
+        })?;
+        if total_leader_weight == 0 {
+            return Err("completed epoch has zero leader weight".to_string());
+        }
+
+        let mut expected_distributed = 0u64;
+        let validator_count = state.validators.len();
+        let mut validators = Vec::with_capacity(validator_count);
+        let mut performance_bps = BTreeMap::new();
+        let mut commission_bps = BTreeMap::new();
+        for (index, (validator, accounting)) in state.validators.iter().enumerate() {
+            let expected_blocks = if index + 1 == validator_count {
+                SLOTS_PER_EPOCH
+                    .checked_sub(expected_distributed)
+                    .ok_or_else(|| "expected block remainder underflow".to_string())?
+            } else {
+                ((SLOTS_PER_EPOCH as u128).saturating_mul(accounting.leader_weight as u128)
+                    / total_leader_weight as u128) as u64
+            };
+            expected_distributed = expected_distributed
+                .checked_add(expected_blocks)
+                .ok_or_else(|| "expected block total overflow".to_string())?;
+            let produced = self
+                .stakes
+                .get(validator)
+                .ok_or_else(|| format!("validator {validator} disappeared before settlement"))?
+                .blocks_produced
+                .checked_sub(accounting.production_baseline)
+                .ok_or_else(|| format!("validator {validator} production counter regressed"))?;
+            let performance = if expected_blocks == 0 {
+                10_000
+            } else {
+                ((produced as u128).saturating_mul(10_000) / expected_blocks as u128).min(10_000)
+                    as u64
+            };
+            performance_bps.insert(*validator, performance);
+            commission_bps.insert(*validator, accounting.commission_bps);
+
+            let average_self_bond = accounting
+                .self_bond
+                .average_amount(epoch_end_slot, state.epoch_start_slot)?;
+            let mut average_delegations = Vec::new();
+            for (delegator, accumulator) in &accounting.delegations {
+                let average = accumulator.average_amount(epoch_end_slot, state.epoch_start_slot)?;
+                if average > 0 {
+                    average_delegations.push((*delegator, average));
+                }
+            }
+            validators.push(ValidatorEpochStakeWeight {
+                validator: *validator,
+                average_self_bond,
+                average_delegations,
+            });
+        }
+        if expected_distributed != SLOTS_PER_EPOCH {
+            return Err("expected block accounting does not cover the epoch".to_string());
+        }
+
+        Ok(StakingV2EpochRewardInputs {
+            stake_weights: EpochStakeWeightSnapshot {
+                epoch: state.current_epoch,
+                start_slot: state.epoch_start_slot,
+                end_slot: epoch_end_slot,
+                validators,
+            },
+            performance_bps,
+            commission_bps,
+        })
+    }
+
+    /// Queue a bounded commission change with a two-complete-epoch notice.
+    pub fn request_staking_v2_commission_change(
+        &mut self,
+        validator: &Pubkey,
+        commission_bps: u64,
+    ) -> Result<PendingValidatorCommission, String> {
+        let state = self
+            .staking_v2_state
+            .as_mut()
+            .ok_or_else(|| "Staking V2 state is not initialized".to_string())?;
+        let schedule = state.commissions.get_mut(validator).ok_or_else(|| {
+            format!("validator {validator} has no Staking V2 commission schedule")
+        })?;
+        if schedule.pending.is_some() {
+            return Err("validator already has a pending commission change".to_string());
+        }
+        if commission_bps > MAX_VALIDATOR_COMMISSION_BPS {
+            return Err(format!(
+                "validator commission {} exceeds maximum {}",
+                commission_bps, MAX_VALIDATOR_COMMISSION_BPS
+            ));
+        }
+        if schedule.current_bps.abs_diff(commission_bps)
+            > MAX_VALIDATOR_COMMISSION_CHANGE_BPS_PER_EPOCH
+        {
+            return Err(format!(
+                "validator commission can change by at most {} basis points per request",
+                MAX_VALIDATOR_COMMISSION_CHANGE_BPS_PER_EPOCH
+            ));
+        }
+        let pending = PendingValidatorCommission {
+            commission_bps,
+            activation_epoch: state
+                .current_epoch
+                .checked_add(VALIDATOR_COMMISSION_CHANGE_DELAY_EPOCHS)
+                .ok_or_else(|| "commission activation epoch overflow".to_string())?,
+        };
+        schedule.pending = Some(pending.clone());
+        self.validate_v2_invariants()?;
+        Ok(pending)
+    }
+
+    /// Close the current accounting epoch after successful reward settlement
+    /// and initialize exact stake-time baselines for the next active set.
+    pub fn advance_staking_v2_epoch(
+        &mut self,
+        epoch_end_slot: u64,
+        active_validators: &[Pubkey],
+    ) -> Result<(), String> {
+        self.validate_v2_invariants()?;
+        let previous = self
+            .staking_v2_state
+            .clone()
+            .ok_or_else(|| "Staking V2 state is not initialized".to_string())?;
+        if previous.last_settled_epoch != Some(previous.current_epoch) {
+            return Err(format!(
+                "cannot advance unsettled Staking V2 epoch {}",
+                previous.current_epoch
+            ));
+        }
+        let expected_end = previous
+            .epoch_start_slot
+            .checked_add(SLOTS_PER_EPOCH)
+            .ok_or_else(|| "Staking V2 epoch end overflow".to_string())?;
+        if epoch_end_slot != expected_end {
+            return Err(format!(
+                "cannot advance Staking V2 epoch at {}; expected {}",
+                epoch_end_slot, expected_end
+            ));
+        }
+        let next_epoch = previous
+            .current_epoch
+            .checked_add(1)
+            .ok_or_else(|| "Staking V2 epoch overflow".to_string())?;
+
+        let mut slash_exposure_snapshots = previous.slash_exposure_snapshots.clone();
+        let mut commissions = previous.commissions;
+        for schedule in commissions.values_mut() {
+            if schedule
+                .pending
+                .as_ref()
+                .is_some_and(|pending| pending.activation_epoch <= next_epoch)
+            {
+                let pending = schedule
+                    .pending
+                    .take()
+                    .ok_or_else(|| "pending commission disappeared".to_string())?;
+                schedule.current_bps = pending.commission_bps;
+                schedule.last_activated_epoch = next_epoch;
+            }
+        }
+
+        let mut seen = HashSet::with_capacity(active_validators.len());
+        let mut validators = BTreeMap::new();
+        for validator in active_validators {
+            if !seen.insert(*validator) {
+                return Err(format!("duplicate next-epoch validator {validator}"));
+            }
+            let schedule = commissions
+                .entry(*validator)
+                .or_insert_with(|| ValidatorCommissionState::new(next_epoch));
+            validators.insert(
+                *validator,
+                self.build_epoch_accounting(*validator, epoch_end_slot, schedule.current_bps)?,
+            );
+        }
+        if validators.is_empty() {
+            return Err("cannot advance Staking V2 without active validators".to_string());
+        }
+        let current_exposure =
+            Self::build_slash_exposure_snapshot(next_epoch, epoch_end_slot, &validators)?;
+        slash_exposure_snapshots.insert(next_epoch, current_exposure);
+        let oldest_retained = next_epoch.saturating_sub(SLASHING_V2_EVIDENCE_WINDOW_EPOCHS);
+        slash_exposure_snapshots.retain(|epoch, _| *epoch >= oldest_retained);
+
+        self.staking_v2_state = Some(StakingV2EpochState {
+            version: STAKING_V2_STATE_VERSION,
+            activation_slot: previous.activation_slot,
+            current_epoch: next_epoch,
+            epoch_start_slot: epoch_end_slot,
+            validators,
+            commissions,
+            last_settled_epoch: Some(previous.current_epoch),
+            slash_exposure_snapshots,
+        });
+        self.validate_v2_invariants()
     }
 
     /// Register stake for a validator
@@ -1423,6 +3055,222 @@ impl StakePool {
         }
     }
 
+    /// Apply a proof-verified Staking V2 equivocation fraction to the exact
+    /// owner liabilities that supplied the offender's frozen epoch power.
+    /// Cooling-down stake is consumed before active stake so post-offense
+    /// top-ups are not charged while original bonded value remains locked.
+    ///
+    /// MossStake's pooled loss is returned to the processor for atomic
+    /// settlement against `MossStakePool`; no synthetic protocol account is
+    /// debited here.
+    pub fn apply_staking_v2_equivocation_slash(
+        &mut self,
+        validator: &Pubkey,
+        offense_slot: u64,
+        slash_percent: u64,
+        execution_slot: u64,
+    ) -> Result<StakingV2SlashSettlement, String> {
+        if slash_percent == 0 || slash_percent > 100 {
+            return Err(format!(
+                "Staking V2 slash percentage must be in 1..=100, found {slash_percent}"
+            ));
+        }
+        if offense_slot > execution_slot {
+            return Err("Staking V2 slash offense is in the future".to_string());
+        }
+        if execution_slot - offense_slot > SLASHING_V2_EVIDENCE_WINDOW_SLOTS {
+            return Err("Staking V2 slashing evidence is outside its window".to_string());
+        }
+        self.validate_v2_invariants()?;
+
+        let offense_epoch = slot_to_epoch(offense_slot);
+        let state = self
+            .staking_v2_state
+            .as_ref()
+            .ok_or_else(|| "Staking V2 state is not initialized".to_string())?;
+        let snapshot = state
+            .slash_exposure_snapshots
+            .get(&offense_epoch)
+            .ok_or_else(|| {
+                format!("no slash-exposure snapshot retained for epoch {offense_epoch}")
+            })?;
+        let exposure = snapshot.validators.get(validator).ok_or_else(|| {
+            format!("validator {validator} had no frozen power in epoch {offense_epoch}")
+        })?;
+        let snapshot_start_slot = snapshot.start_slot;
+        let mut owners = exposure.delegations.clone();
+        if owners.insert(*validator, exposure.self_bond).is_some() {
+            return Err("validator self-bond is duplicated in slash exposure".to_string());
+        }
+
+        let mut updated = self.clone();
+        let mut owner_losses = Vec::new();
+        let mut mossstake_requested_loss = 0u64;
+        let mut active_loss_total = 0u64;
+        let mut native_loss_total = 0u64;
+
+        for (owner, owner_exposure) in owners {
+            let requested_loss = u64::try_from(
+                (owner_exposure as u128)
+                    .checked_mul(slash_percent as u128)
+                    .ok_or_else(|| "slash exposure multiplication overflow".to_string())?
+                    / 100,
+            )
+            .map_err(|_| "slash exposure exceeds u64".to_string())?;
+            if requested_loss == 0 {
+                continue;
+            }
+            if owner == MOSSSTAKE_PROTOCOL_DELEGATOR {
+                mossstake_requested_loss = requested_loss;
+                continue;
+            }
+
+            let request_key = (*validator, owner);
+            let cooling_down_stake = updated
+                .unstake_requests
+                .get(&request_key)
+                .filter(|request| {
+                    request
+                        .unlock_slot
+                        .checked_sub(UNSTAKE_COOLDOWN_SLOTS)
+                        .is_some_and(|requested_at| requested_at >= snapshot_start_slot)
+                })
+                .map(|request| request.amount.min(requested_loss))
+                .unwrap_or(0);
+            if cooling_down_stake > 0 {
+                let remove_request = {
+                    let request = updated
+                        .unstake_requests
+                        .get_mut(&request_key)
+                        .ok_or_else(|| "slashable unstake request disappeared".to_string())?;
+                    request.amount = request
+                        .amount
+                        .checked_sub(cooling_down_stake)
+                        .ok_or_else(|| "slashable unstake request underflow".to_string())?;
+                    request.amount == 0
+                };
+                if remove_request {
+                    updated.unstake_requests.remove(&request_key);
+                }
+            }
+
+            let remaining = requested_loss
+                .checked_sub(cooling_down_stake)
+                .ok_or_else(|| "cooling-down slash exceeds requested loss".to_string())?;
+            let active_stake = if owner == *validator {
+                let info = updated
+                    .stakes
+                    .get_mut(validator)
+                    .ok_or_else(|| format!("validator {validator} stake is missing"))?;
+                info.slash(remaining)
+            } else {
+                let delegated = updated
+                    .delegations
+                    .get(validator)
+                    .and_then(|entries| entries.get(&owner))
+                    .copied()
+                    .unwrap_or(0);
+                let active_loss = delegated.min(remaining);
+                if active_loss > 0 {
+                    let remove_delegator = {
+                        let entries = updated
+                            .delegations
+                            .get_mut(validator)
+                            .ok_or_else(|| "validator delegation map disappeared".to_string())?;
+                        let amount = entries
+                            .get_mut(&owner)
+                            .ok_or_else(|| "delegator stake disappeared".to_string())?;
+                        *amount = amount
+                            .checked_sub(active_loss)
+                            .ok_or_else(|| "delegator slash underflow".to_string())?;
+                        *amount == 0
+                    };
+                    if remove_delegator {
+                        if let Some(entries) = updated.delegations.get_mut(validator) {
+                            entries.remove(&owner);
+                        }
+                    }
+                    if updated
+                        .delegations
+                        .get(validator)
+                        .is_some_and(HashMap::is_empty)
+                    {
+                        updated.delegations.remove(validator);
+                    }
+                    let info = updated
+                        .stakes
+                        .get_mut(validator)
+                        .ok_or_else(|| format!("validator {validator} stake is missing"))?;
+                    info.delegated_amount = info
+                        .delegated_amount
+                        .checked_sub(active_loss)
+                        .ok_or_else(|| "validator delegated stake underflow".to_string())?;
+                }
+                active_loss
+            };
+
+            let actual_loss = active_stake
+                .checked_add(cooling_down_stake)
+                .ok_or_else(|| "owner slash loss overflow".to_string())?;
+            if actual_loss == 0 {
+                continue;
+            }
+            active_loss_total = active_loss_total
+                .checked_add(active_stake)
+                .ok_or_else(|| "active slash total overflow".to_string())?;
+            native_loss_total = native_loss_total
+                .checked_add(actual_loss)
+                .ok_or_else(|| "native slash total overflow".to_string())?;
+            owner_losses.push(StakingV2SlashOwnerLoss {
+                owner,
+                active_stake,
+                cooling_down_stake,
+            });
+        }
+
+        let offender = updated
+            .stakes
+            .get_mut(validator)
+            .ok_or_else(|| format!("validator {validator} stake is missing"))?;
+        offender.is_active = false;
+        updated.total_staked = updated
+            .total_staked
+            .checked_sub(active_loss_total)
+            .ok_or_else(|| "network active stake underflow during slash".to_string())?;
+        updated.total_slashed = updated
+            .total_slashed
+            .checked_add(native_loss_total)
+            .ok_or_else(|| "network slashed total overflow".to_string())?;
+        if updated
+            .staking_v2_state
+            .as_ref()
+            .is_some_and(|state| state.validators.contains_key(validator))
+        {
+            updated.checkpoint_staking_v2_validator_inner(validator, execution_slot)?;
+        }
+        updated.validate_v2_invariants()?;
+        *self = updated;
+
+        Ok(StakingV2SlashSettlement {
+            validator: *validator,
+            offense_epoch,
+            slash_percent,
+            owner_losses,
+            mossstake_requested_loss,
+        })
+    }
+
+    /// Record a pooled slash settled in MossStake state. Active Moss backing is
+    /// reconciled through `rebalance_mossstake_allocations`; this method records
+    /// the full active-plus-cooling-down loss in network slashing statistics.
+    pub fn record_staking_v2_external_slash(&mut self, amount: u64) -> Result<(), String> {
+        self.total_slashed = self
+            .total_slashed
+            .checked_add(amount)
+            .ok_or_else(|| "network slashed total overflow".to_string())?;
+        Ok(())
+    }
+
     /// Top up a validator's stake after slashing (recovery mechanism).
     /// Unlike `stake()`, this does not require meeting MIN_VALIDATOR_STAKE upfront.
     /// The validator must already exist in the stake pool.
@@ -1482,6 +3330,68 @@ impl StakePool {
         entries
     }
 
+    /// Encode the RocksDB singleton row. Before activation this deliberately
+    /// emits the byte-for-byte legacy struct shape so the signed rollback
+    /// binary remains usable. The versioned envelope starts only once V2 state
+    /// exists and legacy rollback is no longer consensus-safe.
+    pub fn storage_bytes(&self) -> Result<Vec<u8>, String> {
+        if self.staking_v2_state.is_none() {
+            return serialize_legacy_bincode(
+                &StakePoolStorageV1 {
+                    stakes: self.stakes.clone(),
+                    total_staked: self.total_staked,
+                    total_slashed: self.total_slashed,
+                    unstake_requests: self.unstake_requests.clone(),
+                    delegations: self.delegations.clone(),
+                    fingerprint_registry: self.fingerprint_registry.clone(),
+                    bootstrap_grants_issued: self.bootstrap_grants_issued,
+                },
+                "legacy stake pool storage",
+            );
+        }
+
+        let encoded = serialize_legacy_bincode(self, "stake pool storage v2")?;
+        let mut envelope = Vec::with_capacity(STAKE_POOL_STORAGE_V2_MAGIC.len() + encoded.len());
+        envelope.extend_from_slice(STAKE_POOL_STORAGE_V2_MAGIC);
+        envelope.extend_from_slice(&encoded);
+        Ok(envelope)
+    }
+
+    /// Decode either the exact deployed storage layout or the post-activation
+    /// versioned envelope.
+    pub fn from_storage_bytes(data: &[u8]) -> Result<Self, String> {
+        let pool = if let Some(encoded) = data.strip_prefix(STAKE_POOL_STORAGE_V2_MAGIC) {
+            deserialize_legacy_bincode_strict(
+                encoded,
+                encoded.len() as u64,
+                "stake pool storage v2",
+            )?
+        } else {
+            let legacy: StakePoolStorageV1 = deserialize_legacy_bincode_strict(
+                data,
+                data.len() as u64,
+                "legacy stake pool storage",
+            )?;
+            Self {
+                stakes: legacy.stakes,
+                total_staked: legacy.total_staked,
+                total_slashed: legacy.total_slashed,
+                unstake_requests: legacy.unstake_requests,
+                delegations: legacy.delegations,
+                fingerprint_registry: legacy.fingerprint_registry,
+                bootstrap_grants_issued: legacy.bootstrap_grants_issued,
+                staking_v2_state: None,
+            }
+        };
+
+        if pool.staking_v2_state.is_some() {
+            pool.validate_v2_invariants()?;
+        } else {
+            pool.validate_invariants()?;
+        }
+        Ok(pool)
+    }
+
     pub fn canonical_snapshot_bytes(&self) -> Result<Vec<u8>, String> {
         let mut unstake_requests: Vec<_> = self
             .unstake_requests
@@ -1511,52 +3421,161 @@ impl StakePool {
             .collect();
         fingerprint_registry.sort_by_key(|(fingerprint, _)| *fingerprint);
 
-        let snapshot = StakePoolSnapshotV1 {
-            version: 1,
-            total_staked: self.total_staked,
-            total_slashed: self.total_slashed,
-            bootstrap_grants_issued: self.bootstrap_grants_issued,
-            stakes: self.stake_entries(),
-            unstake_requests,
-            delegations,
-            fingerprint_registry,
-        };
-
-        serialize_legacy_bincode(&snapshot, "stake pool canonical snapshot")
+        match &self.staking_v2_state {
+            Some(staking_v2_state) => serialize_legacy_bincode(
+                &StakePoolSnapshotV2 {
+                    version: 2,
+                    total_staked: self.total_staked,
+                    total_slashed: self.total_slashed,
+                    bootstrap_grants_issued: self.bootstrap_grants_issued,
+                    stakes: self.stake_entries(),
+                    unstake_requests,
+                    delegations,
+                    fingerprint_registry,
+                    staking_v2_state: staking_v2_state.clone(),
+                },
+                "stake pool canonical snapshot v2",
+            ),
+            None => serialize_legacy_bincode(
+                &StakePoolSnapshotV1 {
+                    version: 1,
+                    total_staked: self.total_staked,
+                    total_slashed: self.total_slashed,
+                    bootstrap_grants_issued: self.bootstrap_grants_issued,
+                    stakes: self.stake_entries(),
+                    unstake_requests,
+                    delegations,
+                    fingerprint_registry,
+                },
+                "stake pool canonical snapshot v1",
+            ),
+        }
     }
 
     pub fn from_canonical_snapshot_bytes(data: &[u8]) -> Result<Self, String> {
-        let snapshot: StakePoolSnapshotV1 =
-            deserialize_legacy_bincode_strict(data, data.len() as u64, "stake pool snapshot v1")?;
-        if snapshot.version != 1 {
-            return Err(format!(
-                "unsupported stake pool snapshot version {}",
-                snapshot.version
-            ));
+        match data.first().copied() {
+            Some(1) => {
+                let snapshot: StakePoolSnapshotV1 = deserialize_legacy_bincode_strict(
+                    data,
+                    data.len() as u64,
+                    "stake pool snapshot v1",
+                )?;
+                Self::from_snapshot_parts(
+                    snapshot.total_staked,
+                    snapshot.total_slashed,
+                    snapshot.bootstrap_grants_issued,
+                    snapshot.stakes,
+                    snapshot.unstake_requests,
+                    snapshot.delegations,
+                    snapshot.fingerprint_registry,
+                    None,
+                )
+            }
+            Some(2) => {
+                let snapshot: StakePoolSnapshotV2 = deserialize_legacy_bincode_strict(
+                    data,
+                    data.len() as u64,
+                    "stake pool snapshot v2",
+                )?;
+                Self::from_snapshot_parts(
+                    snapshot.total_staked,
+                    snapshot.total_slashed,
+                    snapshot.bootstrap_grants_issued,
+                    snapshot.stakes,
+                    snapshot.unstake_requests,
+                    snapshot.delegations,
+                    snapshot.fingerprint_registry,
+                    Some(snapshot.staking_v2_state),
+                )
+            }
+            Some(version) => Err(format!("unsupported stake pool snapshot version {version}")),
+            None => Err("stake pool snapshot is empty".to_string()),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_snapshot_parts(
+        total_staked: u64,
+        total_slashed: u64,
+        bootstrap_grants_issued: u64,
+        stake_entries: Vec<StakeInfo>,
+        request_entries: Vec<((Pubkey, Pubkey), UnstakeRequest)>,
+        delegation_entries: Vec<(Pubkey, Vec<(Pubkey, u64)>)>,
+        fingerprint_entries: Vec<([u8; 32], Pubkey)>,
+        staking_v2_state: Option<StakingV2EpochState>,
+    ) -> Result<Self, String> {
+        let mut stake_keys = HashSet::with_capacity(stake_entries.len());
+        for entry in &stake_entries {
+            if !stake_keys.insert(entry.validator) {
+                return Err(format!(
+                    "duplicate stake entry for validator {}",
+                    entry.validator
+                ));
+            }
+        }
+        let mut request_keys = HashSet::with_capacity(request_entries.len());
+        for (key, _) in &request_entries {
+            if !request_keys.insert(*key) {
+                return Err(format!(
+                    "duplicate unstake request for validator {} and staker {}",
+                    key.0, key.1
+                ));
+            }
+        }
+        let mut delegation_validators = HashSet::with_capacity(delegation_entries.len());
+        for (validator, entries) in &delegation_entries {
+            if !delegation_validators.insert(*validator) {
+                return Err(format!(
+                    "duplicate delegation map for validator {validator}"
+                ));
+            }
+            let mut delegators = HashSet::with_capacity(entries.len());
+            for (delegator, _) in entries {
+                if !delegators.insert(*delegator) {
+                    return Err(format!(
+                        "duplicate delegation for validator {} and delegator {}",
+                        validator, delegator
+                    ));
+                }
+            }
+        }
+        let mut fingerprints = HashSet::with_capacity(fingerprint_entries.len());
+        for (fingerprint, _) in &fingerprint_entries {
+            if !fingerprints.insert(*fingerprint) {
+                return Err(format!(
+                    "duplicate machine fingerprint {}",
+                    hex::encode(fingerprint)
+                ));
+            }
         }
 
-        let stakes = snapshot
-            .stakes
+        let stakes = stake_entries
             .into_iter()
             .map(|entry| (entry.validator, entry))
             .collect();
-        let unstake_requests = snapshot.unstake_requests.into_iter().collect();
-        let delegations = snapshot
-            .delegations
+        let unstake_requests = request_entries.into_iter().collect();
+        let delegations = delegation_entries
             .into_iter()
             .map(|(validator, entries)| (validator, entries.into_iter().collect()))
             .collect();
-        let fingerprint_registry = snapshot.fingerprint_registry.into_iter().collect();
+        let fingerprint_registry = fingerprint_entries.into_iter().collect();
 
-        Ok(Self {
+        let pool = Self {
             stakes,
-            total_staked: snapshot.total_staked,
-            total_slashed: snapshot.total_slashed,
+            total_staked,
+            total_slashed,
             unstake_requests,
             delegations,
             fingerprint_registry,
-            bootstrap_grants_issued: snapshot.bootstrap_grants_issued,
-        })
+            bootstrap_grants_issued,
+            staking_v2_state,
+        };
+        if pool.staking_v2_state.is_some() {
+            pool.validate_v2_invariants()?;
+        } else {
+            pool.validate_invariants()?;
+        }
+        Ok(pool)
     }
 
     /// Get total stake in the network (already excludes pending unstakes)
@@ -1571,6 +3590,19 @@ impl StakePool {
     /// Pending unstakes do NOT dilute active stakers.
     pub fn active_stake(&self) -> u64 {
         self.total_staked
+    }
+
+    /// Staking V2 reward-eligible stake. Inactive or below-minimum entries are
+    /// excluded from both the budget input and reward denominator.
+    pub fn reward_eligible_stake(&self) -> Result<u64, String> {
+        self.stakes
+            .values()
+            .filter(|info| info.is_active && info.meets_minimum())
+            .try_fold(0u64, |total, info| {
+                total
+                    .checked_add(info.total_stake())
+                    .ok_or_else(|| "reward-eligible stake total overflow".to_string())
+            })
     }
 
     /// Get the total amount currently locked in pending unstake requests (T6.3).
@@ -1719,10 +3751,14 @@ impl StakePool {
     }
 
     /// Record block production (for achievements)
-    pub fn record_block_produced(&mut self, validator: &Pubkey) {
+    pub fn record_block_produced(&mut self, validator: &Pubkey) -> Result<(), String> {
         if let Some(stake_info) = self.stakes.get_mut(validator) {
-            stake_info.blocks_produced += 1;
+            stake_info.blocks_produced = stake_info
+                .blocks_produced
+                .checked_add(1)
+                .ok_or_else(|| format!("validator {validator} production counter overflow"))?;
         }
+        Ok(())
     }
 
     /// Delegate stake to a fully vested validator
@@ -1732,6 +3768,10 @@ impl StakePool {
         validator: &Pubkey,
         amount: u64,
     ) -> Result<(), String> {
+        if amount == 0 {
+            return Err("Delegation amount must be greater than zero".to_string());
+        }
+
         // Check validator is fully vested
         let stake_info = self
             .stakes
@@ -1742,23 +3782,60 @@ impl StakePool {
             return Err("Validator still bootstrapping, cannot accept delegations".to_string());
         }
 
+        let maximum_effective_stake = stake_info
+            .amount
+            .checked_mul(MAX_VALIDATOR_EFFECTIVE_STAKE_MULTIPLIER)
+            .ok_or_else(|| "Validator effective-stake cap overflow".to_string())?;
+        let new_effective_stake = stake_info
+            .total_stake()
+            .checked_add(amount)
+            .ok_or_else(|| "Validator effective stake overflow".to_string())?;
+        if new_effective_stake > maximum_effective_stake {
+            return Err(format!(
+                "Delegation would exceed validator effective-stake cap: requested={}, resulting={}, cap={}",
+                amount, new_effective_stake, maximum_effective_stake
+            ));
+        }
+        if let Some(capacity) = self.staking_v2_delegation_capacity(validator)? {
+            if amount > capacity {
+                return Err(format!(
+                    "Delegation would exceed validator saturation: requested={}, remaining_capacity={}",
+                    amount, capacity
+                ));
+            }
+        }
+
+        let new_total_staked = self
+            .total_staked
+            .checked_add(amount)
+            .ok_or_else(|| "Network total stake overflow".to_string())?;
+        let prior_delegation = self
+            .delegations
+            .get(validator)
+            .and_then(|entries| entries.get(&delegator))
+            .copied()
+            .unwrap_or(0);
+        let new_delegation = prior_delegation
+            .checked_add(amount)
+            .ok_or_else(|| "Delegator stake overflow".to_string())?;
+
         // Update validator's delegated amount
-        // AUDIT-FIX A-3: Use saturating_add to prevent overflow
         if let Some(stake_info) = self.stakes.get_mut(validator) {
-            stake_info.delegated_amount = stake_info.delegated_amount.saturating_add(amount);
+            stake_info.delegated_amount = stake_info
+                .delegated_amount
+                .checked_add(amount)
+                .ok_or_else(|| "Validator delegated stake overflow".to_string())?;
             // AUDIT-FIX A-1: Update is_active after delegation changes total stake
             stake_info.is_active = stake_info.meets_minimum();
         }
 
         // Delegations contribute to total active stake (used as denominator
         // in reward distribution and voting power calculations).
-        self.total_staked = self.total_staked.saturating_add(amount);
+        self.total_staked = new_total_staked;
 
         // Track individual delegation
-        // AUDIT-FIX A-3: Use saturating_add to prevent overflow
         let validator_delegations = self.delegations.entry(*validator).or_default();
-        let entry = validator_delegations.entry(delegator).or_insert(0);
-        *entry = entry.saturating_add(amount);
+        validator_delegations.insert(delegator, new_delegation);
 
         Ok(())
     }
@@ -1770,6 +3847,10 @@ impl StakePool {
         validator: &Pubkey,
         amount: u64,
     ) -> Result<(), String> {
+        if amount == 0 {
+            return Err("Undelegation amount must be greater than zero".to_string());
+        }
+
         // Check delegator has sufficient delegation
         let delegated = self
             .delegations
@@ -1813,6 +3894,52 @@ impl StakePool {
         }
 
         Ok(())
+    }
+
+    /// Begin cooldown for an exact owned delegation. The delegation stops
+    /// contributing voting weight and rewards immediately, while the account's
+    /// balance remains locked until [`claim_unstake`](Self::claim_unstake).
+    pub fn request_delegation_unstake(
+        &mut self,
+        delegator: Pubkey,
+        validator: &Pubkey,
+        amount: u64,
+        current_slot: u64,
+    ) -> Result<UnstakeRequest, String> {
+        if amount == 0 {
+            return Err("Undelegation amount must be greater than zero".to_string());
+        }
+        let unstake_key = (*validator, delegator);
+        if self.unstake_requests.contains_key(&unstake_key) {
+            return Err("Unstake already in progress".to_string());
+        }
+        let delegated = self
+            .delegations
+            .get(validator)
+            .and_then(|entries| entries.get(&delegator))
+            .copied()
+            .unwrap_or(0);
+        if amount > delegated {
+            return Err(format!(
+                "Insufficient delegation: have {}, requested {}",
+                delegated, amount
+            ));
+        }
+        let unlock_slot = current_slot
+            .checked_add(UNSTAKE_COOLDOWN_SLOTS)
+            .ok_or_else(|| "Delegation cooldown deadline overflow".to_string())?;
+        let request = UnstakeRequest {
+            validator: *validator,
+            staker: delegator,
+            amount,
+            unlock_slot,
+        };
+
+        // undelegate() performs every arithmetic and ownership check before
+        // mutation; insert the request only after it succeeds.
+        self.undelegate(delegator, validator, amount)?;
+        self.unstake_requests.insert(unstake_key, request.clone());
+        Ok(request)
     }
 
     /// Add additional stake to validator (after graduation, up to 100k max)
@@ -1910,6 +4037,19 @@ impl StakePool {
             .map(|(_, req)| req)
     }
 
+    /// Return every pending native/direct-delegation unstake owned by one
+    /// staker, ordered by validator for stable RPC and SDK presentation.
+    pub fn get_unstake_requests_for_staker(&self, staker: &Pubkey) -> Vec<UnstakeRequest> {
+        let mut requests: Vec<_> = self
+            .unstake_requests
+            .iter()
+            .filter(|((_, owner), _)| owner == staker)
+            .map(|(_, request)| request.clone())
+            .collect();
+        requests.sort_by_key(|request| request.validator.0);
+        requests
+    }
+
     /// Get total unclaimed rewards in pool
     pub fn total_unclaimed_rewards(&self) -> u64 {
         self.stakes.values().map(|s| s.rewards_earned).sum()
@@ -1984,6 +4124,436 @@ impl StakePool {
         // Sort deterministically by pubkey
         distributions.sort_by_key(|(pk, _)| pk.0);
         distributions
+    }
+
+    /// Build a complete Staking V2 epoch reward plan without mutating state.
+    ///
+    /// Base rewards are split by active effective stake with deterministic
+    /// remainder assignment. Performance then reduces each validator's own
+    /// entitlement; the reduction is left unminted rather than redistributed.
+    /// Delegated rewards are split by exact `(delegator, validator)` ownership,
+    /// after bounded validator commission.
+    pub fn plan_v2_epoch_rewards(
+        &self,
+        reward_budget: u64,
+        performance_bps: &BTreeMap<Pubkey, u64>,
+        commission_bps: &BTreeMap<Pubkey, u64>,
+    ) -> Result<EpochSecurityRewardPlan, String> {
+        self.validate_v2_invariants()?;
+
+        let mut current: Vec<_> = self
+            .stakes
+            .values()
+            .filter(|info| info.is_active && info.meets_minimum())
+            .map(|info| {
+                let mut delegations = self.get_delegations(&info.validator);
+                delegations.sort_by_key(|(delegator, _)| delegator.0);
+                ValidatorEpochStakeWeight {
+                    validator: info.validator,
+                    average_self_bond: info.amount,
+                    average_delegations: delegations,
+                }
+            })
+            .collect();
+        current.sort_by_key(|entry| entry.validator.0);
+        self.plan_v2_epoch_rewards_for_weights(
+            reward_budget,
+            &EpochStakeWeightSnapshot {
+                epoch: 0,
+                start_slot: 0,
+                end_slot: 1,
+                validators: current,
+            },
+            performance_bps,
+            commission_bps,
+        )
+    }
+
+    /// Build a reward plan from the completed epoch's stake-time averages.
+    /// This prevents an end-of-epoch deposit from receiving a full epoch and
+    /// stops an accepted unstake from earning after its exact checkpoint.
+    pub fn plan_v2_epoch_rewards_for_weights(
+        &self,
+        reward_budget: u64,
+        stake_weights: &EpochStakeWeightSnapshot,
+        performance_bps: &BTreeMap<Pubkey, u64>,
+        commission_bps: &BTreeMap<Pubkey, u64>,
+    ) -> Result<EpochSecurityRewardPlan, String> {
+        self.validate_v2_invariants()?;
+        if stake_weights.end_slot <= stake_weights.start_slot {
+            return Err("epoch stake-weight interval must be non-empty".to_string());
+        }
+
+        let mut eligible = stake_weights.validators.clone();
+        eligible.sort_by_key(|entry| entry.validator.0);
+        for pair in eligible.windows(2) {
+            if pair[0].validator == pair[1].validator {
+                return Err(format!(
+                    "duplicate epoch stake weight for validator {}",
+                    pair[0].validator
+                ));
+            }
+        }
+        let mut eligible_stake = 0u64;
+        for entry in &mut eligible {
+            if !self.stakes.contains_key(&entry.validator) {
+                return Err(format!(
+                    "epoch stake weight references unknown validator {}",
+                    entry.validator
+                ));
+            }
+            entry
+                .average_delegations
+                .sort_by_key(|(delegator, _)| delegator.0);
+            for pair in entry.average_delegations.windows(2) {
+                if pair[0].0 == pair[1].0 {
+                    return Err(format!(
+                        "duplicate epoch delegation for validator {} and delegator {}",
+                        entry.validator, pair[0].0
+                    ));
+                }
+            }
+            for (delegator, amount) in &entry.average_delegations {
+                if *delegator == entry.validator {
+                    return Err(format!(
+                        "validator {} self-bond is duplicated in epoch delegation weights",
+                        entry.validator
+                    ));
+                }
+                if *amount == 0 {
+                    return Err(format!(
+                        "validator {} has a zero epoch delegation from {}",
+                        entry.validator, delegator
+                    ));
+                }
+            }
+            let effective = entry.average_effective_stake()?;
+            let maximum = entry
+                .average_self_bond
+                .checked_mul(MAX_VALIDATOR_EFFECTIVE_STAKE_MULTIPLIER)
+                .ok_or_else(|| "average validator concentration cap overflow".to_string())?;
+            if effective > maximum {
+                return Err(format!(
+                    "validator {} average effective stake {} exceeds V2 cap {}",
+                    entry.validator, effective, maximum
+                ));
+            }
+            eligible_stake = eligible_stake
+                .checked_add(effective)
+                .ok_or_else(|| "reward-eligible average stake overflow".to_string())?;
+        }
+
+        if reward_budget == 0 || eligible_stake == 0 {
+            return Ok(EpochSecurityRewardPlan {
+                reward_budget,
+                assigned_reward: 0,
+                performance_unminted: reward_budget,
+                validators: vec![],
+            });
+        }
+
+        let mut validators = Vec::with_capacity(eligible.len());
+        let mut base_distributed = 0u64;
+        let mut assigned_reward = 0u64;
+        let eligible_count = eligible.len();
+        for (index, weight) in eligible.into_iter().enumerate() {
+            let effective_stake = weight.average_effective_stake()?;
+            let base_reward = if index + 1 == eligible_count {
+                reward_budget
+                    .checked_sub(base_distributed)
+                    .ok_or_else(|| "epoch base-reward remainder underflow".to_string())?
+            } else {
+                ((reward_budget as u128).saturating_mul(effective_stake as u128)
+                    / eligible_stake as u128) as u64
+            };
+            base_distributed = base_distributed
+                .checked_add(base_reward)
+                .ok_or_else(|| "epoch base-reward total overflow".to_string())?;
+
+            let validator_performance = performance_bps
+                .get(&weight.validator)
+                .copied()
+                .ok_or_else(|| {
+                    format!(
+                        "missing completed-epoch performance for validator {}",
+                        weight.validator
+                    )
+                })?;
+            if validator_performance > 10_000 {
+                return Err(format!(
+                    "validator {} performance {} exceeds 10000 basis points",
+                    weight.validator, validator_performance
+                ));
+            }
+            let validator_commission =
+                commission_bps
+                    .get(&weight.validator)
+                    .copied()
+                    .ok_or_else(|| {
+                        format!(
+                            "missing completed-epoch commission for validator {}",
+                            weight.validator
+                        )
+                    })?;
+            if validator_commission > MAX_VALIDATOR_COMMISSION_BPS {
+                return Err(format!(
+                    "validator {} commission {} exceeds maximum {}",
+                    weight.validator, validator_commission, MAX_VALIDATOR_COMMISSION_BPS
+                ));
+            }
+            let performance_adjusted_reward = ((base_reward as u128)
+                .saturating_mul(validator_performance as u128)
+                / 10_000) as u64;
+            assigned_reward = assigned_reward
+                .checked_add(performance_adjusted_reward)
+                .ok_or_else(|| "assigned epoch reward overflow".to_string())?;
+
+            let average_delegated = effective_stake
+                .checked_sub(weight.average_self_bond)
+                .ok_or_else(|| "average delegated stake underflow".to_string())?;
+            let delegation_gross_reward = if average_delegated == 0 {
+                0
+            } else {
+                ((performance_adjusted_reward as u128).saturating_mul(average_delegated as u128)
+                    / effective_stake as u128) as u64
+            };
+            let self_bond_reward = performance_adjusted_reward
+                .checked_sub(delegation_gross_reward)
+                .ok_or_else(|| "validator self-bond reward underflow".to_string())?;
+            let commission_reward = ((delegation_gross_reward as u128)
+                .saturating_mul(validator_commission as u128)
+                / 10_000) as u64;
+            let delegator_budget = delegation_gross_reward
+                .checked_sub(commission_reward)
+                .ok_or_else(|| "delegator reward budget underflow".to_string())?;
+
+            let mut delegator_rewards = Vec::new();
+            if average_delegated > 0 {
+                let delegations = weight.average_delegations;
+                let mut delegator_distributed = 0u64;
+                let delegation_count = delegations.len();
+                for (delegation_index, (delegator, amount)) in delegations.into_iter().enumerate() {
+                    let reward = if delegation_index + 1 == delegation_count {
+                        delegator_budget
+                            .checked_sub(delegator_distributed)
+                            .ok_or_else(|| "delegator reward remainder underflow".to_string())?
+                    } else {
+                        ((delegator_budget as u128).saturating_mul(amount as u128)
+                            / average_delegated as u128) as u64
+                    };
+                    delegator_distributed = delegator_distributed
+                        .checked_add(reward)
+                        .ok_or_else(|| "delegator reward total overflow".to_string())?;
+                    if reward > 0 {
+                        delegator_rewards.push(DelegatorEpochReward {
+                            delegator,
+                            amount: reward,
+                        });
+                    }
+                }
+                if delegator_distributed != delegator_budget {
+                    return Err(format!(
+                        "delegator reward conservation failure for validator {}",
+                        weight.validator
+                    ));
+                }
+            }
+
+            let planned_total = self_bond_reward
+                .checked_add(commission_reward)
+                .and_then(|value| {
+                    delegator_rewards
+                        .iter()
+                        .try_fold(value, |total, credit| total.checked_add(credit.amount))
+                })
+                .ok_or_else(|| "validator reward-plan total overflow".to_string())?;
+            if planned_total != performance_adjusted_reward {
+                return Err(format!(
+                    "validator {} reward-plan mismatch: planned={}, adjusted={}",
+                    weight.validator, planned_total, performance_adjusted_reward
+                ));
+            }
+
+            validators.push(ValidatorEpochRewardPlan {
+                validator: weight.validator,
+                base_reward,
+                performance_bps: validator_performance,
+                performance_adjusted_reward,
+                self_bond_reward,
+                delegation_gross_reward,
+                commission_reward,
+                delegator_rewards,
+            });
+        }
+
+        if base_distributed != reward_budget {
+            return Err(format!(
+                "epoch base-reward conservation failure: distributed={}, budget={}",
+                base_distributed, reward_budget
+            ));
+        }
+        let performance_unminted = reward_budget
+            .checked_sub(assigned_reward)
+            .ok_or_else(|| "performance-unminted reward underflow".to_string())?;
+        Ok(EpochSecurityRewardPlan {
+            reward_budget,
+            assigned_reward,
+            performance_unminted,
+            validators,
+        })
+    }
+
+    /// Plan and apply one Staking V2 epoch settlement on a clone, committing
+    /// the updated pool only after all validator and conservation checks pass.
+    pub fn settle_v2_epoch_rewards(
+        &mut self,
+        reward_budget: u64,
+        performance_bps: &BTreeMap<Pubkey, u64>,
+        commission_bps: &BTreeMap<Pubkey, u64>,
+        epoch_start: u64,
+    ) -> Result<EpochSecurityRewardSettlement, String> {
+        let plan = self.plan_v2_epoch_rewards(reward_budget, performance_bps, commission_bps)?;
+        self.apply_v2_epoch_reward_plan(plan, epoch_start)
+    }
+
+    pub fn settle_v2_epoch_rewards_for_weights(
+        &mut self,
+        reward_budget: u64,
+        stake_weights: &EpochStakeWeightSnapshot,
+        performance_bps: &BTreeMap<Pubkey, u64>,
+        commission_bps: &BTreeMap<Pubkey, u64>,
+        epoch_start: u64,
+    ) -> Result<EpochSecurityRewardSettlement, String> {
+        let expected_inputs = self.staking_v2_epoch_reward_inputs(stake_weights.end_slot)?;
+        if expected_inputs.stake_weights != *stake_weights
+            || expected_inputs.performance_bps != *performance_bps
+            || expected_inputs.commission_bps != *commission_bps
+        {
+            return Err(
+                "Staking V2 settlement inputs do not match committed epoch accounting".to_string(),
+            );
+        }
+        let state = self
+            .staking_v2_state
+            .as_ref()
+            .ok_or_else(|| "Staking V2 state is not initialized".to_string())?;
+        if state.last_settled_epoch == Some(state.current_epoch) {
+            return Err(format!(
+                "Staking V2 epoch {} is already settled",
+                state.current_epoch
+            ));
+        }
+        if epoch_start != stake_weights.start_slot {
+            return Err(format!(
+                "Staking V2 reward epoch starts at {}, not {}",
+                stake_weights.start_slot, epoch_start
+            ));
+        }
+
+        let plan = self.plan_v2_epoch_rewards_for_weights(
+            reward_budget,
+            stake_weights,
+            performance_bps,
+            commission_bps,
+        )?;
+        let mut updated = self.clone();
+        let settlement = updated.apply_v2_epoch_reward_plan(plan, epoch_start)?;
+        let state = updated
+            .staking_v2_state
+            .as_mut()
+            .ok_or_else(|| "Staking V2 state disappeared during settlement".to_string())?;
+        state.last_settled_epoch = Some(state.current_epoch);
+        updated.validate_v2_invariants()?;
+        *self = updated;
+        Ok(settlement)
+    }
+
+    fn apply_v2_epoch_reward_plan(
+        &mut self,
+        plan: EpochSecurityRewardPlan,
+        epoch_start: u64,
+    ) -> Result<EpochSecurityRewardSettlement, String> {
+        let mut updated = self.clone();
+        let num_active = updated
+            .stakes
+            .values()
+            .filter(|info| info.is_active && info.meets_minimum())
+            .count()
+            .max(1) as u64;
+        let mut total_minted = 0u64;
+        let mut bootstrap_debt_unminted = 0u64;
+        let mut settlements = Vec::with_capacity(plan.validators.len());
+
+        for validator_plan in &plan.validators {
+            let planned_operator_reward = validator_plan
+                .self_bond_reward
+                .checked_add(validator_plan.commission_reward)
+                .ok_or_else(|| "planned validator operator reward overflow".to_string())?;
+            let stake_info = updated
+                .stakes
+                .get_mut(&validator_plan.validator)
+                .ok_or_else(|| {
+                    format!(
+                        "planned reward references unknown validator {}",
+                        validator_plan.validator
+                    )
+                })?;
+            stake_info
+                .rewards_earned
+                .checked_add(planned_operator_reward)
+                .ok_or_else(|| {
+                    format!(
+                        "validator {} unclaimed reward overflow",
+                        validator_plan.validator
+                    )
+                })?;
+            stake_info.add_reward(planned_operator_reward, epoch_start);
+            let (liquid_operator_reward, bootstrap_debt_payment) =
+                stake_info.claim_rewards(epoch_start, num_active);
+
+            let delegator_total =
+                validator_plan
+                    .delegator_rewards
+                    .iter()
+                    .try_fold(0u64, |total, credit| {
+                        total
+                            .checked_add(credit.amount)
+                            .ok_or_else(|| "delegator settlement total overflow".to_string())
+                    })?;
+            total_minted = total_minted
+                .checked_add(liquid_operator_reward)
+                .and_then(|value| value.checked_add(delegator_total))
+                .ok_or_else(|| "epoch minted settlement total overflow".to_string())?;
+            bootstrap_debt_unminted = bootstrap_debt_unminted
+                .checked_add(bootstrap_debt_payment)
+                .ok_or_else(|| "epoch bootstrap debt total overflow".to_string())?;
+            settlements.push(ValidatorEpochRewardSettlement {
+                validator: validator_plan.validator,
+                planned_operator_reward,
+                liquid_operator_reward,
+                bootstrap_debt_payment,
+                delegator_rewards: validator_plan.delegator_rewards.clone(),
+            });
+        }
+
+        let accounted = total_minted
+            .checked_add(bootstrap_debt_unminted)
+            .ok_or_else(|| "epoch applied reward total overflow".to_string())?;
+        if accounted != plan.assigned_reward {
+            return Err(format!(
+                "epoch settlement mismatch: minted={} debt_unminted={} assigned={}",
+                total_minted, bootstrap_debt_unminted, plan.assigned_reward
+            ));
+        }
+        updated.validate_v2_invariants()?;
+        *self = updated;
+
+        Ok(EpochSecurityRewardSettlement {
+            plan,
+            total_minted,
+            bootstrap_debt_unminted,
+            validators: settlements,
+        })
     }
 
     /// Distribute delegation rewards proportionally to delegators
@@ -2379,19 +4949,35 @@ impl StakePool {
             .collect();
         let sorted_fp: BTreeMap<&[u8; 32], &Pubkey> = self.fingerprint_registry.iter().collect();
 
-        let data = serialize_legacy_bincode(
-            &(
-                0x03u8, // domain separator
-                self.total_staked,
-                self.total_slashed,
-                self.bootstrap_grants_issued,
-                &sorted_stakes,
-                &sorted_unstake,
-                &sorted_delegations,
-                &sorted_fp,
+        let data = match &self.staking_v2_state {
+            Some(staking_v2_state) => serialize_legacy_bincode(
+                &(
+                    0x05u8, // Staking V2 domain separator
+                    self.total_staked,
+                    self.total_slashed,
+                    self.bootstrap_grants_issued,
+                    &sorted_stakes,
+                    &sorted_unstake,
+                    &sorted_delegations,
+                    &sorted_fp,
+                    staking_v2_state,
+                ),
+                "stake pool canonical hash v2",
             ),
-            "stake pool canonical hash",
-        )
+            None => serialize_legacy_bincode(
+                &(
+                    0x03u8, // exact legacy domain separator and tuple shape
+                    self.total_staked,
+                    self.total_slashed,
+                    self.bootstrap_grants_issued,
+                    &sorted_stakes,
+                    &sorted_unstake,
+                    &sorted_delegations,
+                    &sorted_fp,
+                ),
+                "stake pool canonical hash v1",
+            ),
+        }
         .unwrap_or_default();
 
         Hash::hash(&data)
@@ -2400,13 +4986,14 @@ impl StakePool {
     /// Diagnostic summary of pool internal fields for state root debugging.
     pub fn diagnostic_summary(&self) -> String {
         format!(
-            "staked={} slashed={} grants={} fp_reg={} unstake={} deleg={}",
+            "staked={} slashed={} grants={} fp_reg={} unstake={} deleg={} staking_v2={}",
             self.total_staked,
             self.total_slashed,
             self.bootstrap_grants_issued,
             self.fingerprint_registry.len(),
             self.unstake_requests.len(),
             self.delegations.len(),
+            self.staking_v2_state.is_some(),
         )
     }
 }
@@ -3102,11 +5689,15 @@ impl ValidatorSet {
 
         // Filter: only active (non-pending) validators with stake >= MIN_VALIDATOR_STAKE can be leaders.
         // Pending validators are in ACTIVATION_WARMUP and must not participate in consensus.
+        let staking_v2_active = stake_pool.staking_v2_state().is_some();
         let eligible: Vec<&ValidatorInfo> = sorted_validators
             .iter()
             .filter(|v| {
                 if v.pending_activation {
                     return false;
+                }
+                if staking_v2_active {
+                    return stake_pool.staking_v2_leader_weight(&v.pubkey).is_some();
                 }
                 let stake = stake_pool
                     .get_stake(&v.pubkey)
@@ -3137,6 +5728,9 @@ impl ValidatorSet {
         let weights: Vec<i128> = eligible
             .iter()
             .map(|v| {
+                if let Some(weight) = stake_pool.staking_v2_leader_weight(&v.pubkey) {
+                    return weight as i128;
+                }
                 let stake = stake_pool
                     .get_stake(&v.pubkey)
                     .map(|s| s.total_stake().min(MAX_VALIDATOR_STAKE))
@@ -3251,6 +5845,9 @@ pub fn eligible_validator_stake(
     let info = validator_set.get_validator(validator)?;
     if info.pending_activation {
         return None;
+    }
+    if stake_pool.staking_v2_state().is_some() {
+        return stake_pool.staking_v2_consensus_power(validator);
     }
     let stake = stake_pool.get_stake(validator)?.total_stake();
     if stake < min_validator_stake {
@@ -3629,10 +6226,32 @@ pub enum SlashingOffense {
         slot: u64,
         colluding_validators: Vec<Pubkey>,
     },
+    /// Two chain-domain-signed block headers produced by one validator for the
+    /// same slot. Appended to preserve every legacy bincode variant index.
+    DoubleBlockV2 {
+        header_1: BlockHeader,
+        header_2: BlockHeader,
+    },
+    /// Two chain-domain-signed BFT prevotes for one height and round.
+    DoublePrevoteV2 { vote_1: Prevote, vote_2: Prevote },
+    /// Two chain-domain-signed BFT precommits for one height and round.
+    DoublePrecommitV2 {
+        vote_1: Precommit,
+        vote_2: Precommit,
+    },
 }
 
 /// Maximum encoded SlashValidator evidence payload accepted by the system program.
 pub const SLASHING_EVIDENCE_CODEC_LIMIT_BYTES: u64 = 64 * 1024;
+
+/// Maximum age of proof-carrying Staking V2 evidence.
+///
+/// Two epochs plus the at-most-one-epoch frozen-power interval remains below
+/// the 7-day (3.5 epoch) unstake cooldown. Stake that secured the offense
+/// therefore cannot become claimable before the evidence window closes.
+pub const SLASHING_V2_EVIDENCE_WINDOW_EPOCHS: u64 = 2;
+pub const SLASHING_V2_EVIDENCE_WINDOW_SLOTS: u64 =
+    SLOTS_PER_EPOCH * SLASHING_V2_EVIDENCE_WINDOW_EPOCHS;
 
 /// Evidence of slashable behavior
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3712,6 +6331,69 @@ impl SlashingEvidence {
                 slot: _,
                 colluding_validators,
             } => colluding_validators.len() >= 2,
+            // V2 evidence is intentionally never accepted through the legacy
+            // verifier because its signatures are bound to a chain-id domain.
+            SlashingOffense::DoubleBlockV2 { .. }
+            | SlashingOffense::DoublePrevoteV2 { .. }
+            | SlashingOffense::DoublePrecommitV2 { .. } => false,
+        }
+    }
+
+    /// Verify proof-carrying evidence in the active chain-id domain.
+    ///
+    /// This strict verifier accepts only V2 evidence. Legacy hash-only block
+    /// evidence and legacy vote signatures cannot establish an independently
+    /// verifiable, chain-bound consensus fault and must not cross the V2
+    /// activation boundary.
+    pub fn verify_with_chain_id(&self, chain_id: &str) -> bool {
+        match &self.offense {
+            SlashingOffense::DoubleBlockV2 { header_1, header_2 } => {
+                header_1.slot == header_2.slot
+                    && header_1.validator == header_2.validator
+                    && header_1.validator == self.validator.0
+                    && header_1.signable_hash() != header_2.signable_hash()
+                    && header_1.verify_signature_with_chain_id(chain_id)
+                    && header_2.verify_signature_with_chain_id(chain_id)
+            }
+            SlashingOffense::DoublePrevoteV2 { vote_1, vote_2 } => {
+                vote_1.height == vote_2.height
+                    && vote_1.round == vote_2.round
+                    && vote_1.block_hash != vote_2.block_hash
+                    && vote_1.validator == vote_2.validator
+                    && vote_1.validator == self.validator
+                    && vote_1.verify_signature_with_chain_id(chain_id)
+                    && vote_2.verify_signature_with_chain_id(chain_id)
+            }
+            SlashingOffense::DoublePrecommitV2 { vote_1, vote_2 } => {
+                vote_1.height == vote_2.height
+                    && vote_1.round == vote_2.round
+                    && vote_1.block_hash != vote_2.block_hash
+                    && vote_1.validator == vote_2.validator
+                    && vote_1.validator == self.validator
+                    && vote_1.verify_signature_with_chain_id(chain_id)
+                    && vote_2.verify_signature_with_chain_id(chain_id)
+            }
+            SlashingOffense::DoubleBlock { .. }
+            | SlashingOffense::DoubleVote { .. }
+            | SlashingOffense::Downtime { .. }
+            | SlashingOffense::InvalidStateTransition { .. }
+            | SlashingOffense::Censorship { .. }
+            | SlashingOffense::Collusion { .. } => false,
+        }
+    }
+
+    /// Consensus slot/height at which the alleged offense occurred.
+    pub fn offense_slot(&self) -> u64 {
+        match &self.offense {
+            SlashingOffense::DoubleBlock { slot, .. }
+            | SlashingOffense::DoubleVote { slot, .. }
+            | SlashingOffense::InvalidStateTransition { slot, .. }
+            | SlashingOffense::Censorship { slot, .. }
+            | SlashingOffense::Collusion { slot, .. } => *slot,
+            SlashingOffense::Downtime { current_slot, .. } => *current_slot,
+            SlashingOffense::DoubleBlockV2 { header_1, .. } => header_1.slot,
+            SlashingOffense::DoublePrevoteV2 { vote_1, .. } => vote_1.height,
+            SlashingOffense::DoublePrecommitV2 { vote_1, .. } => vote_1.height,
         }
     }
 
@@ -3727,6 +6409,10 @@ impl SlashingEvidence {
             SlashingOffense::InvalidStateTransition { .. } => 100, // Maximum severity
             SlashingOffense::Censorship { .. } => 70,              // High severity
             SlashingOffense::Collusion { .. } => 100,              // Maximum - permanent ban
+            SlashingOffense::DoubleBlockV2 { .. } => 100,
+            SlashingOffense::DoublePrevoteV2 { .. } | SlashingOffense::DoublePrecommitV2 { .. } => {
+                80
+            }
         }
     }
 }
@@ -3811,6 +6497,24 @@ impl SlashingTracker {
             return false;
         }
 
+        self.add_verified_evidence(evidence)
+    }
+
+    /// Add strictly verified, proof-carrying evidence after Staking V2
+    /// activation. The caller supplies the active chain-id domain.
+    pub fn add_evidence_with_chain_id(
+        &mut self,
+        evidence: SlashingEvidence,
+        chain_id: &str,
+    ) -> bool {
+        if !evidence.verify_with_chain_id(chain_id) {
+            return false;
+        }
+
+        self.add_verified_evidence(evidence)
+    }
+
+    fn add_verified_evidence(&mut self, evidence: SlashingEvidence) -> bool {
         // Add to evidence list
         let validator_evidence = self.evidence.entry(evidence.validator).or_default();
 
@@ -3826,6 +6530,18 @@ impl SlashingTracker {
                     SlashingOffense::DoubleVote { vote_1: v1, .. },
                     SlashingOffense::DoubleVote { vote_1: v2, .. },
                 ) => v1.slot == v2.slot,
+                (
+                    SlashingOffense::DoubleBlockV2 { header_1: h1, .. },
+                    SlashingOffense::DoubleBlockV2 { header_1: h2, .. },
+                ) => h1.slot == h2.slot,
+                (
+                    SlashingOffense::DoublePrevoteV2 { vote_1: v1, .. },
+                    SlashingOffense::DoublePrevoteV2 { vote_1: v2, .. },
+                ) => v1.height == v2.height && v1.round == v2.round,
+                (
+                    SlashingOffense::DoublePrecommitV2 { vote_1: v1, .. },
+                    SlashingOffense::DoublePrecommitV2 { vote_1: v2, .. },
+                ) => v1.height == v2.height && v1.round == v2.round,
                 (
                     SlashingOffense::InvalidStateTransition { slot: s1, .. },
                     SlashingOffense::InvalidStateTransition { slot: s2, .. },
@@ -4190,6 +6906,15 @@ impl SlashingTracker {
                             / 100) as u64
                     }
                     SlashingOffense::Collusion { .. } => original_stake,
+                    SlashingOffense::DoubleBlockV2 { .. } => {
+                        (original_stake as u128 * params.slashing_percentage_double_sign as u128
+                            / 100) as u64
+                    }
+                    SlashingOffense::DoublePrevoteV2 { .. }
+                    | SlashingOffense::DoublePrecommitV2 { .. } => {
+                        (original_stake as u128 * params.slashing_percentage_double_vote as u128
+                            / 100) as u64
+                    }
                 };
 
                 total_penalty = total_penalty.saturating_add(stake_penalty);
@@ -4434,6 +7159,40 @@ mod tests {
     }
 
     #[test]
+    fn stake_pool_snapshot_rejects_duplicate_validator_entries() {
+        let validator = Pubkey::new([3u8; 32]);
+        let entry = StakeInfo::new(validator, MIN_VALIDATOR_STAKE, 0);
+        let snapshot = StakePoolSnapshotV1 {
+            version: 1,
+            total_staked: MIN_VALIDATOR_STAKE * 2,
+            total_slashed: 0,
+            bootstrap_grants_issued: 0,
+            stakes: vec![entry.clone(), entry],
+            unstake_requests: vec![],
+            delegations: vec![],
+            fingerprint_registry: vec![],
+        };
+        let bytes = serialize_legacy_bincode(&snapshot, "duplicate stake fixture").unwrap();
+
+        let error = StakePool::from_canonical_snapshot_bytes(&bytes).unwrap_err();
+        assert!(error.contains("duplicate stake entry"));
+    }
+
+    #[test]
+    fn stake_pool_invariants_detect_delegation_total_mismatch() {
+        let validator = Pubkey::new([4u8; 32]);
+        let delegator = Pubkey::new([5u8; 32]);
+        let mut pool = StakePool::new();
+        pool.stake(validator, MIN_VALIDATOR_STAKE, 0).unwrap();
+        pool.delegate(delegator, &validator, 1_000).unwrap();
+        assert!(pool.validate_v2_invariants().is_ok());
+
+        pool.stakes.get_mut(&validator).unwrap().delegated_amount += 1;
+        let error = pool.validate_invariants().unwrap_err();
+        assert!(error.contains("delegated stake mismatch"));
+    }
+
+    #[test]
     fn test_vote_aggregator() {
         let mut agg = VoteAggregator::new();
         let vote = Vote::new(
@@ -4570,6 +7329,39 @@ mod tests {
         // With 2 validators and 100 slots, both should be selected at least once
         assert!(found_pk1, "pk1 should have been selected at least once");
         assert!(found_pk2, "pk2 should have been selected at least once");
+    }
+
+    #[test]
+    fn staking_v2_leader_weights_are_frozen_for_the_epoch() {
+        let mut set = ValidatorSet::new();
+        let mut pool = StakePool::new();
+        let pk1 = Pubkey::new([31u8; 32]);
+        let pk2 = Pubkey::new([32u8; 32]);
+        let delegator = Pubkey::new([33u8; 32]);
+        set.add_validator(ValidatorInfo::new(pk1, 0));
+        set.add_validator(ValidatorInfo::new(pk2, 0));
+        pool.stake(pk1, MIN_VALIDATOR_STAKE, 0).unwrap();
+        pool.stake(pk2, MIN_VALIDATOR_STAKE, 0).unwrap();
+        pool.initialize_staking_v2(0, &[pk1, pk2]).unwrap();
+
+        let before: Vec<_> = (0..32)
+            .map(|slot| set.select_leader_weighted(slot, &pool, &[], MIN_VALIDATOR_STAKE))
+            .collect();
+        let powers_before = canonical_validator_powers(&set, &pool);
+        let pk1_power_before = eligible_validator_stake(&pk1, &set, &pool, MIN_VALIDATOR_STAKE);
+        pool.delegate(delegator, &pk1, MIN_VALIDATOR_STAKE * 3)
+            .unwrap();
+        pool.checkpoint_staking_v2_validator(&pk1, 100).unwrap();
+        let after: Vec<_> = (0..32)
+            .map(|slot| set.select_leader_weighted(slot, &pool, &[], MIN_VALIDATOR_STAKE))
+            .collect();
+
+        assert_eq!(after, before);
+        assert_eq!(canonical_validator_powers(&set, &pool), powers_before);
+        assert_eq!(
+            eligible_validator_stake(&pk1, &set, &pool, MIN_VALIDATOR_STAKE),
+            pk1_power_before
+        );
     }
 
     #[test]
@@ -4881,6 +7673,76 @@ mod tests {
         assert_eq!(amount, 50_000_000_000_000);
     }
 
+    #[test]
+    fn owned_delegation_unstake_cannot_cross_validator_buckets() {
+        let mut pool = StakePool::new();
+        let validator_a = Pubkey::new([1u8; 32]);
+        let validator_b = Pubkey::new([2u8; 32]);
+        let delegator = Pubkey::new([3u8; 32]);
+        pool.stake(validator_a, MIN_VALIDATOR_STAKE, 0).unwrap();
+        pool.stake(validator_b, MIN_VALIDATOR_STAKE, 0).unwrap();
+        pool.delegate(delegator, &validator_a, 10_000).unwrap();
+        let before_total = pool.total_stake();
+
+        let error = pool
+            .request_delegation_unstake(delegator, &validator_b, 1, 100)
+            .unwrap_err();
+        assert!(error.contains("Insufficient delegation"));
+        assert_eq!(pool.total_stake(), before_total);
+        assert_eq!(
+            pool.get_delegator_stakes(&delegator),
+            vec![(validator_a, 10_000)]
+        );
+
+        let request = pool
+            .request_delegation_unstake(delegator, &validator_a, 4_000, 100)
+            .unwrap();
+        assert_eq!(request.staker, delegator);
+        assert_eq!(request.validator, validator_a);
+        assert_eq!(request.amount, 4_000);
+        assert_eq!(
+            pool.get_delegator_stakes(&delegator),
+            vec![(validator_a, 6_000)]
+        );
+        assert_eq!(pool.total_stake(), before_total - 4_000);
+    }
+
+    #[test]
+    fn delegation_cap_is_checked_before_mutation() {
+        let mut pool = StakePool::new();
+        let validator = Pubkey::new([4u8; 32]);
+        let delegator = Pubkey::new([5u8; 32]);
+        pool.stake(validator, MIN_VALIDATOR_STAKE, 0).unwrap();
+        let maximum_delegation = MIN_VALIDATOR_STAKE
+            .checked_mul(MAX_VALIDATOR_EFFECTIVE_STAKE_MULTIPLIER - 1)
+            .unwrap();
+        pool.delegate(delegator, &validator, maximum_delegation)
+            .unwrap();
+        let before_total = pool.total_stake();
+        let before_delegations = pool.get_delegator_stakes(&delegator);
+
+        let error = pool.delegate(delegator, &validator, 1).unwrap_err();
+
+        assert!(error.contains("effective-stake cap"));
+        assert_eq!(pool.total_stake(), before_total);
+        assert_eq!(pool.get_delegator_stakes(&delegator), before_delegations);
+    }
+
+    #[test]
+    fn zero_delegation_operations_are_rejected() {
+        let mut pool = StakePool::new();
+        let validator = Pubkey::new([6u8; 32]);
+        let delegator = Pubkey::new([7u8; 32]);
+        pool.stake(validator, MIN_VALIDATOR_STAKE, 0).unwrap();
+
+        assert!(pool.delegate(delegator, &validator, 0).is_err());
+        assert!(pool.undelegate(delegator, &validator, 0).is_err());
+        assert!(pool
+            .request_delegation_unstake(delegator, &validator, 0, 0)
+            .is_err());
+        assert_eq!(pool.total_stake(), MIN_VALIDATOR_STAKE);
+    }
+
     // ================================================================
     // T4.5 — Epoch reward distribution tests
     // ================================================================
@@ -4902,6 +7764,628 @@ mod tests {
         let r2 = rewards.iter().find(|(pk, _)| *pk == pk2).unwrap().1;
         assert_eq!(r1, 250_000);
         assert_eq!(r2, 750_000);
+    }
+
+    #[test]
+    fn staking_v2_reward_plan_conserves_budget_and_routes_delegation() {
+        let mut pool = StakePool::new();
+        let validator_a = Pubkey::new([1u8; 32]);
+        let validator_b = Pubkey::new([2u8; 32]);
+        let delegator = Pubkey::new([3u8; 32]);
+        pool.stake(validator_a, MIN_VALIDATOR_STAKE, 0).unwrap();
+        pool.stake(validator_b, MIN_VALIDATOR_STAKE, 0).unwrap();
+        pool.delegate(delegator, &validator_a, MIN_VALIDATOR_STAKE * 3)
+            .unwrap();
+        let performance = BTreeMap::from([(validator_a, 10_000), (validator_b, 10_000)]);
+        let commissions = BTreeMap::from([
+            (validator_a, DEFAULT_VALIDATOR_COMMISSION_BPS),
+            (validator_b, DEFAULT_VALIDATOR_COMMISSION_BPS),
+        ]);
+
+        let plan = pool
+            .plan_v2_epoch_rewards(1_000, &performance, &commissions)
+            .unwrap();
+
+        assert_eq!(plan.reward_budget, 1_000);
+        assert_eq!(plan.assigned_reward, 1_000);
+        assert_eq!(plan.performance_unminted, 0);
+        assert_eq!(plan.validators.len(), 2);
+        let first = &plan.validators[0];
+        assert_eq!(first.validator, validator_a);
+        assert_eq!(first.base_reward, 800);
+        assert_eq!(first.performance_adjusted_reward, 800);
+        assert_eq!(first.self_bond_reward, 200);
+        assert_eq!(first.delegation_gross_reward, 600);
+        assert_eq!(first.commission_reward, 30);
+        assert_eq!(
+            first.delegator_rewards,
+            vec![DelegatorEpochReward {
+                delegator,
+                amount: 570
+            }]
+        );
+        let second = &plan.validators[1];
+        assert_eq!(second.validator, validator_b);
+        assert_eq!(second.base_reward, 200);
+        assert_eq!(second.self_bond_reward, 200);
+        assert_eq!(second.delegation_gross_reward, 0);
+    }
+
+    #[test]
+    fn staking_v2_performance_reduction_is_not_redistributed() {
+        let mut pool = StakePool::new();
+        let validator_a = Pubkey::new([4u8; 32]);
+        let validator_b = Pubkey::new([5u8; 32]);
+        let delegator = Pubkey::new([6u8; 32]);
+        pool.stake(validator_a, MIN_VALIDATOR_STAKE, 0).unwrap();
+        pool.stake(validator_b, MIN_VALIDATOR_STAKE, 0).unwrap();
+        pool.delegate(delegator, &validator_a, MIN_VALIDATOR_STAKE * 3)
+            .unwrap();
+        let performance = BTreeMap::from([(validator_a, 5_000), (validator_b, 10_000)]);
+        let commissions = BTreeMap::from([
+            (validator_a, DEFAULT_VALIDATOR_COMMISSION_BPS),
+            (validator_b, DEFAULT_VALIDATOR_COMMISSION_BPS),
+        ]);
+
+        let plan = pool
+            .plan_v2_epoch_rewards(1_000, &performance, &commissions)
+            .unwrap();
+
+        assert_eq!(plan.assigned_reward, 600);
+        assert_eq!(plan.performance_unminted, 400);
+        assert_eq!(plan.validators[0].base_reward, 800);
+        assert_eq!(plan.validators[0].performance_adjusted_reward, 400);
+        assert_eq!(plan.validators[1].performance_adjusted_reward, 200);
+    }
+
+    #[test]
+    fn staking_v2_reward_plans_conserve_every_unit_and_ignore_input_order() {
+        let mut pool = StakePool::new();
+        let validator_a = Pubkey::new([41u8; 32]);
+        let validator_b = Pubkey::new([42u8; 32]);
+        let validator_c = Pubkey::new([43u8; 32]);
+        for validator in [validator_a, validator_b, validator_c] {
+            pool.stake(validator, MIN_VALIDATOR_STAKE, 0).unwrap();
+        }
+
+        for case in 0..128u64 {
+            let delegator_a = Pubkey::new([51u8; 32]);
+            let delegator_b = Pubkey::new([52u8; 32]);
+            let delegator_c = Pubkey::new([53u8; 32]);
+            let delegator_d = Pubkey::new([54u8; 32]);
+            let unit = MIN_VALIDATOR_STAKE / 16;
+            let mut weights = EpochStakeWeightSnapshot {
+                epoch: case,
+                start_slot: case.saturating_mul(SLOTS_PER_EPOCH),
+                end_slot: case.saturating_add(1).saturating_mul(SLOTS_PER_EPOCH),
+                validators: vec![
+                    ValidatorEpochStakeWeight {
+                        validator: validator_a,
+                        average_self_bond: MIN_VALIDATOR_STAKE,
+                        average_delegations: vec![
+                            (delegator_a, unit.saturating_mul(1 + case % 7)),
+                            (delegator_b, unit.saturating_mul(1 + case % 5)),
+                        ],
+                    },
+                    ValidatorEpochStakeWeight {
+                        validator: validator_b,
+                        average_self_bond: MIN_VALIDATOR_STAKE,
+                        average_delegations: vec![
+                            (delegator_c, unit.saturating_mul(1 + case % 11)),
+                            (delegator_d, unit.saturating_mul(1 + case % 3)),
+                        ],
+                    },
+                    ValidatorEpochStakeWeight {
+                        validator: validator_c,
+                        average_self_bond: MIN_VALIDATOR_STAKE,
+                        average_delegations: vec![],
+                    },
+                ],
+            };
+            let performance = BTreeMap::from([
+                (validator_a, 10_000 - case % 997),
+                (validator_b, 9_000 + case % 1_001),
+                (validator_c, 7_500 + case % 2_501),
+            ]);
+            let commissions = BTreeMap::from([
+                (validator_a, case % (MAX_VALIDATOR_COMMISSION_BPS + 1)),
+                (
+                    validator_b,
+                    (case.saturating_mul(7)) % (MAX_VALIDATOR_COMMISSION_BPS + 1),
+                ),
+                (
+                    validator_c,
+                    (case.saturating_mul(13)) % (MAX_VALIDATOR_COMMISSION_BPS + 1),
+                ),
+            ]);
+            let budget = case.saturating_mul(case).saturating_add(case % 17);
+
+            let canonical = pool
+                .plan_v2_epoch_rewards_for_weights(budget, &weights, &performance, &commissions)
+                .unwrap();
+
+            let base_total: u64 = canonical
+                .validators
+                .iter()
+                .map(|validator| validator.base_reward)
+                .sum();
+            assert_eq!(base_total, budget, "case {case} base reward conservation");
+            assert_eq!(
+                canonical.assigned_reward + canonical.performance_unminted,
+                budget,
+                "case {case} assigned reward conservation"
+            );
+            for validator in &canonical.validators {
+                let delegator_total: u64 = validator
+                    .delegator_rewards
+                    .iter()
+                    .map(|reward| reward.amount)
+                    .sum();
+                assert_eq!(
+                    validator.self_bond_reward + validator.commission_reward + delegator_total,
+                    validator.performance_adjusted_reward,
+                    "case {case} validator {} route conservation",
+                    validator.validator
+                );
+            }
+
+            weights.validators.reverse();
+            for validator in &mut weights.validators {
+                validator.average_delegations.reverse();
+            }
+            let permuted = pool
+                .plan_v2_epoch_rewards_for_weights(budget, &weights, &performance, &commissions)
+                .unwrap();
+            assert_eq!(
+                permuted, canonical,
+                "case {case} reward plan changed with input order"
+            );
+        }
+    }
+
+    #[test]
+    fn staking_v2_reward_plan_requires_bounded_complete_performance() {
+        let mut pool = StakePool::new();
+        let validator = Pubkey::new([7u8; 32]);
+        pool.stake(validator, MIN_VALIDATOR_STAKE, 0).unwrap();
+
+        let missing = pool
+            .plan_v2_epoch_rewards(1_000, &BTreeMap::new(), &BTreeMap::new())
+            .unwrap_err();
+        assert!(missing.contains("missing completed-epoch performance"));
+
+        let invalid_performance = BTreeMap::from([(validator, 10_001)]);
+        let invalid = pool
+            .plan_v2_epoch_rewards(1_000, &invalid_performance, &BTreeMap::new())
+            .unwrap_err();
+        assert!(invalid.contains("exceeds 10000"));
+
+        let valid_performance = BTreeMap::from([(validator, 10_000)]);
+        let missing_commission = pool
+            .plan_v2_epoch_rewards(1_000, &valid_performance, &BTreeMap::new())
+            .unwrap_err();
+        assert!(missing_commission.contains("missing completed-epoch commission"));
+
+        let invalid_commissions = BTreeMap::from([(validator, MAX_VALIDATOR_COMMISSION_BPS + 1)]);
+        let invalid_commission = pool
+            .plan_v2_epoch_rewards(1_000, &valid_performance, &invalid_commissions)
+            .unwrap_err();
+        assert!(invalid_commission.contains("commission"));
+    }
+
+    #[test]
+    fn staking_v2_settlement_applies_operator_and_delegator_credits_exactly() {
+        let mut pool = StakePool::new();
+        let validator_a = Pubkey::new([8u8; 32]);
+        let validator_b = Pubkey::new([9u8; 32]);
+        let delegator = Pubkey::new([10u8; 32]);
+        pool.stake(validator_a, MIN_VALIDATOR_STAKE, 0).unwrap();
+        pool.stake(validator_b, MIN_VALIDATOR_STAKE, 0).unwrap();
+        pool.delegate(delegator, &validator_a, MIN_VALIDATOR_STAKE * 3)
+            .unwrap();
+        let performance = BTreeMap::from([(validator_a, 10_000), (validator_b, 10_000)]);
+        let commissions = BTreeMap::from([
+            (validator_a, DEFAULT_VALIDATOR_COMMISSION_BPS),
+            (validator_b, DEFAULT_VALIDATOR_COMMISSION_BPS),
+        ]);
+
+        let settlement = pool
+            .settle_v2_epoch_rewards(1_000, &performance, &commissions, 0)
+            .unwrap();
+
+        assert_eq!(settlement.total_minted, 1_000);
+        assert_eq!(settlement.bootstrap_debt_unminted, 0);
+        assert_eq!(settlement.validators[0].planned_operator_reward, 230);
+        assert_eq!(settlement.validators[0].liquid_operator_reward, 230);
+        assert_eq!(settlement.validators[0].delegator_rewards[0].amount, 570);
+        assert_eq!(settlement.validators[1].liquid_operator_reward, 200);
+    }
+
+    #[test]
+    fn staking_v2_settlement_reports_bootstrap_debt_without_minting_it() {
+        let mut pool = StakePool::new();
+        let validator = Pubkey::new([11u8; 32]);
+        pool.stake_with_index(validator, BOOTSTRAP_GRANT_AMOUNT, 0, 0)
+            .unwrap();
+        let performance = BTreeMap::from([(validator, 10_000)]);
+        let commissions = BTreeMap::from([(validator, 0)]);
+
+        let settlement = pool
+            .settle_v2_epoch_rewards(1_000, &performance, &commissions, 0)
+            .unwrap();
+
+        assert_eq!(
+            settlement.total_minted + settlement.bootstrap_debt_unminted,
+            settlement.plan.assigned_reward
+        );
+        assert!(settlement.total_minted > 0);
+        assert!(settlement.bootstrap_debt_unminted > 0);
+    }
+
+    #[test]
+    fn staking_v2_settlement_failure_does_not_mutate_pool() {
+        let mut pool = StakePool::new();
+        let validator = Pubkey::new([12u8; 32]);
+        pool.stake(validator, MIN_VALIDATOR_STAKE, 0).unwrap();
+        let before = pool.canonical_snapshot_bytes().unwrap();
+
+        let error = pool
+            .settle_v2_epoch_rewards(1_000, &BTreeMap::new(), &BTreeMap::new(), 0)
+            .unwrap_err();
+
+        assert!(error.contains("missing completed-epoch performance"));
+        assert_eq!(pool.canonical_snapshot_bytes().unwrap(), before);
+    }
+
+    #[test]
+    fn staking_v2_storage_and_hash_switch_only_at_activation() {
+        let validator = Pubkey::new([13u8; 32]);
+        let mut pool = StakePool::new();
+        pool.stake(validator, MIN_VALIDATOR_STAKE, 0).unwrap();
+
+        let legacy_hash = pool.canonical_hash();
+        let legacy_storage = pool.storage_bytes().unwrap();
+        assert!(!legacy_storage.starts_with(STAKE_POOL_STORAGE_V2_MAGIC));
+        let legacy_roundtrip = StakePool::from_storage_bytes(&legacy_storage).unwrap();
+        assert_eq!(legacy_roundtrip.canonical_hash(), legacy_hash);
+        assert!(legacy_roundtrip.staking_v2_state().is_none());
+
+        pool.initialize_staking_v2(0, &[validator]).unwrap();
+        assert_ne!(pool.canonical_hash(), legacy_hash);
+        let v2_storage = pool.storage_bytes().unwrap();
+        assert!(v2_storage.starts_with(STAKE_POOL_STORAGE_V2_MAGIC));
+        let v2_roundtrip = StakePool::from_storage_bytes(&v2_storage).unwrap();
+        assert_eq!(v2_roundtrip.canonical_hash(), pool.canonical_hash());
+        assert_eq!(v2_roundtrip.staking_v2_state(), pool.staking_v2_state());
+
+        let snapshot = pool.canonical_snapshot_bytes().unwrap();
+        assert_eq!(snapshot.first(), Some(&2));
+        let snapshot_roundtrip = StakePool::from_canonical_snapshot_bytes(&snapshot).unwrap();
+        assert_eq!(snapshot_roundtrip.canonical_hash(), pool.canonical_hash());
+    }
+
+    #[test]
+    fn staking_v2_slash_uses_frozen_owners_and_cooling_down_stake_first() {
+        let validator = Pubkey::new([0x91; 32]);
+        let delegator = Pubkey::new([0x92; 32]);
+        let direct = MIN_VALIDATOR_STAKE / 2;
+        let moss = MIN_VALIDATOR_STAKE / 2;
+        let mut pool = StakePool::new();
+        pool.stake(validator, MIN_VALIDATOR_STAKE, 0).unwrap();
+        pool.delegate(delegator, &validator, direct).unwrap();
+        pool.delegate(MOSSSTAKE_PROTOCOL_DELEGATOR, &validator, moss)
+            .unwrap();
+        pool.initialize_staking_v2(0, &[validator]).unwrap();
+
+        let frozen = pool
+            .staking_v2_state()
+            .unwrap()
+            .slash_exposure_snapshots
+            .get(&0)
+            .unwrap()
+            .validators
+            .get(&validator)
+            .unwrap()
+            .clone();
+        assert_eq!(frozen.self_bond, MIN_VALIDATOR_STAKE);
+        assert_eq!(frozen.delegations.get(&delegator), Some(&direct));
+        assert_eq!(
+            frozen.delegations.get(&MOSSSTAKE_PROTOCOL_DELEGATOR),
+            Some(&moss)
+        );
+
+        pool.request_delegation_unstake(delegator, &validator, direct / 2, 10)
+            .unwrap();
+        pool.checkpoint_staking_v2_validator(&validator, 10)
+            .unwrap();
+        let settlement = pool
+            .apply_staking_v2_equivocation_slash(&validator, 5, 30, 20)
+            .unwrap();
+
+        let validator_loss = settlement
+            .owner_losses
+            .iter()
+            .find(|loss| loss.owner == validator)
+            .unwrap();
+        assert_eq!(validator_loss.active_stake, MIN_VALIDATOR_STAKE * 30 / 100);
+        assert_eq!(validator_loss.cooling_down_stake, 0);
+        let delegator_loss = settlement
+            .owner_losses
+            .iter()
+            .find(|loss| loss.owner == delegator)
+            .unwrap();
+        assert_eq!(delegator_loss.active_stake, 0);
+        assert_eq!(delegator_loss.cooling_down_stake, direct * 30 / 100);
+        assert_eq!(settlement.mossstake_requested_loss, moss * 30 / 100);
+        assert_eq!(
+            pool.get_unstake_requests_for_staker(&delegator)[0].amount,
+            direct / 2 - direct * 30 / 100
+        );
+        assert!(!pool.get_stake(&validator).unwrap().is_active);
+        pool.validate_v2_invariants().unwrap();
+    }
+
+    #[test]
+    fn staking_v2_slash_rejects_expired_evidence_without_mutation() {
+        let validator = Pubkey::new([0x93; 32]);
+        let mut pool = StakePool::new();
+        pool.stake(validator, MIN_VALIDATOR_STAKE, 0).unwrap();
+        pool.initialize_staking_v2(0, &[validator]).unwrap();
+        let before = pool.canonical_snapshot_bytes().unwrap();
+
+        let error = pool
+            .apply_staking_v2_equivocation_slash(
+                &validator,
+                0,
+                30,
+                SLASHING_V2_EVIDENCE_WINDOW_SLOTS + 1,
+            )
+            .unwrap_err();
+        assert!(error.contains("outside its window"));
+        assert_eq!(pool.canonical_snapshot_bytes().unwrap(), before);
+    }
+
+    #[test]
+    fn staking_v2_direct_delegation_capacity_enforces_dynamic_saturation() {
+        let validator_a = Pubkey::new([61u8; 32]);
+        let delegator = Pubkey::new([63u8; 32]);
+
+        let mut one_validator = StakePool::new();
+        one_validator
+            .stake(validator_a, MIN_VALIDATOR_STAKE, 0)
+            .unwrap();
+        one_validator
+            .initialize_staking_v2(0, &[validator_a])
+            .unwrap();
+        assert_eq!(
+            one_validator
+                .staking_v2_delegation_capacity(&validator_a)
+                .unwrap(),
+            Some(MIN_VALIDATOR_STAKE * 4)
+        );
+
+        let validators = (0..20)
+            .map(|index| Pubkey::new([index + 64; 32]))
+            .collect::<Vec<_>>();
+        let validator_a = validators[0];
+        let mut balanced = StakePool::new();
+        for validator in &validators {
+            balanced.stake(*validator, MIN_VALIDATOR_STAKE, 0).unwrap();
+        }
+        balanced.initialize_staking_v2(0, &validators).unwrap();
+
+        // At the mature 20-validator 5% limit, integer ceil rounding permits
+        // one remainder spore but not a material concentration increase.
+        assert_eq!(
+            balanced
+                .staking_v2_delegation_capacity(&validator_a)
+                .unwrap(),
+            Some(1)
+        );
+        let before = balanced.canonical_snapshot_bytes().unwrap();
+        let error = balanced.delegate(delegator, &validator_a, 2).unwrap_err();
+        assert!(error.contains("saturation"));
+        assert_eq!(balanced.canonical_snapshot_bytes().unwrap(), before);
+        balanced.delegate(delegator, &validator_a, 1).unwrap();
+        balanced
+            .checkpoint_staking_v2_validator(&validator_a, 1)
+            .unwrap();
+        balanced.validate_v2_invariants().unwrap();
+    }
+
+    #[test]
+    fn staking_v2_stake_time_prevents_last_slot_full_epoch_reward() {
+        let validator = Pubkey::new([14u8; 32]);
+        let delegator = Pubkey::new([15u8; 32]);
+        let mut pool = StakePool::new();
+        pool.stake(validator, MIN_VALIDATOR_STAKE, 0).unwrap();
+        pool.initialize_staking_v2(0, &[validator]).unwrap();
+
+        let late_delegation = SLOTS_PER_EPOCH * 10;
+        pool.delegate(delegator, &validator, late_delegation)
+            .unwrap();
+        pool.checkpoint_staking_v2_validator(&validator, SLOTS_PER_EPOCH - 1)
+            .unwrap();
+
+        let inputs = pool
+            .staking_v2_epoch_reward_inputs(SLOTS_PER_EPOCH)
+            .unwrap();
+        assert_eq!(inputs.stake_weights.validators.len(), 1);
+        assert_eq!(
+            inputs.stake_weights.validators[0].average_delegations,
+            vec![(delegator, 10)]
+        );
+    }
+
+    #[test]
+    fn staking_v2_commission_change_is_bounded_and_delayed_two_epochs() {
+        let validator = Pubkey::new([16u8; 32]);
+        let mut pool = StakePool::new();
+        pool.stake(validator, MIN_VALIDATOR_STAKE, 0).unwrap();
+        pool.initialize_staking_v2(0, &[validator]).unwrap();
+
+        let too_large = pool
+            .request_staking_v2_commission_change(
+                &validator,
+                DEFAULT_VALIDATOR_COMMISSION_BPS
+                    + MAX_VALIDATOR_COMMISSION_CHANGE_BPS_PER_EPOCH
+                    + 1,
+            )
+            .unwrap_err();
+        assert!(too_large.contains("at most"));
+
+        let pending = pool
+            .request_staking_v2_commission_change(
+                &validator,
+                DEFAULT_VALIDATOR_COMMISSION_BPS + MAX_VALIDATOR_COMMISSION_CHANGE_BPS_PER_EPOCH,
+            )
+            .unwrap();
+        assert_eq!(pending.activation_epoch, 2);
+
+        let inputs = pool
+            .staking_v2_epoch_reward_inputs(SLOTS_PER_EPOCH)
+            .unwrap();
+        pool.settle_v2_epoch_rewards_for_weights(
+            0,
+            &inputs.stake_weights,
+            &inputs.performance_bps,
+            &inputs.commission_bps,
+            inputs.stake_weights.start_slot,
+        )
+        .unwrap();
+        pool.advance_staking_v2_epoch(SLOTS_PER_EPOCH, &[validator])
+            .unwrap();
+        assert_eq!(
+            pool.staking_v2_state()
+                .unwrap()
+                .commissions
+                .get(&validator)
+                .unwrap()
+                .current_bps,
+            DEFAULT_VALIDATOR_COMMISSION_BPS
+        );
+        let inputs = pool
+            .staking_v2_epoch_reward_inputs(SLOTS_PER_EPOCH * 2)
+            .unwrap();
+        pool.settle_v2_epoch_rewards_for_weights(
+            0,
+            &inputs.stake_weights,
+            &inputs.performance_bps,
+            &inputs.commission_bps,
+            inputs.stake_weights.start_slot,
+        )
+        .unwrap();
+        pool.advance_staking_v2_epoch(SLOTS_PER_EPOCH * 2, &[validator])
+            .unwrap();
+        assert_eq!(
+            pool.staking_v2_state()
+                .unwrap()
+                .commissions
+                .get(&validator)
+                .unwrap()
+                .current_bps,
+            DEFAULT_VALIDATOR_COMMISSION_BPS + MAX_VALIDATOR_COMMISSION_CHANGE_BPS_PER_EPOCH
+        );
+    }
+
+    #[test]
+    fn staking_v2_epoch_cannot_advance_or_settle_twice() {
+        let validator = Pubkey::new([17u8; 32]);
+        let mut pool = StakePool::new();
+        pool.stake(validator, MIN_VALIDATOR_STAKE, 0).unwrap();
+        pool.initialize_staking_v2(0, &[validator]).unwrap();
+
+        let before = pool.canonical_snapshot_bytes().unwrap();
+        let error = pool
+            .advance_staking_v2_epoch(SLOTS_PER_EPOCH, &[validator])
+            .unwrap_err();
+        assert!(error.contains("unsettled"));
+        assert_eq!(pool.canonical_snapshot_bytes().unwrap(), before);
+
+        let inputs = pool
+            .staking_v2_epoch_reward_inputs(SLOTS_PER_EPOCH)
+            .unwrap();
+        pool.settle_v2_epoch_rewards_for_weights(
+            0,
+            &inputs.stake_weights,
+            &inputs.performance_bps,
+            &inputs.commission_bps,
+            inputs.stake_weights.start_slot,
+        )
+        .unwrap();
+        let settled = pool.canonical_snapshot_bytes().unwrap();
+        let error = pool
+            .settle_v2_epoch_rewards_for_weights(
+                0,
+                &inputs.stake_weights,
+                &inputs.performance_bps,
+                &inputs.commission_bps,
+                inputs.stake_weights.start_slot,
+            )
+            .unwrap_err();
+        assert!(error.contains("already settled"));
+        assert_eq!(pool.canonical_snapshot_bytes().unwrap(), settled);
+    }
+
+    #[test]
+    fn staking_v2_mossstake_allocator_is_exact_balanced_and_order_independent() {
+        let validators = [
+            Pubkey::new([20u8; 32]),
+            Pubkey::new([21u8; 32]),
+            Pubkey::new([22u8; 32]),
+            Pubkey::new([23u8; 32]),
+        ];
+        let mut pool = StakePool::new();
+        for validator in validators {
+            pool.stake(validator, BOOTSTRAP_GRANT_AMOUNT, 0).unwrap();
+        }
+        let backing = 1_120_000 * 1_000_000_000;
+        let expected_each = 280_000 * 1_000_000_000;
+        let forward = pool
+            .plan_mossstake_allocations(backing, &validators)
+            .unwrap();
+        let mut reversed = validators;
+        reversed.reverse();
+        let reverse = pool.plan_mossstake_allocations(backing, &reversed).unwrap();
+        assert_eq!(forward, reverse);
+        assert!(forward.values().all(|amount| *amount == expected_each));
+
+        let applied = pool
+            .rebalance_mossstake_allocations(backing, &validators, 0)
+            .unwrap();
+        assert_eq!(applied, forward);
+        assert_eq!(pool.mossstake_allocation_total().unwrap(), backing);
+        assert_eq!(
+            pool.total_stake(),
+            backing + BOOTSTRAP_GRANT_AMOUNT * validators.len() as u64
+        );
+        pool.initialize_staking_v2(0, &validators).unwrap();
+        let updated_backing = backing - 120_000 * 1_000_000_000;
+        let updated = pool
+            .rebalance_mossstake_allocations(updated_backing, &validators, 0)
+            .expect("multi-validator V2 rebalance must update all accounting atomically");
+        assert_eq!(updated.values().copied().sum::<u64>(), updated_backing);
+        assert_eq!(pool.mossstake_allocation_total().unwrap(), updated_backing);
+        pool.validate_v2_invariants().unwrap();
+    }
+
+    #[test]
+    fn staking_v2_mossstake_allocator_fails_atomically_above_five_x_capacity() {
+        let validators = [Pubkey::new([24u8; 32]), Pubkey::new([25u8; 32])];
+        let mut pool = StakePool::new();
+        for validator in validators {
+            pool.stake(validator, BOOTSTRAP_GRANT_AMOUNT, 0).unwrap();
+        }
+        let before = pool.canonical_snapshot_bytes().unwrap();
+        let over_capacity = BOOTSTRAP_GRANT_AMOUNT
+            * (MAX_VALIDATOR_EFFECTIVE_STAKE_MULTIPLIER - 1)
+            * validators.len() as u64
+            + 1;
+        let error = pool
+            .rebalance_mossstake_allocations(over_capacity, &validators, 0)
+            .unwrap_err();
+        assert!(error.contains("capacity"));
+        assert_eq!(pool.canonical_snapshot_bytes().unwrap(), before);
     }
 
     #[test]
@@ -5779,6 +9263,113 @@ mod tests {
             e1.timestamp, e2.timestamp,
             "two evidence structs with same input must be identical"
         );
+    }
+
+    #[test]
+    fn proof_carrying_double_block_is_chain_bound_and_deduplicated() {
+        let chain_id = "lichen-slashing-v2-test";
+        let producer = crate::Keypair::generate();
+        let producer_pubkey = producer.pubkey();
+        let reporter = crate::Keypair::generate().pubkey();
+        let mut block_1 = Block::new_with_timestamp(
+            42,
+            Hash::hash(b"parent"),
+            Hash::hash(b"state-a"),
+            producer_pubkey.0,
+            Vec::new(),
+            1_700_000_000,
+        );
+        block_1.sign_with_chain_id(&producer, chain_id);
+        let mut block_2 = block_1.clone();
+        block_2.header.state_root = Hash::hash(b"state-b");
+        block_2.sign_with_chain_id(&producer, chain_id);
+
+        let evidence = SlashingEvidence::new(
+            SlashingOffense::DoubleBlockV2 {
+                header_1: block_1.header,
+                header_2: block_2.header,
+            },
+            producer_pubkey,
+            42,
+            reporter,
+            1_700_000_001,
+        );
+        assert!(
+            !evidence.verify(),
+            "legacy verifier must reject V2 evidence"
+        );
+        assert!(evidence.verify_with_chain_id(chain_id));
+        assert!(!evidence.verify_with_chain_id("another-chain"));
+        assert_eq!(evidence.offense_slot(), 42);
+
+        let mut tracker = SlashingTracker::new();
+        assert!(tracker.add_evidence_with_chain_id(evidence.clone(), chain_id));
+        assert!(!tracker.add_evidence_with_chain_id(evidence, chain_id));
+        assert_eq!(tracker.evidence_count(), 1);
+    }
+
+    #[test]
+    fn proof_carrying_bft_votes_require_same_height_round_signer_and_distinct_value() {
+        let chain_id = "lichen-slashing-v2-test";
+        let voter = crate::Keypair::generate();
+        let voter_pubkey = voter.pubkey();
+        let hash_1 = Some(Hash::hash(b"block-a"));
+        let hash_2 = Some(Hash::hash(b"block-b"));
+        let vote_1 = Prevote {
+            height: 77,
+            round: 3,
+            block_hash: hash_1,
+            validator: voter_pubkey,
+            signature: voter.sign(&Prevote::signing_bytes_for_chain_id(
+                chain_id, 77, 3, &hash_1,
+            )),
+        };
+        let vote_2 = Prevote {
+            height: 77,
+            round: 3,
+            block_hash: hash_2,
+            validator: voter_pubkey,
+            signature: voter.sign(&Prevote::signing_bytes_for_chain_id(
+                chain_id, 77, 3, &hash_2,
+            )),
+        };
+        let evidence = SlashingEvidence::new(
+            SlashingOffense::DoublePrevoteV2 {
+                vote_1: vote_1.clone(),
+                vote_2: vote_2.clone(),
+            },
+            voter_pubkey,
+            77,
+            crate::Keypair::generate().pubkey(),
+            1_700_000_001,
+        );
+        assert!(evidence.verify_with_chain_id(chain_id));
+
+        let mut wrong_round = vote_2.clone();
+        wrong_round.round = 4;
+        let invalid = SlashingEvidence::new(
+            SlashingOffense::DoublePrevoteV2 {
+                vote_1: vote_1.clone(),
+                vote_2: wrong_round,
+            },
+            voter_pubkey,
+            77,
+            crate::Keypair::generate().pubkey(),
+            1_700_000_001,
+        );
+        assert!(!invalid.verify_with_chain_id(chain_id));
+
+        let same_value = SlashingEvidence::new(
+            SlashingOffense::DoublePrevoteV2 {
+                vote_1: vote_1.clone(),
+                vote_2: vote_1,
+            },
+            voter_pubkey,
+            77,
+            crate::Keypair::generate().pubkey(),
+            1_700_000_001,
+        );
+        assert!(!same_value.verify_with_chain_id(chain_id));
     }
 
     // ================================================================
@@ -6799,6 +10390,82 @@ mod tests {
     }
 
     #[test]
+    fn test_target_bonded_stake_rounds_up() {
+        assert_eq!(target_bonded_stake(0), 0);
+        assert_eq!(target_bonded_stake(10_000), 6_700);
+        assert_eq!(target_bonded_stake(1), 1);
+        assert_eq!(target_bonded_stake(10_001), 6_701);
+    }
+
+    #[test]
+    fn test_epoch_security_budget_scales_below_target_and_caps_at_ceiling() {
+        let supply = GENESIS_SUPPLY_SPORES;
+        let target = target_bonded_stake(supply);
+        let ceiling = compute_epoch_mint(0, supply);
+
+        assert_eq!(compute_epoch_security_budget(0, supply, 0).unwrap(), 0);
+        assert_eq!(
+            compute_epoch_security_budget(0, supply, target).unwrap(),
+            ceiling
+        );
+        assert_eq!(
+            compute_epoch_security_budget(0, supply, supply).unwrap(),
+            ceiling
+        );
+
+        let quarter_target = target / 4;
+        let quarter_budget = compute_epoch_security_budget(0, supply, quarter_target).unwrap();
+        assert_eq!(
+            quarter_budget,
+            (ceiling as u128 * quarter_target as u128 / target as u128) as u64
+        );
+    }
+
+    #[test]
+    fn test_epoch_security_budget_keeps_equal_base_rate_below_target() {
+        let supply = GENESIS_SUPPLY_SPORES;
+        let one_million_licn = 1_000_000 * 1_000_000_000;
+        let two_million_licn = one_million_licn * 2;
+        let first = compute_epoch_security_budget(0, supply, one_million_licn).unwrap();
+        let second = compute_epoch_security_budget(0, supply, two_million_licn).unwrap();
+
+        assert!(second.abs_diff(first.saturating_mul(2)) <= 1);
+    }
+
+    #[test]
+    fn test_epoch_security_budget_rejects_impossible_stake() {
+        let error = compute_epoch_security_budget(0, 100, 101).unwrap_err();
+        assert!(error.contains("exceeds total supply"));
+    }
+
+    #[test]
+    fn test_dynamic_budget_prevents_low_participation_windfall() {
+        let supply = 502_675_532 * 1_000_000_000;
+        let native_stake = 400_000 * 1_000_000_000;
+        let moss_stake = 1_119_674 * 1_000_000_000;
+        let effective_stake = native_stake + moss_stake;
+        let ceiling = compute_epoch_mint(0, supply);
+        let budget = compute_epoch_security_budget(0, supply, effective_stake).unwrap();
+
+        // Current testnet participation is about 0.45% of the 67% target. The
+        // dynamic budget must therefore be far below the full issuance ceiling.
+        assert!(budget.saturating_mul(200) < ceiling);
+
+        let (native_reward, moss_reward) =
+            split_reward_budget_by_stake(budget, native_stake, moss_stake).unwrap();
+        assert_eq!(native_reward + moss_reward, budget);
+        assert!(moss_reward > native_reward);
+    }
+
+    #[test]
+    fn test_split_reward_budget_is_dynamic_and_conserves_dust() {
+        assert_eq!(split_reward_budget_by_stake(100, 0, 0).unwrap(), (0, 0));
+        assert_eq!(split_reward_budget_by_stake(101, 1, 3).unwrap(), (26, 75));
+        assert_eq!(split_reward_budget_by_stake(101, 3, 1).unwrap(), (76, 25));
+        assert!(split_reward_budget_by_stake(1, u64::MAX, 1).is_err());
+    }
+
+    #[test]
     fn test_distribute_epoch_staker_rewards_proportional() {
         // Two validators with 100k and 300k stake — should get 25%/75% of epoch mint
         let mut pool = StakePool::new();
@@ -7152,5 +10819,24 @@ mod tests {
             .unwrap();
 
         assert_eq!(licn_price_from_state(&state), 0.10);
+    }
+
+    #[test]
+    fn test_consensus_oracle_price_rejects_future_and_noncanonical_quotes() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::state::StateStore::open(dir.path()).unwrap();
+        state.set_last_slot(100).unwrap();
+
+        state
+            .put_oracle_consensus_price("LICN", 125_000_000, 9, 95, 3)
+            .unwrap();
+        assert_eq!(read_consensus_oracle_price_from_state(&state, "LICN"), None);
+        assert_eq!(consensus_oracle_price_from_state(&state, "LICN"), None);
+
+        state
+            .put_oracle_consensus_price("LICN", 12_500_000, 8, 101, 3)
+            .unwrap();
+        assert_eq!(read_consensus_oracle_price_from_state(&state, "LICN"), None);
+        assert_eq!(consensus_oracle_price_from_state(&state, "LICN"), None);
     }
 }

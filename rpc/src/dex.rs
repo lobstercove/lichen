@@ -14,7 +14,7 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -230,6 +230,10 @@ pub struct MarginPositionJson {
     pub status: &'static str,
     pub size: u64,
     pub margin: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cross_collateral: Option<u64>,
+    pub funding_v2_migrated: bool,
+    pub cross_v2_migrated: bool,
     pub entry_price: f64,
     pub entry_price_raw: u64,
     pub leverage: u64,
@@ -244,8 +248,24 @@ pub struct MarginPositionJson {
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MarginInfoJson {
+    pub paused: bool,
+    pub migration_locked: bool,
     pub insurance_fund: u64,
+    pub total_collateral_escrowed: u64,
     pub last_funding_slot: u64,
+    pub funding_activation_slot: u64,
+    pub funding_v2_enabled: bool,
+    pub funding_migrated_open_count: u64,
+    pub funding_migration_finalized: bool,
+    pub funding_pool: u64,
+    pub funding_total_claims: u64,
+    pub funding_debt_writeoff: u64,
+    pub bad_debt: u64,
+    pub cross_v2_enabled: bool,
+    pub cross_migrated_open_count: u64,
+    pub cross_migration_finalized: bool,
+    pub cross_total_collateral: u64,
+    pub max_cross_positions_per_account: u64,
     pub maintenance_bps: u64,
     pub position_count: u64,
     pub max_leverage: u64,
@@ -254,10 +274,36 @@ pub struct MarginInfoJson {
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct CrossMarginAccountJson {
+    pub trader: String,
+    pub enabled: bool,
+    pub balance: u64,
+    pub active_position_count: u64,
+    pub equity: u64,
+    pub equity_deficit: u64,
+    pub total_notional: u64,
+    pub initial_required: u64,
+    pub maintenance_required: u64,
+    pub funding_debt: u64,
+    pub available_to_withdraw: u64,
+    pub health_ratio_bps: u64,
+    pub status: &'static str,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct FundingRateJson {
-    pub base_rate_bps: u64,
+    pub dynamic: bool,
+    pub formula: &'static str,
+    pub base_rate_bps: Option<u64>,
+    pub interval_slots: u64,
     pub interval_hours: u64,
     pub max_rate_bps: u64,
+    pub max_skew_rate_bps: u64,
+    pub funding_v2_enabled: bool,
+    pub funding_pool: u64,
+    pub funding_total_claims: u64,
+    pub funding_debt_writeoff: u64,
     pub tiers: Vec<FundingTierJson>,
 }
 
@@ -1017,6 +1063,9 @@ fn decode_margin_position(data: &[u8]) -> Option<MarginPositionJson> {
         status: value.status,
         size: value.size,
         margin: value.margin,
+        cross_collateral: None,
+        funding_v2_migrated: false,
+        cross_v2_migrated: false,
         entry_price: value.entry_price,
         entry_price_raw: value.entry_price_raw,
         leverage: value.leverage,
@@ -2148,6 +2197,24 @@ async fn get_margin_positions(
                         pos.mark_price = close_raw as f64 / PRICE_SCALE as f64;
                     }
                 }
+                if pos.margin_type == "cross" {
+                    pos.cross_collateral = Some(read_u64(
+                        &state,
+                        DEX_MARGIN_PROGRAM,
+                        &format!("mrg_x2_bal_{trader_hex}"),
+                    ));
+                }
+                pos.funding_v2_migrated = read_bytes(
+                    &state,
+                    DEX_MARGIN_PROGRAM,
+                    &format!("mrg_pf2idx_{}", pos.position_id),
+                )
+                .is_some();
+                pos.cross_v2_migrated = read_u64(
+                    &state,
+                    DEX_MARGIN_PROGRAM,
+                    &format!("mrg_x2_mig_{}", pos.position_id),
+                ) == 1;
                 positions.push(pos);
             }
         }
@@ -2166,7 +2233,27 @@ async fn get_margin_position(
 
     match read_bytes(&state, DEX_MARGIN_PROGRAM, &key) {
         Some(data) => match decode_margin_position(&data) {
-            Some(pos) => ApiResponse::ok(pos, slot).into_response(),
+            Some(mut pos) => {
+                if pos.margin_type == "cross" {
+                    pos.cross_collateral = Some(read_u64(
+                        &state,
+                        DEX_MARGIN_PROGRAM,
+                        &format!("mrg_x2_bal_{}", pos.trader),
+                    ));
+                }
+                pos.funding_v2_migrated = read_bytes(
+                    &state,
+                    DEX_MARGIN_PROGRAM,
+                    &format!("mrg_pf2idx_{}", pos.position_id),
+                )
+                .is_some();
+                pos.cross_v2_migrated = read_u64(
+                    &state,
+                    DEX_MARGIN_PROGRAM,
+                    &format!("mrg_x2_mig_{}", pos.position_id),
+                ) == 1;
+                ApiResponse::ok(pos, slot).into_response()
+            }
             None => api_err("invalid position data"),
         },
         None => api_not_found(&format!("position {} not found", position_id)),
@@ -2178,8 +2265,36 @@ async fn get_margin_info(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
 
     let info = MarginInfoJson {
+        paused: read_bytes(&state, DEX_MARGIN_PROGRAM, "mrg_paused")
+            .and_then(|data| data.first().copied())
+            == Some(1),
+        migration_locked: read_bytes(&state, DEX_MARGIN_PROGRAM, "mrg_v2_mig_lock")
+            .and_then(|data| data.first().copied())
+            == Some(1),
         insurance_fund: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_insurance"),
-        last_funding_slot: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_last_fund"),
+        total_collateral_escrowed: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_coll_esc"),
+        last_funding_slot: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_f2last_1"),
+        funding_activation_slot: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_f2_activation"),
+        funding_v2_enabled: read_bytes(&state, DEX_MARGIN_PROGRAM, "mrg_f2_enabled")
+            .and_then(|data| data.first().copied())
+            == Some(1),
+        funding_migrated_open_count: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_f2_migrated"),
+        funding_migration_finalized: read_bytes(&state, DEX_MARGIN_PROGRAM, "mrg_f2_mig_final")
+            .and_then(|data| data.first().copied())
+            == Some(1),
+        funding_pool: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_f2_pool"),
+        funding_total_claims: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_f2_claims"),
+        funding_debt_writeoff: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_f2_writeoff"),
+        bad_debt: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_bad_debt"),
+        cross_v2_enabled: read_bytes(&state, DEX_MARGIN_PROGRAM, "mrg_x2_enabled")
+            .and_then(|data| data.first().copied())
+            == Some(1),
+        cross_migrated_open_count: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_x2_migrated"),
+        cross_migration_finalized: read_bytes(&state, DEX_MARGIN_PROGRAM, "mrg_x2_mig_final")
+            .and_then(|data| data.first().copied())
+            == Some(1),
+        cross_total_collateral: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_x2_total"),
+        max_cross_positions_per_account: 32,
         maintenance_bps: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_maint_bps"),
         position_count: read_u64(&state, DEX_MARGIN_PROGRAM, MARGIN_POSITION_COUNT_KEY),
         total_open_interest: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_total_oi"),
@@ -2196,6 +2311,227 @@ async fn get_margin_info(State(state): State<Arc<RpcState>>) -> Response {
     ApiResponse::ok(info, slot).into_response()
 }
 
+fn margin_tier_requirements(leverage: u64) -> (u64, u64) {
+    if leverage <= 2 {
+        (5_000, 2_500)
+    } else if leverage <= 3 {
+        (3_333, 1_700)
+    } else if leverage <= 5 {
+        (2_000, 1_000)
+    } else if leverage <= 10 {
+        (1_000, 500)
+    } else if leverage <= 25 {
+        (400, 200)
+    } else if leverage <= 50 {
+        (200, 100)
+    } else {
+        (100, 50)
+    }
+}
+
+/// GET /api/v1/margin/cross-account/:trader — bounded shared-collateral state.
+async fn get_margin_cross_account(
+    State(state): State<Arc<RpcState>>,
+    Path(trader): Path<String>,
+) -> Response {
+    let slot = current_slot(&state);
+    let trader_hex = normalize_account_lookup(&trader);
+    let enabled = read_bytes(&state, DEX_MARGIN_PROGRAM, "mrg_x2_enabled")
+        .and_then(|data| data.first().copied())
+        == Some(1);
+    let balance = read_u64(
+        &state,
+        DEX_MARGIN_PROGRAM,
+        &format!("mrg_x2_bal_{trader_hex}"),
+    );
+    let count = read_u64(
+        &state,
+        DEX_MARGIN_PROGRAM,
+        &format!("mrg_x2_count_{trader_hex}"),
+    );
+    let admin_maintenance = read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_maint_bps");
+
+    let mut valid = enabled && count <= 32;
+    let mut stale = false;
+    let mut net_pnl = 0i128;
+    let mut total_notional = 0u64;
+    let mut initial_required = 0u64;
+    let mut maintenance_required = 0u64;
+    let mut funding_debt = 0u64;
+
+    if valid {
+        for index in 1..=count {
+            let position_id = read_u64(
+                &state,
+                DEX_MARGIN_PROGRAM,
+                &format!("mrg_x2_pos_{trader_hex}_{index}"),
+            );
+            let registry_index = read_u64(
+                &state,
+                DEX_MARGIN_PROGRAM,
+                &format!("mrg_x2_idx_{position_id}"),
+            );
+            let position = read_bytes(
+                &state,
+                DEX_MARGIN_PROGRAM,
+                &margin_position_storage_key(position_id),
+            )
+            .and_then(|data| decode_margin_position(&data));
+            let Some(position) = position else {
+                valid = false;
+                break;
+            };
+            if position_id == 0
+                || registry_index != index
+                || position.trader != trader_hex
+                || position.status != "open"
+                || position.margin_type != "cross"
+            {
+                valid = false;
+                break;
+            }
+            let mark_data = read_bytes(
+                &state,
+                DEX_MARGIN_PROGRAM,
+                &margin_mark_storage_key(position.pair_id),
+            );
+            let Some(mark_data) = mark_data.filter(|data| data.len() >= 16) else {
+                stale = true;
+                break;
+            };
+            let mark_price = u64::from_le_bytes(mark_data[0..8].try_into().unwrap_or([0; 8]));
+            let source_slot = u64::from_le_bytes(mark_data[8..16].try_into().unwrap_or([0; 8]));
+            if mark_price == 0 || source_slot > slot || slot - source_slot > 750 {
+                stale = true;
+                break;
+            }
+            let notional_u128 = position.size as u128 * mark_price as u128 / PRICE_SCALE as u128;
+            let Ok(notional) = u64::try_from(notional_u128) else {
+                valid = false;
+                break;
+            };
+            let (profit, price_delta) = if position.side == "long" {
+                (
+                    mark_price >= position.entry_price_raw,
+                    mark_price.abs_diff(position.entry_price_raw),
+                )
+            } else {
+                (
+                    mark_price <= position.entry_price_raw,
+                    mark_price.abs_diff(position.entry_price_raw),
+                )
+            };
+            let pnl_u128 = position.size as u128 * price_delta as u128 / PRICE_SCALE as u128;
+            let Ok(pnl) = i128::try_from(pnl_u128) else {
+                valid = false;
+                break;
+            };
+            net_pnl = match if profit {
+                net_pnl.checked_add(pnl)
+            } else {
+                net_pnl.checked_sub(pnl)
+            } {
+                Some(value) => value,
+                None => {
+                    valid = false;
+                    break;
+                }
+            };
+            let (initial_bps, maintenance_bps) = margin_tier_requirements(position.leverage);
+            let initial = (notional_u128 * initial_bps as u128 / 10_000).max(1);
+            let maintenance =
+                (notional_u128 * maintenance_bps.max(admin_maintenance) as u128 / 10_000).max(1);
+            let (Ok(initial), Ok(maintenance)) =
+                (u64::try_from(initial), u64::try_from(maintenance))
+            else {
+                valid = false;
+                break;
+            };
+            let Some(next_notional) = total_notional.checked_add(notional) else {
+                valid = false;
+                break;
+            };
+            let Some(next_initial) = initial_required.checked_add(initial) else {
+                valid = false;
+                break;
+            };
+            let Some(next_maintenance) = maintenance_required.checked_add(maintenance) else {
+                valid = false;
+                break;
+            };
+            let debt = read_u64(
+                &state,
+                DEX_MARGIN_PROGRAM,
+                &format!("mrg_pf2debt_{position_id}"),
+            );
+            let Some(next_debt) = funding_debt.checked_add(debt) else {
+                valid = false;
+                break;
+            };
+            total_notional = next_notional;
+            initial_required = next_initial;
+            maintenance_required = next_maintenance;
+            funding_debt = next_debt;
+        }
+    }
+
+    let signed_equity = (balance as i128)
+        .checked_add(net_pnl)
+        .and_then(|value| value.checked_sub(funding_debt as i128));
+    let equity = if valid && !stale {
+        signed_equity
+            .filter(|value| *value > 0)
+            .and_then(|value| u64::try_from(value).ok())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let equity_deficit = if valid && !stale {
+        signed_equity
+            .filter(|value| *value < 0)
+            .and_then(|value| u64::try_from(value.unsigned_abs()).ok())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let health_ratio_bps = if total_notional == 0 {
+        if valid && !stale {
+            10_000
+        } else {
+            0
+        }
+    } else {
+        u64::try_from(equity as u128 * 10_000 / total_notional as u128).unwrap_or(u64::MAX)
+    };
+    let status = if !enabled {
+        "inactive"
+    } else if stale {
+        "stale"
+    } else if !valid {
+        "invalid"
+    } else if equity < maintenance_required {
+        "maintenance"
+    } else {
+        "healthy"
+    };
+    let account = CrossMarginAccountJson {
+        trader: trader_hex,
+        enabled,
+        balance,
+        active_position_count: count,
+        equity,
+        equity_deficit,
+        total_notional,
+        initial_required,
+        maintenance_required,
+        funding_debt,
+        available_to_withdraw: balance.min(equity.saturating_sub(initial_required)),
+        health_ratio_bps,
+        status,
+    };
+    ApiResponse::ok(account, slot).into_response()
+}
+
 /// GET /api/v1/margin/enabled-pairs — List pair IDs that have margin trading enabled
 async fn get_margin_enabled_pairs(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
@@ -2210,58 +2546,68 @@ async fn get_margin_enabled_pairs(State(state): State<Arc<RpcState>>) -> Respons
     ApiResponse::ok(serde_json::json!({ "enabledPairIds": enabled }), slot).into_response()
 }
 
-/// GET /api/v1/margin/funding-rate — Returns funding rate constants per tier
+/// GET /api/v1/margin/funding-rate — Dynamic funding policy and solvency state
 async fn get_margin_funding_rate(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
 
-    // Base rate: 1 bps = 0.01% per 8h interval (from contract constant MAX_FUNDING_RATE_BPS=100 / 100)
-    let base_rate_bps: u64 = 1;
-    let interval_hours: u64 = 8; // FUNDING_INTERVAL_SLOTS = 28_800 ≈ 8h
+    let interval_slots: u64 = 72_000;
+    let interval_hours: u64 = 8;
     let max_rate_bps: u64 = 100; // 1% max per interval
 
-    // Tier table mirrors contract's get_tier_params funding_rate_mult_x10
+    // Leverage changes position notional relative to margin. Funding is not
+    // multiplied by leverage a second time.
     let tiers = vec![
         FundingTierJson {
             max_leverage: 2,
             multiplier_x10: 10,
-            effective_rate_bps: base_rate_bps as f64 * 10.0 / 10.0,
+            effective_rate_bps: max_rate_bps as f64,
         },
         FundingTierJson {
             max_leverage: 3,
             multiplier_x10: 10,
-            effective_rate_bps: base_rate_bps as f64 * 10.0 / 10.0,
+            effective_rate_bps: max_rate_bps as f64,
         },
         FundingTierJson {
             max_leverage: 5,
-            multiplier_x10: 15,
-            effective_rate_bps: base_rate_bps as f64 * 15.0 / 10.0,
+            multiplier_x10: 10,
+            effective_rate_bps: max_rate_bps as f64,
         },
         FundingTierJson {
             max_leverage: 10,
-            multiplier_x10: 20,
-            effective_rate_bps: base_rate_bps as f64 * 20.0 / 10.0,
+            multiplier_x10: 10,
+            effective_rate_bps: max_rate_bps as f64,
         },
         FundingTierJson {
             max_leverage: 25,
-            multiplier_x10: 30,
-            effective_rate_bps: base_rate_bps as f64 * 30.0 / 10.0,
+            multiplier_x10: 10,
+            effective_rate_bps: max_rate_bps as f64,
         },
         FundingTierJson {
             max_leverage: 50,
-            multiplier_x10: 50,
-            effective_rate_bps: base_rate_bps as f64 * 50.0 / 10.0,
+            multiplier_x10: 10,
+            effective_rate_bps: max_rate_bps as f64,
         },
         FundingTierJson {
             max_leverage: 100,
-            multiplier_x10: 100,
-            effective_rate_bps: base_rate_bps as f64 * 100.0 / 10.0,
+            multiplier_x10: 10,
+            effective_rate_bps: max_rate_bps as f64,
         },
     ];
 
     let info = FundingRateJson {
-        base_rate_bps,
+        dynamic: true,
+        formula: "clamp(mark/index premium + bounded long/short open-size skew, -1%, +1%) applied once to position notional",
+        base_rate_bps: None,
+        interval_slots,
         interval_hours,
         max_rate_bps,
+        max_skew_rate_bps: 10,
+        funding_v2_enabled: read_bytes(&state, DEX_MARGIN_PROGRAM, "mrg_f2_enabled")
+            .and_then(|data| data.first().copied())
+            == Some(1),
+        funding_pool: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_f2_pool"),
+        funding_total_claims: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_f2_claims"),
+        funding_debt_writeoff: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_f2_writeoff"),
         tiers,
     };
 
@@ -2515,11 +2861,34 @@ async fn post_vote(Path(_proposal_id): Path<u64>) -> Response {
 async fn get_oracle_prices(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
     let assets = ["LICN", "wSOL", "wETH", "wBNB", "wNEO", "wGAS", "wBTC"];
+    let mut required_assets = vec!["LICN", "wSOL", "wETH", "wBNB"];
+    for (symbol, asset) in [("WNEO", "wNEO"), ("WGAS", "wGAS"), ("WBTC", "wBTC")] {
+        if state
+            .state
+            .get_symbol_registry(symbol)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            required_assets.push(asset);
+        }
+    }
     let mut feeds = Vec::new();
+    let mut fresh_assets = HashSet::new();
 
     for asset in &assets {
         if let Ok(Some(price)) = state.state.get_oracle_consensus_price(asset) {
-            let stale = slot.saturating_sub(price.slot) > lichen_core::ORACLE_STALENESS_SLOTS;
+            let canonical = price.price > 0 && price.decimals == lichen_core::ORACLE_PRICE_DECIMALS;
+            let status = if !canonical {
+                "invalid"
+            } else if price.slot > slot {
+                "future"
+            } else if slot - price.slot > lichen_core::ORACLE_STALENESS_SLOTS {
+                "stale"
+            } else {
+                fresh_assets.insert(*asset);
+                "fresh"
+            };
             let timestamp = state
                 .state
                 .get_block_by_slot(price.slot)
@@ -2527,23 +2896,41 @@ async fn get_oracle_prices(State(state): State<Arc<RpcState>>) -> Response {
                 .flatten()
                 .map(|block| block.header.timestamp)
                 .unwrap_or(0);
+            let display_price = canonical.then_some(price.price as f64 / 100_000_000.0);
 
             feeds.push(serde_json::json!({
                 "asset": asset,
-                "price": price.price as f64 / 10f64.powi(price.decimals as i32),
+                "price": display_price,
                 "priceRaw": price.price,
                 "decimals": price.decimals,
                 "slot": price.slot,
                 "timestamp": timestamp,
-                "stale": stale,
+                "stale": status != "fresh",
+                "status": status,
                 "source": "native_consensus"
             }));
         }
     }
 
+    let consensus_managed = read_bytes(&state, "ORACLE", "oracle_consensus_managed")
+        .and_then(|value| value.first().copied())
+        == Some(1);
+    let paused = read_bytes(&state, "ORACLE", "oracle_paused")
+        .and_then(|value| value.first().copied())
+        == Some(1);
+    let operational = consensus_managed
+        && !paused
+        && required_assets
+            .iter()
+            .all(|asset| fresh_assets.contains(asset));
+
     ApiResponse::ok(
         serde_json::json!({
-            "oracleActive": true,
+            "oracleActive": operational,
+            "consensusManaged": consensus_managed,
+            "paused": paused,
+            "requiredFeeds": required_assets.len(),
+            "freshFeeds": fresh_assets.len(),
             "feeds": feeds,
         }),
         slot,
@@ -2559,8 +2946,8 @@ async fn get_oracle_prices(State(state): State<Arc<RpcState>>) -> Response {
 /// Returns the USD-denominated price (or LICN-denominated for cross pairs)
 /// from the validator-attested oracle, or None if unavailable/stale.
 fn oracle_price_for_pair(state: &lichen_core::StateStore, pair_id: u64) -> Option<f64> {
-    use lichen_core::consensus::{consensus_oracle_price_from_state, licn_price_from_state};
-    let licn_usd = licn_price_from_state(state);
+    use lichen_core::consensus::consensus_oracle_price_from_state;
+    let licn_usd = consensus_oracle_price_from_state(state, "LICN")?;
     match pair_id {
         1 => Some(licn_usd),
         2 => consensus_oracle_price_from_state(state, "wSOL"),
@@ -2649,6 +3036,10 @@ pub(crate) fn build_dex_router() -> Router<Arc<RpcState>> {
         .route("/margin/positions", get(get_margin_positions))
         .route("/margin/positions/:id", get(get_margin_position))
         .route("/margin/info", get(get_margin_info))
+        .route(
+            "/margin/cross-account/:trader",
+            get(get_margin_cross_account),
+        )
         .route("/margin/enabled-pairs", get(get_margin_enabled_pairs))
         .route("/margin/funding-rate", get(get_margin_funding_rate))
         // Analytics
@@ -2720,6 +3111,24 @@ async fn get_margin_stats_rest(State(state): State<Arc<RpcState>>) -> Response {
             "totalOpenInterest": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_total_oi"),
             "liquidationCount": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_liq_count"),
             "insuranceFund": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_insurance"),
+            "totalCollateralEscrowed": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_coll_esc"),
+            "badDebt": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_bad_debt"),
+            "fundingV2Enabled": read_bytes(&state, DEX_MARGIN_PROGRAM, "mrg_f2_enabled")
+                .and_then(|data| data.first().copied()) == Some(1),
+            "fundingMigratedOpenCount": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_f2_migrated"),
+            "fundingMigrationFinalized": read_bytes(&state, DEX_MARGIN_PROGRAM, "mrg_f2_mig_final")
+                .and_then(|data| data.first().copied()) == Some(1),
+            "crossV2Enabled": read_bytes(&state, DEX_MARGIN_PROGRAM, "mrg_x2_enabled")
+                .and_then(|data| data.first().copied()) == Some(1),
+            "crossMigratedOpenCount": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_x2_migrated"),
+            "crossMigrationFinalized": read_bytes(&state, DEX_MARGIN_PROGRAM, "mrg_x2_mig_final")
+                .and_then(|data| data.first().copied()) == Some(1),
+            "crossTotalCollateral": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_x2_total"),
+            "maxCrossPositionsPerAccount": 32,
+            "paused": read_bytes(&state, DEX_MARGIN_PROGRAM, "mrg_paused")
+                .and_then(|data| data.first().copied()) == Some(1),
+            "migrationLocked": read_bytes(&state, DEX_MARGIN_PROGRAM, "mrg_v2_mig_lock")
+                .and_then(|data| data.first().copied()) == Some(1),
         }),
         slot,
     )
@@ -3281,6 +3690,14 @@ mod tests {
         buf[90..98].copy_from_slice(&PNL_BIAS.to_le_bytes());
         let m = decode_margin_position(&buf).unwrap();
         assert_eq!(m.status, "liquidated");
+    }
+
+    #[test]
+    fn decode_margin_position_negative_pnl_is_exact() {
+        let mut buf = vec![0u8; 112];
+        buf[90..98].copy_from_slice(&(PNL_BIAS - 42).to_le_bytes());
+        let m = decode_margin_position(&buf).unwrap();
+        assert_eq!(m.realized_pnl, -42);
     }
 
     // ── decode_candle ───────────────────────────────────────────────────

@@ -105,8 +105,8 @@
                     common swap/liquidity writes, and <code>ThallLendClient</code> for the stable lending flow:
                     deposits, withdrawals, borrows, repayments, liquidations, account/protocol reads, interest-rate
                     reads, and stats, plus <code>SporeVaultClient</code> for vault/user/strategy reads, aggregate
-                    stats, and the common deposit/withdraw/harvest flow. BountyBoard does not have a first-class
-                    helper yet, but the shared SDK transports expose aggregate stats reads for it.
+                    stats, and the common deposit/withdraw/harvest flow. <code>BountyBoardClient</code> covers exact
+                    bounty accounting, lifecycle, administration, and migration operations.
                 </p>
                 <p><strong>Everything else:</strong> most contracts in this catalog currently use the generic SDK
                     contract-call surface plus contract-specific JSON-RPC reads. Use this reference page and the ABI
@@ -665,8 +665,10 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             fns</span><span class="meta-chip">12.2 KB</span></div>
                 </div>
                 <div class="contract-body">
-                    <p>Collateralized lending and borrowing with automated liquidations. Depositors earn interest;
-                        borrowers pledge collateral up to the collateral factor. Uses a <strong>kinked interest rate
+                    <p>Single-asset LICN lending and borrowing with automated liquidations. Depositors earn interest;
+                        borrowers pledge LICN collateral to borrow LICN up to the collateral factor. Because both
+                        sides use the same asset, the USD price cancels from solvency calculations; an optional
+                        LichenOracle feed acts only as a fail-closed freshness circuit breaker. Uses a <strong>kinked interest rate
                             model</strong> — low rates below 80% utilization, steeply increasing above. Liquidators
                         receive a 5% bonus for keeping the protocol solvent.</p>
                     <div class="sub-heading">Configuration</div>
@@ -733,14 +735,16 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>SporePump</h3>
                         <div class="subtitle">Token Launchpad with Bonding Curves</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,996 lines</span><span class="meta-chip">20
-                            fns</span><span class="meta-chip">16.5 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">4,696 lines</span><span class="meta-chip">42
+                            fns</span><span class="meta-chip">64.5 KB</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Fair-launch platform for new tokens. Anyone can create a token by paying a small fee; the price
                         follows a <strong>linear bonding curve</strong> (price = base + slope &times; supply). When a
-                        token's market cap hits the <strong>graduation threshold</strong>, it automatically migrates
-                        liquidity to a LichenSwap pool — no rugs, no presales.</p>
+                        token's market cap hits the <strong>graduation threshold</strong>, it becomes eligible for a
+                        deterministic, governed migration that atomically provisions its
+                        canonical token program, LichenSwap pair/pool/liquidity position, and both router directions.
+                        Failed migrations leave the curve state recoverable instead of advertising a partial DEX launch.</p>
                     <div class="sub-heading">Configuration</div>
                     <table class="const-table">
                         <tr>
@@ -767,19 +771,47 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>PLATFORM_FEE</td>
                             <td>1% on each trade</td>
                         </tr>
+                        <tr>
+                            <td>CREATOR_ROYALTY</td>
+                            <td>0.5% default on each buy and sell; governance capped at 10%</td>
+                        </tr>
                     </table>
                     <div class="sub-heading">Functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span
-                            class="fn-chip">create_token</span><span class="fn-chip">buy</span><span
-                            class="fn-chip">sell</span><span class="fn-chip">get_token_info</span><span
-                            class="fn-chip">get_buy_quote</span><span class="fn-chip">get_token_count</span><span
-                            class="fn-chip">get_platform_stats</span><span class="fn-chip">pause</span><span
+                            class="fn-chip">create_token</span><span class="fn-chip">create_token_with_metadata</span><span
+                            class="fn-chip">get_token_metadata</span><span class="fn-chip">buy</span><span
+                            class="fn-chip">buy_with_min_output</span><span class="fn-chip">sell</span><span
+                            class="fn-chip">sell_with_min_output</span><span class="fn-chip">get_token_info</span><span
+                            class="fn-chip">get_buy_quote</span><span class="fn-chip">get_sell_quote</span><span
+                            class="fn-chip">get_token_count</span><span class="fn-chip">get_platform_stats</span><span
+                            class="fn-chip">get_creator_royalty_balance</span><span
+                            class="fn-chip">claim_creator_royalty</span><span class="fn-chip">get_custody_status</span><span
+                            class="fn-chip">recover_custody_surplus</span><span class="fn-chip">pause</span><span
                             class="fn-chip">unpause</span><span class="fn-chip">freeze_token</span><span
                             class="fn-chip">unfreeze_token</span><span class="fn-chip">set_buy_cooldown</span><span
                             class="fn-chip">set_sell_cooldown</span><span class="fn-chip">set_max_buy</span><span
                             class="fn-chip">set_creator_royalty</span><span class="fn-chip">withdraw_fees</span><span
+                            class="fn-chip">get_accounting_migration_token</span><span
+                            class="fn-chip">begin_accounting_v3_migration</span><span
+                            class="fn-chip">migrate_accounting_v3_token</span><span
+                            class="fn-chip">complete_accounting_v3_migration</span><span
+                            class="fn-chip">propose_admin</span><span class="fn-chip">accept_admin</span><span
                             class="fn-chip">set_licn_token</span><span class="fn-chip">set_dex_addresses</span><span
+                            class="fn-chip">set_graduation_governance</span><span
+                            class="fn-chip">set_graduation_config</span><span class="fn-chip">begin_migration</span><span
+                            class="fn-chip">abort_migration</span><span class="fn-chip">finalize_migration</span><span
+                            class="fn-chip">consume_graduation_claim</span><span
+                            class="fn-chip">get_graduation_status</span><span
                             class="fn-chip">get_graduation_info</span></div>
+                    <div class="callout callout-info">
+                        <p><strong>Exact accounting and agent surface:</strong> Accounting V3 separates curve reserve,
+                            creator liability, graduation revenue, and withdrawable platform fees, with a sealed,
+                            contiguous migration and custody-solvency proof. The same migration persists deterministic
+                            metadata for legacy rows and rejects malformed or conflicting symbol indexes; metadata reads
+                            no longer invent labels at request time. Protected buy/sell methods enforce signed minimum
+                            output. JS, Python, and Rust <code>SporePumpClient</code> helpers expose the complete
+                            user, governance, migration, custody, and graduation lifecycle.</p>
+                    </div>
                     <div class="badge-row"><span class="badge badge-defi">DeFi</span></div>
                 </div>
             </div>
@@ -794,20 +826,24 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>SporePay</h3>
                         <div class="subtitle">Streaming Payments</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">2,114 lines</span><span class="meta-chip">18
-                            fns</span><span class="meta-chip">17.4 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">3,709 lines</span><span class="meta-chip">25
+                            fns</span><span class="meta-chip">44.4 KB</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Sablier-style payment streaming for real-time payroll, subscriptions, and vesting. A sender locks
                         LICN and sets a time window; the recipient can withdraw proportionally as slots pass. Senders
-                        can cancel at any time — unstreamed funds return automatically. Supports <strong>LichenID
-                            identity gating</strong> so streams can require a minimum reputation score.</p>
+                        can cancel at any time — unvested funds return automatically and any temporarily restricted
+                        recipient payout remains an explicit claimable liability. Supports <strong>LichenID identity
+                            gating</strong> so streams can require a minimum reputation score.</p>
                     <div class="sub-heading">How It Works</div>
                     <ul>
                         <li><code>create_stream</code> — sender locks total amount with start/end slot window</li>
                         <li><code>withdraw_from_stream</code> — recipient claims accrued amount</li>
                         <li><code>cancel_stream</code> — sender reclaims remaining unstreamed balance</li>
-                        <li>Identity gate: admin can set a LichenID reputation threshold</li>
+                        <li>Cliffs are true vesting boundaries: cancellation before the cliff refunds the full stream</li>
+                        <li>Exact Accounting V3 liability, unpaid-payout recovery, and fail-closed solvency migration</li>
+                        <li>Bounded sender/recipient stream indexes support deterministic account pagination</li>
+                        <li>Identity gate: admin can set a LichenID reputation threshold; missing configuration fails closed</li>
                     </ul>
                     <div class="sub-heading">Functions</div>
                     <div class="fn-list"><span class="fn-chip">create_stream</span><span
@@ -820,11 +856,19 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             class="fn-chip">get_stream_info</span><span class="fn-chip">set_identity_admin</span><span
                             class="fn-chip">set_lichenid_address</span><span
                             class="fn-chip">set_identity_gate</span><span class="fn-chip">get_stream_count</span><span
-                            class="fn-chip">get_platform_stats</span></div>
+                            class="fn-chip">get_platform_stats</span><span
+                            class="fn-chip">claim_unpaid_payout</span><span
+                            class="fn-chip">get_unpaid_payout</span><span
+                            class="fn-chip">begin_accounting_v3_migration</span><span
+                            class="fn-chip">migrate_accounting_v3_stream</span><span
+                            class="fn-chip">complete_accounting_v3_migration</span><span
+                            class="fn-chip">get_sender_stream_ids</span><span
+                            class="fn-chip">get_recipient_stream_ids</span></div>
                     <div class="callout callout-info">
                         <p><strong>SDK helper coverage:</strong> <code>SporePayClient</code> now wraps the user-facing
                             SporePay flow across JS, Python, and Rust: stream creation, cliff streams, stream reads,
-                            withdrawable balance reads, withdrawals, cancellations, transfers, and aggregated stats.</p>
+                            withdrawable and unpaid-payout reads, withdrawals, cancellations, transfers, unpaid-payout
+                            claims, bounded account stream pagination, and exact accounting/migration stats.</p>
                         <p><strong>Generic fallback:</strong> admin-only configuration such as pause, identity-gate
                             updates, token/self-address setup, and other low-frequency ops remain on the raw contract
                             surface described in the ABI section of this page.</p>
@@ -842,16 +886,17 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                     <div class="contract-icon icon-defi"><i class="fas fa-vault"></i></div>
                     <div class="contract-header-text">
                         <h3>SporeVault</h3>
-                        <div class="subtitle">Auto-Compounding Yield Aggregator</div>
+                        <div class="subtitle">Auto-Compounding LICN Lending Vault</div>
                     </div>
                     <div class="contract-meta"><span class="meta-chip">1,698 lines</span><span class="meta-chip">19
                             fns</span><span class="meta-chip">17.0 KB</span></div>
                 </div>
                 <div class="contract-body">
-                    <p>ERC-4626-style vault that optimizes yield across Lichen DeFi protocols. Depositors receive
-                        shares; the vault routes capital to up to 5 strategies (ThallLend lending, LichenSwap LP,
-                        staking). <code>harvest()</code> compounds returns and takes a 10% performance fee. Minimum
-                        locked shares prevent the ERC-4626 inflation attack (T5.9).</p>
+                    <p>ERC-4626-style LICN vault backed by real idle custody and one ThallLend lending strategy.
+                        Depositors receive shares; <code>harvest()</code> synchronizes lending custody, compounds
+                        returns, realizes a 10% performance fee, and accrues the 2% annualized management fee.
+                        LichenSwap LP and staking identifiers fail closed until withdrawal-safe, manipulation-resistant
+                        adapters exist. Minimum locked shares prevent the ERC-4626 inflation attack (T5.9).</p>
                     <div class="sub-heading">Configuration</div>
                     <table class="const-table">
                         <tr>
@@ -864,11 +909,11 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         </tr>
                         <tr>
                             <td>MANAGEMENT_FEE</td>
-                            <td>~2% annual (25 BPS/slot)</td>
+                            <td>2% annualized at the 400 ms target slot cadence</td>
                         </tr>
                         <tr>
                             <td>MAX_STRATEGIES</td>
-                            <td>5 active strategies</td>
+                            <td>1 active ThallLend strategy in the current implementation</td>
                         </tr>
                         <tr>
                             <td>MIN_LOCKED_SHARES</td>
@@ -887,11 +932,11 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         </tr>
                         <tr>
                             <td>2</td>
-                            <td>LP Provision (LichenSwap liquidity)</td>
+                            <td>LP Provision — reserved, fails closed</td>
                         </tr>
                         <tr>
                             <td>3</td>
-                            <td>Staking</td>
+                            <td>Staking — reserved, fails closed</td>
                         </tr>
                     </table>
                     <div class="sub-heading">Functions</div>
@@ -1319,16 +1364,18 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>LichenOracle</h3>
                         <div class="subtitle">Price Feeds, Validator Entropy &amp; Attestations</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,341 lines</span><span class="meta-chip">24
-                            fns</span><span class="meta-chip">16.4 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">2,186 lines</span><span class="meta-chip">25
+                            exports</span></div>
                 </div>
                 <div class="contract-body">
-                    <p>Oracle contract providing three services: <strong>price feeds</strong> (owner-authorized feeders
-                        submit prices per asset, max 1h staleness), <strong>validator-entropy commit-reveal
-                            randomness</strong> (commitments bind to the first committed block entropy after the commit
-                        slot), and <strong>data attestations</strong> (arbitrary signed data with on-chain
-                        verification). It complements, rather than replaces, the native validator oracle used for
-                        consensus price surfaces.</p>
+                    <p>Oracle surface providing three services: <strong>validator-native price feeds</strong> (fixed8
+                        quotes finalized by a strict greater-than-two-thirds active-stake quorum and mirrored into
+                        contract compatibility storage), <strong>validator-entropy commit-reveal randomness</strong>
+                        (commitments bind to the first committed block entropy after the commit slot), and
+                        <strong>bounded data attestations</strong> (hash-bound payloads up to 32 bytes with distinct
+                        authorized-attester counting). Live contract reads fail closed for malformed, future, or
+                        quotes older than 750 slots. Legacy single-feeder price writes are available only during
+                        genesis and are disabled once consensus-managed mode activates.</p>
                     <div class="sub-heading">Configuration</div>
                     <table class="const-table">
                         <tr>
@@ -1336,19 +1383,27 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <th>Value</th>
                         </tr>
                         <tr>
-                            <td>MAX_STALENESS</td>
-                            <td>3,600 seconds (1 hour)</td>
+                            <td>MAX_PRICE_STALENESS_SLOTS</td>
+                            <td>750 slots (about 5 minutes at the 400 ms target)</td>
+                        </tr>
+                        <tr>
+                            <td>CANONICAL_PRICE_DECIMALS</td>
+                            <td>8</td>
+                        </tr>
+                        <tr>
+                            <td>MAX_ATTESTATION_DATA_BYTES</td>
+                            <td>32 bytes, losslessly retrievable</td>
                         </tr>
                         <tr>
                             <td>PRICE_FEED_SIZE</td>
                             <td>49 bytes (price + timestamp + decimals + feeder)</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (24)</div>
+                    <div class="sub-heading">Exports (25)</div>
                     <div class="fn-list"><span class="fn-chip">initialize_oracle</span><span
                             class="fn-chip">add_price_feeder</span><span
                             class="fn-chip">set_authorized_attester</span><span class="fn-chip">submit_price</span><span
-                            class="fn-chip">get_price</span><span class="fn-chip">commit_randomness</span><span
+                            class="fn-chip">get_price</span><span class="fn-chip">get_price_value</span><span class="fn-chip">commit_randomness</span><span
                             class="fn-chip">reveal_randomness</span><span class="fn-chip">request_randomness</span><span
                             class="fn-chip">get_randomness</span><span class="fn-chip">submit_attestation</span><span
                             class="fn-chip">verify_attestation</span><span
@@ -1441,8 +1496,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>BountyBoard</h3>
                         <div class="subtitle">On-Chain Bounty &amp; Task Management</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,389 lines</span><span class="meta-chip">16
-                            fns</span><span class="meta-chip">16.0 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Accounting V2</span><span class="meta-chip">34
+                            fns</span><span class="meta-chip">Exact custody</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Decentralized task marketplace where creators post bounties with LICN rewards and deadlines,
@@ -1456,7 +1511,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <li><code>approve_work</code> — creator approves, worker gets paid + reputation boost</li>
                         <li><code>cancel_bounty</code> — creator cancels open bounty for refund</li>
                     </ul>
-                    <div class="sub-heading">Functions (16)</div>
+                    <div class="sub-heading">Functions (34)</div>
                     <div class="fn-list"><span class="fn-chip">create_bounty</span><span
                             class="fn-chip">submit_work</span><span class="fn-chip">approve_work</span><span
                             class="fn-chip">cancel_bounty</span><span class="fn-chip">get_bounty</span><span
@@ -1466,18 +1521,30 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             class="fn-chip">initialize</span><span class="fn-chip">approve_submission</span><span
                             class="fn-chip">get_bounty_count</span><span class="fn-chip">set_platform_fee</span><span
                             class="fn-chip">bb_pause</span><span class="fn-chip">bb_unpause</span><span
-                            class="fn-chip">get_platform_stats</span></div>
+                            class="fn-chip">get_platform_stats</span><span class="fn-chip">set_fee_treasury</span><span
+                            class="fn-chip">withdraw_platform_fees</span><span class="fn-chip">get_platform_fees</span><span
+                            class="fn-chip">migrate_bounty_token</span><span class="fn-chip">get_bounty_terms</span><span
+                            class="fn-chip">get_submission</span><span class="fn-chip">update_work</span><span
+                            class="fn-chip">begin_accounting_v2_migration</span><span
+                            class="fn-chip">migrate_accounting_v2_bounty</span><span
+                            class="fn-chip">complete_accounting_v2_migration</span><span
+                            class="fn-chip">get_accounting_migration_status</span><span
+                            class="fn-chip">get_accounting_health</span><span
+                            class="fn-chip">get_bounty_migration_record</span><span
+                            class="fn-chip">propose_admin</span><span class="fn-chip">accept_admin</span><span
+                            class="fn-chip">get_admin_transition</span><span
+                            class="fn-chip">get_bounty_count_exact</span><span
+                            class="fn-chip">cancel_admin_proposal</span></div>
                     <div class="callout callout-info">
                         <p><strong>SDK helper coverage:</strong> <code>BountyBoardClient</code> now wraps the stable
                             BountyBoard user flow across JS, Python, and Rust: symbol-registry resolution,
-                            bounty reads (<code>get_bounty</code>, <code>get_bounty_count</code>,
-                            <code>get_platform_stats</code>), aggregate stats, and the full bounty lifecycle
+                            exact bounty, submission, terms, fee, accounting, and aggregate reads; the full lifecycle
                             (<code>create_bounty</code>, <code>submit_work</code>, <code>approve_work</code>,
-                            <code>cancel_bounty</code>). Admin-only controls (identity-gate, token-address, fees,
-                            pause) remain on raw contract calls.
+                            <code>update_work</code>, <code>cancel_bounty</code>); and every administration and
+                            Accounting V2 migration call.
                         </p>
                         <p><strong>Registry symbol:</strong> resolve <code>BOUNTY</code> through the symbol registry
-                            before calling <code>get_bounty_count</code>, <code>get_bounty</code>, or mutation
+                            before calling <code>get_bounty_count_exact</code>, <code>get_bounty</code>, or mutation
                             methods.</p>
                     </div>
                     <div class="badge-row"><span class="badge badge-infra">Infrastructure</span><span
@@ -1495,14 +1562,16 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>Compute Market</h3>
                         <div class="subtitle">Decentralized Compute Marketplace</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">2,323 lines</span><span class="meta-chip">34
-                            fns</span><span class="meta-chip">16.9 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">5,751 lines</span><span class="meta-chip">56
+                            fns</span><span class="meta-chip">70.7 KB WASM</span></div>
                 </div>
                 <div class="contract-body">
                     <p>On-chain marketplace for decentralized compute resources. <strong>Providers</strong> register
                         CPU/GPU/memory; <strong>requesters</strong> submit jobs with a code hash and payment; providers
-                        claim and complete jobs. Built-in <strong>dispute mechanism</strong> for invalid results.
-                        <strong>LichenID</strong> ensures only reputable providers participate.
+                        claim and complete jobs. Built-in <strong>dispute mechanism</strong> for invalid results,
+                        exact Accounting V3 custody, bounded provider capacity, and replay-safe agent spending
+                        policies. <strong>LichenID</strong> gates providers and requesters through an immutable,
+                        fail-closed dependency.
                     </p>
                     <div class="sub-heading">Job States</div>
                     <table class="const-table">
@@ -1516,14 +1585,17 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         </tr>
                         <tr>
                             <td>COMPLETED</td>
-                            <td>Provider submitted result, payment released</td>
+                            <td>Provider submitted result; payment remains escrowed through the challenge period</td>
                         </tr>
                         <tr>
                             <td>DISPUTED</td>
                             <td>Requester challenged the result</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (34)</div>
+                    <p>Every job snapshots its fee and claim/completion/challenge windows. Settlement separates
+                        escrow, deferred provider payouts, and withdrawable platform fees, while migration and
+                        malformed-state locks stop new value movement until exact custody solvency is proven.</p>
+                    <div class="sub-heading">Functions (56)</div>
                     <div class="fn-list"><span class="fn-chip">register_provider</span><span
                             class="fn-chip">submit_job</span><span class="fn-chip">claim_job</span><span
                             class="fn-chip">complete_job</span><span class="fn-chip">dispute_job</span><span
@@ -1543,7 +1615,27 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             class="fn-chip">get_job_count</span><span class="fn-chip">get_provider_info</span><span
                             class="fn-chip">set_platform_fee</span><span class="fn-chip">cm_pause</span><span
                             class="fn-chip">cm_unpause</span><span class="fn-chip">get_platform_stats</span><span
-                            class="fn-chip">set_token_address</span></div>
+                            class="fn-chip">claim_unpaid_payout</span><span
+                            class="fn-chip">get_unpaid_payout</span><span
+                            class="fn-chip">set_agent_compute_controls</span><span
+                            class="fn-chip">set_agent_spending_policy</span><span
+                            class="fn-chip">disable_agent_spending_policy</span><span
+                            class="fn-chip">submit_agent_job</span><span
+                            class="fn-chip">get_agent_compute_controls</span><span
+                            class="fn-chip">get_agent_spending_policy</span><span
+                            class="fn-chip">get_agent_spend_window</span><span
+                            class="fn-chip">get_agent_job_action</span><span
+                            class="fn-chip">set_token_address</span><span class="fn-chip">pause</span><span
+                            class="fn-chip">unpause</span><span class="fn-chip">set_fee_treasury</span><span
+                            class="fn-chip">withdraw_platform_fees</span><span
+                            class="fn-chip">get_platform_fees</span><span
+                            class="fn-chip">get_job_timing</span><span
+                            class="fn-chip">get_provider_capacity</span><span
+                            class="fn-chip">begin_accounting_v3_migration</span><span
+                            class="fn-chip">migrate_accounting_v3_job</span><span
+                            class="fn-chip">complete_accounting_v3_migration</span><span
+                            class="fn-chip">get_accounting_migration_status</span><span
+                            class="fn-chip">get_accounting_health</span></div>
                     <div class="badge-row"><span class="badge badge-infra">Infrastructure</span><span
                             class="badge badge-identity">LichenID</span></div>
                 </div>
@@ -1892,17 +1984,19 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>DEX Margin</h3>
                         <div class="subtitle">Leveraged Trading &amp; Liquidation Engine</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">3,176 lines</span><span class="meta-chip">32
-                            fns</span><span class="meta-chip">27 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Funding V2</span><span
+                            class="meta-chip">Bounded Cross V2</span><span class="meta-chip">Exact lUSD custody</span>
+                    </div>
                 </div>
                 <div class="contract-body">
-                    <p>Isolated and cross-margin leverage trading up to <strong>100x (isolated) / 3x (cross)</strong>.
-                        Automated liquidation engine triggers when health drops below 10%. Liquidation penalty split
-                        50/50 between liquidator bonus and insurance fund. Socialized loss if insurance fund is
-                        depleted. Funding rate settlements every 8 hours. <strong>Oracle safety:</strong>
-                        <code>close_position</code>, <code>partial_close</code>, and <code>remove_margin</code> now
-                        <strong>reject</strong> (codes 5/7) when oracle price is unavailable — prevents zero-PnL exits
-                        during outages.
+                    <p>Isolated leverage up to <strong>100x</strong> and bounded shared-collateral cross margin up to
+                        <strong>3x</strong>. Cross accounts aggregate at most 32 active positions with portfolio-wide
+                        equity, tier-weighted initial and maintenance requirements, funding debt, and fresh oracle PnL.
+                        Liquidations realize PnL before splitting only the funded residual penalty 50/50 between the
+                        liquidator and insurance. Uncollectible loss is exposed separately as bad debt and is never
+                        reported as an insurance asset. Funding settles through global O(1) indexes and a pool-backed
+                        claim ledger every 8 hours. Mark and index prices use exact integer pair bases and fail closed
+                        when the consensus oracle source slot is missing, future-dated, or older than 750 slots.
                     </p>
                     <div class="sub-heading">Configuration</div>
                     <table class="const-table">
@@ -1924,11 +2018,11 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         </tr>
                         <tr>
                             <td>Maintenance Margin</td>
-                            <td>10%</td>
+                            <td>25% (2x) to 0.5% (100x), plus governed floor</td>
                         </tr>
                         <tr>
                             <td>Liquidation Penalty</td>
-                            <td>5%</td>
+                            <td>3% (2–3x) to 15% (100x), limited by funded residual equity</td>
                         </tr>
                         <tr>
                             <td>Insurance Fund Share</td>
@@ -1936,10 +2030,10 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         </tr>
                         <tr>
                             <td>Funding Rate</td>
-                            <td>Every 8 hours</td>
+                            <td>Mark/index premium + bounded skew, capped at 1% per 8 hours</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (32)</div>
+                    <div class="sub-heading">Core functions</div>
                     <div class="fn-list"><span class="fn-chip">open_position</span><span
                             class="fn-chip">open_position_with_mode</span><span
                             class="fn-chip">close_position</span><span class="fn-chip">close_position_limit</span><span
@@ -1957,8 +2051,17 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             class="fn-chip">get_margin_ratio</span><span
                             class="fn-chip">query_user_open_position</span><span
                             class="fn-chip">set_position_sl_tp</span><span
+                            class="fn-chip">settle_position_funding</span><span
+                            class="fn-chip">claim_funding</span><span class="fn-chip">get_funding_state</span><span
+                            class="fn-chip">deposit_cross_collateral</span><span
+                            class="fn-chip">withdraw_cross_collateral</span><span
+                            class="fn-chip">get_cross_account</span><span class="fn-chip">get_bad_debt</span><span
                             class="fn-chip">withdraw_insurance</span><span
-                            class="fn-chip">set_lichencoin_address</span><span
+                            class="fn-chip">begin_margin_v2_migration</span><span
+                            class="fn-chip">migrate_funding_v2_position</span><span
+                            class="fn-chip">migrate_cross_v2_position</span><span
+                            class="fn-chip">finalize_and_activate_margin_v2</span><span
+                            class="fn-chip">complete_margin_v2_migration</span><span
                             class="fn-chip">emergency_pause</span><span class="fn-chip">emergency_unpause</span></div>
                     <div class="badge-row"><span class="badge badge-dex">DEX</span></div>
                 </div>
@@ -2616,17 +2719,16 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                     <div class="contract-icon icon-infra"><i class="fas fa-shield-alt"></i></div>
                     <div class="contract-header-text">
                         <h3>Shielded Pool</h3>
-                        <div class="subtitle">ZK-Private Transaction Pool</div>
+                        <div class="subtitle">Fail-closed Compatibility ABI</div>
                     </div>
                     <div class="contract-meta"><span class="meta-chip">924 lines</span><span class="meta-chip">10
                             fns</span><span class="meta-chip">18 KB</span></div>
                 </div>
                 <div class="contract-body">
-                    <p>On-chain contract managing the <strong>shielded transaction pool</strong> for private value
-                        flows. Stores the commitment Merkle tree root, spent nullifier set, and pool statistics.
-                        Native <strong>shield</strong>, <strong>unshield</strong>, and <strong>transfer</strong>
-                        instructions validate transparent proofs in the runtime and update this contract-backed state.
-                        The contract exposes admin pause controls plus query helpers for shielded state.
+                    <p>This contract creates no custody ledger. Direct <strong>shield</strong>,
+                        <strong>unshield</strong>, <strong>transfer</strong>, pause, and query calls return
+                        <code>ERR_NATIVE_ONLY</code>; canonical historical reads come from RPC. Native scheme 0x01
+                        operations are also disabled pending a constrained verifier.
                     </p>
                     <div class="sub-heading">Functions (10)</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">shield</span><span
@@ -2680,10 +2782,16 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                 </tr>
                 <tr>
                     <td>sporepump</td>
-                    <td>initialize, create_token, buy, sell, get_token_info, get_buy_quote, get_token_count,
-                        get_platform_stats, pause, unpause, freeze_token, unfreeze_token, set_buy_cooldown,
-                        set_sell_cooldown, set_max_buy, set_creator_royalty, withdraw_fees, set_dex_addresses,
-                        get_graduation_info, set_licn_token</td>
+                    <td>initialize, create_token, create_token_with_metadata, get_token_metadata, buy,
+                        buy_with_min_output, sell, sell_with_min_output, get_token_info, get_buy_quote,
+                        get_token_count, get_sell_quote, get_platform_stats, pause, unpause, freeze_token,
+                        unfreeze_token, set_buy_cooldown, set_sell_cooldown, set_max_buy, set_creator_royalty,
+                        withdraw_fees, set_dex_addresses, get_creator_royalty_balance, claim_creator_royalty,
+                        get_custody_status, get_accounting_migration_token, recover_custody_surplus,
+                        begin_accounting_v3_migration, migrate_accounting_v3_token,
+                        complete_accounting_v3_migration, propose_admin, accept_admin, get_graduation_info,
+                        set_licn_token, set_graduation_governance, set_graduation_config, begin_migration,
+                        abort_migration, finalize_migration, consume_graduation_claim, get_graduation_status</td>
                 </tr>
                 <tr>
                     <td>sporepay</td>
@@ -2763,7 +2871,13 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                     <td>bountyboard</td>
                     <td>create_bounty, submit_work, approve_work, cancel_bounty, get_bounty, set_identity_admin,
                         set_lichenid_address, set_identity_gate, set_token_address, initialize, approve_submission,
-                        get_bounty_count, set_platform_fee, bb_pause, bb_unpause, get_platform_stats</td>
+                        get_bounty_count, set_platform_fee, bb_pause, bb_unpause, get_platform_stats,
+                        set_fee_treasury, withdraw_platform_fees, get_platform_fees, migrate_bounty_token,
+                        get_bounty_terms, get_submission, update_work, begin_accounting_v2_migration,
+                        migrate_accounting_v2_bounty, complete_accounting_v2_migration,
+                        get_accounting_migration_status, get_accounting_health, get_bounty_migration_record,
+                        propose_admin, accept_admin, get_admin_transition, get_bounty_count_exact,
+                        cancel_admin_proposal</td>
                 </tr>
                 <tr>
                     <td>compute_market</td>
@@ -3000,7 +3114,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                 </tr>
                 <tr>
                     <td>Insurance fund backstop</td>
-                    <td>DEX Margin (socialized loss)</td>
+                    <td>DEX Margin (1:1 open-interest withdrawal floor + explicit bad-debt accounting)</td>
                 </tr>
             </table>
         </div>

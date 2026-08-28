@@ -285,14 +285,36 @@ fn build_opcode_dispatch_args(opcode: u8, args: &[u8]) -> Vec<u8> {
 }
 
 const ABI_LAYOUT_MARKER: u8 = 0xAB;
+const ABI_WIDE_LAYOUT_MARKER: u8 = 0xAC;
 
-fn canonical_layout_descriptor(args: &[u8], params: &[Type]) -> Option<(Vec<u8>, usize)> {
-    if params.is_empty() || args.first().copied() != Some(ABI_LAYOUT_MARKER) {
+fn canonical_layout_descriptor(args: &[u8], params: &[Type]) -> Option<(Vec<u32>, usize)> {
+    if params.is_empty() {
         return None;
     }
-
-    let data_start = 1usize.checked_add(params.len())?;
-    let layout = args.get(1..data_start)?;
+    let (layout, data_start) = match args.first().copied()? {
+        ABI_LAYOUT_MARKER => {
+            let data_start = 1usize.checked_add(params.len())?;
+            let layout = args
+                .get(1..data_start)?
+                .iter()
+                .map(|stride| u32::from(*stride))
+                .collect::<Vec<_>>();
+            (layout, data_start)
+        }
+        ABI_WIDE_LAYOUT_MARKER => {
+            let descriptor_len = params.len().checked_mul(4)?;
+            let data_start = 1usize.checked_add(descriptor_len)?;
+            let descriptor = args.get(1..data_start)?;
+            let mut layout = Vec::with_capacity(params.len());
+            for stride in descriptor.chunks_exact(4) {
+                layout.push(u32::from_le_bytes([
+                    stride[0], stride[1], stride[2], stride[3],
+                ]));
+            }
+            (layout, data_start)
+        }
+        _ => return None,
+    };
     let mut payload_len = 0usize;
     for (param, stride) in params.iter().zip(layout.iter().copied()) {
         let valid = match param {
@@ -309,7 +331,7 @@ fn canonical_layout_descriptor(args: &[u8], params: &[Type]) -> Option<(Vec<u8>,
     if data_start.checked_add(payload_len)? != args.len() {
         return None;
     }
-    Some((layout.to_vec(), data_start))
+    Some((layout, data_start))
 }
 
 fn find_abi_function<'a>(
@@ -374,6 +396,16 @@ pub enum NativeAccountOp {
         to: Pubkey,
         amount: u64,
     },
+    /// Transfer a native system NFT after its owner explicitly approved the
+    /// calling contract. The encoded token state is committed atomically with
+    /// the top-level contract call and its owner indexes.
+    NftTransfer {
+        token: Pubkey,
+        collection: Pubkey,
+        from: Pubkey,
+        to: Pubkey,
+        encoded_state: Vec<u8>,
+    },
 }
 
 impl NativeAccountOp {
@@ -383,6 +415,7 @@ impl NativeAccountOp {
             | Self::Unlock { account, .. }
             | Self::DeductLocked { account, .. } => *account,
             Self::Transfer { from, .. } => *from,
+            Self::NftTransfer { token, .. } => *token,
         }
     }
 
@@ -401,14 +434,10 @@ impl NativeAccountOp {
             Self::DeductLocked { amount, .. } => account.deduct_locked(*amount),
             Self::Transfer { amount, .. } => {
                 // Debit the sender — apply() is called on the `from` account
-                if account.spendable < *amount {
-                    return Err(format!(
-                        "Insufficient spendable balance for native transfer: have {}, need {}",
-                        account.spendable, amount
-                    ));
-                }
-                account.spores = account.spores.saturating_sub(*amount);
-                account.spendable = account.spendable.saturating_sub(*amount);
+                account.deduct_spendable(*amount)
+            }
+            Self::NftTransfer { encoded_state, .. } => {
+                account.data.clone_from(encoded_state);
                 Ok(())
             }
         }
@@ -1573,18 +1602,6 @@ impl ContractRuntime {
         let call_args: Vec<Value> = if params.is_empty() || effective_args.is_empty() {
             vec![]
         } else {
-            // Grow WASM memory by 1 page (64KB) to get a safe buffer area for
-            // writing the function arguments. This avoids corrupting the module's
-            // stack/heap/data sections.
-            let memory = instance
-                .exports
-                .get_memory("memory")
-                .map_err(|e| format!("Contract has no memory export: {}", e))?;
-            let old_pages = memory
-                .grow(&mut store, 1)
-                .map_err(|e| format!("Failed to grow WASM memory for args: {}", e))?;
-            let args_base: u32 = old_pages.0 * 65536; // byte offset of the new page
-
             // ── ABI-aware JSON arg encoding ─────────────────────────────
             // When the CLI sends JSON-encoded args (e.g. ["addr", 1, "name", 21]),
             // auto-encode them to binary with a layout descriptor so the WASM
@@ -1593,7 +1610,6 @@ impl ContractRuntime {
             let encoded_args = if !effective_args.is_empty()
                 && effective_args[0] == b'['
                 && !params.is_empty()
-                && effective_args[0] != 0xAB
                 && std::str::from_utf8(&effective_args).is_ok()
             {
                 if let Ok(json_vals) =
@@ -1609,6 +1625,27 @@ impl ContractRuntime {
             };
             let args = &encoded_args;
 
+            // Allocate enough fresh pages for the complete encoded payload.
+            // Wide byte arguments (for example a 64 KiB Moss chunk plus its
+            // Merkle proof) legitimately exceed the historical single page.
+            let memory = instance
+                .exports
+                .get_memory("memory")
+                .map_err(|e| format!("Contract has no memory export: {}", e))?;
+            let argument_pages = u32::try_from(args.len().div_ceil(65_536).max(1))
+                .map_err(|_| "Contract argument payload is too large".to_string())?;
+            let current_pages = memory.view(&store).size().0;
+            if current_pages.saturating_add(argument_pages) > MAX_WASM_MEMORY_PAGES {
+                return Err(format!(
+                    "Contract arguments exceed memory limit: {} existing + {} argument pages > {} max",
+                    current_pages, argument_pages, MAX_WASM_MEMORY_PAGES
+                ));
+            }
+            let old_pages = memory
+                .grow(&mut store, argument_pages)
+                .map_err(|e| format!("Failed to grow WASM memory for args: {}", e))?;
+            let args_base: u32 = old_pages.0 * 65_536;
+
             let view = memory.view(&store);
             view.write(args_base as u64, args)
                 .map_err(|e| format!("Failed to write args to WASM memory: {}", e))?;
@@ -1620,8 +1657,8 @@ impl ContractRuntime {
             //   I64 → raw u64 value (advance 8 bytes, little-endian)
             //
             // LAYOUT DESCRIPTOR MODE (for mixed pointer/integer I32 params):
-            //   If args[0] == 0xAB, bytes 1..1+N are a layout descriptor where
-            //   N = number of params. Each byte specifies the data size:
+            //   0xAB carries N one-byte strides. 0xAC carries N u32-LE strides
+            //   for byte buffers larger than 255 bytes. Strides specify:
             //     32 (0x20) = pointer — advance 32 bytes, pass memory pointer
             //      4 (0x04) = u32 integer — read 4 LE bytes, pass raw i32
             //      1 (0x01) = u8/bool — read 1 byte, pass raw i32
@@ -1655,7 +1692,7 @@ impl ContractRuntime {
             for (idx, param) in params.iter().enumerate() {
                 if has_layout {
                     // Layout descriptor mode: stride determined by descriptor byte
-                    let stride = layout.get(idx).copied().unwrap_or(32) as u32;
+                    let stride = layout.get(idx).copied().unwrap_or(32);
                     match param {
                         Type::I32 => {
                             if stride >= 32 {
@@ -2947,6 +2984,7 @@ fn host_cross_contract_call(
     // ── Cap callee compute at caller's remaining budget ──────────────
     let caller_remaining = env.data().compute_remaining;
     let frame_snapshot = CrossCallFrameSnapshot::capture(env.data());
+    let inherited_native_ops_len = env.data().pending_native_account_ops.len();
 
     // ── Build callee context ─────────────────────────────────────────
     let callee_storage_bytes: usize = callee_storage.iter().map(|(k, v)| k.len() + v.len()).sum();
@@ -2973,8 +3011,13 @@ fn host_cross_contract_call(
         // AUDIT-FIX C-2: Fresh delta map so nested CCC deltas can be
         // rolled back if this callee fails.
         pending_ccc_value_deltas: Arc::new(Mutex::new(HashMap::new())),
-        pending_native_account_ops: Vec::new(),
-        pending_native_account_state: HashMap::new(),
+        // A nested contract must observe native transfers already staged by
+        // its caller in the same top-level transaction. This is required for
+        // atomic callback flows (for example, native-asset flash loans) and
+        // keeps native LICN behavior aligned with the shared token-storage
+        // overlay used by ordinary contract calls.
+        pending_native_account_ops: env.data().pending_native_account_ops.clone(),
+        pending_native_account_state: env.data().pending_native_account_state.clone(),
         read_only,
         storage_bytes_used: callee_storage_bytes,
     };
@@ -3178,9 +3221,17 @@ fn host_cross_contract_call(
     }
 
     // Validate and stage native operations before merging direct callee state.
-    if !result.native_account_ops.is_empty() {
+    if result.native_account_ops.len() < inherited_native_ops_len {
+        frame_snapshot.restore(env.data_mut());
+        push_contract_log(
+            &mut env,
+            "[CCC] rejected: callee discarded inherited native operations",
+        );
+        return 0;
+    }
+    if result.native_account_ops.len() > inherited_native_ops_len {
         let ctx = env.data_mut();
-        for op in &result.native_account_ops {
+        for op in &result.native_account_ops[inherited_native_ops_len..] {
             if queue_native_account_op(ctx, &state_store, op.clone()).is_err() {
                 frame_snapshot.restore(ctx);
                 return 0;
@@ -3213,10 +3264,24 @@ fn host_cross_contract_call(
     let effective_result: Vec<u8> = if !result.return_data.is_empty() {
         result.return_data
     } else if let Some(rc) = result.return_code {
-        // Encode the WASM return code as a 4-byte LE value.
-        // ABI-aware callers must interpret this value with the callee's declared
-        // result semantics. Wrapped-token transfers declare zero as success.
-        (rc as u32).to_le_bytes().to_vec()
+        // Preserve the full I64 value for ABI value-returning functions. Token
+        // balances and other u64 queries otherwise get truncated to four bytes
+        // when called through CCC. Status-code functions retain their compact
+        // four-byte representation for compatibility.
+        let returns_value = find_abi_function(&target_contract, logical_function_name)
+            .and_then(|function| function.result_semantics.as_ref())
+            .map(|semantics| {
+                matches!(
+                    semantics.kind,
+                    AbiResultKind::ReturnValue | AbiResultKind::NonzeroReturnValue
+                )
+            })
+            .unwrap_or(false);
+        if returns_value {
+            (rc as u64).to_le_bytes().to_vec()
+        } else {
+            (rc as u32).to_le_bytes().to_vec()
+        }
     } else {
         // No return data and no return code — just signal success.
         vec![1u8]
@@ -3348,27 +3413,143 @@ fn queue_native_account_op(
                 ));
             }
         }
+        NativeAccountOp::NftTransfer {
+            collection,
+            from,
+            to,
+            ..
+        } => {
+            if state_store.is_account_restricted(
+                from,
+                RestrictionTransferDirection::Outgoing,
+                Some(collection),
+                1,
+                1,
+                ctx.slot,
+            )? {
+                return Err(format!(
+                    "Native NFT transfer blocked by active source restriction for {}",
+                    from
+                ));
+            }
+            if state_store.is_account_restricted(
+                to,
+                RestrictionTransferDirection::Incoming,
+                Some(collection),
+                1,
+                0,
+                ctx.slot,
+            )? {
+                return Err(format!(
+                    "Native NFT transfer blocked by active recipient restriction for {}",
+                    to
+                ));
+            }
+        }
         NativeAccountOp::Unlock { .. } | NativeAccountOp::DeductLocked { .. } => {}
     }
 
     let account_key = op.account();
     let mut account = projected_native_account(ctx, state_store, &account_key, false)?;
     op.apply(&mut account)?;
+
+    // Compute the recipient credit before mutating the pending projection. A
+    // failed credit must not leave the source debited in the current frame.
+    let recipient_update = if let Some(to_key) = op.transfer_to() {
+        if let NativeAccountOp::Transfer { amount, .. } = &op {
+            let mut to_account = if to_key == account_key {
+                account.clone()
+            } else {
+                projected_native_account(ctx, state_store, &to_key, true)?
+            };
+            to_account.add_spendable(*amount)?;
+            Some((to_key, to_account))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     ctx.pending_native_account_state
         .insert(account_key, account);
-
-    // For Transfer ops, also credit the recipient account
-    if let Some(to_key) = op.transfer_to() {
-        if let NativeAccountOp::Transfer { amount, .. } = &op {
-            let mut to_account = projected_native_account(ctx, state_store, &to_key, true)?;
-            to_account.spores = to_account.spores.saturating_add(*amount);
-            to_account.spendable = to_account.spendable.saturating_add(*amount);
-            ctx.pending_native_account_state.insert(to_key, to_account);
-        }
+    if let Some((to_key, to_account)) = recipient_update {
+        ctx.pending_native_account_state.insert(to_key, to_account);
     }
 
     ctx.pending_native_account_ops.push(op);
     Ok(())
+}
+
+fn parse_native_nft_key(args: &[u8]) -> Result<(Pubkey, u64, Pubkey), String> {
+    if args.len() != 40 {
+        return Err(format!(
+            "Native NFT lookup expects exactly 40 argument bytes, found {}",
+            args.len()
+        ));
+    }
+
+    let mut collection_bytes = [0u8; 32];
+    collection_bytes.copy_from_slice(&args[..32]);
+    let collection = Pubkey(collection_bytes);
+    if collection == Pubkey([0u8; 32]) {
+        return Err("Native NFT collection cannot be zero".to_string());
+    }
+
+    let token_id = u64::from_le_bytes(
+        args[32..40]
+            .try_into()
+            .map_err(|_| "Invalid native NFT token ID".to_string())?,
+    );
+    let token = crate::nft::derive_nft_token_address(&collection, token_id);
+    Ok((collection, token_id, token))
+}
+
+fn load_projected_native_nft(
+    ctx: &ContractContext,
+    state_store: &StateStore,
+    collection: Pubkey,
+    token_id: u64,
+    token: Pubkey,
+) -> Result<(Account, crate::nft::TokenState), String> {
+    let collection_account = projected_native_account(ctx, state_store, &collection, false)?;
+    if collection_account.owner != crate::processor::SYSTEM_PROGRAM_ID {
+        return Err("Native NFT collection is not system-owned".to_string());
+    }
+    crate::nft::decode_collection_state(&collection_account.data)?;
+
+    let token_account = projected_native_account(ctx, state_store, &token, false)?;
+    if token_account.owner != crate::processor::SYSTEM_PROGRAM_ID {
+        return Err("Native NFT token is not system-owned".to_string());
+    }
+    let token_state = crate::nft::decode_token_state(&token_account.data)?;
+    if token_state.collection != collection || token_state.token_id != token_id {
+        return Err("Native NFT token state conflicts with its canonical address".to_string());
+    }
+    if crate::nft::derive_nft_token_address(&token_state.collection, token_state.token_id) != token
+    {
+        return Err("Native NFT token address is not canonical".to_string());
+    }
+
+    Ok((token_account, token_state))
+}
+
+fn write_native_call_result(
+    env: &FunctionEnvMut<ContractContext>,
+    result_ptr: u32,
+    result_len: u32,
+    value: &[u8],
+) -> bool {
+    if (result_len as usize) < value.len() {
+        return false;
+    }
+    if value.is_empty() {
+        return true;
+    }
+    let Some(memory) = env.data().memory.clone() else {
+        return false;
+    };
+    memory.view(env).write(result_ptr as u64, value).is_ok()
 }
 
 fn handle_native_account_call(
@@ -3383,6 +3564,141 @@ fn handle_native_account_call(
         None => return 0,
     };
 
+    if matches!(function_name, "nft_owner_of" | "nft_get_approved") {
+        let (collection, token_id, token) = match parse_native_nft_key(args) {
+            Ok(key) => key,
+            Err(_) => return 0,
+        };
+        let (_, token_state) = match load_projected_native_nft(
+            env.data(),
+            &state_store,
+            collection,
+            token_id,
+            token,
+        ) {
+            Ok(state) => state,
+            Err(_) => return 0,
+        };
+        let value = if function_name == "nft_owner_of" {
+            token_state.owner.0
+        } else {
+            token_state.approved.unwrap_or(Pubkey([0u8; 32])).0
+        };
+        return if write_native_call_result(&env, result_ptr, result_len, &value) {
+            value.len() as u32
+        } else {
+            0
+        };
+    }
+
+    if function_name == "nft_royalty_info" {
+        if args.len() != 32 {
+            return 0;
+        }
+        let mut collection_bytes = [0u8; 32];
+        collection_bytes.copy_from_slice(args);
+        let collection = Pubkey(collection_bytes);
+        if collection == Pubkey([0u8; 32]) {
+            return 0;
+        }
+        let collection_account =
+            match projected_native_account(env.data(), &state_store, &collection, false) {
+                Ok(account) if account.owner == crate::processor::SYSTEM_PROGRAM_ID => account,
+                _ => return 0,
+            };
+        let collection_state = match crate::nft::decode_collection_state(&collection_account.data) {
+            Ok(state) => state,
+            Err(_) => return 0,
+        };
+        let mut value = [0u8; 34];
+        value[..32].copy_from_slice(&collection_state.creator.0);
+        value[32..].copy_from_slice(&collection_state.royalty_bps.to_le_bytes());
+        return if write_native_call_result(&env, result_ptr, result_len, &value) {
+            value.len() as u32
+        } else {
+            0
+        };
+    }
+
+    if function_name == "nft_transfer_from" {
+        if env.data().read_only || args.len() != 104 {
+            return 0;
+        }
+        let mut collection_bytes = [0u8; 32];
+        collection_bytes.copy_from_slice(&args[..32]);
+        let collection = Pubkey(collection_bytes);
+        let mut from_bytes = [0u8; 32];
+        from_bytes.copy_from_slice(&args[32..64]);
+        let from = Pubkey(from_bytes);
+        let mut to_bytes = [0u8; 32];
+        to_bytes.copy_from_slice(&args[64..96]);
+        let to = Pubkey(to_bytes);
+        let token_id = u64::from_le_bytes(match args[96..104].try_into() {
+            Ok(bytes) => bytes,
+            Err(_) => return 0,
+        });
+        if collection == Pubkey([0u8; 32]) || from == Pubkey([0u8; 32]) || to == Pubkey([0u8; 32]) {
+            return 0;
+        }
+        let token = crate::nft::derive_nft_token_address(&collection, token_id);
+        let (_, mut token_state) = match load_projected_native_nft(
+            env.data(),
+            &state_store,
+            collection,
+            token_id,
+            token,
+        ) {
+            Ok(state) => state,
+            Err(_) => return 0,
+        };
+        let spender = env.data().contract;
+        if token_state.owner != from || (spender != from && token_state.approved != Some(spender)) {
+            return 0;
+        }
+        token_state.owner = to;
+        token_state.approved = None;
+        let encoded_state = match crate::nft::encode_token_state(&token_state) {
+            Ok(data) => data,
+            Err(_) => return 0,
+        };
+        let op = NativeAccountOp::NftTransfer {
+            token,
+            collection,
+            from,
+            to,
+            encoded_state,
+        };
+        let ctx = env.data_mut();
+        if queue_native_account_op(ctx, &state_store, op).is_err() {
+            return 0;
+        }
+
+        return if write_native_call_result(&env, result_ptr, result_len, &[1u8]) {
+            1
+        } else {
+            0
+        };
+    }
+
+    if function_name == "total_supply" {
+        let total_supply_bytes = state_store.get_metrics().total_supply.to_le_bytes();
+        let write_len = (8usize).min(result_len as usize);
+        if write_len > 0 {
+            let memory = match env.data().memory.clone() {
+                Some(memory) => memory,
+                None => return 0,
+            };
+            let view = memory.view(&env);
+            if view
+                .write(result_ptr as u64, &total_supply_bytes[..write_len])
+                .is_err()
+            {
+                return 0;
+            }
+        }
+        return 8;
+    }
+
     // balance_of only needs 32 bytes (address), not 40
     if function_name == "balance_of" {
         if args.len() < 32 {
@@ -3391,12 +3707,10 @@ fn handle_native_account_call(
         let mut account_bytes = [0u8; 32];
         account_bytes.copy_from_slice(&args[..32]);
         let pubkey = Pubkey(account_bytes);
-        let balance = state_store
-            .get_account(&pubkey)
-            .ok()
-            .flatten()
-            .map(|a| a.spores)
-            .unwrap_or(0);
+        let balance = match projected_native_account(env.data(), &state_store, &pubkey, true) {
+            Ok(account) => account.spores,
+            Err(_) => return 0,
+        };
         // Write balance as u64 LE bytes to result buffer
         let balance_bytes = balance.to_le_bytes();
         let write_len = (8usize).min(result_len as usize);
@@ -4006,6 +4320,63 @@ mod tests {
         assert!(err.contains("source"));
         assert!(ctx.pending_native_account_ops.is_empty());
         assert!(ctx.pending_native_account_state.is_empty());
+    }
+
+    #[test]
+    fn test_native_contract_transfer_recipient_overflow_is_atomic() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let from = Pubkey([0xA5; 32]);
+        let to = Pubkey([0xA6; 32]);
+        state
+            .put_account(&from, &account_with_spendable(from, 1_000))
+            .unwrap();
+        state
+            .put_account(&to, &account_with_spendable(to, u64::MAX))
+            .unwrap();
+        let mut ctx = ContractContext::new(Pubkey([0x01; 32]), from, 0, 0);
+
+        let err = queue_native_account_op(
+            &mut ctx,
+            &state,
+            NativeAccountOp::Transfer {
+                from,
+                to,
+                amount: 1,
+            },
+        )
+        .expect_err("recipient overflow must reject the full native payout");
+
+        assert!(err.contains("Overflow adding"));
+        assert!(ctx.pending_native_account_ops.is_empty());
+        assert!(ctx.pending_native_account_state.is_empty());
+    }
+
+    #[test]
+    fn test_native_contract_self_transfer_preserves_balance() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let account = Pubkey([0xA7; 32]);
+        state
+            .put_account(&account, &account_with_spendable(account, 1_000))
+            .unwrap();
+        let mut ctx = ContractContext::new(Pubkey([0x01; 32]), account, 0, 0);
+
+        queue_native_account_op(
+            &mut ctx,
+            &state,
+            NativeAccountOp::Transfer {
+                from: account,
+                to: account,
+                amount: 400,
+            },
+        )
+        .unwrap();
+
+        let projected = ctx.pending_native_account_state.get(&account).unwrap();
+        assert_eq!(projected.spores, 1_000);
+        assert_eq!(projected.spendable, 1_000);
+        assert_eq!(ctx.pending_native_account_ops.len(), 1);
     }
 
     #[test]
@@ -4795,9 +5166,16 @@ mod tests {
         }
 
         let sporepump = load_abi("sporepump");
-        for name in ["create_token", "buy", "sell"] {
+        for name in [
+            "create_token",
+            "create_token_with_metadata",
+            "buy",
+            "buy_with_min_output",
+            "sell",
+            "sell_with_min_output",
+        ] {
             assert_kind(&sporepump, name, AbiResultKind::ReturnValue);
-            assert_failure_codes(&sporepump, name, &[-1, 200]);
+            assert_failure_codes(&sporepump, name, &[-1]);
         }
 
         let lichendao = load_abi("lichendao");
@@ -4982,7 +5360,7 @@ mod tests {
                 ("voter_ptr", AbiType::Pubkey, false),
                 ("proposal_id", AbiType::U64, false),
                 ("support", AbiType::U8, false),
-                ("_voting_power", AbiType::U64, false),
+                ("voting_amount", AbiType::U64, false),
             ],
         );
         assert_params(
@@ -5049,7 +5427,7 @@ mod tests {
             "submit_price",
             &[
                 ("feeder_ptr", AbiType::Pubkey, false),
-                ("asset_ptr", AbiType::Pubkey, false),
+                ("asset_ptr", AbiType::Bytes, false),
                 ("asset_len", AbiType::U32, false),
                 ("price", AbiType::U64, false),
                 ("decimals", AbiType::U8, false),
@@ -5059,7 +5437,7 @@ mod tests {
             &lichenoracle,
             "get_aggregated_price",
             &[
-                ("asset_ptr", AbiType::Pubkey, false),
+                ("asset_ptr", AbiType::Bytes, false),
                 ("asset_len", AbiType::U32, false),
                 ("num_feeds", AbiType::U8, false),
                 ("result_ptr", AbiType::Pubkey, false),
@@ -5168,6 +5546,7 @@ mod tests {
             "shield",
             "unshield",
             "transfer",
+            "get_execution_model",
         ] {
             assert!(
                 shielded_pool
@@ -5361,6 +5740,60 @@ mod tests {
 
         args.push(0);
         assert!(canonical_layout_descriptor(&args, &params).is_none());
+    }
+
+    #[test]
+    fn canonical_wide_layout_supports_large_pointer_payloads() {
+        let params = vec![Type::I32, Type::I32];
+        let mut args = vec![ABI_WIDE_LAYOUT_MARKER];
+        args.extend_from_slice(&70_000u32.to_le_bytes());
+        args.extend_from_slice(&4u32.to_le_bytes());
+        args.extend_from_slice(&vec![0x5Au8; 70_000]);
+        args.extend_from_slice(&70_000u32.to_le_bytes());
+
+        let (layout, data_start) = canonical_layout_descriptor(&args, &params)
+            .expect("canonical wide descriptor should be accepted");
+        assert_eq!(layout, vec![70_000, 4]);
+        assert_eq!(data_start, 9);
+
+        args.push(0);
+        assert!(canonical_layout_descriptor(&args, &params).is_none());
+    }
+
+    #[test]
+    fn runtime_executes_wide_argument_spanning_multiple_pages() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (memory (export "memory") 1)
+                (func (export "inspect_tail") (param $data i32) (param $len i32) (result i32)
+                    (i32.load8_u
+                        (i32.add
+                            (local.get $data)
+                            (i32.sub (local.get $len) (i32.const 1))
+                        )
+                    )
+                )
+            )"#,
+        )
+        .expect("wide-argument WAT should compile");
+        let owner = Pubkey([0x73; 32]);
+        let contract_address = Pubkey([0x74; 32]);
+        let contract = ContractAccount::new(wasm, owner);
+        let mut payload = vec![0x11u8; 70_000];
+        payload[69_999] = 0x7B;
+        let mut args = vec![ABI_WIDE_LAYOUT_MARKER];
+        args.extend_from_slice(&70_000u32.to_le_bytes());
+        args.extend_from_slice(&4u32.to_le_bytes());
+        args.extend_from_slice(&payload);
+        args.extend_from_slice(&70_000u32.to_le_bytes());
+        let context =
+            ContractContext::with_args(owner, contract_address, 0, 0, HashMap::new(), args.clone());
+
+        let result = ContractRuntime::new()
+            .execute(&contract, "inspect_tail", &args, context)
+            .expect("wide argument should execute");
+
+        assert_eq!(result.return_code, Some(0x7B));
     }
 
     #[test]

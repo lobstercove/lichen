@@ -7,6 +7,8 @@ const PROGRAM_SYMBOL_CANDIDATES: [&str; 4] = ["LEND", "lend", "THALLLEND", "thal
 const ACCOUNT_INFO_SIZE: usize = 24;
 const PROTOCOL_STATS_SIZE: usize = 32;
 const INTEREST_RATE_SIZE: usize = 24;
+const RATE_MODEL_SIZE: usize = 56;
+const MARKET_STATUS_SIZE: usize = 80;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThallLendAccountInfo {
@@ -31,13 +33,56 @@ pub struct ThallLendInterestRate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThallLendRateModel {
+    pub rate_scale: u64,
+    pub slots_per_year: u64,
+    pub base_rate_per_slot: u64,
+    pub current_rate_per_slot: u64,
+    pub current_annual_bps: u64,
+    pub utilization_kink_pct: u64,
+    pub max_rate_per_slot: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThallLendMarketStatus {
+    pub paused: bool,
+    pub licn_configured: bool,
+    pub native_licn: bool,
+    pub oracle_config_present: bool,
+    pub oracle_config_valid: bool,
+    pub deposit_cap: u64,
+    pub reserve_factor_pct: u64,
+    pub collateral_factor_pct: u64,
+    pub liquidation_threshold_pct: u64,
+    pub liquidation_bonus_pct: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThallLendStats {
     pub total_deposits: u64,
     pub total_borrows: u64,
+    #[serde(default)]
+    pub available_liquidity: u64,
+    #[serde(default)]
+    pub utilization_pct: u64,
     pub reserves: u64,
     pub deposit_count: u64,
     pub borrow_count: u64,
+    #[serde(default)]
+    pub repay_count: u64,
     pub liquidation_count: u64,
+    #[serde(default)]
+    pub deposit_cap: u64,
+    #[serde(default)]
+    pub reserve_factor_pct: u64,
+    #[serde(default)]
+    pub licn_configured: bool,
+    #[serde(default)]
+    pub native_licn: bool,
+    #[serde(default)]
+    pub oracle_config_present: bool,
+    #[serde(default)]
+    pub oracle_config_valid: bool,
     pub paused: bool,
 }
 
@@ -90,7 +135,7 @@ fn encode_liquidate_args(liquidator: &Pubkey, params: &LiquidateParams) -> Vec<u
 fn ensure_readonly_success(
     result: &ReadonlyContractResult,
     function_name: &str,
-    allowed_codes: &[u32],
+    allowed_codes: &[i64],
 ) -> Result<()> {
     let code = result.return_code.unwrap_or(0);
     if !allowed_codes.contains(&code) {
@@ -190,6 +235,47 @@ fn decode_interest_rate(result: &ReadonlyContractResult) -> Result<ThallLendInte
     })
 }
 
+fn decode_rate_model(result: &ReadonlyContractResult) -> Result<ThallLendRateModel> {
+    ensure_readonly_success(result, "get_rate_model", &[0])?;
+    let bytes = decode_return_data(result, "get_rate_model")?;
+    if bytes.len() < RATE_MODEL_SIZE {
+        return Err(Error::ParseError(
+            "ThallLend get_rate_model payload was shorter than expected".into(),
+        ));
+    }
+    Ok(ThallLendRateModel {
+        rate_scale: decode_u64(&bytes, 0, "get_rate_model")?,
+        slots_per_year: decode_u64(&bytes, 8, "get_rate_model")?,
+        base_rate_per_slot: decode_u64(&bytes, 16, "get_rate_model")?,
+        current_rate_per_slot: decode_u64(&bytes, 24, "get_rate_model")?,
+        current_annual_bps: decode_u64(&bytes, 32, "get_rate_model")?,
+        utilization_kink_pct: decode_u64(&bytes, 40, "get_rate_model")?,
+        max_rate_per_slot: decode_u64(&bytes, 48, "get_rate_model")?,
+    })
+}
+
+fn decode_market_status(result: &ReadonlyContractResult) -> Result<ThallLendMarketStatus> {
+    ensure_readonly_success(result, "get_market_status", &[0])?;
+    let bytes = decode_return_data(result, "get_market_status")?;
+    if bytes.len() < MARKET_STATUS_SIZE {
+        return Err(Error::ParseError(
+            "ThallLend get_market_status payload was shorter than expected".into(),
+        ));
+    }
+    Ok(ThallLendMarketStatus {
+        paused: decode_u64(&bytes, 0, "get_market_status")? != 0,
+        licn_configured: decode_u64(&bytes, 8, "get_market_status")? != 0,
+        native_licn: decode_u64(&bytes, 16, "get_market_status")? != 0,
+        oracle_config_present: decode_u64(&bytes, 24, "get_market_status")? != 0,
+        oracle_config_valid: decode_u64(&bytes, 32, "get_market_status")? != 0,
+        deposit_cap: decode_u64(&bytes, 40, "get_market_status")?,
+        reserve_factor_pct: decode_u64(&bytes, 48, "get_market_status")?,
+        collateral_factor_pct: decode_u64(&bytes, 56, "get_market_status")?,
+        liquidation_threshold_pct: decode_u64(&bytes, 64, "get_market_status")?,
+        liquidation_bonus_pct: decode_u64(&bytes, 72, "get_market_status")?,
+    })
+}
+
 impl ThallLendClient {
     pub fn new(client: Client) -> Self {
         Self {
@@ -271,6 +357,32 @@ impl ThallLendClient {
             )
             .await?;
         decode_interest_rate(&result)
+    }
+
+    pub async fn get_rate_model(&self) -> Result<ThallLendRateModel> {
+        let result = self
+            .client
+            .call_readonly_contract(
+                &self.get_program_id().await?,
+                "get_rate_model",
+                Vec::new(),
+                None,
+            )
+            .await?;
+        decode_rate_model(&result)
+    }
+
+    pub async fn get_market_status(&self) -> Result<ThallLendMarketStatus> {
+        let result = self
+            .client
+            .call_readonly_contract(
+                &self.get_program_id().await?,
+                "get_market_status",
+                Vec::new(),
+                None,
+            )
+            .await?;
+        decode_market_status(&result)
     }
 
     pub async fn get_deposit_count(&self) -> Result<u64> {
@@ -467,5 +579,34 @@ mod tests {
         assert_eq!(rate.rate_per_slot, 254);
         assert_eq!(rate.utilization_pct, 40);
         assert_eq!(rate.total_available, 3_000);
+    }
+
+    #[test]
+    fn rate_model_and_market_status_decoding_match_contract_layouts() {
+        let mut rate_payload = Vec::new();
+        for value in [1_000_000_000_000u64, 78_894_000, 254, 508, 400, 80, 25_400] {
+            rate_payload.extend_from_slice(&value.to_le_bytes());
+        }
+        let rate = decode_rate_model(&readonly_result(rate_payload)).unwrap();
+        assert_eq!(rate.rate_scale, 1_000_000_000_000);
+        assert_eq!(rate.slots_per_year, 78_894_000);
+        assert_eq!(rate.current_rate_per_slot, 508);
+        assert_eq!(rate.current_annual_bps, 400);
+
+        let mut status_payload = Vec::new();
+        for value in [0u64, 1, 1, 1, 1, 10_000, 10, 75, 85, 5] {
+            status_payload.extend_from_slice(&value.to_le_bytes());
+        }
+        let status = decode_market_status(&readonly_result(status_payload)).unwrap();
+        assert!(!status.paused);
+        assert!(status.licn_configured);
+        assert!(status.native_licn);
+        assert!(status.oracle_config_present);
+        assert!(status.oracle_config_valid);
+        assert_eq!(status.deposit_cap, 10_000);
+        assert_eq!(status.reserve_factor_pct, 10);
+        assert_eq!(status.collateral_factor_pct, 75);
+        assert_eq!(status.liquidation_threshold_pct, 85);
+        assert_eq!(status.liquidation_bonus_pct, 5);
     }
 }

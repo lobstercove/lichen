@@ -6,7 +6,12 @@ use crate::hash::Hash;
 use serde::{Deserialize, Serialize};
 
 pub const NFT_COLLECTION_VERSION: u8 = 1;
-pub const NFT_TOKEN_VERSION: u8 = 1;
+pub const NFT_TOKEN_VERSION: u8 = 2;
+const NFT_TOKEN_LEGACY_VERSION: u8 = 1;
+pub const NFT_NAME_MAX_BYTES: usize = 128;
+pub const NFT_SYMBOL_MAX_BYTES: usize = 16;
+pub const NFT_METADATA_URI_MAX_BYTES: usize = 512;
+pub const NFT_MAX_ROYALTY_BPS: u16 = 1_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollectionState {
@@ -28,6 +33,16 @@ pub struct TokenState {
     pub token_id: u64,
     pub owner: Pubkey,
     pub metadata_uri: String,
+    pub approved: Option<Pubkey>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyTokenStateV1 {
+    version: u8,
+    collection: Pubkey,
+    token_id: u64,
+    owner: Pubkey,
+    metadata_uri: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,27 +80,148 @@ pub struct NftActivity {
 }
 
 pub fn encode_collection_state(state: &CollectionState) -> Result<Vec<u8>, String> {
+    validate_collection_state(state)?;
     serialize_legacy_bincode(state, "NFT collection")
 }
 
 pub fn decode_collection_state(data: &[u8]) -> Result<CollectionState, String> {
-    deserialize_legacy_bincode(data, "NFT collection")
+    let state: CollectionState = deserialize_legacy_bincode(data, "NFT collection")?;
+    validate_collection_state(&state)?;
+    Ok(state)
 }
 
 pub fn encode_token_state(state: &TokenState) -> Result<Vec<u8>, String> {
+    validate_token_state(state)?;
     serialize_legacy_bincode(state, "NFT token")
 }
 
 pub fn decode_token_state(data: &[u8]) -> Result<TokenState, String> {
-    deserialize_legacy_bincode(data, "NFT token")
+    let state = match data.first().copied() {
+        Some(NFT_TOKEN_LEGACY_VERSION) => {
+            let legacy: LegacyTokenStateV1 = deserialize_legacy_bincode(data, "legacy NFT token")?;
+            TokenState {
+                version: NFT_TOKEN_VERSION,
+                collection: legacy.collection,
+                token_id: legacy.token_id,
+                owner: legacy.owner,
+                metadata_uri: legacy.metadata_uri,
+                approved: None,
+            }
+        }
+        Some(NFT_TOKEN_VERSION) => deserialize_legacy_bincode(data, "NFT token")?,
+        Some(version) => return Err(format!("Unsupported NFT token version {version}")),
+        None => return Err("NFT token payload is empty".to_string()),
+    };
+    validate_token_state(&state)?;
+    Ok(state)
 }
 
 pub fn decode_create_collection_data(data: &[u8]) -> Result<CreateCollectionData, String> {
-    deserialize_legacy_bincode(data, "NFT create collection data")
+    let create: CreateCollectionData =
+        deserialize_legacy_bincode(data, "NFT create collection data")?;
+    validate_collection_fields(
+        &create.name,
+        &create.symbol,
+        create.royalty_bps,
+        create.max_supply,
+    )?;
+    if create.mint_authority == Some(Pubkey([0u8; 32])) {
+        return Err("NFT mint authority cannot be zero".to_string());
+    }
+    Ok(create)
 }
 
 pub fn decode_mint_nft_data(data: &[u8]) -> Result<MintNftData, String> {
-    deserialize_legacy_bincode(data, "NFT mint data")
+    let mint: MintNftData = deserialize_legacy_bincode(data, "NFT mint data")?;
+    validate_metadata_uri(&mint.metadata_uri)?;
+    Ok(mint)
+}
+
+pub fn derive_nft_token_address(collection: &Pubkey, token_id: u64) -> Pubkey {
+    let mut preimage = Vec::with_capacity(40);
+    preimage.extend_from_slice(&collection.0);
+    preimage.extend_from_slice(&token_id.to_le_bytes());
+    Pubkey(Hash::hash(&preimage).0)
+}
+
+fn valid_text(value: &str, max_bytes: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max_bytes
+        && value.trim() == value
+        && !value.chars().any(char::is_control)
+}
+
+fn validate_collection_fields(
+    name: &str,
+    symbol: &str,
+    royalty_bps: u16,
+    _max_supply: u64,
+) -> Result<(), String> {
+    if !valid_text(name, NFT_NAME_MAX_BYTES) {
+        return Err("NFT collection name is empty, malformed, or too long".to_string());
+    }
+    if symbol.len() < 2
+        || symbol.len() > NFT_SYMBOL_MAX_BYTES
+        || !symbol
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+        || !symbol.as_bytes().iter().all(u8::is_ascii_alphanumeric)
+        || symbol.as_bytes().iter().any(u8::is_ascii_lowercase)
+    {
+        return Err("NFT collection symbol must be 2-16 uppercase alphanumeric bytes".to_string());
+    }
+    if royalty_bps > NFT_MAX_ROYALTY_BPS {
+        return Err(format!(
+            "NFT collection royalty exceeds {} basis points",
+            NFT_MAX_ROYALTY_BPS
+        ));
+    }
+    Ok(())
+}
+
+fn validate_metadata_uri(uri: &str) -> Result<(), String> {
+    if !valid_text(uri, NFT_METADATA_URI_MAX_BYTES) {
+        return Err("NFT metadata URI is empty, malformed, or too long".to_string());
+    }
+    Ok(())
+}
+
+fn validate_collection_state(state: &CollectionState) -> Result<(), String> {
+    if state.version != NFT_COLLECTION_VERSION {
+        return Err(format!(
+            "Unsupported NFT collection version {}",
+            state.version
+        ));
+    }
+    if state.creator == Pubkey([0u8; 32]) {
+        return Err("NFT collection creator cannot be zero".to_string());
+    }
+    if state.mint_authority == Some(Pubkey([0u8; 32])) {
+        return Err("NFT mint authority cannot be zero".to_string());
+    }
+    if state.max_supply > 0 && state.minted > state.max_supply {
+        return Err("NFT collection minted count exceeds max supply".to_string());
+    }
+    validate_collection_fields(
+        &state.name,
+        &state.symbol,
+        state.royalty_bps,
+        state.max_supply,
+    )
+}
+
+fn validate_token_state(state: &TokenState) -> Result<(), String> {
+    if state.version != NFT_TOKEN_VERSION {
+        return Err(format!("Unsupported NFT token version {}", state.version));
+    }
+    if state.collection == Pubkey([0u8; 32]) || state.owner == Pubkey([0u8; 32]) {
+        return Err("NFT collection and owner addresses cannot be zero".to_string());
+    }
+    if state.approved == Some(Pubkey([0u8; 32])) || state.approved == Some(state.owner) {
+        return Err("NFT approval must be a nonzero address other than the owner".to_string());
+    }
+    validate_metadata_uri(&state.metadata_uri)
 }
 
 pub fn encode_nft_activity(activity: &NftActivity) -> Result<Vec<u8>, String> {
@@ -123,6 +259,7 @@ mod tests {
             token_id: 7,
             owner: Pubkey([0xCCu8; 32]),
             metadata_uri: "ipfs://QmTest123".to_string(),
+            approved: None,
         }
     }
 
@@ -190,6 +327,24 @@ mod tests {
         assert_eq!(decoded.token_id, orig.token_id);
         assert_eq!(decoded.owner, orig.owner);
         assert_eq!(decoded.metadata_uri, orig.metadata_uri);
+        assert_eq!(decoded.approved, orig.approved);
+    }
+
+    #[test]
+    fn legacy_token_decodes_without_approval_and_reencodes_as_v2() {
+        let legacy = LegacyTokenStateV1 {
+            version: NFT_TOKEN_LEGACY_VERSION,
+            collection: Pubkey([0xAA; 32]),
+            token_id: 9,
+            owner: Pubkey([0xCC; 32]),
+            metadata_uri: "ipfs://legacy".to_string(),
+        };
+        let bytes = serialize_legacy_bincode(&legacy, "legacy NFT token").unwrap();
+        let decoded = decode_token_state(&bytes).unwrap();
+        assert_eq!(decoded.version, NFT_TOKEN_VERSION);
+        assert_eq!(decoded.approved, None);
+        let canonical = encode_token_state(&decoded).unwrap();
+        assert_eq!(canonical.first(), Some(&NFT_TOKEN_VERSION));
     }
 
     #[test]
@@ -222,6 +377,21 @@ mod tests {
         assert!(decode_create_collection_data(&[0xFF; 2]).is_err());
     }
 
+    #[test]
+    fn collection_validation_rejects_unsafe_metadata_and_royalty_terms() {
+        let mut collection = sample_collection();
+        collection.royalty_bps = NFT_MAX_ROYALTY_BPS + 1;
+        assert!(encode_collection_state(&collection).is_err());
+
+        collection = sample_collection();
+        collection.symbol = "lower".to_string();
+        assert!(encode_collection_state(&collection).is_err());
+
+        collection = sample_collection();
+        collection.name = " leading".to_string();
+        assert!(encode_collection_state(&collection).is_err());
+    }
+
     // ── MintNftData ──
 
     #[test]
@@ -239,6 +409,17 @@ mod tests {
     #[test]
     fn mint_nft_data_decode_garbage() {
         assert!(decode_mint_nft_data(&[]).is_err());
+    }
+
+    #[test]
+    fn token_validation_rejects_unsafe_metadata_and_approval() {
+        let mut token = sample_token();
+        token.metadata_uri = "bad\nuri".to_string();
+        assert!(encode_token_state(&token).is_err());
+
+        token = sample_token();
+        token.approved = Some(token.owner);
+        assert!(encode_token_state(&token).is_err());
     }
 
     // ── NftActivity encode/decode ──

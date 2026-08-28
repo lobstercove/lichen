@@ -58,6 +58,7 @@ fn privileged_processor_regressions_remain_in_suite() {
         "test_shield_rejects_outgoing_restricted_sender_without_pool_mutation",
         "test_shield_rejects_native_frozen_amount_without_pool_mutation",
         "test_shield_protocol_pause_rejects_deposit_without_pool_mutation",
+        "test_unshield_protocol_pause_rejects_exit_without_nullifier_mutation",
         "test_unshield_rejects_incoming_restricted_recipient_without_spending_nullifier",
         "test_unshield_rejects_native_incoming_restricted_recipient_without_spending_nullifier",
         "test_shielded_transfer_protocol_pause_rejects_before_nullifier_mutation",

@@ -1,10 +1,9 @@
 //! ZK runtime artifact metadata.
 //!
-//! Lichen shielded proofs now use native Plonky3 STARK envelopes and no longer
-//! require proving-key or verification-key ceremonies. This module reports the
-//! active runtime scheme for each shielded circuit so callers that still expect
-//! a setup step can introspect the live configuration without relying on
-//! trusted-setup artifacts.
+//! Legacy scheme 0x01 uses native Plonky3 STARK envelopes and has no external
+//! proving-key or verification-key ceremony. The scheme is disabled because it
+//! does not constrain private witnesses. This module retains compatibility
+//! metadata only; it does not report activation.
 
 use super::{ProofType, ZkSchemeVersion};
 
@@ -15,9 +14,9 @@ pub struct CeremonyOutput {
     pub circuit_name: String,
     /// Which shielded circuit this metadata belongs to
     pub proof_type: ProofType,
-    /// Which proof scheme the runtime expects
+    /// Which legacy proof scheme the fixture describes
     pub zk_scheme_version: ZkSchemeVersion,
-    /// Human-readable description of the live runtime
+    /// Human-readable compatibility status
     pub note: String,
 }
 
@@ -26,21 +25,21 @@ fn runtime_artifact(proof_type: ProofType) -> CeremonyOutput {
         circuit_name: proof_type.as_str().to_string(),
         proof_type,
         zk_scheme_version: ZkSchemeVersion::Plonky3FriPoseidon2,
-        note: "Native Plonky3 STARK runtime; no external setup artifacts required".to_string(),
+        note: "Legacy scheme 0x01 fixture metadata; proof acceptance is disabled".to_string(),
     }
 }
 
-/// Return the live runtime metadata for the shield circuit.
+/// Return legacy compatibility metadata for the shield circuit.
 pub fn setup_shield() -> Result<CeremonyOutput, String> {
     Ok(runtime_artifact(ProofType::Shield))
 }
 
-/// Return the live runtime metadata for the unshield circuit.
+/// Return legacy compatibility metadata for the unshield circuit.
 pub fn setup_unshield() -> Result<CeremonyOutput, String> {
     Ok(runtime_artifact(ProofType::Unshield))
 }
 
-/// Return the live runtime metadata for the transfer circuit.
+/// Return legacy compatibility metadata for the transfer circuit.
 pub fn setup_transfer() -> Result<CeremonyOutput, String> {
     Ok(runtime_artifact(ProofType::Transfer))
 }

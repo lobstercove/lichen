@@ -1000,6 +1000,7 @@ dependencies = [
  "matchit",
  "memchr",
  "mime",
+ "multer",
  "percent-encoding",
  "pin-project-lite",
  "rustversion",
@@ -1446,9 +1447,9 @@ dependencies = [
 
 [[package]]
 name = "chacha20"
-version = "0.10.1"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
@@ -2355,6 +2356,15 @@ dependencies = [
  "sec1",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "encoding_rs"
+version = "0.8.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
+dependencies = [
+ "cfg-if",
 ]
 
 [[package]]
@@ -3463,6 +3473,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "lichen-client-sdk"
+version = "0.1.7"
+dependencies = [
+ "anyhow",
+ "base64",
+ "bincode",
+ "hex",
+ "lobstercove-lichen-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "lichen-custody"
 version = "0.5.264"
 dependencies = [
@@ -3528,6 +3554,29 @@ dependencies = [
  "tracing",
  "tracing-subscriber 0.3.23",
  "ureq",
+]
+
+[[package]]
+name = "lichen-moss-provider"
+version = "0.5.264"
+dependencies = [
+ "axum",
+ "base64",
+ "bs58",
+ "futures-util",
+ "http-body-util",
+ "lichen-client-sdk",
+ "lobstercove-lichen-core",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tower 0.5.3",
+ "tower-http 0.5.2",
+ "tracing",
+ "tracing-subscriber 0.3.23",
 ]
 
 [[package]]
@@ -3656,6 +3705,7 @@ dependencies = [
  "derive_more 1.0.0",
  "dilithium-rs",
  "ed25519-dalek",
+ "flate2",
  "getrandom 0.4.3",
  "hex",
  "libc",
@@ -3875,6 +3925,23 @@ name = "more-asserts"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7843ec2de400bcbc6a6328c958dc38e5359da6e93e72e37bc5246bf1ae776389"
+
+[[package]]
+name = "multer"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83e87776546dc87511aa5ee218730c92b666d7264ab6ed41f9d215af9cd5224b"
+dependencies = [
+ "bytes",
+ "encoding_rs",
+ "futures-util",
+ "http",
+ "httparse",
+ "memchr",
+ "mime",
+ "spin 0.9.9",
+ "version_check",
+]
 
 [[package]]
 name = "munge"
@@ -4159,7 +4226,7 @@ dependencies = [
  "p3-matrix",
  "p3-maybe-rayon",
  "p3-util",
- "spin",
+ "spin 0.12.2",
  "tracing",
 ]
 
@@ -4195,7 +4262,7 @@ dependencies = [
  "p3-util",
  "rand 0.10.2",
  "serde",
- "spin",
+ "spin 0.12.2",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -4269,7 +4336,7 @@ dependencies = [
  "p3-util",
  "rand 0.10.2",
  "serde",
- "spin",
+ "spin 0.12.2",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -4294,7 +4361,7 @@ dependencies = [
  "paste",
  "rand 0.10.2",
  "serde",
- "spin",
+ "spin 0.12.2",
  "tracing",
 ]
 
@@ -4924,7 +4991,7 @@ version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80"
 dependencies = [
- "chacha20 0.10.1",
+ "chacha20 0.10.2",
  "getrandom 0.4.3",
  "rand_core 0.10.1",
 ]
@@ -6136,6 +6203,12 @@ dependencies = [
 
 [[package]]
 name = "spin"
+version = "0.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
+
+[[package]]
+name = "spin"
 version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8abadc99fd9c7bbb7d0ca2b31d72a067d0c0dcd7aad25ab8cac71ba91417694b"
@@ -6557,6 +6630,7 @@ dependencies = [
  "tokio-util",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]

@@ -13,6 +13,8 @@ fn setup() -> [u8; 32] {
     let lusd = [9u8; 32];
     lichen_sdk::test_mock::set_caller(admin);
     assert_eq!(initialize(admin.as_ptr()), 0);
+    assert_eq!(activate_funding_v2(admin.as_ptr()), 0);
+    assert_eq!(activate_cross_v2(admin.as_ptr()), 0);
     assert_eq!(
         set_collateral_token_address(admin.as_ptr(), lusd.as_ptr()),
         0
@@ -54,7 +56,8 @@ fn test_add_margin_u64_overflow() {
 
 #[test]
 fn test_insurance_fund_overflow() {
-    // FIXED: insurance fund now uses saturating_add — no panic, caps at u64::MAX.
+    // Insurance accounting must fail before payouts instead of silently
+    // saturating and leaving physical lUSD unaccounted.
     let admin = setup();
     lichen_sdk::test_mock::set_slot(100);
 
@@ -71,18 +74,9 @@ fn test_insurance_fund_overflow() {
 
     let liquidator = [3u8; 32];
     lichen_sdk::test_mock::set_caller(liquidator);
-    assert_eq!(
-        liquidate(liquidator.as_ptr(), 1),
-        0,
-        "liquidation should succeed with saturating insurance"
-    );
-    // Insurance fund should be at or near u64::MAX (saturated)
-    let fund = get_insurance_fund();
-    assert!(
-        fund >= u64::MAX - 10,
-        "insurance fund should be near max, got {}",
-        fund
-    );
+    assert_eq!(liquidate(liquidator.as_ptr(), 1), 12);
+    assert_eq!(get_insurance_fund(), u64::MAX - 10);
+    assert_eq!(get_position_info(1), 1);
 }
 
 // ============================================================================
@@ -517,6 +511,7 @@ fn test_open_position_no_mark_price() {
     let admin = [1u8; 32];
     lichen_sdk::test_mock::set_caller(admin);
     assert_eq!(initialize(admin.as_ptr()), 0);
+    assert_eq!(activate_funding_v2(admin.as_ptr()), 0);
     // Enable margin for pair 1 but don't set mark price
     enable_margin_pair(admin.as_ptr(), 1);
     let trader = [2u8; 32];

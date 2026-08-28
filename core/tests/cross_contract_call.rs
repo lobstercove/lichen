@@ -322,6 +322,64 @@ fn target_check_caller_wat() -> &'static str {
     )"#
 }
 
+fn target_u64_balance_wat() -> &'static str {
+    r#"(module
+        (memory (export "memory") 1)
+        (func (export "balance_of") (param i32) (result i64)
+            (i64.const 5000000000))
+    )"#
+}
+
+fn caller_u64_balance_wat() -> &'static str {
+    r#"(module
+        (import "env" "get_args" (func $get_args (param i32 i32) (result i32)))
+        (import "env" "cross_contract_call" (func $cross_contract_call (param i32 i32 i32 i32 i32 i64 i32 i32) (result i32)))
+        (memory (export "memory") 1)
+        (data (i32.const 100) "balance_of")
+        (func (export "call") (result i64)
+            (drop (call $get_args (i32.const 0) (i32.const 32)))
+            (if (i32.eqz (call $cross_contract_call
+                (i32.const 0) (i32.const 100) (i32.const 10)
+                (i32.const 200) (i32.const 32) (i64.const 0)
+                (i32.const 300) (i32.const 8)))
+                (then (return (i64.const 0))))
+            (i64.load (i32.const 300)))
+    )"#
+}
+
+fn u64_balance_abi() -> ContractAbi {
+    ContractAbi {
+        version: "1.0".to_string(),
+        name: "u64_balance".to_string(),
+        template: None,
+        description: None,
+        functions: vec![AbiFunction {
+            name: "balance_of".to_string(),
+            description: None,
+            params: vec![AbiParam {
+                name: "account".to_string(),
+                param_type: AbiType::Pubkey,
+                optional: false,
+                description: None,
+            }],
+            returns: Some(AbiReturn {
+                return_type: AbiType::U64,
+                description: None,
+            }),
+            opcode: None,
+            readonly: true,
+            result_semantics: Some(AbiResultSemantics {
+                kind: AbiResultKind::ReturnValue,
+                success_codes: Vec::new(),
+                failure_codes: Vec::new(),
+                description: None,
+            }),
+        }],
+        events: Vec::new(),
+        errors: Vec::new(),
+    }
+}
+
 fn caller_identity_ccc_wat() -> &'static str {
     r#"(module
         (import "env" "get_args" (func $get_args (param i32 i32) (result i32)))
@@ -444,6 +502,66 @@ fn caller_two_payable_calls_wat() -> &'static str {
             (call $cross_contract_call
                 (i32.const 0) (i32.const 100) (i32.const 6)
                 (i32.const 32) (i32.const 32) (i64.const 40)
+                (i32.const 200) (i32.const 8)))
+    )"#
+}
+
+/// Native flash-loan-shaped callback fixture. The lender transfers 100 spores
+/// to the receiver, invokes its callback, then requires its projected balance
+/// to be 1,001 spores (the 1,000 starting balance plus a one-spore fee).
+fn native_callback_lender_wat() -> &'static str {
+    r#"(module
+        (import "env" "get_args" (func $get_args (param i32 i32) (result i32)))
+        (import "env" "get_contract_address" (func $get_contract_address (param i32) (result i32)))
+        (import "env" "cross_contract_call" (func $cross_contract_call (param i32 i32 i32 i32 i32 i64 i32 i32) (result i32)))
+        (memory (export "memory") 1)
+        (data (i32.const 100) "transfer")
+        (data (i32.const 120) "repay")
+        (data (i32.const 140) "balance_of")
+        (data (i32.const 180) "\64\00\00\00\00\00\00\00")
+        (func (export "flash") (result i32)
+            ;; args[0..32] = receiver; zeroed memory[256..288] = system program.
+            (drop (call $get_args (i32.const 0) (i32.const 32)))
+            (drop (call $get_contract_address (i32.const 40)))
+            ;; system.transfer(receiver, 100)
+            (memory.copy (i32.const 32) (i32.const 180) (i32.const 8))
+            (if (i32.eqz (call $cross_contract_call
+                (i32.const 256) (i32.const 100) (i32.const 8)
+                (i32.const 0) (i32.const 40) (i64.const 0)
+                (i32.const 300) (i32.const 8)))
+                (then (return (i32.const 0))))
+            ;; receiver.repay(lender)
+            (if (i32.eqz (call $cross_contract_call
+                (i32.const 0) (i32.const 120) (i32.const 5)
+                (i32.const 40) (i32.const 32) (i64.const 0)
+                (i32.const 300) (i32.const 8)))
+                (then (return (i32.const 0))))
+            ;; system.balance_of(lender) must include both pending transfers.
+            (if (i32.eqz (call $cross_contract_call
+                (i32.const 256) (i32.const 140) (i32.const 10)
+                (i32.const 40) (i32.const 32) (i64.const 0)
+                (i32.const 300) (i32.const 8)))
+                (then (return (i32.const 0))))
+            (i64.eq (i64.load (i32.const 300)) (i64.const 1001)))
+    )"#
+}
+
+/// Receiver starts with one spore, observes the 100-spore pending loan, and
+/// repays 101 spores to the lender passed in callback args.
+fn native_callback_receiver_wat() -> &'static str {
+    r#"(module
+        (import "env" "get_args" (func $get_args (param i32 i32) (result i32)))
+        (import "env" "cross_contract_call" (func $cross_contract_call (param i32 i32 i32 i32 i32 i64 i32 i32) (result i32)))
+        (memory (export "memory") 1)
+        (data (i32.const 100) "transfer")
+        (data (i32.const 140) "\65\00\00\00\00\00\00\00")
+        (func (export "repay") (result i32)
+            ;; args[0..32] = lender; append amount=101.
+            (drop (call $get_args (i32.const 0) (i32.const 32)))
+            (memory.copy (i32.const 32) (i32.const 140) (i32.const 8))
+            (call $cross_contract_call
+                (i32.const 256) (i32.const 100) (i32.const 8)
+                (i32.const 0) (i32.const 40) (i64.const 0)
                 (i32.const 200) (i32.const 8)))
     )"#
 }
@@ -684,6 +802,47 @@ fn cross_contract_caller_address_starting_with_layout_marker_is_preserved() {
 }
 
 #[test]
+fn cross_contract_u64_return_value_is_not_truncated() {
+    let (state, _tmp) = create_test_state();
+    let owner = Pubkey::new([1u8; 32]);
+    let caller_addr = Pubkey::new([28u8; 32]);
+    let target_addr = Pubkey::new([29u8; 32]);
+
+    deploy_wasm_contract_with_abi(
+        &state,
+        &target_addr,
+        &owner,
+        target_u64_balance_wat().as_bytes(),
+        u64_balance_abi(),
+    );
+    deploy_wasm_contract(
+        &state,
+        &caller_addr,
+        &owner,
+        caller_u64_balance_wat().as_bytes(),
+    );
+    let caller_account = state.get_account(&caller_addr).unwrap().unwrap();
+    let caller_contract: ContractAccount = serde_json::from_slice(&caller_account.data).unwrap();
+    let args = target_addr.0.to_vec();
+    let mut ctx = ContractContext::with_args(
+        owner,
+        caller_addr,
+        0,
+        1,
+        caller_contract.storage.clone(),
+        args.clone(),
+    );
+    ctx.state_store = Some(state);
+
+    let result = ContractRuntime::new()
+        .execute(&caller_contract, "call", &args, ctx)
+        .expect("u64 balance query should execute");
+
+    assert!(result.success, "runtime failed: {:?}", result.error);
+    assert_eq!(result.return_code, Some(5_000_000_000));
+}
+
+#[test]
 fn test_payable_cross_contract_call_can_refund_attached_value_atomically() {
     let (state, _tmp) = create_test_state();
     let owner = Pubkey::new([1u8; 32]);
@@ -783,6 +942,70 @@ fn test_sequential_payable_calls_use_updated_projected_balances() {
     assert_eq!(result.ccc_value_deltas.get(&caller_addr), Some(&-80));
     assert_eq!(result.ccc_value_deltas.get(&target_addr), Some(&80));
     assert_eq!(result.native_account_ops.len(), 2);
+}
+
+#[test]
+fn test_nested_native_callback_observes_pending_transfer_and_balance() {
+    let (state, _tmp) = create_test_state();
+    let owner = Pubkey::new([1u8; 32]);
+    let lender_addr = Pubkey::new([36u8; 32]);
+    let receiver_addr = Pubkey::new([37u8; 32]);
+
+    deploy_wasm_contract(
+        &state,
+        &lender_addr,
+        &owner,
+        native_callback_lender_wat().as_bytes(),
+    );
+    deploy_wasm_contract(
+        &state,
+        &receiver_addr,
+        &owner,
+        native_callback_receiver_wat().as_bytes(),
+    );
+    let mut lender_account = state.get_account(&lender_addr).unwrap().unwrap();
+    lender_account.add_spendable(1_000).unwrap();
+    state.put_account(&lender_addr, &lender_account).unwrap();
+    let mut receiver_account = state.get_account(&receiver_addr).unwrap().unwrap();
+    receiver_account.add_spendable(1).unwrap();
+    state
+        .put_account(&receiver_addr, &receiver_account)
+        .unwrap();
+
+    let lender_contract: ContractAccount = serde_json::from_slice(&lender_account.data).unwrap();
+    let args = receiver_addr.0.to_vec();
+    let mut ctx = ContractContext::with_args(
+        owner,
+        lender_addr,
+        0,
+        1,
+        lender_contract.storage.clone(),
+        args.clone(),
+    );
+    ctx.state_store = Some(state);
+
+    let result = ContractRuntime::new()
+        .execute(&lender_contract, "flash", &args, ctx)
+        .expect("native callback flow should execute");
+
+    assert!(result.success, "runtime failed: {:?}", result.error);
+    assert_eq!(result.return_code, Some(1));
+    assert_eq!(
+        result.native_account_ops,
+        vec![
+            NativeAccountOp::Transfer {
+                from: lender_addr,
+                to: receiver_addr,
+                amount: 100,
+            },
+            NativeAccountOp::Transfer {
+                from: receiver_addr,
+                to: lender_addr,
+                amount: 101,
+            },
+        ],
+        "inherited native operations must remain ordered and must not duplicate"
+    );
 }
 
 #[test]

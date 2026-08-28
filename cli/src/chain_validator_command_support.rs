@@ -6,7 +6,7 @@ use crate::keypair_manager::KeypairManager;
 use crate::validator_support::{
     handle_validator_fingerprint, handle_validator_info, handle_validator_list,
     handle_validator_performance, handle_validator_reclassify_bootstrap, handle_validator_register,
-    handle_validator_register_self_funded,
+    handle_validator_register_self_funded, handle_validator_set_commission,
 };
 
 pub(super) async fn handle_chain_validator_command(
@@ -41,6 +41,12 @@ pub(super) async fn handle_chain_validator_command(
         }
         ValidatorCommands::ReclassifyBootstrap { keypair } => {
             handle_validator_reclassify_bootstrap(client, keypair_mgr, keypair).await?
+        }
+        ValidatorCommands::SetCommission {
+            commission_bps,
+            keypair,
+        } => {
+            handle_validator_set_commission(client, keypair_mgr, commission_bps, keypair).await?
         }
     }
 

@@ -2778,6 +2778,7 @@ dependencies = [
  "derive_more 1.0.0",
  "dilithium-rs",
  "ed25519-dalek",
+ "flate2",
  "getrandom 0.4.3",
  "hex",
  "libc",

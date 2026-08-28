@@ -83,9 +83,13 @@ function calculateDashboardTotalStakeSpores(validators, mossStakePool) {
     }
     const rawMossStake = Number(mossStakePool.total_licn_staked);
     if (!Number.isFinite(rawMossStake) || rawMossStake < 0) return null;
-    return validators.reduce((sum, validator) => {
+    const validatorStake = validators.reduce((sum, validator) => {
         return sum + Math.max(0, explorerNumber(validator?.stake));
-    }, 0) + rawMossStake;
+    }, 0);
+    // Staking V2 validator stake already contains delegated MossStake backing.
+    // The legacy validator total does not, so compose the two eras explicitly.
+    const stakingV2Active = validators.some(validator => validator?.staking_v2_active === true);
+    return validatorStake + (stakingV2Active ? 0 : rawMossStake);
 }
 
 function resetDashboardWsCadence() {
@@ -836,7 +840,8 @@ async function updateDashboardStats() {
             const validatorCountEl = document.getElementById('validatorCount');
             if (validatorCountEl) validatorCountEl.textContent = onlineCount;
 
-            // Total stake combines validator stake and LICN held by MossStake.
+            // V2 validator stake already includes MossStake backing; the helper
+            // retains the legacy composition before activation.
             const totalStakeEl = document.getElementById('totalStake');
             const totalStake = calculateDashboardTotalStakeSpores(validators, mossStakePool);
             if (totalStakeEl && totalStake !== null) {

@@ -15,9 +15,9 @@ use axum::body::{to_bytes, Body};
 use axum::http::Request;
 use lichen_core::{
     contract::ContractAccount, Account, Block, CommitSignature, FeeConfig, FinalityTracker, Hash,
-    Instruction, Keypair, LockTier, Message, MossStakePool, Precommit, Pubkey, StakeInfo,
-    StakePool, StateStore, SymbolRegistryEntry, Transaction, BOOTSTRAP_GRANT_AMOUNT,
-    CONTRACT_PROGRAM_ID,
+    Instruction, Keypair, LockTier, MarketActivity, MarketActivityKind, Message, MossStakePool,
+    Precommit, Pubkey, StakeInfo, StakePool, StateStore, SymbolRegistryEntry, Transaction,
+    BOOTSTRAP_GRANT_AMOUNT, CONTRACT_PROGRAM_ID,
 };
 use lichen_rpc::{build_rpc_router, build_rpc_router_with_min_validator_stake};
 use serde_json::json;
@@ -95,6 +95,528 @@ async fn rest_get(app: &axum::Router, path: &str) -> RpcResult {
 fn fresh_app() -> axum::Router {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = StateStore::open(dir.path()).expect("state");
+    put_ready_tip(&state, 1);
+    let _ = Box::leak(Box::new(dir));
+    build_rpc_router(
+        state,
+        None,
+        None,
+        None,
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+fn app_with_thalllend_stats() -> axum::Router {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let program = Pubkey([0x4c; 32]);
+    state
+        .register_symbol(
+            "LEND",
+            SymbolRegistryEntry {
+                symbol: String::new(),
+                program,
+                owner: Pubkey([0x4d; 32]),
+                name: Some("ThallLend".to_string()),
+                template: None,
+                metadata: None,
+                decimals: None,
+            },
+        )
+        .expect("register ThallLend symbol");
+    for (key, value) in [
+        (b"ll_total_deposits".as_slice(), 5_000u64),
+        (b"ll_total_borrows".as_slice(), 2_000),
+        (b"ll_reserves".as_slice(), 150),
+        (b"ll_dep_count".as_slice(), 7),
+        (b"ll_bor_count".as_slice(), 5),
+        (b"ll_repay_count".as_slice(), 3),
+        (b"ll_liq_count".as_slice(), 2),
+        (b"ll_deposit_cap".as_slice(), 10_000),
+        (b"ll_reserve_factor".as_slice(), 10),
+    ] {
+        state
+            .put_contract_storage(&program, key, &value.to_le_bytes())
+            .expect("put ThallLend stat");
+    }
+    state
+        .put_contract_storage(&program, b"ll_licn_addr", &[0u8; 32])
+        .expect("put native LICN configuration");
+    state
+        .put_contract_storage(&program, b"ll_oracle_addr", &[7u8; 32])
+        .expect("put ThallLend oracle address");
+    state
+        .put_contract_storage(&program, b"ll_oracle_asset", b"LICN/USD")
+        .expect("put ThallLend oracle asset");
+    put_ready_tip(&state, 1);
+    let _ = Box::leak(Box::new(dir));
+    build_rpc_router(
+        state,
+        None,
+        None,
+        None,
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+fn app_with_sporevault_stats() -> axum::Router {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let program = Pubkey([0x56; 32]);
+    state
+        .register_symbol(
+            "SPOREVAULT",
+            SymbolRegistryEntry {
+                symbol: String::new(),
+                program,
+                owner: Pubkey([0x57; 32]),
+                name: Some("SporeVault".to_string()),
+                template: None,
+                metadata: None,
+                decimals: None,
+            },
+        )
+        .expect("register SporeVault symbol");
+    for (key, value) in [
+        (b"cv_total_assets".as_slice(), 10_000u64),
+        (b"cv_total_shares".as_slice(), 9_000),
+        (b"cv_idle_assets".as_slice(), 4_000),
+        (b"cv_lending_assets".as_slice(), 6_000),
+        (b"cv_strategy_count".as_slice(), 1),
+        (b"cv_strat_type:0".as_slice(), 1),
+        (b"cv_strat_alloc:0".as_slice(), 33),
+        (b"cv_total_earned".as_slice(), 800),
+        (b"cv_fees_earned".as_slice(), 300),
+        (b"cv_protocol_fees".as_slice(), 250),
+        (b"cv_accounting_version".as_slice(), 2),
+        (b"cv_dep_fee".as_slice(), 10),
+        (b"cv_wd_fee".as_slice(), 30),
+        (b"cv_dep_cap".as_slice(), 50_000),
+        (b"cv_risk_tier".as_slice(), 1),
+    ] {
+        state
+            .put_contract_storage(&program, key, &value.to_le_bytes())
+            .expect("put SporeVault stat");
+    }
+    state
+        .put_contract_storage(&program, b"cv_licn_token", &[0u8; 32])
+        .expect("put SporeVault native LICN configuration");
+    state
+        .put_contract_storage(&program, b"cv_thalllend_addr", &[0x4c; 32])
+        .expect("put SporeVault ThallLend configuration");
+    state
+        .put_contract_storage(&program, b"cv_paused", &[0])
+        .expect("put SporeVault pause state");
+    let mut custody_account = Account::new(0, CONTRACT_PROGRAM_ID);
+    custody_account.spores = 4_250;
+    custody_account.spendable = 4_250;
+    state
+        .put_account(&program, &custody_account)
+        .expect("put SporeVault custody account");
+    put_ready_tip(&state, 1);
+    let _ = Box::leak(Box::new(dir));
+    build_rpc_router(
+        state,
+        None,
+        None,
+        None,
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+fn app_with_sporepay_stats() -> axum::Router {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let program = Pubkey([0x53; 32]);
+    state
+        .register_symbol(
+            "SPOREPAY",
+            SymbolRegistryEntry {
+                symbol: String::new(),
+                program,
+                owner: Pubkey([0x54; 32]),
+                name: Some("SporePay".to_string()),
+                template: None,
+                metadata: None,
+                decimals: None,
+            },
+        )
+        .expect("register SporePay symbol");
+    for (key, value) in [
+        (b"stream_count".as_slice(), 5u64),
+        (b"sp_total_streamed".as_slice(), 10_000),
+        (b"sp_total_withdrawn".as_slice(), 3_000),
+        (b"sp_cancel_count".as_slice(), 1),
+        (b"sp_escrow_liability".as_slice(), 7_000),
+        (b"sp_total_unpaid".as_slice(), 77),
+        (b"sp_account_version".as_slice(), 3),
+        (b"sp_account_mig_expected".as_slice(), 5),
+        (b"sp_account_mig_cursor".as_slice(), 4),
+    ] {
+        state
+            .put_contract_storage(&program, key, &value.to_le_bytes())
+            .expect("put SporePay stat");
+    }
+    state
+        .put_contract_storage(&program, b"sp_paused", &[1])
+        .expect("put SporePay pause");
+    state
+        .put_contract_storage(&program, b"sp_account_mig_lock", &[1])
+        .expect("put SporePay migration lock");
+    put_ready_tip(&state, 1);
+    let _ = Box::leak(Box::new(dir));
+    build_rpc_router(
+        state,
+        None,
+        None,
+        None,
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+fn app_with_bountyboard_stats() -> axum::Router {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let program = Pubkey([0x47; 32]);
+    let identity = Pubkey([0x48; 32]);
+    let admin = Pubkey([0x49; 32]);
+    let pending_admin = Pubkey([0x4a; 32]);
+    state
+        .register_symbol(
+            "BOUNTY",
+            SymbolRegistryEntry {
+                symbol: String::new(),
+                program,
+                owner: admin,
+                name: Some("BountyBoard".to_string()),
+                template: None,
+                metadata: None,
+                decimals: None,
+            },
+        )
+        .expect("register BountyBoard symbol");
+    for (key, value) in [
+        (b"bounty_count".as_slice(), 2u64),
+        (b"bb_completed_count".as_slice(), 1),
+        (b"bb_reward_volume".as_slice(), 90),
+        (b"bb_cancel_count".as_slice(), 0),
+        (b"platform_fee_bps".as_slice(), 250),
+        (b"lichenid_min_rep".as_slice(), 25),
+        (b"bb_account_version".as_slice(), 2),
+        (b"bb_account_mig_expected".as_slice(), 2),
+        (b"bb_account_mig_cursor".as_slice(), 2),
+        (b"bb_account_mig_escrow".as_slice(), 100),
+        (b"bb_escrow_liability".as_slice(), 100),
+    ] {
+        state
+            .put_contract_storage(&program, key, &value.to_le_bytes())
+            .expect("put BountyBoard u64 state");
+    }
+    for (key, value) in [
+        (b"bounty_token_addr".as_slice(), [0u8; 32].as_slice()),
+        (b"bb_fee_treasury".as_slice(), admin.0.as_slice()),
+        (b"identity_admin".as_slice(), admin.0.as_slice()),
+        (b"bb_pending_admin".as_slice(), pending_admin.0.as_slice()),
+        (b"lichenid_address".as_slice(), identity.0.as_slice()),
+    ] {
+        state
+            .put_contract_storage(&program, key, value)
+            .expect("put BountyBoard address state");
+    }
+    state
+        .put_contract_storage(&program, b"bb_account_mig_lock", &[0])
+        .expect("put BountyBoard migration lock");
+    state
+        .put_contract_storage(&program, b"bb_paused", &[0])
+        .expect("put BountyBoard pause state");
+    let mut fee_key = b"bb_platform_fee:".to_vec();
+    fee_key.extend_from_slice(&[0u8; 32]);
+    state
+        .put_contract_storage(&program, &fee_key, &10u64.to_le_bytes())
+        .expect("put BountyBoard platform fees");
+    let mut custody_account = Account::new(0, CONTRACT_PROGRAM_ID);
+    custody_account.spores = 110;
+    custody_account.spendable = 110;
+    state
+        .put_account(&program, &custody_account)
+        .expect("put BountyBoard custody account");
+    put_ready_tip(&state, 1);
+    let _ = Box::leak(Box::new(dir));
+    build_rpc_router(
+        state,
+        None,
+        None,
+        None,
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+fn app_with_compute_market_stats() -> axum::Router {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let program = Pubkey([0x43; 32]);
+    let token = Pubkey([0x44; 32]);
+    let identity = Pubkey([0x45; 32]);
+    let admin = Pubkey([0x46; 32]);
+    state
+        .register_symbol(
+            "COMPUTE",
+            SymbolRegistryEntry {
+                symbol: String::new(),
+                program,
+                owner: admin,
+                name: Some("Compute Market".to_string()),
+                template: None,
+                metadata: None,
+                decimals: None,
+            },
+        )
+        .expect("register Compute Market symbol");
+    for (key, value) in [
+        (b"job_count".as_slice(), 2u64),
+        (b"cm_completed_count".as_slice(), 1),
+        (b"cm_payment_volume".as_slice(), 90),
+        (b"cm_dispute_count".as_slice(), 1),
+        (b"cm_account_version".as_slice(), 3),
+        (b"cm_account_mig_expected".as_slice(), 2),
+        (b"cm_account_mig_cursor".as_slice(), 2),
+        (b"cm_account_mig_escrow".as_slice(), 100),
+        (b"cm_account_mig_unpaid".as_slice(), 20),
+        (b"cm_escrow_liability".as_slice(), 100),
+        (b"cm_total_unpaid".as_slice(), 20),
+        (b"lichenid_min_rep".as_slice(), 25),
+    ] {
+        state
+            .put_contract_storage(&program, key, &value.to_le_bytes())
+            .expect("put Compute Market u64 state");
+    }
+    for (key, value) in [
+        (b"cm_token_address".as_slice(), token.0.as_slice()),
+        (b"cm_fee_treasury".as_slice(), admin.0.as_slice()),
+        (b"identity_admin".as_slice(), admin.0.as_slice()),
+        (b"lichenid_address".as_slice(), identity.0.as_slice()),
+    ] {
+        state
+            .put_contract_storage(&program, key, value)
+            .expect("put Compute Market address state");
+    }
+    state
+        .put_contract_storage(&program, b"cm_account_mig_lock", &[0])
+        .expect("put Compute Market migration lock");
+    state
+        .put_contract_storage(&program, b"cm_paused", &[0])
+        .expect("put Compute Market pause state");
+    let mut fee_key = b"platform_fee:".to_vec();
+    fee_key.extend_from_slice(&token.0);
+    state
+        .put_contract_storage(&program, &fee_key, &10u64.to_le_bytes())
+        .expect("put Compute Market platform fees");
+    state
+        .update_token_balance(&token, &program, 130)
+        .expect("put Compute Market custody balance");
+    put_ready_tip(&state, 1);
+    let _ = Box::leak(Box::new(dir));
+    build_rpc_router(
+        state,
+        None,
+        None,
+        None,
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+fn app_with_lichenmarket_stats() -> axum::Router {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let program = Pubkey([0x60; 32]);
+    let token = Pubkey([0x61; 32]);
+    state
+        .register_symbol(
+            "MARKET",
+            SymbolRegistryEntry {
+                symbol: String::new(),
+                program,
+                owner: Pubkey([0x62; 32]),
+                name: Some("LichenMarket".to_string()),
+                template: None,
+                metadata: None,
+                decimals: None,
+            },
+        )
+        .expect("register LichenMarket symbol");
+    for (key, value) in [
+        (b"mm_listing_count".as_slice(), 7u64),
+        (b"mm_sale_count".as_slice(), 3),
+        (b"mm_native_sale_volume".as_slice(), 100),
+        (b"mm_sale_volume".as_slice(), 999),
+        (b"mm_metrics_version".as_slice(), 3),
+        (b"mm_metrics_mig_expected".as_slice(), 2),
+        (b"mm_metrics_mig_rows".as_slice(), 2),
+    ] {
+        state
+            .put_contract_storage(&program, key, &value.to_le_bytes())
+            .expect("put LichenMarket stat");
+    }
+    for (prefix, value) in [
+        (b"mm_token_sale_count:".as_slice(), 2u64),
+        (b"mm_token_sale_volume:".as_slice(), 1_000),
+        (b"mm_token_sale_fees:".as_slice(), 25),
+        (b"mm_platform_fee:".as_slice(), 5),
+    ] {
+        let mut key = prefix.to_vec();
+        key.extend_from_slice(&token.0);
+        state
+            .put_contract_storage(&program, &key, &value.to_le_bytes())
+            .expect("put LichenMarket token stat");
+    }
+    state
+        .put_contract_storage(&program, b"mm_metrics_mig_lock", &[0])
+        .expect("put LichenMarket migration lock");
+    state
+        .put_contract_storage(&program, b"mm_paused", &[0])
+        .expect("put LichenMarket pause");
+    let collection = Pubkey([0x63; 32]);
+    let spoof_program = Pubkey([0x64; 32]);
+    let put_listing = |token_id: u64, seller: Pubkey, active: bool| {
+        let mut key = b"listing:".to_vec();
+        key.extend_from_slice(&collection.0);
+        key.push(b':');
+        key.extend_from_slice(&token_id.to_le_bytes());
+        let mut value = vec![0u8; 147];
+        value[..32].copy_from_slice(&seller.0);
+        value[32..64].copy_from_slice(&collection.0);
+        value[64..72].copy_from_slice(&token_id.to_le_bytes());
+        value[72..80].copy_from_slice(&(token_id * 100).to_le_bytes());
+        value[144] = u8::from(active);
+        state
+            .put_contract_storage(&program, &key, &value)
+            .expect("put LichenMarket listing");
+    };
+    // Historical activity says token #1 was listed, but canonical state says
+    // it is inactive. Token #3 is active even without an activity-index row.
+    put_listing(1, Pubkey([0x65; 32]), false);
+    put_listing(3, Pubkey([0x6B; 32]), true);
+    let mut listing_fee_key = b"mm_listing_fee:".to_vec();
+    listing_fee_key.extend_from_slice(&collection.0);
+    listing_fee_key.extend_from_slice(&3u64.to_le_bytes());
+    state
+        .put_contract_storage(&program, &listing_fee_key, &250u64.to_le_bytes())
+        .expect("put LichenMarket listing fee snapshot");
+    let mut listing_slot_key = b"mm_listing_slot:".to_vec();
+    listing_slot_key.extend_from_slice(&collection.0);
+    listing_slot_key.extend_from_slice(&3u64.to_le_bytes());
+    state
+        .put_contract_storage(&program, &listing_slot_key, &15u64.to_le_bytes())
+        .expect("put LichenMarket listing slot");
+    for (sequence, activity) in [
+        MarketActivity {
+            slot: 10,
+            timestamp: 1_700_000_010,
+            kind: MarketActivityKind::Listing,
+            program,
+            collection: Some(collection),
+            token: None,
+            token_id: Some(1),
+            price: Some(100),
+            seller: Some(Pubkey([0x65; 32])),
+            buyer: None,
+            function: "list_nft".to_string(),
+            tx_signature: Hash::hash(b"market-listing"),
+        },
+        MarketActivity {
+            slot: 11,
+            timestamp: 1_700_000_011,
+            kind: MarketActivityKind::Sale,
+            program,
+            collection: Some(collection),
+            token: None,
+            token_id: Some(1),
+            price: Some(100),
+            seller: Some(Pubkey([0x65; 32])),
+            buyer: Some(Pubkey([0x66; 32])),
+            function: "buy_nft".to_string(),
+            tx_signature: Hash::hash(b"market-sale"),
+        },
+        MarketActivity {
+            slot: 12,
+            timestamp: 1_700_000_012,
+            kind: MarketActivityKind::OfferAccepted,
+            program,
+            collection: Some(collection),
+            token: None,
+            token_id: Some(2),
+            price: Some(200),
+            seller: Some(Pubkey([0x67; 32])),
+            buyer: Some(Pubkey([0x68; 32])),
+            function: "accept_offer".to_string(),
+            tx_signature: Hash::hash(b"market-offer-sale"),
+        },
+        MarketActivity {
+            slot: 13,
+            timestamp: 1_700_000_013,
+            kind: MarketActivityKind::Listing,
+            program: spoof_program,
+            collection: Some(collection),
+            token: None,
+            token_id: Some(99),
+            price: Some(999_999),
+            seller: Some(Pubkey([0x69; 32])),
+            buyer: None,
+            function: "list_nft".to_string(),
+            tx_signature: Hash::hash(b"spoof-listing"),
+        },
+        MarketActivity {
+            slot: 14,
+            timestamp: 1_700_000_014,
+            kind: MarketActivityKind::Sale,
+            program: spoof_program,
+            collection: Some(collection),
+            token: None,
+            token_id: Some(99),
+            price: Some(999_999),
+            seller: Some(Pubkey([0x69; 32])),
+            buyer: Some(Pubkey([0x6A; 32])),
+            function: "buy_nft".to_string(),
+            tx_signature: Hash::hash(b"spoof-sale"),
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        state
+            .record_market_activity(&activity, sequence as u32)
+            .expect("record LichenMarket activity fixture");
+    }
     put_ready_tip(&state, 1);
     let _ = Box::leak(Box::new(dir));
     build_rpc_router(
@@ -849,6 +1371,21 @@ async fn test_native_get_validator_info() {
 }
 
 #[tokio::test]
+async fn test_native_get_validator_info_uses_committed_v2_commission_schedule() {
+    let (app, validator, _, _) = app_with_staking_v2_projection();
+    let resp = rpc_p(&app, "/", "getValidatorInfo", json!([validator]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+    assert_eq!(resp["result"]["commission_rate"], json!(500));
+    assert_eq!(resp["result"]["pending_commission_rate"], json!(600));
+    assert_eq!(
+        resp["result"]["pending_commission_activation_epoch"],
+        json!(2)
+    );
+}
+
+#[tokio::test]
 async fn test_native_get_validator_performance() {
     let app = fresh_app();
     let resp = rpc_p(
@@ -888,6 +1425,36 @@ async fn test_native_get_staking_status() {
 }
 
 #[tokio::test]
+async fn test_native_get_staking_status_includes_delegated_stake() {
+    let (app, validator, validator_total_stake, _) = app_with_native_staking_projection();
+    let resp = rpc_p(&app, "/", "getStakingStatus", json!([validator]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+    assert_eq!(resp["result"]["total_staked"], json!(validator_total_stake));
+}
+
+#[tokio::test]
+async fn test_native_get_staking_status_reports_v2_owned_delegation_and_budget() {
+    let (app, _, delegator, _) = app_with_staking_v2_projection();
+    let resp = rpc_p(&app, "/", "getStakingStatus", json!([delegator]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert_eq!(result["is_validator"], json!(false));
+    assert_eq!(result["staking_v2_active"], json!(true));
+    assert_eq!(
+        result["direct_delegated_stake"],
+        json!(25_000_000_000_000u64)
+    );
+    assert_eq!(result["owned_stake_total"], json!(25_000_000_000_000u64));
+    assert_eq!(result["direct_delegations"].as_array().unwrap().len(), 1);
+    assert!(result["active_epoch_security_budget"].as_u64().unwrap() > 0);
+    assert_eq!(result["target_bonded_ratio_bps"], json!(6_700));
+}
+
+#[tokio::test]
 async fn test_native_get_staking_rewards() {
     let app = fresh_app();
     let resp = rpc_p(
@@ -916,6 +1483,72 @@ async fn test_native_get_staking_rewards_reports_liquid_claims_separately() {
     assert_eq!(result["claimed_total_rewards"], json!(1_000_000_000));
     assert_eq!(result["total_debt_repaid"], json!(400_000_000));
     assert_eq!(result["total_rewards"], json!(1_200_000_000));
+}
+
+#[tokio::test]
+async fn test_native_get_staking_rewards_projects_native_epoch_share_only() {
+    let (app, validator, validator_total_stake, network_total_stake) =
+        app_with_native_staking_projection();
+    let resp = rpc_p(&app, "/", "getStakingRewards", json!([validator]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+
+    let current_slot =
+        lichen_core::consensus::SLOTS_PER_EPOCH + lichen_core::consensus::SLOTS_PER_EPOCH / 2;
+    let epoch_start = lichen_core::consensus::epoch_start_slot(
+        lichen_core::consensus::slot_to_epoch(current_slot),
+    );
+    let (native_epoch_mint, mossstake_epoch_mint) = lichen_core::consensus::split_epoch_mint(
+        epoch_start,
+        lichen_core::consensus::GENESIS_SUPPLY_SPORES,
+    );
+    let expected_epoch_reward = ((native_epoch_mint as u128 * validator_total_stake as u128)
+        / network_total_stake as u128) as u64;
+    let expected_pending = expected_epoch_reward / 2;
+
+    assert!(mossstake_epoch_mint > 0);
+    assert_eq!(
+        resp["result"]["projected_epoch_reward"],
+        json!(expected_epoch_reward)
+    );
+    assert_eq!(resp["result"]["projected_pending"], json!(expected_pending));
+}
+
+#[tokio::test]
+async fn test_native_get_staking_rewards_uses_dynamic_v2_operator_and_delegator_projection() {
+    let (app, validator, delegator, _) = app_with_staking_v2_projection();
+
+    let validator_resp = rpc_p(&app, "/", "getStakingRewards", json!([validator]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&validator_resp);
+    assert_eq!(
+        validator_resp["result"]["projection_model"],
+        json!("staking_v2_dynamic_security_budget")
+    );
+    assert!(
+        validator_resp["result"]["projected_epoch_reward"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0
+    );
+
+    let delegator_resp = rpc_p(&app, "/", "getStakingRewards", json!([delegator]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&delegator_resp);
+    assert_eq!(
+        delegator_resp["result"]["projection_model"],
+        json!("staking_v2_dynamic_security_budget")
+    );
+    assert!(
+        delegator_resp["result"]["projected_epoch_reward"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0,
+        "direct delegators must receive their own V2 projection"
+    );
 }
 
 #[tokio::test]
@@ -1040,6 +1673,76 @@ async fn test_native_get_reward_adjustment_info() {
     let app = fresh_app();
     let resp = rpc(&app, "/", "getRewardAdjustmentInfo").await.unwrap();
     assert_valid_rpc(&resp);
+}
+
+#[tokio::test]
+async fn test_native_get_reward_adjustment_info_redirects_inactive_mossstake_share() {
+    let app = fresh_app_with_min_validator_stake(75_000_000_000);
+    let resp = rpc(&app, "/", "getRewardAdjustmentInfo").await.unwrap();
+    assert_valid_rpc(&resp);
+    assert!(resp.get("error").is_none(), "unexpected RPC error: {resp}");
+    assert_eq!(
+        resp["result"]["validatorEpochMint"],
+        resp["result"]["epochMint"]
+    );
+    assert_eq!(resp["result"]["mossStakeEpochMint"], json!(0));
+}
+
+#[tokio::test]
+async fn test_native_get_reward_adjustment_info_reports_active_epoch_split() {
+    let (app, _, _, network_total_stake) = app_with_native_staking_projection();
+    let resp = rpc(&app, "/", "getRewardAdjustmentInfo").await.unwrap();
+    assert_valid_rpc(&resp);
+
+    let current_slot =
+        lichen_core::consensus::SLOTS_PER_EPOCH + lichen_core::consensus::SLOTS_PER_EPOCH / 2;
+    let epoch_start = lichen_core::consensus::epoch_start_slot(
+        lichen_core::consensus::slot_to_epoch(current_slot),
+    );
+    let (native_epoch_mint, mossstake_epoch_mint) = lichen_core::consensus::split_epoch_mint(
+        epoch_start,
+        lichen_core::consensus::GENESIS_SUPPLY_SPORES,
+    );
+    let epochs_per_year =
+        lichen_core::consensus::SLOTS_PER_YEAR / lichen_core::consensus::SLOTS_PER_EPOCH;
+    let expected_apy = format!(
+        "{:.2}",
+        (native_epoch_mint as f64 * epochs_per_year as f64 / network_total_stake as f64) * 100.0
+    );
+
+    assert_eq!(
+        resp["result"]["validatorEpochMint"],
+        json!(native_epoch_mint)
+    );
+    assert_eq!(
+        resp["result"]["mossStakeEpochMint"],
+        json!(mossstake_epoch_mint)
+    );
+    assert_eq!(resp["result"]["estimatedApy"], json!(expected_apy));
+}
+
+#[tokio::test]
+async fn test_native_get_reward_adjustment_info_reports_v2_dynamic_budget_conservation() {
+    let (app, _, _, _) = app_with_staking_v2_projection();
+    let resp = rpc(&app, "/", "getRewardAdjustmentInfo").await.unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+
+    assert_eq!(
+        result["rewardModel"],
+        json!("staking_v2_dynamic_security_budget")
+    );
+    let ceiling = result["epochInflationCeiling"].as_u64().unwrap();
+    let budget = result["securityBudget"].as_u64().unwrap();
+    let assigned = result["projectedAssignedMint"].as_u64().unwrap();
+    let validator = result["validatorEpochMint"].as_u64().unwrap();
+    let moss = result["mossStakeEpochMint"].as_u64().unwrap();
+    assert!(
+        budget < ceiling,
+        "low bonded participation must scale issuance"
+    );
+    assert_eq!(assigned, budget);
+    assert_eq!(validator + moss, assigned);
 }
 
 #[tokio::test]
@@ -1726,20 +2429,43 @@ async fn test_native_rpc_rejects_removed_parameter_aliases() {
 
 #[tokio::test]
 async fn test_native_get_market_listings() {
-    let app = fresh_app();
+    let app = app_with_lichenmarket_stats();
     let resp = rpc_p(&app, "/", "getMarketListings", json!([{}]))
         .await
         .unwrap();
     assert_valid_rpc(&resp);
+    assert_eq!(resp["result"]["count"], 1);
+    assert_eq!(resp["result"]["listings"][0]["token_id"], 3);
+    assert_eq!(resp["result"]["listings"][0]["active"], true);
+    assert_eq!(resp["result"]["listings"][0]["settlement_ready"], true);
+    assert_eq!(resp["result"]["listings"][0]["function"], "state");
 }
 
 #[tokio::test]
 async fn test_native_get_market_sales() {
-    let app = fresh_app();
+    let app = app_with_lichenmarket_stats();
     let resp = rpc_p(&app, "/", "getMarketSales", json!([{}]))
         .await
         .unwrap();
     assert_valid_rpc(&resp);
+    assert_eq!(resp["result"]["count"], 2);
+    assert_eq!(resp["result"]["sales"][0]["kind"], "offer_accepted");
+    assert_eq!(resp["result"]["sales"][1]["kind"], "sale");
+}
+
+#[tokio::test]
+async fn test_native_market_activity_excludes_legacy_spoof_rows() {
+    let app = app_with_lichenmarket_stats();
+    let resp = rpc_p(&app, "/", "getMarketActivity", json!([{}]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+    assert_eq!(resp["result"]["count"], 3);
+    assert!(resp["result"]["activity"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|item| item["token_id"] != 99));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1960,30 +2686,118 @@ async fn test_native_get_dex_governance_stats() {
 
 #[tokio::test]
 async fn test_native_get_thalllend_stats() {
-    let app = fresh_app();
+    let app = app_with_thalllend_stats();
     let resp = rpc(&app, "/", "getThallLendStats").await.unwrap();
     assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert_eq!(result["total_deposits"], 5_000);
+    assert_eq!(result["total_borrows"], 2_000);
+    assert_eq!(result["available_liquidity"], 3_000);
+    assert_eq!(result["utilization_pct"], 40);
+    assert_eq!(result["reserves"], 150);
+    assert_eq!(result["repay_count"], 3);
+    assert_eq!(result["deposit_cap"], 10_000);
+    assert_eq!(result["reserve_factor_pct"], 10);
+    assert_eq!(result["licn_configured"], true);
+    assert_eq!(result["native_licn"], true);
+    assert_eq!(result["oracle_config_present"], true);
+    assert_eq!(result["oracle_config_valid"], true);
+    assert_eq!(result["paused"], false);
+}
+
+#[tokio::test]
+async fn test_native_get_sporevault_stats() {
+    let app = app_with_sporevault_stats();
+    let resp = rpc(&app, "/", "getSporeVaultStats").await.unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert_eq!(result["total_assets"], 10_000);
+    assert_eq!(result["idle_assets"], 4_000);
+    assert_eq!(result["lending_assets"], 6_000);
+    assert_eq!(result["active_lending_strategies"], 1);
+    assert_eq!(result["lending_strategy_rows"], 1);
+    assert_eq!(result["strategy_registry_valid"], true);
+    assert_eq!(result["total_strategy_allocation"], 33);
+    assert_eq!(result["accounting_version"], 2);
+    assert_eq!(result["deposit_fee_bps"], 10);
+    assert_eq!(result["withdrawal_fee_bps"], 30);
+    assert_eq!(result["native_licn"], true);
+    assert_eq!(result["thalllend_config_valid"], true);
+    assert_eq!(result["components_match_total"], true);
+    assert_eq!(result["real_liquid_custody"], 4_250);
+    assert_eq!(result["liquid_custody_covers_accounting"], true);
+    assert_eq!(result["operational"], true);
 }
 
 #[tokio::test]
 async fn test_native_get_sporepay_stats() {
-    let app = fresh_app();
+    let app = app_with_sporepay_stats();
     let resp = rpc(&app, "/", "getSporePayStats").await.unwrap();
     assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert_eq!(result["stream_count"], 5);
+    assert_eq!(result["total_streamed"], 10_000);
+    assert_eq!(result["total_withdrawn"], 3_000);
+    assert_eq!(result["cancel_count"], 1);
+    assert_eq!(result["escrow_liability"], 7_000);
+    assert_eq!(result["unpaid_liability"], 77);
+    assert_eq!(result["accounting_version"], 3);
+    assert_eq!(result["migration_locked"], true);
+    assert_eq!(result["migration_expected_streams"], 5);
+    assert_eq!(result["migration_cursor"], 4);
+    assert_eq!(result["paused"], true);
 }
 
 #[tokio::test]
 async fn test_native_get_bountyboard_stats() {
-    let app = fresh_app();
+    let app = app_with_bountyboard_stats();
     let resp = rpc(&app, "/", "getBountyBoardStats").await.unwrap();
     assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert_eq!(result["bounty_count"], 2);
+    assert_eq!(result["bounty_count_exact"], "2");
+    assert_eq!(result["completed_count"], 1);
+    assert_eq!(result["payment_token"], Pubkey([0u8; 32]).to_base58());
+    assert_eq!(result["native_licn"], true);
+    assert_eq!(result["token_config_valid"], true);
+    assert_eq!(result["fee_config_valid"], true);
+    assert_eq!(result["identity_gate_enabled"], true);
+    assert_eq!(result["identity_config_valid"], true);
+    assert_eq!(result["pending_admin"], Pubkey([0x4a; 32]).to_base58());
+    assert_eq!(result["admin_transition_valid"], true);
+    assert_eq!(result["accounting_version"], 2);
+    assert_eq!(result["escrow_liability"], 100);
+    assert_eq!(result["platform_fees"], 10);
+    assert_eq!(result["total_liability"], 110);
+    assert_eq!(result["total_liability_raw_exact"], "110");
+    assert_eq!(result["custody_balance"], 110);
+    assert_eq!(result["custody_balance_raw_exact"], "110");
+    assert_eq!(result["accounting_ready"], true);
+    assert_eq!(result["solvent"], true);
+    assert_eq!(result["paused"], false);
 }
 
 #[tokio::test]
 async fn test_native_get_compute_market_stats() {
-    let app = fresh_app();
+    let app = app_with_compute_market_stats();
     let resp = rpc(&app, "/", "getComputeMarketStats").await.unwrap();
     assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert_eq!(result["job_count"], 2);
+    assert_eq!(result["payment_token"], Pubkey([0x44; 32]).to_base58());
+    assert_eq!(result["token_config_valid"], true);
+    assert_eq!(result["identity_gate_enabled"], true);
+    assert_eq!(result["identity_config_valid"], true);
+    assert_eq!(result["accounting_version"], 3);
+    assert_eq!(result["escrow_liability"], 100);
+    assert_eq!(result["unpaid_liability"], 20);
+    assert_eq!(result["platform_fees"], 10);
+    assert_eq!(result["total_liability"], 130);
+    assert_eq!(result["custody_balance"], 130);
+    assert_eq!(result["accounting_ready"], true);
+    assert_eq!(result["solvent"], true);
+    assert_eq!(result["paused"], false);
+    assert_eq!(result["agent_blocked_payment_count_supported"], false);
 }
 
 #[tokio::test]
@@ -1995,9 +2809,53 @@ async fn test_native_get_moss_storage_stats() {
 
 #[tokio::test]
 async fn test_native_get_lichenmarket_stats() {
-    let app = fresh_app();
+    let app = app_with_lichenmarket_stats();
     let resp = rpc(&app, "/", "getLichenMarketStats").await.unwrap();
     assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert_eq!(result["listing_count"], 7);
+    assert_eq!(result["sale_count"], 3);
+    assert_eq!(result["native_sale_volume"], 100);
+    assert_eq!(result["native_sale_volume_raw_exact"], "100");
+    assert_eq!(result["legacy_mixed_sale_volume"], 999);
+    assert_eq!(result["legacy_mixed_sale_volume_raw_exact"], "999");
+    assert_eq!(result["metrics_version"], 3);
+    assert_eq!(result["accounting_ready"], true);
+    assert_eq!(result["paused"], false);
+}
+
+#[tokio::test]
+async fn test_native_get_lichenmarket_token_stats() {
+    let app = app_with_lichenmarket_stats();
+    let token = Pubkey([0x61; 32]).to_base58();
+    let resp = rpc_p(
+        &app,
+        "/",
+        "getLichenMarketTokenStats",
+        json!([token.clone()]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert_eq!(result["payment_token"], token);
+    assert_eq!(result["sale_count"], 2);
+    assert_eq!(result["sale_volume"], 1_000);
+    assert_eq!(result["sale_volume_raw_exact"], "1000");
+    assert_eq!(result["realized_fees"], 25);
+    assert_eq!(result["realized_fees_raw_exact"], "25");
+    assert_eq!(result["withdrawable_fees"], 5);
+    assert_eq!(result["withdrawable_fees_raw_exact"], "5");
+
+    let invalid = rpc_p(
+        &app,
+        "/",
+        "getLichenMarketTokenStats",
+        json!(["not-a-pubkey"]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(invalid["error"]["code"], -32602);
 }
 
 #[tokio::test]
@@ -2539,8 +3397,31 @@ async fn test_rest_dex_governance_proposals() {
 #[tokio::test]
 async fn test_rest_dex_margin_info() {
     let app = fresh_app();
-    let resp = rest_get(&app, "/api/v1/margin/info").await;
-    assert!(resp.is_ok() || resp.is_err());
+    let body = rest_get(&app, "/api/v1/margin/info")
+        .await
+        .expect("margin info response");
+    assert_eq!(body["data"]["paused"], false);
+    assert_eq!(body["data"]["migrationLocked"], false);
+    assert_eq!(body["data"]["fundingV2Enabled"], false);
+    assert_eq!(body["data"]["fundingMigratedOpenCount"], 0);
+    assert_eq!(body["data"]["fundingMigrationFinalized"], false);
+    assert_eq!(body["data"]["crossV2Enabled"], false);
+    assert_eq!(body["data"]["crossMigratedOpenCount"], 0);
+    assert_eq!(body["data"]["crossMigrationFinalized"], false);
+    assert_eq!(body["data"]["totalCollateralEscrowed"], 0);
+}
+
+#[tokio::test]
+async fn test_rest_dex_cross_margin_account() {
+    let app = fresh_app();
+    let trader = "11".repeat(32);
+    let body = rest_get(&app, &format!("/api/v1/margin/cross-account/{trader}"))
+        .await
+        .expect("cross margin account response");
+    assert_eq!(body["data"]["trader"], trader);
+    assert_eq!(body["data"]["enabled"], false);
+    assert_eq!(body["data"]["status"], "inactive");
+    assert_eq!(body["data"]["activePositionCount"], 0);
 }
 
 #[tokio::test]
@@ -2565,6 +3446,10 @@ async fn test_rest_dex_oracle_prices() {
     assert_eq!(licn_feed["decimals"], 8u64);
     assert_eq!(licn_feed["slot"], 95u64);
     assert_eq!(licn_feed["stale"], false);
+    assert_eq!(licn_feed["status"], "fresh");
+    assert_eq!(body["data"]["oracleActive"], false);
+    assert_eq!(body["data"]["freshFeeds"], 2u64);
+    assert_eq!(body["data"]["requiredFeeds"], 4u64);
 }
 
 #[tokio::test]
@@ -2577,6 +3462,10 @@ async fn test_native_get_oracle_prices_uses_consensus_oracle() {
     assert_eq!(result["source"], json!("native_consensus"));
     assert_eq!(result["LICN"], json!(0.125));
     assert_eq!(result["wSOL"], json!(148.75));
+    assert_eq!(result["wETH"], serde_json::Value::Null);
+    assert_eq!(result["operational"], json!(false));
+    assert_eq!(result["freshFeeds"], json!(2));
+    assert_eq!(result["requiredFeeds"], json!(4));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2924,6 +3813,150 @@ fn app_with_bootstrap_staking_rewards() -> (axum::Router, String) {
     (app, validator_b58)
 }
 
+fn app_with_native_staking_projection() -> (axum::Router, String, u64, u64) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let current_slot =
+        lichen_core::consensus::SLOTS_PER_EPOCH + lichen_core::consensus::SLOTS_PER_EPOCH / 2;
+    put_ready_tip(&state, current_slot);
+    let _ = Box::leak(Box::new(dir));
+
+    let validator = Pubkey([0x31u8; 32]);
+    let other_validator = Pubkey([0x32u8; 32]);
+    let delegator = Pubkey([0x33u8; 32]);
+    let principal = 100_000_000_000_000u64;
+    let delegated = 25_000_000_000_000u64;
+
+    let mut stake_pool = StakePool::new();
+    stake_pool
+        .stake(validator, principal, 0)
+        .expect("stake validator");
+    stake_pool
+        .stake(other_validator, principal, 0)
+        .expect("stake other validator");
+    stake_pool
+        .delegate(delegator, &validator, delegated)
+        .expect("delegate to validator");
+
+    let mut validator_info = ValidatorInfo::new(validator, 0);
+    validator_info.stake = principal;
+    state
+        .put_validator(&validator_info)
+        .expect("put validator info");
+    let mut other_validator_info = ValidatorInfo::new(other_validator, 0);
+    other_validator_info.stake = principal;
+    state
+        .put_validator(&other_validator_info)
+        .expect("put other validator info");
+    let validator_total_stake = principal + delegated;
+    let network_total_stake = principal + principal + delegated;
+    assert_eq!(stake_pool.total_stake(), network_total_stake);
+
+    let mut moss_pool = MossStakePool::new();
+    moss_pool
+        .stake(Pubkey([0x34u8; 32]), 1_000_000_000, current_slot)
+        .expect("activate MossStake pool");
+    state
+        .put_mossstake_pool(&moss_pool)
+        .expect("put MossStake pool");
+
+    let app = build_rpc_router(
+        state,
+        None,
+        Some(Arc::new(RwLock::new(stake_pool))),
+        None,
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+    );
+
+    (
+        app,
+        validator.to_base58(),
+        validator_total_stake,
+        network_total_stake,
+    )
+}
+
+fn app_with_staking_v2_projection() -> (axum::Router, String, String, String) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let current_slot = lichen_core::SLOTS_PER_EPOCH / 2;
+    put_ready_tip(&state, current_slot);
+    let _ = Box::leak(Box::new(dir));
+
+    let validator = Pubkey([0x51u8; 32]);
+    let other_validator = Pubkey([0x52u8; 32]);
+    let delegator = Pubkey([0x53u8; 32]);
+    let moss_owner = Pubkey([0x54u8; 32]);
+    let principal = 100_000_000_000_000u64;
+    let delegated = 25_000_000_000_000u64;
+    let moss_backing = 50_000_000_000_000u64;
+
+    let mut stake_pool = StakePool::new();
+    stake_pool
+        .stake(validator, principal, 0)
+        .expect("stake validator");
+    stake_pool
+        .stake(other_validator, principal, 0)
+        .expect("stake other validator");
+    stake_pool
+        .delegate(delegator, &validator, delegated)
+        .expect("direct delegation");
+    stake_pool
+        .initialize_staking_v2(0, &[validator, other_validator])
+        .expect("initialize V2");
+    stake_pool
+        .rebalance_mossstake_allocations(moss_backing, &[validator, other_validator], 0)
+        .expect("allocate MossStake backing");
+    stake_pool
+        .request_staking_v2_commission_change(&validator, 600)
+        .expect("queue delayed commission");
+
+    let mut validator_info = ValidatorInfo::new(validator, 0);
+    validator_info.stake = principal;
+    validator_info.commission_rate = 999;
+    state
+        .put_validator(&validator_info)
+        .expect("put validator info");
+    let mut other_validator_info = ValidatorInfo::new(other_validator, 0);
+    other_validator_info.stake = principal;
+    state
+        .put_validator(&other_validator_info)
+        .expect("put other validator info");
+
+    let mut moss_pool = MossStakePool::new();
+    moss_pool
+        .stake_with_tier(moss_owner, moss_backing, 0, LockTier::Lock365)
+        .expect("stake into MossStake");
+    state
+        .put_mossstake_pool(&moss_pool)
+        .expect("put MossStake pool");
+
+    let app = build_rpc_router(
+        state,
+        None,
+        Some(Arc::new(RwLock::new(stake_pool))),
+        None,
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+    );
+
+    (
+        app,
+        validator.to_base58(),
+        delegator.to_base58(),
+        moss_owner.to_base58(),
+    )
+}
+
 fn app_with_mossstake_pool(licn_staked: u64) -> (axum::Router, MossStakePool) {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = StateStore::open(dir.path()).expect("state");
@@ -2969,7 +4002,7 @@ fn app_with_weighted_mossstake_pool() -> (axum::Router, String, String) {
     moss_pool
         .stake_with_tier(locked, 1_000, 0, LockTier::Lock30)
         .expect("stake locked");
-    moss_pool.distribute_rewards(260);
+    moss_pool.distribute_rewards(260).unwrap();
     state
         .put_mossstake_pool(&moss_pool)
         .expect("put mossstake pool");
@@ -3759,14 +4792,21 @@ async fn test_native_get_mossstake_pool_info_uses_mossstake_reward_share_for_apy
     let apy = resp["result"]["average_apy_percent"]
         .as_f64()
         .expect("average apy percent");
-    let slots_per_day = lichen_core::consensus::SLOTS_PER_YEAR / 365;
-    let current_reward =
-        lichen_core::compute_block_reward(1, lichen_core::consensus::GENESIS_SUPPLY_SPORES);
-    let mossstake_reward = ((current_reward as u128
-        * lichen_core::MOSSSTAKE_BLOCK_SHARE_BPS as u128)
-        / 10_000u128) as u64;
-    let expected = pool.calculate_apy_bp(slots_per_day, mossstake_reward) as f64 / 100.0;
-    let full_reward_apy = pool.calculate_apy_bp(slots_per_day, current_reward) as f64 / 100.0;
+    let (_, mossstake_epoch_mint) =
+        lichen_core::consensus::split_epoch_mint(0, lichen_core::consensus::GENESIS_SUPPLY_SPORES);
+    let full_epoch_mint = lichen_core::consensus::compute_epoch_mint(
+        0,
+        lichen_core::consensus::GENESIS_SUPPLY_SPORES,
+    );
+    let epochs_per_year =
+        lichen_core::consensus::SLOTS_PER_YEAR / lichen_core::consensus::SLOTS_PER_EPOCH;
+    let annual_mossstake_rewards =
+        (mossstake_epoch_mint as u128).saturating_mul(epochs_per_year as u128);
+    let annual_full_rewards = (full_epoch_mint as u128).saturating_mul(epochs_per_year as u128);
+    let expected =
+        pool.calculate_apy_bp_from_annual_rewards(annual_mossstake_rewards) as f64 / 100.0;
+    let full_reward_apy =
+        pool.calculate_apy_bp_from_annual_rewards(annual_full_rewards) as f64 / 100.0;
 
     assert!(
         (apy - expected).abs() < 0.01,
@@ -3775,6 +4815,41 @@ async fn test_native_get_mossstake_pool_info_uses_mossstake_reward_share_for_apy
     assert!(
         apy < full_reward_apy,
         "MossStake APY must not use the full validator reward pool"
+    );
+}
+
+#[tokio::test]
+async fn test_native_get_mossstake_pool_info_reports_equal_v2_stlicn_yield() {
+    let (app, _, _, moss_owner) = app_with_staking_v2_projection();
+    let resp = rpc(&app, "/", "getMossStakePoolInfo").await.unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert_eq!(
+        result["reward_model"],
+        json!("staking_v2_equal_stlicn_dynamic_security_budget")
+    );
+    let tiers = result["tiers"].as_array().expect("tier array");
+    let first_apy = tiers[0]["apy_percent"].as_f64().unwrap();
+    for tier in tiers {
+        assert_eq!(tier["multiplier"], json!(1.0));
+        assert_eq!(tier["apy_percent"].as_f64().unwrap(), first_apy);
+    }
+    let v2 = &result["staking_v2"];
+    assert_eq!(v2["protocol_fee_bps"], json!(0));
+    assert_eq!(v2["underlying_allocations"].as_array().unwrap().len(), 2);
+    assert!(
+        v2["projected_epoch_gross_reward"].as_u64().unwrap()
+            >= v2["projected_epoch_net_reward"].as_u64().unwrap()
+    );
+
+    let position = rpc_p(&app, "/", "getStakingPosition", json!([moss_owner]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&position);
+    assert_eq!(position["result"]["reward_multiplier"], json!(1.0));
+    assert_eq!(
+        position["result"]["reward_model"],
+        json!("staking_v2_equal_stlicn")
     );
 }
 

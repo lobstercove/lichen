@@ -38,6 +38,7 @@ export PATH
 NETWORK=${1:-testnet}
 VALIDATOR_NUM=${2:-1}
 LOCAL_VALIDATOR_COUNT=${LICHEN_LOCAL_VALIDATOR_COUNT:-4}
+LOCAL_GENESIS_VALIDATOR_COUNT=${LICHEN_LOCAL_GENESIS_VALIDATOR_COUNT:-1}
 ORIG_ARGS=("$@")
 
 if [[ "$NETWORK" =~ ^[0-9]+$ ]]; then
@@ -71,6 +72,11 @@ if ! [[ "$VALIDATOR_NUM" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if ! [[ "$LOCAL_VALIDATOR_COUNT" =~ ^[1-9][0-9]*$ ]] || (( LOCAL_VALIDATOR_COUNT > 16 )); then
 	echo "LICHEN_LOCAL_VALIDATOR_COUNT must be an integer between 1 and 16"
+	exit 1
+fi
+if ! [[ "$LOCAL_GENESIS_VALIDATOR_COUNT" =~ ^[1-9][0-9]*$ ]] \
+	|| (( LOCAL_GENESIS_VALIDATOR_COUNT > LOCAL_VALIDATOR_COUNT )); then
+	echo "LICHEN_LOCAL_GENESIS_VALIDATOR_COUNT must be an integer between 1 and LICHEN_LOCAL_VALIDATOR_COUNT"
 	exit 1
 fi
 if (( VALIDATOR_NUM > LOCAL_VALIDATOR_COUNT )); then
@@ -275,13 +281,14 @@ except Exception:
 			--prepare-wallet --network "$NETWORK" --output-dir "$DB_PATH" || exit 1
 	fi
 
-	VALIDATOR_PUBKEY="${LOCAL_VALIDATOR_PUBKEYS[0]}"
 	GENESIS_ARGS=(
 		--network "$NETWORK"
 		--db-path "$DB_PATH"
 		--wallet-file "$GENESIS_WALLET_FILE"
-		--initial-validator "$VALIDATOR_PUBKEY"
 	)
+	for local_validator_index in $(seq 0 $((LOCAL_GENESIS_VALIDATOR_COUNT - 1))); do
+		GENESIS_ARGS+=(--initial-validator "${LOCAL_VALIDATOR_PUBKEYS[$local_validator_index]}")
+	done
 	if [[ -n "${LICHEN_LOCAL_SLOT_DURATION_MS:-}" ]]; then
 		GENESIS_ARGS+=(--local-slot-duration-ms "$LICHEN_LOCAL_SLOT_DURATION_MS")
 	fi
@@ -293,6 +300,25 @@ except Exception:
 	done
 
 	LICHEN_GENESIS_BIN="$GENESIS_BIN" "$GENESIS_WRAPPER" "${GENESIS_ARGS[@]}" || exit 1
+
+	# A multi-validator genesis quorum cannot fetch its authoritative config from
+	# RPC before that quorum has finalized height 1. Provision the public config
+	# created by V1 into the other predeclared genesis-validator directories while
+	# preserving independently owned keys, databases, WALs, and archive state.
+	for local_validator_num in $(seq 2 "$LOCAL_GENESIS_VALIDATOR_COUNT"); do
+		local_p2p_port=$((BASE_P2P + local_validator_num - 1))
+		local_state_dir="${REPO_ROOT}/data/state-${local_p2p_port}"
+		local_genesis_file="${local_state_dir}/genesis.json"
+		if [[ -f "$local_state_dir/CURRENT" ]]; then
+			if [[ ! -f "$local_genesis_file" ]] \
+				|| ! cmp -s "$DB_PATH/genesis.json" "$local_genesis_file"; then
+				echo "Refusing to replace V${local_validator_num} genesis config over existing local chain state" >&2
+				exit 1
+			fi
+			continue
+		fi
+		install -m 0644 "$DB_PATH/genesis.json" "$local_genesis_file" || exit 1
+	done
 }
 
 case $VALIDATOR_NUM in

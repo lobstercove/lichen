@@ -1,6 +1,12 @@
 use serde::Deserialize;
 
 #[derive(Deserialize)]
+pub struct StakingDelegation {
+    pub validator: String,
+    pub amount: u64,
+}
+
+#[derive(Deserialize)]
 pub struct StakingStatus {
     pub total_staked: u64,
     pub is_validator: bool,
@@ -13,6 +19,24 @@ pub struct StakingStatus {
     pub total_debt_repaid: u64,
     #[serde(default)]
     pub vesting_status: String,
+    #[serde(default)]
+    pub owned_stake_total: u64,
+    #[serde(default)]
+    pub self_bond: u64,
+    #[serde(default)]
+    pub incoming_delegated_stake: u64,
+    #[serde(default)]
+    pub direct_delegated_stake: u64,
+    #[serde(default)]
+    pub direct_delegations: Vec<StakingDelegation>,
+    #[serde(default)]
+    pub moss_value_licn: u64,
+    #[serde(default)]
+    pub pending_unstake_total: u64,
+    #[serde(default)]
+    pub staking_v2_active: bool,
+    #[serde(default)]
+    pub active_epoch_security_budget: u64,
 }
 
 #[derive(Deserialize)]

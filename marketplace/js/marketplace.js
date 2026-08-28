@@ -28,6 +28,7 @@
         uri = uri.trim();
         if (!uri) return gradientFromHash(seed || 'market');
         if (uri.indexOf('linear-gradient') === 0) return uri;
+        if (uri.indexOf('moss://') === 0 && typeof window.resolveMossUri === 'function') return window.resolveMossUri(uri);
         if (uri.indexOf('ipfs://') === 0) return 'https://ipfs.io/ipfs/' + uri.slice('ipfs://'.length);
         if (uri.indexOf('http://') === 0 || uri.indexOf('https://') === 0) return uri;
         return gradientFromHash(seed || 'market');

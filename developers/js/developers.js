@@ -432,10 +432,10 @@ const SEARCH_INDEX = [
     { title: 'subscribeSignatureStatus', desc: 'Track transaction confirmation status', url: 'ws-reference.html#subscribeSignatureStatus', category: 'API' },
 
     // Privacy & Identity
-    { title: 'ZK Privacy Guide', desc: 'Shielded transfers, notes, nullifiers, and privacy model', url: 'zk-privacy.html', category: 'Privacy' },
-    { title: 'Shielded Notes', desc: 'How encrypted notes and commitments are formed', url: 'zk-privacy.html#notes', category: 'Privacy' },
-    { title: 'Nullifiers', desc: 'Preventing double-spends in shielded pools', url: 'zk-privacy.html#nullifiers', category: 'Privacy' },
-    { title: 'Merkle Tree', desc: 'Merkle roots and path verification for private spends', url: 'zk-privacy.html#merkle', category: 'Privacy' },
+    { title: 'Shielded History and Transition', desc: 'Read-only scheme 0x01 history, disabled operations, and replacement requirements', url: 'zk-privacy.html', category: 'Privacy' },
+    { title: 'Historical Shielded Notes', desc: 'Legacy encrypted-note and commitment formats', url: 'zk-privacy.html#notes', category: 'Privacy' },
+    { title: 'Historical Nullifiers', desc: 'Read-only nullifier semantics for scheme 0x01', url: 'zk-privacy.html#nullifiers', category: 'Privacy' },
+    { title: 'Historical Merkle Tree', desc: 'Read-only roots and path verification for legacy entries', url: 'zk-privacy.html#merkle', category: 'Privacy' },
     { title: 'LichenID Trust Tiers', desc: 'Identity reputation tiers and network effects', url: 'lichenid.html#trust-tiers', category: 'Identity' },
     { title: 'LichenID Name Service', desc: 'Register and resolve .lichen names', url: 'lichenid.html#name-service', category: 'Identity' },
 

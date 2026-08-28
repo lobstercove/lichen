@@ -21,10 +21,12 @@ pub mod token;
 
 // Re-export modules
 pub use crosscall::{
-    balance_of_token_or_native, call_contract, call_nft_owner, call_nft_transfer,
-    call_token_balance, call_token_transfer, call_token_transfer_from, encode_layout_args,
-    is_native_token, native_balance_of, receive_token_or_native, transfer_native,
-    transfer_token_or_native, CrossCall, SYSTEM_PROGRAM,
+    balance_of_token_or_native, call_contract, call_native_nft_get_approved, call_native_nft_owner,
+    call_native_nft_royalty_info, call_native_nft_transfer_from, call_nft_owner,
+    call_nft_royalty_info, call_nft_transfer, call_nft_transfer_from, call_token_balance,
+    call_token_transfer, call_token_transfer_from, encode_layout_args, is_native_token,
+    native_balance_of, receive_token_or_native, transfer_native, transfer_token_or_native,
+    CrossCall, SYSTEM_PROGRAM,
 };
 pub use dex::Pool;
 pub use nft::NFT;

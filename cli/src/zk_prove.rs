@@ -1,8 +1,8 @@
 //! ZK Proof Generator CLI
 //!
-//! Generates native Plonky3 STARK proofs for shield, unshield, and transfer
-//! transactions.  Used by the E2E test suite (Python) to create valid
-//! proofs that the validator can verify.
+//! Legacy scheme-0x01 proof tooling retained for compatibility and test
+//! fixtures. Public commands fail closed before reading witness material while
+//! that unconstrained scheme is disabled by validators.
 //!
 //! Usage:
 //!   zk-prove shield   --amount <spores>
@@ -64,6 +64,17 @@ fn main() {
         "reserve-liability" => cmd_reserve_liability(&args),
         "verify-reserve-liability" => cmd_verify_reserve_liability(&args),
         _ => usage(),
+    }
+}
+
+fn require_proof_acceptance_or_exit(proof_type: &ProofType) {
+    if !lichen_core::zk::proof_acceptance_enabled(proof_type) {
+        eprintln!(
+            "error: {} proof tooling is unavailable: {}",
+            proof_type.as_str(),
+            lichen_core::zk::PROOF_SCHEME_ACCEPTANCE_DISABLED_REASON
+        );
+        process::exit(2);
     }
 }
 
@@ -129,6 +140,8 @@ fn sha256_tagged_bytes(tag: &str, fields: &[(&str, &[u8])]) -> [u8; 32] {
 }
 
 fn cmd_shield(args: &[String]) {
+    require_proof_acceptance_or_exit(&ProofType::Shield);
+
     let amount: u64 = find_arg(args, "--amount")
         .unwrap_or_else(|| {
             eprintln!("error: --amount is required");
@@ -180,6 +193,8 @@ fn cmd_shield(args: &[String]) {
 }
 
 fn cmd_unshield(args: &[String]) {
+    require_proof_acceptance_or_exit(&ProofType::Unshield);
+
     let amount: u64 = find_arg(args, "--amount")
         .unwrap_or_else(|| {
             eprintln!("error: --amount is required");
@@ -349,6 +364,8 @@ struct TransferOutput {
 }
 
 fn cmd_transfer(args: &[String]) {
+    require_proof_acceptance_or_exit(&ProofType::Transfer);
+
     let witness_file = find_arg(args, "--transfer-json").unwrap_or_else(|| {
         eprintln!("error: --transfer-json is required");
         process::exit(1);
@@ -438,7 +455,7 @@ fn cmd_transfer(args: &[String]) {
         output_serials[j] = random_scalar_bytes();
     }
 
-    // Value conservation check (client-side, circuit enforces this too)
+    // Legacy fixture sanity check only; disabled scheme 0x01 does not constrain this in the AIR.
     let total_in: u64 = input_values.iter().sum();
     let total_out: u64 = output_values.iter().sum();
     if total_in != total_out {
@@ -517,6 +534,8 @@ fn cmd_transfer(args: &[String]) {
 // ───────────────────────────── Reserve/Liability ─────────────────────────────
 
 fn cmd_reserve_liability(args: &[String]) {
+    require_proof_acceptance_or_exit(&ProofType::ReserveLiability);
+
     let lichen_network = required_arg_or_exit(args, "--lichen-network");
     let neo_network = required_arg_or_exit(args, "--neo-network");
     let neo_chain_id = required_arg_or_exit(args, "--neo-chain-id");
@@ -626,6 +645,8 @@ fn cmd_reserve_liability(args: &[String]) {
 }
 
 fn cmd_verify_reserve_liability(args: &[String]) {
+    require_proof_acceptance_or_exit(&ProofType::ReserveLiability);
+
     let proof_json_file = required_arg_or_exit(args, "--proof-json");
     let proof_json = fs::read_to_string(&proof_json_file).unwrap_or_else(|e| {
         eprintln!("error: failed to read {}: {}", proof_json_file, e);

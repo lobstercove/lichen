@@ -29,6 +29,7 @@ const LICHEN_CONFIG = (() => {
             label: 'Mainnet',
             rpc: 'https://rpc.lichen.network',
             ws: 'wss://rpc.lichen.network/ws',
+            moss: 'https://moss.lichen.network',
             slotDurationMs: 400,
             local: false,
         },
@@ -36,6 +37,7 @@ const LICHEN_CONFIG = (() => {
             label: 'Testnet',
             rpc: testnetRpc,
             ws: testnetWs,
+            moss: 'https://testnet-moss.lichen.network',
             slotDurationMs: 400,
             local: false,
         },
@@ -43,6 +45,7 @@ const LICHEN_CONFIG = (() => {
             label: 'Local Testnet',
             rpc: 'http://localhost:8899',
             ws: 'ws://localhost:8900',
+            moss: 'http://localhost:9120',
             slotDurationMs: 400,
             local: true,
         },
@@ -50,6 +53,7 @@ const LICHEN_CONFIG = (() => {
             label: 'Local Mainnet',
             rpc: 'http://localhost:9899',
             ws: 'ws://localhost:9900',
+            moss: 'http://localhost:9121',
             slotDurationMs: 400,
             local: true,
         },
@@ -157,6 +161,12 @@ const LICHEN_CONFIG = (() => {
     function ws(networkKey) {
         const key = resolveNetwork(networkKey || currentNetwork());
         return networks[key].ws;
+    }
+
+    /** Get the Moss content gateway URL for a given network (or current). */
+    function moss(networkKey) {
+        const key = resolveNetwork(networkKey || currentNetwork());
+        return networks[key].moss;
     }
 
     /** Read the current network from a given localStorage key, with fallback. */
@@ -493,6 +503,7 @@ const LICHEN_CONFIG = (() => {
         // Endpoints
         rpc,
         ws,
+        moss,
 
         // Network selection
         currentNetwork,

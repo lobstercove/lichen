@@ -251,7 +251,11 @@ function contractIx(callerAddr, contractAddr, argsBytes) {
 
 // Named-export ABI (SporePump uses named WASM exports)
 function namedCallIx(callerAddr, contractAddr, funcName, argsBytes, value = 0) {
-    const data = JSON.stringify({ Call: { function: funcName, args: Array.from(argsBytes), value } });
+    const normalizedValue = typeof value === 'bigint' ? Number(value) : value;
+    if (!Number.isSafeInteger(normalizedValue) || normalizedValue < 0) {
+        throw new Error('contract call value exceeds the exact JSON integer range');
+    }
+    const data = JSON.stringify({ Call: { function: funcName, args: Array.from(argsBytes), value: normalizedValue } });
     return { program_id: CONTRACT_PID, accounts: [callerAddr, contractAddr], data };
 }
 
@@ -271,7 +275,11 @@ function deployContractIx(deployerAddr, contractAddr, wasm, abi) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // Binary encoding helpers
 // ═══════════════════════════════════════════════════════════════════════════════
-function writeU64LE(view, off, n) { view.setBigUint64(off, BigInt(Math.round(n)), true); }
+function writeU64LE(view, off, n) {
+    const value = typeof n === 'bigint' ? n : BigInt(Math.round(n));
+    if (value < 0n || value > 0xffffffffffffffffn) throw new Error('u64 argument out of range');
+    view.setBigUint64(off, value, true);
+}
 function writeI16LE(view, off, n) { view.setInt16(off, n, true); }
 function writeU16LE(view, off, n) { view.setUint16(off, n, true); }
 function writeU8(arr, off, n) { arr[off] = n & 0xFF; }
@@ -319,21 +327,28 @@ function buildCreateTokenWithMetadata(creatorAddr, name, symbol) {
 }
 
 // buy(buyer_addr[32] + token_id[u64] + licn_amount[u64]) → returns tokens_received
-function buildBuy(buyerAddr, tokenId, licnAmount) {
-    const buf = new ArrayBuffer(48); const v = new DataView(buf); const a = new Uint8Array(buf);
+function buildBuy(buyerAddr, tokenId, licnAmount, minimumTokensOut = 0n) {
+    const buf = new ArrayBuffer(56); const v = new DataView(buf); const a = new Uint8Array(buf);
     writePubkey(a, 0, buyerAddr);
     writeU64LE(v, 32, tokenId);
     writeU64LE(v, 40, licnAmount);
+    writeU64LE(v, 48, minimumTokensOut);
     return a;
 }
 
 // sell(seller_addr[32] + token_id[u64] + token_amount[u64]) → returns licn_refund
-function buildSell(sellerAddr, tokenId, tokenAmount) {
-    const buf = new ArrayBuffer(48); const v = new DataView(buf); const a = new Uint8Array(buf);
+function buildSell(sellerAddr, tokenId, tokenAmount, minimumLicnOut = 0n) {
+    const buf = new ArrayBuffer(56); const v = new DataView(buf); const a = new Uint8Array(buf);
     writePubkey(a, 0, sellerAddr);
     writeU64LE(v, 32, tokenId);
     writeU64LE(v, 40, tokenAmount);
+    writeU64LE(v, 48, minimumLicnOut);
     return a;
+}
+
+function slippageFloor(rawAmount, basisPoints = 100n) {
+    const value = BigInt(rawAmount);
+    return value * (10_000n - basisPoints) / 10_000n;
 }
 
 // get_token_info(token_id[u64]) → return_data: 33 bytes
@@ -726,16 +741,22 @@ async function runTests() {
             const initialInfo = await rest(`/launchpad/tokens/${tokenId1}`);
             const initialPrice = Number(initialInfo?.data?.current_price || 0);
             const initialQuote = await rest(`/launchpad/tokens/${tokenId1}/quote?amount=5`);
-            const quotedAliceTokensRaw = Math.round(Number(initialQuote?.data?.tokens_received || 0) * SPORES_PER_LICN);
+            const quotedAliceTokensRaw = BigInt(initialQuote?.data?.tokens_received_raw || 0);
             const aliceHolderBefore = await rest(`/launchpad/tokens/${tokenId1}/holders?address=${alice.address}`);
-            const aliceTokensBefore = Number(aliceHolderBefore?.data?.balance_raw || 0);
-            assert(quotedAliceTokensRaw > 0, 'Alice 5 LICN buy quote returns tokens');
+            const aliceTokensBefore = BigInt(aliceHolderBefore?.data?.balance_raw_exact || aliceHolderBefore?.data?.balance_raw || 0);
+            assert(quotedAliceTokensRaw > 0n, 'Alice 5 LICN buy quote returns exact raw tokens');
 
             // Alice buys 5 LICN worth
             try {
                 const buyAmount1 = 5n * BigInt(SPORES_PER_LICN);
                 const result = await sendTx(alice, [
-                    namedCallIx(alice.address, CONTRACTS.sporepump, 'buy', buildBuy(alice.address, tokenId1, Number(buyAmount1)), Number(buyAmount1))
+                    namedCallIx(
+                        alice.address,
+                        CONTRACTS.sporepump,
+                        'buy_with_min_output',
+                        buildBuy(alice.address, tokenId1, buyAmount1, slippageFloor(quotedAliceTokensRaw)),
+                        buyAmount1,
+                    )
                 ]);
                 assert(!!result, `Alice bought tokens for 5 LICN`);
                 await sleep(2500);  // wait for buy cooldown (2s) + confirmation
@@ -746,8 +767,10 @@ async function runTests() {
             // Bob buys 10 LICN worth (price should be higher now)
             try {
                 const buyAmount2 = 10n * BigInt(SPORES_PER_LICN);
+                const quote = await rest(`/launchpad/tokens/${tokenId1}/quote?amount_raw=${buyAmount2}`);
+                const minimumOut = slippageFloor(BigInt(quote?.data?.tokens_received_raw || 0));
                 const result = await sendTx(bob, [
-                    namedCallIx(bob.address, CONTRACTS.sporepump, 'buy', buildBuy(bob.address, tokenId1, Number(buyAmount2)), Number(buyAmount2))
+                    namedCallIx(bob.address, CONTRACTS.sporepump, 'buy_with_min_output', buildBuy(bob.address, tokenId1, buyAmount2, minimumOut), buyAmount2)
                 ]);
                 assert(!!result, `Bob bought tokens for 10 LICN`);
                 await sleep(2500);
@@ -758,8 +781,10 @@ async function runTests() {
             // Charlie buys 3 LICN worth
             try {
                 const buyAmount3 = 3n * BigInt(SPORES_PER_LICN);
+                const quote = await rest(`/launchpad/tokens/${tokenId1}/quote?amount_raw=${buyAmount3}`);
+                const minimumOut = slippageFloor(BigInt(quote?.data?.tokens_received_raw || 0));
                 const result = await sendTx(charlie, [
-                    namedCallIx(charlie.address, CONTRACTS.sporepump, 'buy', buildBuy(charlie.address, tokenId1, Number(buyAmount3)), Number(buyAmount3))
+                    namedCallIx(charlie.address, CONTRACTS.sporepump, 'buy_with_min_output', buildBuy(charlie.address, tokenId1, buyAmount3, minimumOut), buyAmount3)
                 ]);
                 assert(!!result, `Charlie bought tokens for 3 LICN`);
                 await sleep(2500);
@@ -776,10 +801,11 @@ async function runTests() {
             assert(Number(boughtInfo?.data?.current_price || 0) > initialPrice, 'Bonding-curve price increased after buys');
             for (const [label, wallet] of [['Alice', alice], ['Bob', bob], ['Charlie', charlie]]) {
                 const holder = await rest(`/launchpad/tokens/${tokenId1}/holders?address=${wallet.address}`);
-                assert(Number(holder?.data?.balance_raw || 0) > 0, `${label} launchpad token balance is indexed`);
+                const balanceRaw = BigInt(holder?.data?.balance_raw_exact || holder?.data?.balance_raw || 0);
+                assert(balanceRaw > 0n, `${label} launchpad token balance is indexed exactly`);
                 if (wallet.address === alice.address) {
                     assertEq(
-                        Number(holder.data.balance_raw) - aliceTokensBefore,
+                        balanceRaw - aliceTokensBefore,
                         quotedAliceTokensRaw,
                         'Alice received the exact quoted token amount',
                     );
@@ -808,16 +834,22 @@ async function runTests() {
             try {
                 await sleep(5500);  // wait for sell cooldown (5s)
                 const holderBefore = await rest(`/launchpad/tokens/${tokenId1}/holders?address=${alice.address}`);
-                const balanceBefore = Number(holderBefore?.data?.balance_raw || 0);
+                const balanceBefore = BigInt(holderBefore?.data?.balance_raw_exact || holderBefore?.data?.balance_raw || 0);
                 const licnBefore = await getBalance(alice.address);
-                const sellAmount = Math.max(1, Math.floor(balanceBefore / 10));
+                const sellAmount = balanceBefore / 10n || 1n;
+                const quote = await rest(`/launchpad/tokens/${tokenId1}/sell-quote?amount_raw=${sellAmount}`);
+                const minimumOut = slippageFloor(BigInt(quote?.data?.licn_received_raw || 0));
                 const result = await sendTx(alice, [
-                    namedCallIx(alice.address, CONTRACTS.sporepump, 'sell', buildSell(alice.address, tokenId1, sellAmount))
+                    namedCallIx(alice.address, CONTRACTS.sporepump, 'sell_with_min_output', buildSell(alice.address, tokenId1, sellAmount, minimumOut))
                 ]);
-                assert(!!result, `Alice sold ${sellAmount.toLocaleString()} tokens`);
+                assert(!!result, `Alice sold ${sellAmount.toLocaleString()} raw token units`);
                 await sleep(2000);
                 const holderAfter = await rest(`/launchpad/tokens/${tokenId1}/holders?address=${alice.address}`);
-                assertEq(Number(holderAfter?.data?.balance_raw || 0), balanceBefore - sellAmount, 'Alice token balance decreased by sold amount');
+                assertEq(
+                    BigInt(holderAfter?.data?.balance_raw_exact || holderAfter?.data?.balance_raw || 0),
+                    balanceBefore - sellAmount,
+                    'Alice token balance decreased by sold amount',
+                );
                 assert((await getBalance(alice.address)) > licnBefore, 'Alice received LICN sale proceeds');
             } catch (e) {
                 assert(false, `Alice sell failed: ${e.message}`);
@@ -826,11 +858,13 @@ async function runTests() {
             // Bob tries to sell immediately (should hit cooldown or work if enough time passed)
             try {
                 await sleep(5500);
-                const sellAmount = 500_000;
+                const sellAmount = 500_000n;
+                const quote = await rest(`/launchpad/tokens/${tokenId1}/sell-quote?amount_raw=${sellAmount}`);
+                const minimumOut = slippageFloor(BigInt(quote?.data?.licn_received_raw || 0));
                 const result = await sendTx(bob, [
-                    namedCallIx(bob.address, CONTRACTS.sporepump, 'sell', buildSell(bob.address, tokenId1, sellAmount))
+                    namedCallIx(bob.address, CONTRACTS.sporepump, 'sell_with_min_output', buildSell(bob.address, tokenId1, sellAmount, minimumOut))
                 ]);
-                assert(!!result, `Bob sold ${sellAmount.toLocaleString()} tokens`);
+                assert(!!result, `Bob sold ${sellAmount.toLocaleString()} raw token units`);
                 await sleep(2000);
             } catch (e) {
                 assert(false, `Bob sell failed: ${e.message}`);
@@ -856,8 +890,10 @@ async function runTests() {
 
             // Charlie buys token #2 to verify isolated curves
             const buyAmount = 2n * BigInt(SPORES_PER_LICN);
+            const quote = await rest(`/launchpad/tokens/${tokenId2}/quote?amount_raw=${buyAmount}`);
+            const minimumOut = slippageFloor(BigInt(quote?.data?.tokens_received_raw || 0));
             const buyResult = await sendTx(charlie, [
-                namedCallIx(charlie.address, CONTRACTS.sporepump, 'buy', buildBuy(charlie.address, tokenId2, Number(buyAmount)), Number(buyAmount))
+                namedCallIx(charlie.address, CONTRACTS.sporepump, 'buy_with_min_output', buildBuy(charlie.address, tokenId2, buyAmount, minimumOut), buyAmount)
             ]);
             assert(!!buyResult, 'Charlie bought Token #2 for 2 LICN');
             await sleep(2000);
@@ -889,7 +925,7 @@ async function runTests() {
         // 9a. Buy with 0 amount (must reject, no accepted no-op)
         try {
             const sim = await simulateTx(dave, [
-                namedCallIx(dave.address, CONTRACTS.sporepump, 'buy', buildBuy(dave.address, tokenId1, 0), 0)
+                namedCallIx(dave.address, CONTRACTS.sporepump, 'buy_with_min_output', buildBuy(dave.address, tokenId1, 0n, 0n), 0)
             ]);
             assertSimulationRejected(sim, 'Zero-amount buy rejected at preflight');
         } catch (e) {
@@ -898,7 +934,13 @@ async function runTests() {
 
         // 9b. Buy non-existent token (id=999) must reject so native LICN value is not accepted.
         const daveBalanceBefore = await getBalance(dave.address);
-        const invalidBuyIx = namedCallIx(dave.address, CONTRACTS.sporepump, 'buy', buildBuy(dave.address, 999, SPORES_PER_LICN), SPORES_PER_LICN);
+        const invalidBuyIx = namedCallIx(
+            dave.address,
+            CONTRACTS.sporepump,
+            'buy_with_min_output',
+            buildBuy(dave.address, 999, BigInt(SPORES_PER_LICN), 1n),
+            SPORES_PER_LICN,
+        );
         const invalidBuySimulation = await simulateTx(dave, [invalidBuyIx]);
         assertSimulationRejected(invalidBuySimulation, 'Buy non-existent token rejected at preflight');
         try {
@@ -914,7 +956,7 @@ async function runTests() {
         try {
             await sleep(5500);
             const sim = await simulateTx(dave, [
-                namedCallIx(dave.address, CONTRACTS.sporepump, 'sell', buildSell(dave.address, tokenId1, 999_999_999_999))
+                namedCallIx(dave.address, CONTRACTS.sporepump, 'sell_with_min_output', buildSell(dave.address, tokenId1, 999_999_999_999n, 1n))
             ]);
             assertSimulationRejected(sim, 'Sell more than owned rejected at preflight');
         } catch (e) {
@@ -1160,13 +1202,15 @@ async function runTests() {
         assertEq(launch?.name, graduationName, 'Graduation token name is replicated');
         assertEq(launch?.symbol, graduationSymbol, 'Graduation token symbol is replicated');
 
-        const thresholdBuy = 60_000 * SPORES_PER_LICN;
+        const thresholdBuy = 60_000n * BigInt(SPORES_PER_LICN);
+        const thresholdQuote = await rest(`/launchpad/tokens/${graduationTokenId}/quote?amount_raw=${thresholdBuy}`);
+        const thresholdMinimum = slippageFloor(BigInt(thresholdQuote?.data?.tokens_received_raw || 0));
         await sendTx(alice, [
             namedCallIx(
                 alice.address,
                 CONTRACTS.sporepump,
-                'buy',
-                buildBuy(alice.address, graduationTokenId, thresholdBuy),
+                'buy_with_min_output',
+                buildBuy(alice.address, graduationTokenId, thresholdBuy, thresholdMinimum),
                 thresholdBuy,
             ),
         ]);
@@ -1182,8 +1226,8 @@ async function runTests() {
             await simulateTx(alice, [namedCallIx(
                 alice.address,
                 CONTRACTS.sporepump,
-                'buy',
-                buildBuy(alice.address, graduationTokenId, SPORES_PER_LICN),
+                'buy_with_min_output',
+                buildBuy(alice.address, graduationTokenId, BigInt(SPORES_PER_LICN), 1n),
                 SPORES_PER_LICN,
             )]),
             'Eligible launch rejects further curve buys',
@@ -1193,8 +1237,8 @@ async function runTests() {
         const templateAbi = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'contracts', 'launchpad_token', 'abi.json'), 'utf8'));
         const candidate = genKeypair().address;
         await sendTx(alice, [deployContractIx(alice.address, candidate, templateWasm, templateAbi)]);
-        const obligations = BigInt(eligible.data.supply_sold_raw);
-        const maxSupply = BigInt(eligible.data.max_supply_raw);
+        const obligations = BigInt(eligible.data.supply_sold_raw_exact || eligible.data.supply_sold_raw);
+        const maxSupply = BigInt(eligible.data.max_supply_raw_exact || eligible.data.max_supply_raw);
         await sendTx(alice, [namedCallIx(
             alice.address,
             candidate,
@@ -1262,7 +1306,7 @@ async function runTests() {
         assert((poolsNow?.data || []).some((pool) => Number(pool.poolId) === Number(token.pool_id)), 'Graduated AMM pool is publicly indexed');
 
         const launchBalance = await rest(`/launchpad/tokens/${graduationTokenId}/holders?address=${alice.address}`);
-        const claimAmount = BigInt(launchBalance?.data?.claimable_raw || 0);
+        const claimAmount = BigInt(launchBalance?.data?.claimable_raw_exact || launchBalance?.data?.claimable_raw || 0);
         assert(claimAmount > 0n, 'Alice has a public frozen claim amount');
         await sendTx(alice, [namedCallIx(alice.address, candidate, 'claim', bs58decode(alice.address))]);
         const claimedHolder = await rest(`/launchpad/tokens/${graduationTokenId}/holders?address=${alice.address}`);

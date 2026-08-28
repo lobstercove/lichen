@@ -5,6 +5,7 @@
     'use strict';
 
     var collectionNameCache = {};
+    var metadataImageCache = {};
     var SPORES_PER_LICN = 1000000000;
     var marketTrustedRpcCall = window.marketTrustedRpcCall || function (method, params) {
         return trustedLichenRpcCall(
@@ -72,6 +73,71 @@
         return response[field];
     }
 
+    function contentUrl(uri) {
+        var value = String(uri || '').trim();
+        if (value.indexOf('moss://') === 0 && typeof window.resolveMossUri === 'function') {
+            return window.resolveMossUri(value);
+        }
+        if (value.indexOf('ipfs://') === 0) {
+            return 'https://ipfs.io/ipfs/' + value.slice('ipfs://'.length);
+        }
+        if (value.indexOf('https://') === 0 || value.indexOf('http://') === 0) return value;
+        return '';
+    }
+
+    async function resolveMetadataImage(metadataUri, fallback) {
+        var uri = String(metadataUri || '').trim();
+        if (!uri) return fallback;
+        if (metadataImageCache[uri]) return metadataImageCache[uri];
+        var url = contentUrl(uri);
+        if (!url) return fallback;
+        try {
+            var response = await fetch(url, { method: 'GET', credentials: 'omit' });
+            if (!response.ok) throw new Error('metadata HTTP ' + response.status);
+            var declaredLength = Number(response.headers.get('content-length') || 0);
+            if (declaredLength > 1048576) throw new Error('metadata exceeds 1 MiB');
+            var text = await response.text();
+            if (text.length > 1048576) throw new Error('metadata exceeds 1 MiB');
+            var metadata = JSON.parse(text);
+            var image = contentUrl(metadata && (metadata.image || metadata.media_uri));
+            if (!image) throw new Error('metadata has no supported image URI');
+            metadataImageCache[uri] = image;
+            return image;
+        } catch (error) {
+            console.warn('marketplace-data: could not resolve NFT metadata:', error.message || error);
+            return fallback;
+        }
+    }
+
+    async function hydrateNftMetadata(nft) {
+        if (!nft || typeof nft !== 'object') return nft;
+        var hydrated = Object.assign({}, nft);
+        if (hydrated.metadata_uri) {
+            hydrated.image = await resolveMetadataImage(
+                hydrated.metadata_uri,
+                hydrated.image || gradientFromHash(hydrated.id || hydrated.token || 'nft')
+            );
+        }
+        return hydrated;
+    }
+
+    async function hydrateNftList(items) {
+        var output = new Array(items.length);
+        var cursor = 0;
+        var workers = [];
+        var workerCount = Math.min(8, items.length);
+        for (var worker = 0; worker < workerCount; worker++) {
+            workers.push((async function () {
+                while (cursor < items.length) {
+                    var index = cursor++;
+                    output[index] = await hydrateNftMetadata(items[index]);
+                }
+            })());
+        }
+        await Promise.all(workers);
+        return output;
+    }
+
     // ===== Collection Name Lookup =====
     async function getCollectionName(contractId) {
         if (!contractId) return 'Unknown';
@@ -128,6 +194,10 @@
             for (var i = 0; i < items.length; i++) {
                 var item = items[i];
                 var colName = await getCollectionName(item.collection || item.contract_id);
+                var fallbackImage = item.image || gradientFromHash(item.id || item.token || 'nft-' + i);
+                var resolvedImage = item.metadata_uri
+                    ? await resolveMetadataImage(item.metadata_uri, fallbackImage)
+                    : fallbackImage;
                 results.push({
                     id: item.id || item.token || '',
                     name: item.name || (item.token_id !== undefined ? '#' + item.token_id : 'NFT #' + (i + 1)),
@@ -135,7 +205,7 @@
                     collectionId: item.collection || item.contract_id || '',
                     creator: item.creator || item.owner || '-',
                     seller: item.seller || item.owner || '-',
-                    image: item.metadata_uri || item.image || gradientFromHash(item.id || item.token || 'nft-' + i),
+                    image: resolvedImage,
                     price: item.price_licn !== undefined ? formatLicnPrice(item.price_licn, true) : priceToLicn(item.price || 0),
                     rarity: item.rarity || null,
                     period: period || null,
@@ -191,11 +261,15 @@
             for (var i = 0; i < saleList.length; i++) {
                 var s = saleList[i];
                 var colName = await getCollectionName(s.collection || s.contract_id);
+                var saleFallbackImage = s.image || gradientFromHash(s.id || s.token || 'sale-' + i);
+                var saleResolvedImage = s.metadata_uri
+                    ? await resolveMetadataImage(s.metadata_uri, saleFallbackImage)
+                    : saleFallbackImage;
                 results.push({
                     id: s.id || s.token || '',
                     nft: s.name || (s.token_id !== undefined ? '#' + s.token_id : 'Sale #' + (i + 1)),
                     collection: colName,
-                    image: s.metadata_uri || s.image || gradientFromHash(s.id || s.token || 'sale-' + i),
+                    image: saleResolvedImage,
                     price: s.price_licn !== undefined ? formatLicnPrice(s.price_licn, true) : priceToLicn(s.price || 0),
                     from: s.seller || '-',
                     to: s.buyer || '-',
@@ -210,7 +284,7 @@
     }
 
     async function getStats() {
-        var stats = { totalNFTs: 0, totalCollections: 0, totalVolume: 0, totalCreators: 0 };
+        var stats = { totalNFTs: 0, totalCollections: 0, totalVolume: 0, totalCreators: 0, accountingReady: false };
         try {
             var metrics = await marketTrustedRpcCall('getMetrics', []);
             if (metrics) {
@@ -221,7 +295,10 @@
             var marketStats = await marketTrustedRpcCall('getLichenMarketStats', []);
             if (marketStats && typeof marketStats === 'object') {
                 stats.totalNFTs = Number(marketStats.listing_count || 0);
-                stats.totalVolume = Number(marketStats.sale_volume || 0) / SPORES_PER_LICN;
+                stats.accountingReady = marketStats.accounting_ready === true;
+                stats.totalVolume = stats.accountingReady
+                    ? Number(marketStats.native_sale_volume_raw_exact || '0') / SPORES_PER_LICN
+                    : 0;
                 if (marketStats.creator_count !== undefined) {
                     stats.totalCreators = Number(marketStats.creator_count || 0);
                 }
@@ -271,7 +348,7 @@
         if (!address) return [];
         try {
             var result = await marketTrustedRpcCall('getNFTsByOwner', [address, { limit: 200 }]);
-            return requireRpcArrayEnvelope(result, 'nfts');
+            return hydrateNftList(requireRpcArrayEnvelope(result, 'nfts'));
         } catch (err) {
             console.warn("marketplace-data:", err.message || err);
             return [];
@@ -281,7 +358,7 @@
     async function getNFTDetail(tokenId) {
         if (!tokenId) return null;
         try {
-            return await marketTrustedRpcCall('getNFT', [tokenId]);
+            return hydrateNftMetadata(await marketTrustedRpcCall('getNFT', [tokenId]));
         } catch (err) {
             console.warn("marketplace-data:", err.message || err);
             return null;
@@ -292,7 +369,7 @@
         if (!collectionId) return [];
         try {
             var result = await marketTrustedRpcCall('getNFTsByCollection', [collectionId, { limit: limit || 20 }]);
-            return requireRpcArrayEnvelope(result, 'nfts');
+            return hydrateNftList(requireRpcArrayEnvelope(result, 'nfts'));
         } catch (err) {
             console.warn("marketplace-data:", err.message || err);
             return [];
@@ -339,7 +416,7 @@
 
     async function resolveMarketplaceProgram() {
         try {
-            var entry = await marketTrustedRpcCall('getSymbolRegistry', ['LICHENMARKET']);
+            var entry = await marketTrustedRpcCall('getSymbolRegistry', ['MARKET']);
             return entry && (entry.program || entry.program_id) ? (entry.program || entry.program_id) : null;
         } catch (err) {
             console.warn("marketplace-data:", err.message || err);

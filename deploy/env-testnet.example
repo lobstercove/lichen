@@ -29,6 +29,12 @@ CUSTODY_URL=http://127.0.0.1:9105
 CUSTODY_API_AUTH_TOKEN=REPLACE_WITH_64_HEX_CUSTODY_API_TOKEN
 
 # Oracle price-feed overrides for hosts that cannot reach the default upstream.
-# LICHEN_ORACLE_WS_URL=wss://stream.binance.us:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade/neousdt@aggTrade/gasusdt@aggTrade/btcusdt@aggTrade
+# US-hosted validators only; other regions should use the validator's Binance.com default.
+# LICHEN_ORACLE_WS_URL=wss://stream.binance.us:9443/stream?streams=solusdt@aggTrade/solusdt@ticker/ethusdt@aggTrade/ethusdt@ticker/bnbusdt@aggTrade/bnbusdt@ticker/neousdt@aggTrade/neousdt@ticker/gasusdt@aggTrade/gasusdt@ticker/btcusdt@aggTrade/btcusdt@ticker
 # LICHEN_ORACLE_REST_URL=https://api.binance.us/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT","NEOUSDT","GASUSDT","BTCUSDT"]
+# Changed-price WebSocket fanout cadence (25..1000ms; default 100ms).
+# LICHEN_ORACLE_BROADCAST_INTERVAL_MS=100
+# Proactive provider connection rotation before Binance's 24h limit (default 23h30m).
+# LICHEN_ORACLE_WS_ROTATE_SECS=84600
+# LICHEN_ORACLE_SOURCE_MAX_STALENESS_SECS=60
 # LICHEN_DISABLE_ORACLE=1

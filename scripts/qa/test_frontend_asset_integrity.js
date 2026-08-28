@@ -47,6 +47,9 @@ const CSP_CONNECT_ALLOWLIST = [
     'https://cloudflareinsights.com',
     'https://static.cloudflareinsights.com',
 ];
+const PORTAL_CONNECT_ALLOWLIST = {
+    marketplace: ['https://moss.lichen.network', 'https://testnet-moss.lichen.network'],
+};
 const DEX_CRITICAL_ASSET_VERSION = '20260602';
 
 let passed = 0;
@@ -279,7 +282,8 @@ function validateProductionHeaders(portal) {
         connectSrcDirectives.length > 0 &&
             connectSrcDirectives.every(directive => {
                 const tokens = new Set(directive.trim().split(/\s+/));
-                return CSP_CONNECT_ALLOWLIST.every(origin => tokens.has(origin));
+                const expectedOrigins = CSP_CONNECT_ALLOWLIST.concat(PORTAL_CONNECT_ALLOWLIST[portal.name] || []);
+                return expectedOrigins.every(origin => tokens.has(origin));
             }),
         `${portal.name}/_headers production connect-src includes explicit RPC, custody, app, and analytics origins`
     );
@@ -1094,6 +1098,7 @@ function validateFrontendInputGuards() {
     const marketplaceCreateHtml = fs.readFileSync(path.join(repoRoot, 'marketplace', 'create.html'), 'utf8');
     const marketplaceItemJs = fs.readFileSync(path.join(repoRoot, 'marketplace', 'js', 'item.js'), 'utf8');
     const marketplaceProfileJs = fs.readFileSync(path.join(repoRoot, 'marketplace', 'js', 'profile.js'), 'utf8');
+    const marketplaceDataJs = fs.readFileSync(path.join(repoRoot, 'marketplace', 'js', 'marketplace-data.js'), 'utf8');
     const monitoringJs = fs.readFileSync(path.join(repoRoot, 'monitoring', 'js', 'monitoring.js'), 'utf8');
     const monitoringHtml = fs.readFileSync(path.join(repoRoot, 'monitoring', 'index.html'), 'utf8');
     const websiteJs = fs.readFileSync(path.join(repoRoot, 'website', 'script.js'), 'utf8');
@@ -1303,6 +1308,24 @@ function validateFrontendInputGuards() {
             !marketplaceProfileJs.includes('Math.round(parseFloat') &&
             !marketplaceProfileJs.includes('isNaN(parseFloat'),
         'marketplace profile page uses exact spores for listing, offers, auctions, and bids'
+    );
+
+    assert(
+        [marketplaceCreateJs, marketplaceItemJs, marketplaceProfileJs, marketplaceDataJs]
+            .every((source) => source.includes("getSymbolRegistry', ['MARKET']") &&
+                !source.includes('LICHENMARKET')),
+        'marketplace clients resolve the canonical MARKET registry symbol'
+    );
+
+    assert(
+        [marketplaceCreateJs, marketplaceItemJs, marketplaceProfileJs]
+            .every((source) => source.includes('new Uint8Array(32).fill(0xFF)') &&
+                !source.includes('CONTRACT_PROGRAM_ID = marketplaceProgram')) &&
+            marketplaceCreateJs.includes('accounts: [currentWallet.address, mossProgram]') &&
+            marketplaceCreateJs.includes('accounts: [currentWallet.address, mp, collectionAddress]') &&
+            !marketplaceCreateJs.includes('program_id: mossProgram') &&
+            !marketplaceCreateJs.includes('program_id: mp'),
+        'marketplace and Moss writes route through CONTRACT_PROGRAM_ID with explicit target accounts'
     );
 
     assert(

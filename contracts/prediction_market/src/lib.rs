@@ -1673,7 +1673,7 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     let caller = lichen_sdk::get_caller();
     if caller.0 != admin {
         log_info("Prediction Market initialize rejected: caller mismatch");
-        return 0;
+        return 2;
     }
     let admin = &admin[..];
     storage_set(ADMIN_KEY, admin);
@@ -2276,6 +2276,7 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_lus
     };
 
     // Load all reserves
+    let mut pools = Vec::with_capacity(outcome_count as usize);
     let mut reserves = Vec::with_capacity(outcome_count as usize);
     for i in 0..outcome_count {
         let pool = match load_outcome_pool(market_id, i) {
@@ -2286,13 +2287,11 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_lus
             }
         };
         reserves.push(pool_reserve(&pool));
+        pools.push(pool);
     }
 
     // Check price circuit breaker (no >50% move in single slot)
-    let prev_price = {
-        let pool = load_outcome_pool(market_id, outcome).unwrap();
-        pool_price_last(&pool)
-    };
+    let prev_price = pool_price_last(&pools[outcome as usize]);
 
     // Check temporary market pause (from a previous trade's circuit breaker)
     let pause_until = load_u64(&market_pause_key(market_id));
@@ -2333,7 +2332,7 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_lus
 
     // Update outcome pools
     for i in 0..outcome_count {
-        let mut pool = load_outcome_pool(market_id, i).unwrap();
+        let mut pool = pools[i as usize].clone();
         set_pool_reserve(&mut pool, new_reserves[i as usize]);
 
         if i == outcome {
@@ -2466,10 +2465,18 @@ pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_am
     }
 
     // Load all reserves
+    let mut pools = Vec::with_capacity(outcome_count as usize);
     let mut reserves = Vec::with_capacity(outcome_count as usize);
     for i in 0..outcome_count {
-        let pool = load_outcome_pool(market_id, i).unwrap();
+        let pool = match load_outcome_pool(market_id, i) {
+            Some(pool) => pool,
+            None => {
+                reentrancy_exit();
+                return 0;
+            }
+        };
         reserves.push(pool_reserve(&pool));
+        pools.push(pool);
     }
 
     // Calculate sell
@@ -2501,7 +2508,7 @@ pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_am
 
     // Update outcome pools
     for i in 0..outcome_count {
-        let mut pool = load_outcome_pool(market_id, i).unwrap();
+        let mut pool = pools[i as usize].clone();
         set_pool_reserve(&mut pool, new_reserves[i as usize]);
 
         let new_p = calculate_price(&new_reserves, i);
@@ -4641,7 +4648,7 @@ mod tests {
         setup();
         let admin = [1u8; 32];
         test_mock::set_caller([9u8; 32]);
-        assert_eq!(initialize(admin.as_ptr()), 0);
+        assert_eq!(initialize(admin.as_ptr()), 2);
         assert_eq!(storage_get(ADMIN_KEY), None);
     }
 

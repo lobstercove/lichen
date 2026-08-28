@@ -7,7 +7,7 @@
     var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl)
         || (typeof window.getMarketRpcUrl === 'function' ? window.getMarketRpcUrl() : null)
         || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function' ? LICHEN_CONFIG.rpc() : null);
-    var CONTRACT_PROGRAM_ID = null;
+    var CONTRACT_PROGRAM_ID = bs58encode(new Uint8Array(32).fill(0xFF));
     var dataSource = window.marketplaceDataSource;
     var currentWallet = null;
     var profileAddress = '';
@@ -144,6 +144,9 @@
         if (!imageUrl || typeof imageUrl !== 'string') return null;
         var url = imageUrl.trim();
         if (!url) return null;
+        if (url.indexOf('moss://') === 0 && typeof window.resolveMossUri === 'function') {
+            return window.resolveMossUri(url) || null;
+        }
         if (url.indexOf('ipfs://') === 0) {
             return 'https://ipfs.io/ipfs/' + url.slice('ipfs://'.length);
         }
@@ -188,9 +191,8 @@
     async function resolveMarketplaceProgram() {
         if (marketplaceProgram) return marketplaceProgram;
         try {
-            var entry = await marketTrustedRpcCall('getSymbolRegistry', ['LICHENMARKET']);
+            var entry = await marketTrustedRpcCall('getSymbolRegistry', ['MARKET']);
             marketplaceProgram = entry && (entry.program || entry.program_id) ? (entry.program || entry.program_id) : null;
-            if (marketplaceProgram) CONTRACT_PROGRAM_ID = marketplaceProgram;
         } catch (_) { }
         return marketplaceProgram;
     }

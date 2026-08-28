@@ -88,6 +88,9 @@ const BLOCK_LIST_DB_READS_PER_BLOCK_ESTIMATE: usize = 2;
 const BLOCK_LIST_MAX_LIMIT: usize =
     BLOCK_LIST_MAX_DB_READS / BLOCK_LIST_DB_READS_PER_BLOCK_ESTIMATE;
 const MARKET_LISTINGS_UNFILTERED_MAX_LIMIT: usize = 200;
+const MARKET_LISTING_STORAGE_SCAN_MAX: usize = 100_000;
+const MARKET_LISTING_STORAGE_PREFIX: &[u8] = b"listing:";
+const MARKET_LISTING_SLOT_STORAGE_PREFIX: &[u8] = b"mm_listing_slot:";
 const PROGRAM_LIST_CACHE_TTL_MS: u128 = 1000;
 const PROGRAM_LIST_CACHE_MAX_ENTRIES: usize = 512;
 const RPC_READ_SLOT_CACHE_MAX_ENTRIES: usize = 4096;
@@ -119,7 +122,9 @@ pub(crate) fn decode_transaction_bytes(bytes: &[u8]) -> Result<Transaction, RpcE
 }
 use dashmap::DashMap;
 use lichen_core::consensus::{
-    compute_block_reward, StakeInfo, ValidatorInfo, GENESIS_SUPPLY_SPORES,
+    compute_block_reward, compute_epoch_security_budget, EpochSecurityRewardPlan,
+    EpochStakeWeightSnapshot, StakeInfo, ValidatorEpochStakeWeight, ValidatorInfo,
+    GENESIS_SUPPLY_SPORES, MOSSSTAKE_PROTOCOL_DELEGATOR, SLOTS_PER_EPOCH,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -5844,6 +5849,9 @@ async fn handle_rpc(
         "getComputeMarketStats" => handle_get_compute_market_stats(&state).await,
         "getMossStorageStats" => handle_get_moss_storage_stats(&state).await,
         "getLichenMarketStats" => handle_get_lichenmarket_stats(&state).await,
+        "getLichenMarketTokenStats" => {
+            handle_get_lichenmarket_token_stats(&state, req.params).await
+        }
         "getLichenAuctionStats" => handle_get_lichenauction_stats(&state).await,
         "getLichenPunksStats" => handle_get_lichenpunks_stats(&state).await,
         // Token contract stats
@@ -9890,6 +9898,20 @@ async fn handle_get_total_burned(state: &RpcState) -> Result<serde_json::Value, 
 async fn handle_get_validators(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     let validators = cached_validators(state).await?;
     let observer_now_ms = now_unix_ms();
+    let stake_pool = if let Some(ref pool) = state.stake_pool {
+        Some(pool.read().await.clone())
+    } else {
+        state.state.get_stake_pool().ok()
+    };
+    let (staking_v2_active, network_saturation_cap_bps) = stake_pool
+        .as_ref()
+        .and_then(|pool| {
+            let active_count = pool.staking_v2_state()?.validators.len();
+            let saturation_bps =
+                lichen_core::consensus::validator_saturation_cap_bps(active_count).ok()?;
+            Some((true, saturation_bps))
+        })
+        .unwrap_or((false, 0));
 
     // Pre-compute total reputation once (was O(n²) inside the map loop)
     let total_reputation: u64 = validators.iter().map(|val| val.reputation).sum();
@@ -9897,23 +9919,92 @@ async fn handle_get_validators(state: &RpcState) -> Result<serde_json::Value, Rp
     let validator_list: Vec<_> = validators
         .iter()
         .filter(|v| should_expose_public_validator(state, v))
-        .map(|v| {
+        .map(|v| -> Result<serde_json::Value, RpcError> {
             // Get stake + bootstrap info from StakePool (authoritative source)
-            let (_pool_stake, bootstrap_debt, vesting_status, earned_amount, graduation_slot) =
-                if let Some(stake_info) = canonical_stake_info(state, &v.pubkey) {
-                    (
-                        stake_info.amount,
-                        stake_info.bootstrap_debt,
-                        format!("{:?}", stake_info.status),
-                        stake_info.earned_amount,
-                        stake_info.graduation_slot,
-                    )
-                } else {
-                    (0, 0, "Unknown".to_string(), 0, None)
-                };
-            let actual_stake = canonical_validator_stake(state, &v.pubkey, v.stake);
+            let stake_info = stake_pool
+                .as_ref()
+                .and_then(|pool| pool.get_stake(&v.pubkey).cloned())
+                .or_else(|| canonical_stake_info(state, &v.pubkey));
+            let (
+                pool_stake,
+                self_bond,
+                delegated_stake,
+                bootstrap_debt,
+                vesting_status,
+                earned_amount,
+                graduation_slot,
+            ) = if let Some(stake_info) = stake_info {
+                (
+                    stake_info.total_stake(),
+                    stake_info.amount,
+                    stake_info.delegated_amount,
+                    stake_info.bootstrap_debt,
+                    format!("{:?}", stake_info.status),
+                    stake_info.earned_amount,
+                    stake_info.graduation_slot,
+                )
+            } else {
+                (0, 0, 0, 0, "Unknown".to_string(), 0, None)
+            };
+            let actual_stake = if pool_stake > 0 {
+                pool_stake
+            } else {
+                canonical_validator_stake(state, &v.pubkey, v.stake)
+            };
             let blocks_proposed =
                 canonical_validator_blocks_proposed(state, &v.pubkey, v.blocks_proposed);
+            let commission = stake_pool
+                .as_ref()
+                .and_then(StakePool::staking_v2_state)
+                .and_then(|v2| v2.commissions.get(&v.pubkey));
+            let commission_rate = commission
+                .map(|schedule| schedule.current_bps)
+                .unwrap_or(v.commission_rate);
+            let pending_commission_rate = commission
+                .and_then(|schedule| schedule.pending.as_ref())
+                .map(|pending| pending.commission_bps);
+            let pending_commission_activation_epoch = commission
+                .and_then(|schedule| schedule.pending.as_ref())
+                .map(|pending| pending.activation_epoch);
+            let staking_v2_epoch_active = stake_pool
+                .as_ref()
+                .and_then(StakePool::staking_v2_state)
+                .is_some_and(|v2| v2.validators.contains_key(&v.pubkey));
+            let delegation_capacity_remaining = if staking_v2_epoch_active {
+                stake_pool
+                    .as_ref()
+                    .ok_or_else(|| RpcError {
+                        code: -32000,
+                        message: "Staking V2 is active without a readable stake pool".to_string(),
+                    })?
+                    .staking_v2_delegation_capacity(&v.pubkey)
+                    .map_err(|error| RpcError {
+                        code: -32000,
+                        message: format!("Failed to calculate validator capacity: {error}"),
+                    })?
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let effective_stake_limit = if staking_v2_epoch_active {
+                actual_stake.saturating_add(delegation_capacity_remaining)
+            } else {
+                0
+            };
+            let saturation_usage_bps = if effective_stake_limit > 0 {
+                ((actual_stake as u128).saturating_mul(10_000) / effective_stake_limit as u128)
+                    as u64
+            } else {
+                0
+            };
+            let epoch_consensus_power = if staking_v2_active {
+                stake_pool
+                    .as_ref()
+                    .and_then(|pool| pool.staking_v2_consensus_power(&v.pubkey))
+                    .unwrap_or(0)
+            } else {
+                actual_stake
+            };
 
             let normalized_reputation = if total_reputation > 0 {
                 v.reputation as f64 / total_reputation as f64
@@ -9921,7 +10012,7 @@ async fn handle_get_validators(state: &RpcState) -> Result<serde_json::Value, Rp
                 0.0
             };
 
-            serde_json::json!({
+            Ok(serde_json::json!({
                 "pubkey": v.pubkey.to_base58(),
                 "stake": actual_stake,  // Use actual account balance
                 "reputation": v.reputation as f64,
@@ -9945,9 +10036,22 @@ async fn handle_get_validators(state: &RpcState) -> Result<serde_json::Value, Rp
                 "vesting_status": vesting_status,
                 "earned_amount": earned_amount,
                 "graduation_slot": graduation_slot,
-            })
+                "staking_v2_active": staking_v2_active,
+                "staking_v2_epoch_active": staking_v2_epoch_active,
+                "self_bond": self_bond,
+                "delegated_stake": delegated_stake,
+                "effective_stake": actual_stake,
+                "epoch_consensus_power": epoch_consensus_power,
+                "commission_rate": commission_rate,
+                "pending_commission_rate": pending_commission_rate,
+                "pending_commission_activation_epoch": pending_commission_activation_epoch,
+                "network_saturation_cap_bps": network_saturation_cap_bps,
+                "effective_stake_limit": effective_stake_limit,
+                "saturation_usage_bps": saturation_usage_bps,
+                "delegation_capacity_remaining": delegation_capacity_remaining,
+            }))
         })
-        .collect();
+        .collect::<Result<Vec<_>, RpcError>>()?;
 
     Ok(serde_json::json!({
         "validators": validator_list,
@@ -10486,6 +10590,116 @@ fn canonical_total_staked(state: &RpcState, validators: &[ValidatorInfo]) -> u64
         .sum()
 }
 
+#[derive(Debug)]
+struct StakingV2RewardProjection {
+    plan: EpochSecurityRewardPlan,
+    effective_stake: u64,
+    slots_into_epoch: u64,
+}
+
+/// Project the current Staking V2 epoch from one consensus-committed source of
+/// truth. The projection assumes current stake remains unchanged through the
+/// epoch and every validator finishes at 100% performance. Actual settlement
+/// still uses exact stake-time and observed production from the completed
+/// epoch; this helper must never be used for state transition logic.
+fn project_staking_v2_epoch(
+    pool: &StakePool,
+    current_slot: u64,
+    total_supply: u64,
+) -> Result<Option<StakingV2RewardProjection>, String> {
+    let Some(state) = pool.staking_v2_state() else {
+        return Ok(None);
+    };
+    let epoch_end_slot = state
+        .epoch_start_slot
+        .checked_add(SLOTS_PER_EPOCH)
+        .ok_or_else(|| "Staking V2 projection epoch end overflow".to_string())?;
+    if current_slot < state.epoch_start_slot || current_slot > epoch_end_slot {
+        return Err(format!(
+            "Staking V2 projection slot {} is outside committed epoch {}..={}",
+            current_slot, state.epoch_start_slot, epoch_end_slot
+        ));
+    }
+
+    let validators = state
+        .validators
+        .values()
+        .map(|accounting| ValidatorEpochStakeWeight {
+            validator: accounting.validator,
+            average_self_bond: accounting.self_bond.amount,
+            average_delegations: accounting
+                .delegations
+                .iter()
+                .filter_map(|(delegator, accumulator)| {
+                    (accumulator.amount > 0).then_some((*delegator, accumulator.amount))
+                })
+                .collect(),
+        })
+        .collect();
+    let weights = EpochStakeWeightSnapshot {
+        epoch: state.current_epoch,
+        start_slot: state.epoch_start_slot,
+        end_slot: epoch_end_slot,
+        validators,
+    };
+    let effective_stake = weights.effective_stake()?;
+    let reward_budget =
+        compute_epoch_security_budget(state.epoch_start_slot, total_supply, effective_stake)?;
+    let performance_bps = state
+        .validators
+        .keys()
+        .map(|validator| (*validator, 10_000))
+        .collect();
+    let commission_bps = state
+        .validators
+        .iter()
+        .map(|(validator, accounting)| (*validator, accounting.commission_bps))
+        .collect();
+    let plan = pool.plan_v2_epoch_rewards_for_weights(
+        reward_budget,
+        &weights,
+        &performance_bps,
+        &commission_bps,
+    )?;
+
+    Ok(Some(StakingV2RewardProjection {
+        plan,
+        effective_stake,
+        slots_into_epoch: current_slot.saturating_sub(state.epoch_start_slot),
+    }))
+}
+
+fn projected_v2_reward_for_account(
+    projection: &StakingV2RewardProjection,
+    account: &Pubkey,
+) -> u64 {
+    projection
+        .plan
+        .validators
+        .iter()
+        .fold(0u64, |total, validator| {
+            let operator_reward = if validator.validator == *account {
+                validator
+                    .self_bond_reward
+                    .saturating_add(validator.commission_reward)
+            } else {
+                0
+            };
+            let delegated_reward = validator
+                .delegator_rewards
+                .iter()
+                .filter(|reward| reward.delegator == *account)
+                .fold(0u64, |sum, reward| sum.saturating_add(reward.amount));
+            total
+                .saturating_add(operator_reward)
+                .saturating_add(delegated_reward)
+        })
+}
+
+fn projected_v2_mossstake_reward(projection: &StakingV2RewardProjection) -> u64 {
+    projected_v2_reward_for_account(projection, &MOSSSTAKE_PROTOCOL_DELEGATOR)
+}
+
 // ============================================================================
 // VALIDATOR ENDPOINTS
 // ============================================================================
@@ -10520,10 +10734,111 @@ async fn handle_get_validator_info(
 
     let current_slot = state.state.get_last_slot().unwrap_or(0);
     let is_active = validator_is_active(current_slot, validator.last_active_slot);
+    let stake_pool = if let Some(ref pool) = state.stake_pool {
+        Some(pool.read().await.clone())
+    } else {
+        state.state.get_stake_pool().ok()
+    };
+    let commission_values = |pool: &StakePool| {
+        pool.staking_v2_state()
+            .and_then(|v2| v2.commissions.get(&pubkey))
+            .map(|schedule| {
+                (
+                    schedule.current_bps,
+                    schedule
+                        .pending
+                        .as_ref()
+                        .map(|pending| pending.commission_bps),
+                    schedule
+                        .pending
+                        .as_ref()
+                        .map(|pending| pending.activation_epoch),
+                )
+            })
+    };
+    let (commission_rate, pending_commission_rate, pending_commission_activation_epoch) =
+        stake_pool.as_ref().and_then(commission_values).unwrap_or((
+            validator.commission_rate,
+            None,
+            None,
+        ));
+    let stake_info = stake_pool.as_ref().and_then(|pool| pool.get_stake(&pubkey));
+    let self_bond = stake_info.map(|stake| stake.amount).unwrap_or(0);
+    let delegated_stake = stake_info.map(|stake| stake.delegated_amount).unwrap_or(0);
+    let effective_stake = stake_info
+        .map(|stake| stake.total_stake())
+        .unwrap_or_else(|| canonical_validator_stake(state, &pubkey, validator.stake));
+    let staking_v2_active = stake_pool
+        .as_ref()
+        .and_then(StakePool::staking_v2_state)
+        .is_some();
+    let staking_v2_epoch_active = stake_pool
+        .as_ref()
+        .and_then(StakePool::staking_v2_state)
+        .is_some_and(|v2| v2.validators.contains_key(&pubkey));
+    let active_validator_count = stake_pool
+        .as_ref()
+        .and_then(StakePool::staking_v2_state)
+        .map(|v2| v2.validators.len())
+        .unwrap_or(0);
+    let network_saturation_cap_bps = if staking_v2_active {
+        lichen_core::consensus::validator_saturation_cap_bps(active_validator_count).map_err(
+            |error| RpcError {
+                code: -32000,
+                message: format!("Failed to calculate validator saturation: {error}"),
+            },
+        )?
+    } else {
+        0
+    };
+    let delegation_capacity_remaining = if staking_v2_epoch_active {
+        stake_pool
+            .as_ref()
+            .ok_or_else(|| RpcError {
+                code: -32000,
+                message: "Staking V2 is active without a readable stake pool".to_string(),
+            })?
+            .staking_v2_delegation_capacity(&pubkey)
+            .map_err(|error| RpcError {
+                code: -32000,
+                message: format!("Failed to calculate validator capacity: {error}"),
+            })?
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let effective_stake_limit = if staking_v2_epoch_active {
+        effective_stake.saturating_add(delegation_capacity_remaining)
+    } else {
+        0
+    };
+    let saturation_usage_bps = if effective_stake_limit > 0 {
+        ((effective_stake as u128).saturating_mul(10_000) / effective_stake_limit as u128) as u64
+    } else {
+        0
+    };
+    let epoch_consensus_power = if staking_v2_active {
+        stake_pool
+            .as_ref()
+            .and_then(|pool| pool.staking_v2_consensus_power(&pubkey))
+            .unwrap_or(0)
+    } else {
+        effective_stake
+    };
 
     Ok(serde_json::json!({
         "pubkey": validator.pubkey.to_base58(),
-        "stake": canonical_validator_stake(state, &validator.pubkey, validator.stake),
+        "stake": effective_stake,
+        "staking_v2_active": staking_v2_active,
+        "staking_v2_epoch_active": staking_v2_epoch_active,
+        "self_bond": self_bond,
+        "delegated_stake": delegated_stake,
+        "effective_stake": effective_stake,
+        "epoch_consensus_power": epoch_consensus_power,
+        "network_saturation_cap_bps": network_saturation_cap_bps,
+        "effective_stake_limit": effective_stake_limit,
+        "saturation_usage_bps": saturation_usage_bps,
+        "delegation_capacity_remaining": delegation_capacity_remaining,
         "reputation": validator.reputation,
         "blocks_proposed": canonical_validator_blocks_proposed(
             state,
@@ -10543,7 +10858,9 @@ async fn handle_get_validator_info(
             0
         },
         "joined_slot": validator.joined_slot,
-        "commission_rate": validator.commission_rate,
+        "commission_rate": commission_rate,
+        "pending_commission_rate": pending_commission_rate,
+        "pending_commission_activation_epoch": pending_commission_activation_epoch,
         "is_active": is_active,
     }))
 }
@@ -10815,62 +11132,126 @@ async fn handle_get_staking_status(
 
     let pubkey = Pubkey::from_base58(pubkey_str).map_err(|_| invalid_pubkey_format_error())?;
 
-    // Check if this is a validator
     let validator_info = load_validator_info(state, &pubkey).await?;
+    let current_slot = state.state.get_last_slot().unwrap_or(0);
+    let total_supply = GENESIS_SUPPLY_SPORES
+        .saturating_add(state.state.get_total_minted().unwrap_or(0))
+        .saturating_sub(state.state.get_total_burned().unwrap_or(0));
+    let mossstake_pool = state.state.get_mossstake_pool().map_err(|error| RpcError {
+        code: -32000,
+        message: format!("Failed to load MossStake pool for staking status: {error}"),
+    })?;
 
-    if let Some(validator) = validator_info {
-        let (
-            live_stake,
-            bootstrap_debt,
-            bootstrap_index,
-            earned_amount,
-            total_debt_repaid,
-            vesting_status,
-            start_slot,
-            graduation_slot,
-        ) = if let Some(stake_info) = canonical_stake_info(state, &pubkey) {
-            (
-                stake_info.amount,
-                stake_info.bootstrap_debt,
-                stake_info.bootstrap_index,
-                stake_info.earned_amount,
-                stake_info.total_debt_repaid,
-                format!("{:?}", stake_info.status),
-                stake_info.start_slot,
-                stake_info.graduation_slot,
-            )
-        } else {
-            (
-                canonical_validator_stake(state, &pubkey, validator.stake),
-                0,
-                u64::MAX,
-                0,
-                0,
-                "Unknown".to_string(),
-                0,
-                None,
-            )
-        };
+    let build_status = |pool: &StakePool| -> Result<serde_json::Value, RpcError> {
+        let stake_info = pool.get_stake(&pubkey);
+        let direct_delegations = pool.get_delegator_stakes(&pubkey);
+        let direct_delegated_total = direct_delegations
+            .iter()
+            .fold(0u64, |total, (_, amount)| total.saturating_add(*amount));
+        let incoming_delegations = pool.get_delegations(&pubkey);
+        let incoming_delegated_total = incoming_delegations
+            .iter()
+            .fold(0u64, |total, (_, amount)| total.saturating_add(*amount));
+        let pending_unstakes = pool.get_unstake_requests_for_staker(&pubkey);
+        let pending_unstake_total = pending_unstakes
+            .iter()
+            .fold(0u64, |total, request| total.saturating_add(request.amount));
+        let (moss_st_licn, moss_value) = mossstake_pool
+            .get_position(&pubkey)
+            .map(|(position, value)| (position.st_licn_amount, value))
+            .unwrap_or((0, 0));
+        let projection =
+            project_staking_v2_epoch(pool, current_slot, total_supply).map_err(|error| {
+                RpcError {
+                    code: -32000,
+                    message: format!("Failed to project Staking V2 status: {error}"),
+                }
+            })?;
+        let effective_bonded_stake = projection
+            .as_ref()
+            .map(|projection| projection.effective_stake)
+            .unwrap_or_else(|| pool.active_stake());
+        let security_budget = projection
+            .as_ref()
+            .map(|projection| projection.plan.reward_budget)
+            .unwrap_or_else(|| {
+                lichen_core::consensus::compute_epoch_mint(
+                    lichen_core::epoch_start_slot(lichen_core::slot_to_epoch(current_slot)),
+                    total_supply,
+                )
+            });
+        let self_bond = stake_info.map(|stake| stake.amount).unwrap_or(0);
+        let effective_validator_stake = stake_info.map(StakeInfo::total_stake).unwrap_or(0);
+        let owned_stake_total = self_bond
+            .saturating_add(direct_delegated_total)
+            .saturating_add(moss_value);
+        let is_validator = validator_info.is_some() || stake_info.is_some();
+        let is_active = stake_info.is_some_and(|stake| stake.is_active)
+            || direct_delegated_total > 0
+            || moss_value > 0
+            || pending_unstake_total > 0;
+
         Ok(serde_json::json!({
-            "is_validator": true,
-            "total_staked": live_stake,
-            "delegations": [],
-            "status": "active",
-            "bootstrap_debt": bootstrap_debt,
-            "bootstrap_index": bootstrap_index,
-            "earned_amount": earned_amount,
-            "total_debt_repaid": total_debt_repaid,
-            "vesting_status": vesting_status,
-            "start_slot": start_slot,
-            "graduation_slot": graduation_slot,
+            "is_validator": is_validator,
+            // Backward-compatible validator effective stake; owned principal is
+            // reported separately so incoming delegation is never presented as
+            // the operator's property.
+            "total_staked": if is_validator { effective_validator_stake } else { owned_stake_total },
+            "owned_stake_total": owned_stake_total,
+            "self_bond": self_bond,
+            "incoming_delegated_stake": incoming_delegated_total,
+            "effective_validator_stake": effective_validator_stake,
+            "direct_delegated_stake": direct_delegated_total,
+            "direct_delegations": direct_delegations.iter().map(|(validator, amount)| serde_json::json!({
+                "validator": validator.to_base58(),
+                "amount": amount,
+            })).collect::<Vec<_>>(),
+            "incoming_delegations": incoming_delegations.iter().map(|(delegator, amount)| serde_json::json!({
+                "delegator": delegator.to_base58(),
+                "amount": amount,
+                "is_mossstake": *delegator == MOSSSTAKE_PROTOCOL_DELEGATOR,
+            })).collect::<Vec<_>>(),
+            "delegations": direct_delegations.iter().map(|(validator, amount)| serde_json::json!({
+                "validator": validator.to_base58(),
+                "amount": amount,
+            })).collect::<Vec<_>>(),
+            "moss_st_licn": moss_st_licn,
+            "moss_value_licn": moss_value,
+            "pending_unstake_total": pending_unstake_total,
+            "pending_unstakes": pending_unstakes.iter().map(|request| serde_json::json!({
+                "validator": request.validator.to_base58(),
+                "amount": request.amount,
+                "unlock_slot": request.unlock_slot,
+                "remaining_slots": request.unlock_slot.saturating_sub(current_slot),
+            })).collect::<Vec<_>>(),
+            "status": if is_active { "active" } else { "inactive" },
+            "bootstrap_debt": stake_info.map(|stake| stake.bootstrap_debt).unwrap_or(0),
+            "bootstrap_index": stake_info.map(|stake| stake.bootstrap_index).unwrap_or(u64::MAX),
+            "earned_amount": stake_info.map(|stake| stake.earned_amount).unwrap_or(0),
+            "total_debt_repaid": stake_info.map(|stake| stake.total_debt_repaid).unwrap_or(0),
+            "vesting_status": stake_info.map(|stake| format!("{:?}", stake.status)).unwrap_or_else(|| "None".to_string()),
+            "start_slot": stake_info.map(|stake| stake.start_slot).unwrap_or(0),
+            "graduation_slot": stake_info.and_then(|stake| stake.graduation_slot),
+            "staking_v2_active": projection.is_some(),
+            "effective_bonded_stake": effective_bonded_stake,
+            "target_bonded_stake": lichen_core::consensus::target_bonded_stake(total_supply),
+            "bonded_ratio_bps": if total_supply > 0 {
+                ((effective_bonded_stake as u128).saturating_mul(10_000) / total_supply as u128) as u64
+            } else { 0 },
+            "target_bonded_ratio_bps": lichen_core::TARGET_BONDED_STAKE_BPS,
+            "active_epoch_security_budget": security_budget,
         }))
+    };
+
+    if let Some(ref pool) = state.stake_pool {
+        let pool = pool.read().await;
+        build_status(&pool)
     } else {
-        Ok(serde_json::json!({
-            "is_validator": false,
-            "total_staked": 0,
-            "delegations": [],
-            "status": "inactive",
-        }))
+        let pool = state.state.get_stake_pool().map_err(|error| RpcError {
+            code: -32000,
+            message: format!("Failed to load stake pool for staking status: {error}"),
+        })?;
+        build_status(&pool)
     }
 }
 
@@ -10898,6 +11279,15 @@ async fn handle_get_staking_rewards(
     // Get staking rewards from stake pool
     if let Some(ref pool) = state.stake_pool {
         let pool_guard = pool.read().await;
+        let current_slot = state.state.get_last_slot().unwrap_or(0);
+        let total_supply = GENESIS_SUPPLY_SPORES
+            .saturating_add(state.state.get_total_minted().unwrap_or(0))
+            .saturating_sub(state.state.get_total_burned().unwrap_or(0));
+        let v2_projection = project_staking_v2_epoch(&pool_guard, current_slot, total_supply)
+            .map_err(|error| RpcError {
+                code: -32000,
+                message: format!("Failed to project Staking V2 rewards: {error}"),
+            })?;
         if let Some(stake_info) = pool_guard.get_stake(&pubkey) {
             // total_claimed tracks all historically claimed rewards (liquid + debt)
             // rewards_earned is the currently pending (unclaimed) buffer
@@ -10905,36 +11295,55 @@ async fn handle_get_staking_rewards(
                 .total_claimed
                 .saturating_sub(stake_info.total_debt_repaid);
             let total_claimed = stake_info.total_claimed;
-            let total_earned = total_claimed + stake_info.rewards_earned;
+            let total_earned = total_claimed.saturating_add(stake_info.rewards_earned);
             let pending = stake_info.rewards_earned;
             let claimed = liquid_claimed;
 
             // Epoch-based reward projection: compute this validator's estimated
             // share of the next epoch distribution based on current stake weight.
-            let current_slot = state.state.get_last_slot().unwrap_or(0);
-            let total_supply = GENESIS_SUPPLY_SPORES
-                .saturating_add(state.state.get_total_minted().unwrap_or(0))
-                .saturating_sub(state.state.get_total_burned().unwrap_or(0));
-
             let current_epoch = lichen_core::consensus::slot_to_epoch(current_slot);
             let epoch_start = lichen_core::consensus::epoch_start_slot(current_epoch);
             let slots_into_epoch = current_slot.saturating_sub(epoch_start);
-            let total_pool_stake = pool_guard.total_stake().max(1);
-            let validator_stake = stake_info.total_stake();
-            let stake_share = validator_stake as f64 / total_pool_stake as f64;
+            let (projected_epoch_reward, projected_pending, projection_model) =
+                if let Some(ref projection) = v2_projection {
+                    let epoch_reward = projected_v2_reward_for_account(projection, &pubkey);
+                    let pending = ((epoch_reward as u128)
+                        .saturating_mul(projection.slots_into_epoch as u128)
+                        / SLOTS_PER_EPOCH as u128) as u64;
+                    (epoch_reward, pending, "staking_v2_dynamic_security_budget")
+                } else {
+                    let total_pool_stake = pool_guard.total_stake().max(1);
+                    let validator_stake = stake_info.total_stake();
+                    let epoch_mint =
+                        lichen_core::consensus::compute_epoch_mint(epoch_start, total_supply);
+                    let mossstake_active = state
+                        .state
+                        .get_mossstake_pool()
+                        .map_err(|error| RpcError {
+                            code: -32000,
+                            message: format!(
+                            "Failed to load MossStake pool for staking reward projection: {error}"
+                        ),
+                        })?
+                        .st_licn_token
+                        .total_supply
+                        > 0;
+                    let staker_epoch_pool = if mossstake_active {
+                        lichen_core::consensus::split_epoch_mint(epoch_start, total_supply).0
+                    } else {
+                        // Legacy consensus redirects the liquid-staking share
+                        // whenever no liquid shares exist at settlement.
+                        epoch_mint
+                    };
+                    let epoch_reward = ((staker_epoch_pool as u128 * validator_stake as u128)
+                        / total_pool_stake as u128) as u64;
+                    let pending = ((epoch_reward as u128 * slots_into_epoch as u128)
+                        / SLOTS_PER_EPOCH as u128) as u64;
+                    (epoch_reward, pending, "legacy_epoch_allocation")
+                };
 
-            // Projected pending: this validator's proportional share of inflation
-            // that has theoretically accrued since the current epoch started.
-            let per_slot_reward = compute_block_reward(current_slot, total_supply);
-            let epoch_accrued = per_slot_reward as u128 * slots_into_epoch as u128;
-            let projected_pending = (epoch_accrued as f64 * stake_share) as u64;
-
-            // Full epoch projection (what they'd earn at next boundary)
-            let epoch_mint = lichen_core::consensus::compute_epoch_mint(epoch_start, total_supply);
-            let projected_epoch_reward = (epoch_mint as f64 * stake_share) as u64;
-
-            let current_reward = per_slot_reward;
-            let base_rate_licn = current_reward as f64 / 1_000_000_000.0;
+            let projected_per_slot = projected_epoch_reward / SLOTS_PER_EPOCH;
+            let base_rate_licn = projected_per_slot as f64 / 1_000_000_000.0;
             let reward_rate = if stake_info.is_active {
                 if stake_info.bootstrap_debt > 0 {
                     // During vesting: 50% goes to debt repayment, 50% liquid
@@ -10960,6 +11369,8 @@ async fn handle_get_staking_rewards(
                 "pending_rewards": pending,
                 "projected_pending": projected_pending,
                 "projected_epoch_reward": projected_epoch_reward,
+                "projection_model": projection_model,
+                "projection_assumption": "current stake remains unchanged and validators finish at 100% performance",
                 "claimed_rewards": claimed,
                 "liquid_claimed_rewards": liquid_claimed,
                 "claimed_total_rewards": total_claimed,
@@ -10970,6 +11381,35 @@ async fn handle_get_staking_rewards(
                 "blocks_produced": stake_info.blocks_produced,
                 "total_debt_repaid": stake_info.total_debt_repaid,
             }));
+        }
+
+        if let Some(ref projection) = v2_projection {
+            let projected_epoch_reward = projected_v2_reward_for_account(projection, &pubkey);
+            if projected_epoch_reward > 0 {
+                let projected_pending = ((projected_epoch_reward as u128)
+                    .saturating_mul(projection.slots_into_epoch as u128)
+                    / SLOTS_PER_EPOCH as u128) as u64;
+                return Ok(serde_json::json!({
+                    "total_rewards": 0,
+                    "pending_rewards": 0,
+                    "projected_pending": projected_pending,
+                    "projected_epoch_reward": projected_epoch_reward,
+                    "claimed_rewards": 0,
+                    "liquid_claimed_rewards": 0,
+                    "claimed_total_rewards": 0,
+                    "reward_rate": format!(
+                        "{:.4}",
+                        (projected_epoch_reward / SLOTS_PER_EPOCH) as f64 / 1_000_000_000.0
+                    ),
+                    "projection_model": "staking_v2_dynamic_security_budget",
+                    "projection_assumption": "current stake remains unchanged and validators finish at 100% performance",
+                    "bootstrap_debt": 0,
+                    "earned_amount": 0,
+                    "vesting_progress": 1.0,
+                    "blocks_produced": 0,
+                    "total_debt_repaid": 0,
+                }));
+            }
         }
     }
 
@@ -15944,15 +16384,7 @@ async fn handle_get_nft(
             code: -32602,
             message: format!("Invalid collection pubkey: {}", e),
         })?;
-        // Derive token address: SHA-256(collection_bytes + token_id_le_bytes)
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(collection_pubkey.0);
-        hasher.update(token_id.to_le_bytes());
-        let hash = hasher.finalize();
-        let mut bytes = [0u8; 32];
-        bytes.copy_from_slice(&hash[..32]);
-        Pubkey(bytes)
+        lichen_core::nft::derive_nft_token_address(&collection_pubkey, token_id)
     } else {
         // [token_pubkey] form (direct lookup)
         let token_str = arr[0].as_str().ok_or_else(|| RpcError {
@@ -16458,17 +16890,107 @@ fn market_activity_to_json(activity: &lichen_core::MarketActivity) -> serde_json
     })
 }
 
+#[derive(Clone)]
+struct ActiveMarketListing {
+    collection: Pubkey,
+    payment_token: Pubkey,
+    token_id: u64,
+    price: u64,
+    seller: Pubkey,
+    royalty_recipient: Pubkey,
+    royalty_bps: u16,
+}
+
+fn decode_active_market_listing(key: &[u8], value: &[u8]) -> Option<ActiveMarketListing> {
+    const LISTING_KEY_LEN: usize = 8 + 32 + 1 + 8;
+    const LISTING_VALUE_LEN: usize = 147;
+    if key.len() != LISTING_KEY_LEN
+        || !key.starts_with(MARKET_LISTING_STORAGE_PREFIX)
+        || key[40] != b':'
+        || value.len() != LISTING_VALUE_LEN
+        || value[144] != 1
+    {
+        return None;
+    }
+
+    let collection = Pubkey(key[8..40].try_into().ok()?);
+    let token_id = u64::from_le_bytes(key[41..49].try_into().ok()?);
+    let seller = Pubkey(value[..32].try_into().ok()?);
+    let stored_collection = Pubkey(value[32..64].try_into().ok()?);
+    let stored_token_id = u64::from_le_bytes(value[64..72].try_into().ok()?);
+    let price = u64::from_le_bytes(value[72..80].try_into().ok()?);
+    let payment_token = Pubkey(value[80..112].try_into().ok()?);
+    let royalty_recipient = Pubkey(value[112..144].try_into().ok()?);
+    let royalty_bps = u16::from_le_bytes(value[145..147].try_into().ok()?);
+    if seller.0 == [0u8; 32]
+        || stored_collection != collection
+        || stored_token_id != token_id
+        || price == 0
+        || royalty_bps > 5_000
+        || (royalty_bps > 0 && royalty_recipient.0 == [0u8; 32])
+    {
+        return None;
+    }
+
+    Some(ActiveMarketListing {
+        collection,
+        payment_token,
+        token_id,
+        price,
+        seller,
+        royalty_recipient,
+        royalty_bps,
+    })
+}
+
+fn market_listing_fee_key(listing: &ActiveMarketListing) -> Vec<u8> {
+    let mut key = b"mm_listing_fee:".to_vec();
+    key.extend_from_slice(&listing.collection.0);
+    key.extend_from_slice(&listing.token_id.to_le_bytes());
+    key
+}
+
+fn decode_market_listing_slot(key: &[u8], value: &[u8]) -> Option<(([u8; 32], u64), u64)> {
+    const SLOT_KEY_LEN: usize = 16 + 32 + 8;
+    if key.len() != SLOT_KEY_LEN
+        || !key.starts_with(MARKET_LISTING_SLOT_STORAGE_PREFIX)
+        || value.len() != 8
+    {
+        return None;
+    }
+    let collection = key[16..48].try_into().ok()?;
+    let token_id = u64::from_le_bytes(key[48..56].try_into().ok()?);
+    let slot = u64::from_le_bytes(value.try_into().ok()?);
+    Some(((collection, token_id), slot))
+}
+
 async fn handle_get_market_listings(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     let filters = parse_market_params_extended(&params)?;
+    let market_program = resolve_symbol_pubkey(state, "MARKET")?;
+    if filters.category.is_some() || filters.rarity.is_some() {
+        return Err(RpcError {
+            code: -32602,
+            message:
+                "category and rarity are NFT metadata filters, not marketplace listing-state fields"
+                    .to_string(),
+        });
+    }
+    if !matches!(
+        filters.sort_by.as_deref(),
+        None | Some("newest" | "oldest" | "price_asc" | "price_desc")
+    ) {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid sort_by: expected newest, oldest, price_asc, or price_desc"
+                .to_string(),
+        });
+    }
 
-    let has_post_filters = filters.price_min.is_some()
-        || filters.price_max.is_some()
-        || filters.seller.is_some()
-        || filters.category.is_some()
-        || filters.rarity.is_some();
+    let has_post_filters =
+        filters.price_min.is_some() || filters.price_max.is_some() || filters.seller.is_some();
 
     // RPC-H09: cap unfiltered marketplace requests to a reasonable page size.
     let effective_limit = if filters.collection.is_none() && !has_post_filters {
@@ -16477,43 +16999,98 @@ async fn handle_get_market_listings(
         filters.limit
     };
 
-    // Fetch more than limit to allow post-filtering
-    let fetch_limit = if has_post_filters {
-        (effective_limit * 5).min(2000)
-    } else {
-        effective_limit
-    };
-
-    let activity = state
+    let mut storage_prefix = MARKET_LISTING_STORAGE_PREFIX.to_vec();
+    if let Some(collection) = filters.collection.as_ref() {
+        storage_prefix.extend_from_slice(&collection.0);
+        storage_prefix.push(b':');
+        if let Some(token_id) = filters.token_id {
+            storage_prefix.extend_from_slice(&token_id.to_le_bytes());
+        }
+    }
+    let rows = state
         .state
-        .get_market_activity(
-            filters.collection.as_ref(),
-            Some(MarketActivityKind::Listing),
-            fetch_limit,
+        .get_contract_storage_entries_with_prefix(
+            &market_program,
+            &storage_prefix,
+            MARKET_LISTING_STORAGE_SCAN_MAX + 1,
         )
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
         })?;
+    if rows.len() > MARKET_LISTING_STORAGE_SCAN_MAX {
+        return Err(RpcError {
+            code: -32000,
+            message: format!(
+                "Marketplace listing-state scan exceeds the {} row safety cap",
+                MARKET_LISTING_STORAGE_SCAN_MAX
+            ),
+        });
+    }
 
-    // Apply multi-criteria filters
-    let mut filtered: Vec<&lichen_core::MarketActivity> = activity
-        .iter()
-        .filter(|a| {
-            // Price range filter (in spores)
+    let mut slot_prefix = MARKET_LISTING_SLOT_STORAGE_PREFIX.to_vec();
+    if let Some(collection) = filters.collection.as_ref() {
+        slot_prefix.extend_from_slice(&collection.0);
+        if let Some(token_id) = filters.token_id {
+            slot_prefix.extend_from_slice(&token_id.to_le_bytes());
+        }
+    }
+    let slot_rows = state
+        .state
+        .get_contract_storage_entries_with_prefix(
+            &market_program,
+            &slot_prefix,
+            MARKET_LISTING_STORAGE_SCAN_MAX + 1,
+        )
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
+    if slot_rows.len() > MARKET_LISTING_STORAGE_SCAN_MAX {
+        return Err(RpcError {
+            code: -32000,
+            message: format!(
+                "Marketplace listing-slot scan exceeds the {} row safety cap",
+                MARKET_LISTING_STORAGE_SCAN_MAX
+            ),
+        });
+    }
+    let listing_slots: std::collections::HashMap<([u8; 32], u64), u64> = slot_rows
+        .into_iter()
+        .filter_map(|(key, value)| decode_market_listing_slot(&key, &value))
+        .collect();
+
+    let mut filtered: Vec<ActiveMarketListing> = rows
+        .into_iter()
+        .filter_map(|(key, value)| decode_active_market_listing(&key, &value))
+        .filter(|listing| {
+            if filters.collection.as_ref() != Some(&listing.collection)
+                && filters.collection.is_some()
+            {
+                return false;
+            }
+            if let Some(token_id) = filters.token_id {
+                if listing.token_id != token_id {
+                    return false;
+                }
+            }
+            if let Some(payment_token) = filters.token.as_ref() {
+                if &listing.payment_token != payment_token {
+                    return false;
+                }
+            }
             if let Some(min) = filters.price_min {
-                if a.price.unwrap_or(0) < min {
+                if listing.price < min {
                     return false;
                 }
             }
             if let Some(max) = filters.price_max {
-                if a.price.unwrap_or(u64::MAX) > max {
+                if listing.price > max {
                     return false;
                 }
             }
-            // Seller filter
             if let Some(ref seller) = filters.seller {
-                if a.seller.as_ref() != Some(seller) {
+                if &listing.seller != seller {
                     return false;
                 }
             }
@@ -16522,13 +17099,38 @@ async fn handle_get_market_listings(
         .collect();
 
     // Sort
-    if let Some(ref sort_by) = filters.sort_by {
-        match sort_by.as_str() {
-            "price_asc" => filtered.sort_by_key(|a| a.price.unwrap_or(0)),
-            "price_desc" => filtered.sort_by_key(|b| std::cmp::Reverse(b.price.unwrap_or(0))),
-            "oldest" => filtered.sort_by_key(|a| a.timestamp),
-            _ => {} // newest first (default from DB)
+    let activity_slot = |listing: &ActiveMarketListing| {
+        listing_slots
+            .get(&(listing.collection.0, listing.token_id))
+            .copied()
+    };
+    match filters.sort_by.as_deref().unwrap_or("newest") {
+        "price_asc" => {
+            filtered.sort_by_key(|listing| (listing.price, listing.collection.0, listing.token_id))
         }
+        "price_desc" => filtered.sort_by(|left, right| {
+            right
+                .price
+                .cmp(&left.price)
+                .then_with(|| left.collection.0.cmp(&right.collection.0))
+                .then_with(|| left.token_id.cmp(&right.token_id))
+        }),
+        "oldest" => filtered.sort_by_key(|listing| {
+            let slot = activity_slot(listing);
+            (
+                slot.is_none(),
+                slot.unwrap_or(u64::MAX),
+                listing.collection.0,
+                listing.token_id,
+            )
+        }),
+        _ => filtered.sort_by_key(|listing| {
+            (
+                std::cmp::Reverse(activity_slot(listing).unwrap_or(0)),
+                listing.collection.0,
+                listing.token_id,
+            )
+        }),
     }
 
     // Apply limit after filtering
@@ -16536,7 +17138,43 @@ async fn handle_get_market_listings(
 
     let items: Vec<serde_json::Value> = filtered
         .iter()
-        .map(|a| market_activity_to_json(a))
+        .map(|listing| {
+            let fee_bps = state
+                .state
+                .get_contract_storage(&market_program, &market_listing_fee_key(listing))
+                .ok()
+                .flatten()
+                .filter(|value| value.len() == 8)
+                .map(|value| u64::from_le_bytes(value[..8].try_into().unwrap_or([0u8; 8])))
+                .filter(|fee| *fee <= 1_000);
+            let settlement_ready = fee_bps.is_some() && listing.royalty_bps <= 1_000;
+            let listing_slot = listing_slots
+                .get(&(listing.collection.0, listing.token_id))
+                .copied();
+            serde_json::json!({
+                "slot": listing_slot,
+                "timestamp": null,
+                "kind": "listing",
+                "program": market_program.to_base58(),
+                "collection": listing.collection.to_base58(),
+                "nft_contract": listing.collection.to_base58(),
+                "token": listing.payment_token.to_base58(),
+                "payment_token": listing.payment_token.to_base58(),
+                "token_id": listing.token_id,
+                "price": listing.price,
+                "price_raw_exact": listing.price.to_string(),
+                "price_licn": listing.price as f64 / 1_000_000_000.0,
+                "seller": listing.seller.to_base58(),
+                "royalty_recipient": listing.royalty_recipient.to_base58(),
+                "royalty_bps": listing.royalty_bps,
+                "marketplace_fee_bps": fee_bps,
+                "active": true,
+                "settlement_ready": settlement_ready,
+                "migration_required": !settlement_ready,
+                "function": "state",
+                "tx_signature": null,
+            })
+        })
         .collect();
 
     Ok(serde_json::json!({
@@ -16559,6 +17197,7 @@ async fn handle_get_market_activity(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     let filters = parse_market_params_extended(&params)?;
+    let market_program = resolve_symbol_pubkey(state, "MARKET")?;
     let has_item_filter = filters.token_id.is_some() || filters.token.is_some();
     let fetch_limit = if has_item_filter {
         (filters.limit.saturating_mul(10)).clamp(filters.limit, 2000)
@@ -16568,7 +17207,12 @@ async fn handle_get_market_activity(
 
     let activity = state
         .state
-        .get_market_activity(filters.collection.as_ref(), None, fetch_limit)
+        .get_market_activity_for_program(
+            filters.collection.as_ref(),
+            None,
+            Some(&market_program),
+            fetch_limit,
+        )
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
@@ -16598,14 +17242,31 @@ async fn handle_get_market_sales(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     let (collection, limit) = parse_market_params(params)?;
-
-    let activity = state
-        .state
-        .get_market_activity(collection.as_ref(), Some(MarketActivityKind::Sale), limit)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", e),
-        })?;
+    let market_program = resolve_symbol_pubkey(state, "MARKET")?;
+    let mut activity = Vec::new();
+    for kind in [
+        MarketActivityKind::Sale,
+        MarketActivityKind::OfferAccepted,
+        MarketActivityKind::AuctionSettled,
+        MarketActivityKind::CollectionOfferAccepted,
+    ] {
+        activity.extend(
+            state
+                .state
+                .get_market_activity_for_program(
+                    collection.as_ref(),
+                    Some(kind),
+                    Some(&market_program),
+                    limit,
+                )
+                .map_err(|e| RpcError {
+                    code: -32000,
+                    message: format!("Database error: {}", e),
+                })?,
+        );
+    }
+    activity.sort_by_key(|item| std::cmp::Reverse((item.slot, item.timestamp)));
+    activity.truncate(limit);
 
     let items: Vec<serde_json::Value> = activity.iter().map(market_activity_to_json).collect();
 
@@ -16622,6 +17283,7 @@ async fn handle_get_market_offers(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     let filters = parse_market_params_extended(&params)?;
+    let market_program = resolve_symbol_pubkey(state, "MARKET")?;
     let fetch_limit = if filters.token_id.is_some() || filters.token.is_some() {
         (filters.limit.saturating_mul(10)).clamp(filters.limit, 2000)
     } else {
@@ -16630,9 +17292,10 @@ async fn handle_get_market_offers(
 
     let activity = state
         .state
-        .get_market_activity(
+        .get_market_activity_for_program(
             filters.collection.as_ref(),
             Some(MarketActivityKind::Offer),
+            Some(&market_program),
             fetch_limit,
         )
         .map_err(|e| RpcError {
@@ -16644,9 +17307,10 @@ async fn handle_get_market_offers(
     if filters.include_collection_offers {
         let collection_activity = state
             .state
-            .get_market_activity(
+            .get_market_activity_for_program(
                 filters.collection.as_ref(),
                 Some(MarketActivityKind::CollectionOffer),
+                Some(&market_program),
                 fetch_limit,
             )
             .map_err(|e| RpcError {
@@ -16691,6 +17355,7 @@ async fn handle_get_market_auctions(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     let filters = parse_market_params_extended(&params)?;
+    let market_program = resolve_symbol_pubkey(state, "MARKET")?;
     let has_item_filter = filters.token_id.is_some() || filters.token.is_some();
     let fetch_limit = if has_item_filter {
         (filters.limit.saturating_mul(10)).clamp(filters.limit, 2000)
@@ -16700,9 +17365,10 @@ async fn handle_get_market_auctions(
 
     let activity = state
         .state
-        .get_market_activity(
+        .get_market_activity_for_program(
             filters.collection.as_ref(),
             Some(MarketActivityKind::AuctionCreated),
+            Some(&market_program),
             fetch_limit,
         )
         .map_err(|e| RpcError {
@@ -17789,11 +18455,24 @@ async fn handle_get_staking_position(
         code: -32603,
         message: format!("Failed to get MossStake pool: {}", e),
     })?;
+    let staking_v2_active = if let Some(ref stake_pool) = state.stake_pool {
+        stake_pool.read().await.staking_v2_state().is_some()
+    } else {
+        state
+            .state
+            .get_stake_pool()
+            .map(|stake_pool| stake_pool.staking_v2_state().is_some())
+            .unwrap_or(false)
+    };
 
     if let Some((position, current_value)) = pool.get_position(&user) {
         let tier = position.lock_tier as u8;
         let tier_name = position.lock_tier.display_name();
-        let multiplier = position.lock_tier.reward_multiplier_bp() as f64 / 10_000.0;
+        let multiplier = if staking_v2_active {
+            1.0
+        } else {
+            position.lock_tier.reward_multiplier_bp() as f64 / 10_000.0
+        };
         Ok(serde_json::json!({
             "owner": user_pubkey,
             "st_licn_amount": position.st_licn_amount,
@@ -17804,7 +18483,12 @@ async fn handle_get_staking_position(
             "lock_tier": tier,
             "lock_tier_name": tier_name,
             "lock_until": position.lock_until,
-            "reward_multiplier": multiplier
+            "reward_multiplier": multiplier,
+            "reward_model": if staking_v2_active {
+                "staking_v2_equal_stlicn"
+            } else {
+                "legacy_lock_tier_weighted"
+            }
         }))
     } else {
         Ok(serde_json::json!({
@@ -17817,14 +18501,21 @@ async fn handle_get_staking_position(
             "lock_tier": 0,
             "lock_tier_name": "Flexible",
             "lock_until": 0,
-            "reward_multiplier": 1.0
+            "reward_multiplier": 1.0,
+            "reward_model": if staking_v2_active {
+                "staking_v2_equal_stlicn"
+            } else {
+                "legacy_lock_tier_weighted"
+            }
         }))
     }
 }
 
 /// Handle getMossStakePoolInfo: Get global MossStake pool info
 async fn handle_get_mossstake_pool_info(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    use lichen_core::consensus::SLOTS_PER_YEAR;
+    use lichen_core::consensus::{
+        epoch_start_slot, slot_to_epoch, SLOTS_PER_EPOCH, SLOTS_PER_YEAR,
+    };
 
     let pool = state.state.get_mossstake_pool().map_err(|e| RpcError {
         code: -32603,
@@ -17832,49 +18523,156 @@ async fn handle_get_mossstake_pool_info(state: &RpcState) -> Result<serde_json::
     })?;
 
     // Derive active validators count and APY from the consensus StakePool
-    let (active_validators, apy_percent, tier_apys) = if let Some(ref sp_arc) = state.stake_pool {
+    let (
+        active_validators,
+        apy_percent,
+        tier_apys,
+        tier_multipliers,
+        reward_model,
+        v2_allocation_details,
+    ) = if let Some(ref sp_arc) = state.stake_pool {
         let sp = sp_arc.read().await;
         let stats = sp.get_stats();
-        let slots_per_day = SLOTS_PER_YEAR / 365;
-        // Use inflation-curve block reward based on current slot
+        // Project the same epoch allocation that settlement uses. Deriving an
+        // annual budget from the epoch mint avoids compounding rounded per-slot
+        // rewards into a visibly inaccurate APY.
         let current_slot = state.state.get_last_slot().unwrap_or(0);
         let total_supply = GENESIS_SUPPLY_SPORES
             .saturating_add(state.state.get_total_minted().unwrap_or(0))
             .saturating_sub(state.state.get_total_burned().unwrap_or(0));
-        let current_reward = compute_block_reward(current_slot, total_supply);
-        let mossstake_reward = ((current_reward as u128
-            * lichen_core::MOSSSTAKE_BLOCK_SHARE_BPS as u128)
-            / 10_000u128) as u64;
-        let apy_bp = pool.calculate_apy_bp(slots_per_day, mossstake_reward);
-        let tier_apys = [
-            pool.calculate_tier_apy_bp(
-                slots_per_day,
-                mossstake_reward,
-                lichen_core::LockTier::Flexible,
-            ) as f64
-                / 100.0,
-            pool.calculate_tier_apy_bp(
-                slots_per_day,
-                mossstake_reward,
-                lichen_core::LockTier::Lock30,
-            ) as f64
-                / 100.0,
-            pool.calculate_tier_apy_bp(
-                slots_per_day,
-                mossstake_reward,
-                lichen_core::LockTier::Lock180,
-            ) as f64
-                / 100.0,
-            pool.calculate_tier_apy_bp(
-                slots_per_day,
-                mossstake_reward,
-                lichen_core::LockTier::Lock365,
-            ) as f64
-                / 100.0,
-        ];
-        (stats.active_validators, apy_bp as f64 / 100.0, tier_apys)
+        let epoch_start = epoch_start_slot(slot_to_epoch(current_slot));
+        let epochs_per_year = SLOTS_PER_YEAR / SLOTS_PER_EPOCH;
+        if let Some(projection) = project_staking_v2_epoch(&sp, current_slot, total_supply)
+            .map_err(|error| RpcError {
+                code: -32000,
+                message: format!("Failed to project Staking V2 MossStake rewards: {error}"),
+            })?
+        {
+            let mossstake_epoch_reward = projected_v2_mossstake_reward(&projection);
+            let annual_mossstake_rewards =
+                (mossstake_epoch_reward as u128).saturating_mul(epochs_per_year as u128);
+            let apy_bp = pool.calculate_apy_bp_from_annual_rewards(annual_mossstake_rewards);
+            let apy = apy_bp as f64 / 100.0;
+            let allocations = sp.mossstake_allocations();
+            let saturation_bps = lichen_core::consensus::validator_saturation_cap_bps(
+                projection.plan.validators.len(),
+            )
+            .map_err(|error| RpcError {
+                code: -32000,
+                message: format!("Failed to project MossStake saturation: {error}"),
+            })?;
+            let saturation_limit = ((projection.effective_stake as u128)
+                .saturating_mul(saturation_bps as u128)
+                .saturating_add(9_999)
+                / 10_000) as u64;
+            let mut gross_reward = 0u64;
+            let allocation_rows = projection
+                .plan
+                .validators
+                .iter()
+                .filter_map(|validator_plan| {
+                    let allocation = allocations
+                        .get(&validator_plan.validator)
+                        .copied()
+                        .unwrap_or(0);
+                    if allocation == 0 {
+                        return None;
+                    }
+                    let stake = sp.get_stake(&validator_plan.validator)?;
+                    let projected_gross = if stake.delegated_amount > 0 {
+                        ((validator_plan.delegation_gross_reward as u128)
+                            .saturating_mul(allocation as u128)
+                            / stake.delegated_amount as u128) as u64
+                    } else {
+                        0
+                    };
+                    gross_reward = gross_reward.saturating_add(projected_gross);
+                    let projected_net = validator_plan
+                        .delegator_rewards
+                        .iter()
+                        .find(|reward| reward.delegator == MOSSSTAKE_PROTOCOL_DELEGATOR)
+                        .map(|reward| reward.amount)
+                        .unwrap_or(0);
+                    Some(serde_json::json!({
+                        "validator": validator_plan.validator.to_base58(),
+                        "allocated_backing": allocation,
+                        "validator_self_bond": stake.amount,
+                        "validator_effective_stake": stake.total_stake(),
+                        "epoch_consensus_power": sp.staking_v2_consensus_power(&validator_plan.validator).unwrap_or(0),
+                        "saturation_limit": saturation_limit,
+                        "saturation_bps": if saturation_limit > 0 {
+                            ((stake.total_stake() as u128).saturating_mul(10_000) / saturation_limit as u128) as u64
+                        } else { 0 },
+                        "commission_bps": sp.staking_v2_state()
+                            .and_then(|state| state.commissions.get(&validator_plan.validator))
+                            .map(|schedule| schedule.current_bps)
+                            .unwrap_or(0),
+                        "projected_epoch_gross_reward": projected_gross,
+                        "projected_epoch_net_reward": projected_net,
+                    }))
+                })
+                .collect::<Vec<_>>();
+            (
+                projection.plan.validators.len() as u64,
+                apy,
+                [apy; 4],
+                [1.0; 4],
+                "staking_v2_equal_stlicn_dynamic_security_budget",
+                serde_json::json!({
+                    "underlying_allocations": allocation_rows,
+                    "projected_epoch_gross_reward": gross_reward,
+                    "projected_validator_commission": gross_reward.saturating_sub(mossstake_epoch_reward),
+                    "projected_epoch_net_reward": mossstake_epoch_reward,
+                    "protocol_fee_bps": 0,
+                    "network_saturation_cap_bps": saturation_bps,
+                }),
+            )
+        } else {
+            let (_, mossstake_epoch_mint) =
+                lichen_core::consensus::split_epoch_mint(epoch_start, total_supply);
+            let annual_mossstake_rewards =
+                (mossstake_epoch_mint as u128).saturating_mul(epochs_per_year as u128);
+            let apy_bp = pool.calculate_apy_bp_from_annual_rewards(annual_mossstake_rewards);
+            let tier_apys = [
+                pool.calculate_tier_apy_bp_from_annual_rewards(
+                    annual_mossstake_rewards,
+                    lichen_core::LockTier::Flexible,
+                ) as f64
+                    / 100.0,
+                pool.calculate_tier_apy_bp_from_annual_rewards(
+                    annual_mossstake_rewards,
+                    lichen_core::LockTier::Lock30,
+                ) as f64
+                    / 100.0,
+                pool.calculate_tier_apy_bp_from_annual_rewards(
+                    annual_mossstake_rewards,
+                    lichen_core::LockTier::Lock180,
+                ) as f64
+                    / 100.0,
+                pool.calculate_tier_apy_bp_from_annual_rewards(
+                    annual_mossstake_rewards,
+                    lichen_core::LockTier::Lock365,
+                ) as f64
+                    / 100.0,
+            ];
+            (
+                stats.active_validators,
+                apy_bp as f64 / 100.0,
+                tier_apys,
+                [1.0, 1.6, 2.4, 3.6],
+                "legacy_fixed_liquid_allocation",
+                serde_json::Value::Null,
+            )
+        }
     } else {
-        (0, 0.0, [0.0, 0.0, 0.0, 0.0])
+        (
+            0,
+            0.0,
+            [0.0, 0.0, 0.0, 0.0],
+            [1.0, 1.6, 2.4, 3.6],
+            "unavailable",
+            serde_json::Value::Null,
+        )
     };
 
     Ok(serde_json::json!({
@@ -17883,12 +18681,15 @@ async fn handle_get_mossstake_pool_info(state: &RpcState) -> Result<serde_json::
         "exchange_rate": pool.st_licn_token.exchange_rate_display(),
         "total_validators": active_validators,
         "average_apy_percent": apy_percent,
+        "reward_model": reward_model,
+        "staking_v2": v2_allocation_details,
+        "projection_assumption": "current stake remains unchanged and validators finish at 100% performance",
         "total_stakers": pool.positions.len(),
         "tiers": [
-            { "id": 0, "name": "Flexible", "lock_days": 0, "multiplier": 1.0, "apy_percent": tier_apys[0] },
-            { "id": 1, "name": "30-Day Lock", "lock_days": 30, "multiplier": 1.6, "apy_percent": tier_apys[1] },
-            { "id": 2, "name": "180-Day Lock", "lock_days": 180, "multiplier": 2.4, "apy_percent": tier_apys[2] },
-            { "id": 3, "name": "365-Day Lock", "lock_days": 365, "multiplier": 3.6, "apy_percent": tier_apys[3] },
+            { "id": 0, "name": "Flexible", "lock_days": 0, "multiplier": tier_multipliers[0], "apy_percent": tier_apys[0] },
+            { "id": 1, "name": "30-Day Lock", "lock_days": 30, "multiplier": tier_multipliers[1], "apy_percent": tier_apys[1] },
+            { "id": 2, "name": "180-Day Lock", "lock_days": 180, "multiplier": tier_multipliers[2], "apy_percent": tier_apys[2] },
+            { "id": 3, "name": "365-Day Lock", "lock_days": 365, "multiplier": tier_multipliers[3], "apy_percent": tier_apys[3] },
         ],
         "cooldown_days": 7
     }))
@@ -17969,9 +18770,9 @@ async fn handle_get_reward_adjustment_info(
     state: &RpcState,
 ) -> Result<serde_json::Value, RpcError> {
     use lichen_core::consensus::{
-        compute_block_reward, compute_epoch_mint, inflation_rate_bps, BOOTSTRAP_GRANT_AMOUNT,
-        GENESIS_SUPPLY_SPORES, INFLATION_DECAY_RATE_BPS, INITIAL_INFLATION_RATE_BPS,
-        SLOTS_PER_EPOCH, SLOTS_PER_YEAR, TERMINAL_INFLATION_RATE_BPS,
+        compute_block_reward, compute_epoch_mint, epoch_start_slot, inflation_rate_bps,
+        slot_to_epoch, BOOTSTRAP_GRANT_AMOUNT, GENESIS_SUPPLY_SPORES, INFLATION_DECAY_RATE_BPS,
+        INITIAL_INFLATION_RATE_BPS, SLOTS_PER_EPOCH, SLOTS_PER_YEAR, TERMINAL_INFLATION_RATE_BPS,
     };
 
     let stake_pool_arc = state.stake_pool.as_ref().ok_or_else(|| RpcError {
@@ -17996,7 +18797,68 @@ async fn handle_get_reward_adjustment_info(
 
     let current_inflation_bps = inflation_rate_bps(current_slot);
     let block_reward = compute_block_reward(current_slot, total_supply);
-    let epoch_mint = compute_epoch_mint(current_slot, total_supply);
+    let epoch_start = epoch_start_slot(slot_to_epoch(current_slot));
+    let epoch_mint = compute_epoch_mint(epoch_start, total_supply);
+    let v2_projection =
+        project_staking_v2_epoch(&stake_pool, current_slot, total_supply).map_err(|error| {
+            RpcError {
+                code: -32000,
+                message: format!("Failed to project Staking V2 economics: {error}"),
+            }
+        })?;
+    let (
+        validator_epoch_mint,
+        mossstake_epoch_mint,
+        security_budget,
+        projected_assigned_mint,
+        projected_performance_unminted,
+        apy_reward,
+        apy_stake,
+        reward_model,
+    ) = if let Some(ref projection) = v2_projection {
+        let mossstake_reward = projected_v2_mossstake_reward(projection);
+        (
+            projection
+                .plan
+                .assigned_reward
+                .saturating_sub(mossstake_reward),
+            mossstake_reward,
+            projection.plan.reward_budget,
+            projection.plan.assigned_reward,
+            projection.plan.performance_unminted,
+            projection.plan.assigned_reward,
+            projection.effective_stake,
+            "staking_v2_dynamic_security_budget",
+        )
+    } else {
+        let mossstake_active = state
+            .state
+            .get_mossstake_pool()
+            .map_err(|error| RpcError {
+                code: -32000,
+                message: format!(
+                    "Failed to load MossStake pool for reward adjustment projection: {error}"
+                ),
+            })?
+            .st_licn_token
+            .total_supply
+            > 0;
+        let (validator_mint, mossstake_mint) = if mossstake_active {
+            lichen_core::consensus::split_epoch_mint(epoch_start, total_supply)
+        } else {
+            (epoch_mint, 0)
+        };
+        (
+            validator_mint,
+            mossstake_mint,
+            epoch_mint,
+            epoch_mint,
+            0,
+            validator_mint,
+            total_staked,
+            "legacy_epoch_allocation",
+        )
+    };
     let epochs_per_year = SLOTS_PER_YEAR / SLOTS_PER_EPOCH;
 
     // Price-adjusted reward (informational — epoch rewards use inflation curve directly)
@@ -18004,10 +18866,12 @@ async fn handle_get_reward_adjustment_info(
     let licn_price = lichen_core::consensus::licn_price_from_state(&state.state);
     let adjusted_reward = reward_config.get_adjusted_reward(current_slot, total_supply, licn_price);
 
-    // Estimate APY: all inflation goes to stakers proportionally at epoch boundaries
-    let annual_inflation = epoch_mint as f64 * epochs_per_year as f64;
-    let apy = if total_staked > 0 {
-        (annual_inflation / total_staked as f64) * 100.0
+    // V2 reports gross security-layer yield over all effective bonded stake.
+    // Legacy epochs report the native-validator allocation only because the
+    // fixed MossStake share has its own independently reported APY.
+    let annual_inflation = apy_reward as f64 * epochs_per_year as f64;
+    let apy = if apy_stake > 0 {
+        (annual_inflation / apy_stake as f64) * 100.0
     } else {
         0.0
     };
@@ -18018,7 +18882,9 @@ async fn handle_get_reward_adjustment_info(
     let current_epoch = current_slot / SLOTS_PER_EPOCH;
     let epoch_start = current_epoch * SLOTS_PER_EPOCH;
     let slots_into_epoch = current_slot.saturating_sub(epoch_start);
-    let projected_unminted = block_reward as u128 * slots_into_epoch as u128;
+    let projected_unminted = (projected_assigned_mint as u128)
+        .saturating_mul(slots_into_epoch as u128)
+        / SLOTS_PER_EPOCH as u128;
     let projected_supply = total_supply.saturating_add(projected_unminted as u64);
 
     // Load wallet pubkeys and balances for full transparency
@@ -18043,7 +18909,7 @@ async fn handle_get_reward_adjustment_info(
         })
     };
 
-    Ok(serde_json::json!({
+    let mut response = serde_json::json!({
         "supplyModel": "inflationary_with_burn",
         "genesisSupply": GENESIS_SUPPLY_SPORES,
         "totalMinted": total_minted,
@@ -18059,6 +18925,8 @@ async fn handle_get_reward_adjustment_info(
         "blockReward": block_reward,
         "adjustedBlockReward": adjusted_reward,
         "epochMint": epoch_mint,
+        "validatorEpochMint": validator_epoch_mint,
+        "mossStakeEpochMint": mossstake_epoch_mint,
         "slotsPerEpoch": SLOTS_PER_EPOCH,
         "epochsPerYear": epochs_per_year,
         "priceAdjustmentMultiplier": if licn_price > 0.0 {
@@ -18100,7 +18968,41 @@ async fn handle_get_reward_adjustment_info(
             "reserve_pool": wallet_info("reserve_pool"),
         },
         "note": "Epoch-based staker rewards: inflation minted at epoch boundaries and distributed to all stakers proportionally by stake weight. Block producers earn transaction fees per-block. 40% fee burn provides counter-pressure."
-    }))
+    });
+    let response_object = response.as_object_mut().ok_or_else(|| RpcError {
+        code: -32603,
+        message: "Failed to construct staking economics response".to_string(),
+    })?;
+    response_object.extend([
+        (
+            "epochInflationCeiling".to_string(),
+            serde_json::json!(epoch_mint),
+        ),
+        (
+            "securityBudget".to_string(),
+            serde_json::json!(security_budget),
+        ),
+        (
+            "projectedAssignedMint".to_string(),
+            serde_json::json!(projected_assigned_mint),
+        ),
+        (
+            "projectedPerformanceUnminted".to_string(),
+            serde_json::json!(projected_performance_unminted),
+        ),
+        (
+            "effectiveBondedStake".to_string(),
+            serde_json::json!(apy_stake),
+        ),
+        ("rewardModel".to_string(), serde_json::json!(reward_model)),
+        (
+            "projectionAssumption".to_string(),
+            serde_json::json!(
+                "current stake remains unchanged and validators finish at 100% performance"
+            ),
+        ),
+    ]);
+    Ok(response)
 }
 
 // ============================================================================
@@ -19479,9 +20381,24 @@ async fn handle_get_dex_margin_stats(state: &RpcState) -> Result<serde_json::Val
         "total_pnl_profit": cf_stats_u64(state, "DEXMARGIN", b"mrg_pnl_profit"),
         "total_pnl_loss": cf_stats_u64(state, "DEXMARGIN", b"mrg_pnl_loss"),
         "insurance_fund": cf_stats_u64(state, "DEXMARGIN", b"mrg_insurance"),
+        "total_collateral_escrowed": cf_stats_u64(state, "DEXMARGIN", b"mrg_coll_esc"),
         "total_open_interest": cf_stats_u64(state, "DEXMARGIN", b"mrg_total_oi"),
+        "funding_v2_enabled": cf_stats_bool(state, "DEXMARGIN", b"mrg_f2_enabled"),
+        "funding_migrated_open_count": cf_stats_u64(state, "DEXMARGIN", b"mrg_f2_migrated"),
+        "funding_migration_finalized": cf_stats_bool(state, "DEXMARGIN", b"mrg_f2_mig_final"),
+        "funding_activation_slot": cf_stats_u64(state, "DEXMARGIN", b"mrg_f2_activation"),
+        "funding_pool": cf_stats_u64(state, "DEXMARGIN", b"mrg_f2_pool"),
+        "funding_total_claims": cf_stats_u64(state, "DEXMARGIN", b"mrg_f2_claims"),
+        "funding_debt_writeoff": cf_stats_u64(state, "DEXMARGIN", b"mrg_f2_writeoff"),
+        "bad_debt": cf_stats_u64(state, "DEXMARGIN", b"mrg_bad_debt"),
+        "cross_v2_enabled": cf_stats_bool(state, "DEXMARGIN", b"mrg_x2_enabled"),
+        "cross_migrated_open_count": cf_stats_u64(state, "DEXMARGIN", b"mrg_x2_migrated"),
+        "cross_migration_finalized": cf_stats_bool(state, "DEXMARGIN", b"mrg_x2_mig_final"),
+        "cross_total_collateral": cf_stats_u64(state, "DEXMARGIN", b"mrg_x2_total"),
+        "max_cross_positions_per_account": 32,
         "max_leverage": max_leverage,
         "paused": cf_stats_bool(state, "DEXMARGIN", b"mrg_paused"),
+        "migration_locked": cf_stats_bool(state, "DEXMARGIN", b"mrg_v2_mig_lock"),
     }))
 }
 
@@ -19580,13 +20497,50 @@ async fn handle_get_dex_governance_stats(state: &RpcState) -> Result<serde_json:
 /// getThallLendStats — Lending protocol stats
 async fn handle_get_thalllend_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     resolve_symbol_pubkey(state, "LEND")?;
+    let total_deposits = cf_stats_u64(state, "LEND", b"ll_total_deposits");
+    let total_borrows = cf_stats_u64(state, "LEND", b"ll_total_borrows");
+    let utilization_pct = if total_deposits == 0 {
+        0
+    } else {
+        u64::try_from(total_borrows as u128 * 100 / total_deposits as u128).unwrap_or(u64::MAX)
+    };
+    let licn_config = state.state.get_program_storage("LEND", b"ll_licn_addr");
+    let licn_configured = licn_config
+        .as_ref()
+        .map(|address| address.len() == 32)
+        .unwrap_or(false);
+    let native_licn = licn_configured
+        && licn_config
+            .as_ref()
+            .map(|address| address.iter().all(|byte| *byte == 0))
+            .unwrap_or(false);
+    let oracle_address = state.state.get_program_storage("LEND", b"ll_oracle_addr");
+    let oracle_asset = state.state.get_program_storage("LEND", b"ll_oracle_asset");
+    let oracle_config_present = oracle_address.is_some() || oracle_asset.is_some();
+    let oracle_config_valid = oracle_address
+        .as_ref()
+        .map(|address| address.len() == 32 && address.iter().any(|byte| *byte != 0))
+        .unwrap_or(false)
+        && oracle_asset
+            .as_ref()
+            .map(|asset| !asset.is_empty() && asset.len() <= 64)
+            .unwrap_or(false);
     Ok(serde_json::json!({
-        "total_deposits": cf_stats_u64(state, "LEND", b"ll_total_deposits"),
-        "total_borrows": cf_stats_u64(state, "LEND", b"ll_total_borrows"),
+        "total_deposits": total_deposits,
+        "total_borrows": total_borrows,
+        "available_liquidity": total_deposits.saturating_sub(total_borrows),
+        "utilization_pct": utilization_pct,
         "reserves": cf_stats_u64(state, "LEND", b"ll_reserves"),
         "deposit_count": cf_stats_u64(state, "LEND", b"ll_dep_count"),
         "borrow_count": cf_stats_u64(state, "LEND", b"ll_bor_count"),
+        "repay_count": cf_stats_u64(state, "LEND", b"ll_repay_count"),
         "liquidation_count": cf_stats_u64(state, "LEND", b"ll_liq_count"),
+        "deposit_cap": cf_stats_u64(state, "LEND", b"ll_deposit_cap"),
+        "reserve_factor_pct": cf_stats_u64(state, "LEND", b"ll_reserve_factor"),
+        "licn_configured": licn_configured,
+        "native_licn": native_licn,
+        "oracle_config_present": oracle_config_present,
+        "oracle_config_valid": oracle_config_valid,
         "paused": cf_stats_bool(state, "LEND", b"ll_paused"),
     }))
 }
@@ -19596,27 +20550,274 @@ async fn handle_get_sporepay_stats(state: &RpcState) -> Result<serde_json::Value
     resolve_symbol_pubkey(state, "SPOREPAY")?;
     Ok(serde_json::json!({
         "stream_count": cf_stats_u64(state, "SPOREPAY", b"stream_count"),
-        "total_streamed": cf_stats_u64(state, "SPOREPAY", b"cp_total_streamed"),
-        "total_withdrawn": cf_stats_u64(state, "SPOREPAY", b"cp_total_withdrawn"),
-        "cancel_count": cf_stats_u64(state, "SPOREPAY", b"cp_cancel_count"),
-        "paused": cf_stats_bool(state, "SPOREPAY", b"cp_paused"),
+        "total_streamed": cf_stats_u64(state, "SPOREPAY", b"sp_total_streamed"),
+        "total_withdrawn": cf_stats_u64(state, "SPOREPAY", b"sp_total_withdrawn"),
+        "cancel_count": cf_stats_u64(state, "SPOREPAY", b"sp_cancel_count"),
+        "escrow_liability": cf_stats_u64(state, "SPOREPAY", b"sp_escrow_liability"),
+        "unpaid_liability": cf_stats_u64(state, "SPOREPAY", b"sp_total_unpaid"),
+        "accounting_version": cf_stats_u64(state, "SPOREPAY", b"sp_account_version"),
+        "migration_locked": cf_stats_bool(state, "SPOREPAY", b"sp_account_mig_lock"),
+        "migration_expected_streams": cf_stats_u64(state, "SPOREPAY", b"sp_account_mig_expected"),
+        "migration_cursor": cf_stats_u64(state, "SPOREPAY", b"sp_account_mig_cursor"),
+        "paused": cf_stats_bool(state, "SPOREPAY", b"sp_paused"),
     }))
 }
 
 /// getBountyBoardStats — Bounty platform stats
 async fn handle_get_bountyboard_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    resolve_symbol_pubkey(state, "BOUNTY")?;
-    Ok(serde_json::json!({
-        "bounty_count": cf_stats_u64(state, "BOUNTY", b"bounty_count"),
-        "completed_count": cf_stats_u64(state, "BOUNTY", b"bb_completed_count"),
-        "reward_volume": cf_stats_u64(state, "BOUNTY", b"bb_reward_volume"),
-        "cancel_count": cf_stats_u64(state, "BOUNTY", b"bb_cancel_count"),
-    }))
+    let program = resolve_symbol_pubkey(state, "BOUNTY")?;
+    let raw = |key: &[u8]| state.state.get_program_storage("BOUNTY", key);
+    let exact_u64 = |key: &[u8]| match raw(key) {
+        None => Some(0),
+        Some(data) if data.len() == 8 => Some(u64::from_le_bytes(
+            data.as_slice()
+                .try_into()
+                .expect("exact u64 length checked"),
+        )),
+        Some(_) => None,
+    };
+    let exact_flag = |key: &[u8]| match raw(key) {
+        None => Some(false),
+        Some(data) if data.as_slice() == [0] => Some(false),
+        Some(data) if data.as_slice() == [1] => Some(true),
+        Some(_) => None,
+    };
+    let exact_address = |key: &[u8]| match raw(key) {
+        Some(data) if data.len() == 32 => {
+            let mut bytes = [0u8; 32];
+            bytes.copy_from_slice(&data);
+            Some(Pubkey(bytes))
+        }
+        _ => None,
+    };
+
+    let token_raw = raw(b"bounty_token_addr");
+    let token_config_present = token_raw.is_some();
+    let payment_token = exact_address(b"bounty_token_addr");
+    let token_config_valid = payment_token.is_some();
+    let native_licn = payment_token == Some(Pubkey([0u8; 32]));
+
+    let identity_admin =
+        exact_address(b"identity_admin").filter(|address| address.0.iter().any(|byte| *byte != 0));
+    let pending_admin_raw = raw(b"bb_pending_admin");
+    let pending_admin_present = pending_admin_raw.is_some();
+    let pending_admin = exact_address(b"bb_pending_admin")
+        .filter(|address| address.0.iter().any(|byte| *byte != 0));
+    let admin_transition_valid =
+        identity_admin.is_some() && (!pending_admin_present || pending_admin.is_some());
+    let lichenid_address = exact_address(b"lichenid_address")
+        .filter(|address| address.0.iter().any(|byte| *byte != 0));
+    let identity_min_reputation = exact_u64(b"lichenid_min_rep");
+    let identity_gate_enabled = identity_min_reputation.is_some_and(|value| value > 0);
+    let identity_config_valid = identity_admin.is_some()
+        && identity_min_reputation.is_some()
+        && (!identity_gate_enabled || lichenid_address.is_some());
+
+    let platform_fee_bps = exact_u64(b"platform_fee_bps");
+    let fee_treasury =
+        exact_address(b"bb_fee_treasury").filter(|address| address.0.iter().any(|byte| *byte != 0));
+    let fee_config_valid =
+        platform_fee_bps.is_some_and(|fee| fee <= 1_000) && fee_treasury.is_some();
+
+    let accounting_version = exact_u64(b"bb_account_version");
+    let migration_locked = exact_flag(b"bb_account_mig_lock");
+    let migration_expected_bounties = exact_u64(b"bb_account_mig_expected");
+    let migration_cursor = exact_u64(b"bb_account_mig_cursor");
+    let migration_escrow = exact_u64(b"bb_account_mig_escrow");
+    let escrow_liability = exact_u64(b"bb_escrow_liability");
+    let platform_fees = payment_token.and_then(|token| {
+        let mut key = b"bb_platform_fee:".to_vec();
+        key.extend_from_slice(&token.0);
+        exact_u64(&key)
+    });
+    let total_liability = escrow_liability
+        .zip(platform_fees)
+        .and_then(|(escrow, fees)| escrow.checked_add(fees));
+    let custody_balance = payment_token.and_then(|token| {
+        if token == Pubkey([0u8; 32]) {
+            state.state.get_balance(&program).ok()
+        } else {
+            state.state.get_token_balance(&token, &program).ok()
+        }
+    });
+    let explicitly_paused = match raw(b"bb_paused") {
+        None => Some(false),
+        Some(data) if data.as_slice() == [0] => Some(false),
+        Some(data) if data.as_slice() == [1] => Some(true),
+        Some(_) => None,
+    };
+    let accounting_ready = accounting_version == Some(2)
+        && migration_locked == Some(false)
+        && escrow_liability.is_some()
+        && platform_fees.is_some()
+        && token_config_valid;
+    let solvent = accounting_ready
+        && total_liability
+            .zip(custody_balance)
+            .is_some_and(|(liability, custody)| custody >= liability);
+    let effective_paused = explicitly_paused.unwrap_or(true)
+        || !accounting_ready
+        || !fee_config_valid
+        || !identity_config_valid
+        || !admin_transition_valid;
+    let bounty_count = exact_u64(b"bounty_count");
+    let completed_count = exact_u64(b"bb_completed_count");
+    let reward_volume = exact_u64(b"bb_reward_volume");
+    let cancel_count = exact_u64(b"bb_cancel_count");
+
+    let mut result = serde_json::json!({
+        "bounty_count": bounty_count,
+        "completed_count": completed_count,
+        "reward_volume": reward_volume,
+        "cancel_count": cancel_count,
+        "payment_token": payment_token.map(|value| value.to_base58()),
+        "native_licn": native_licn,
+        "token_config_present": token_config_present,
+        "token_config_valid": token_config_valid,
+        "fee_treasury": fee_treasury.map(|value| value.to_base58()),
+        "platform_fee_bps": platform_fee_bps,
+        "fee_config_valid": fee_config_valid,
+        "identity_admin": identity_admin.map(|value| value.to_base58()),
+        "pending_admin": pending_admin.map(|value| value.to_base58()),
+        "pending_admin_present": pending_admin_present,
+        "admin_transition_valid": admin_transition_valid,
+        "lichenid_address": lichenid_address.map(|value| value.to_base58()),
+        "identity_min_reputation": identity_min_reputation,
+        "identity_gate_enabled": identity_gate_enabled,
+        "identity_config_valid": identity_config_valid,
+        "accounting_version": accounting_version,
+        "migration_locked": migration_locked,
+        "migration_expected_bounties": migration_expected_bounties,
+        "migration_cursor": migration_cursor,
+        "migration_escrow": migration_escrow,
+        "escrow_liability": escrow_liability,
+        "platform_fees": platform_fees,
+        "total_liability": total_liability,
+        "custody_balance": custody_balance,
+        "accounting_ready": accounting_ready,
+        "solvent": solvent,
+        "explicitly_paused": explicitly_paused,
+        "paused": effective_paused,
+    });
+    let object = result
+        .as_object_mut()
+        .expect("BountyBoard stats literal is an object");
+    for (field, value) in [
+        ("bounty_count_exact", bounty_count),
+        ("completed_count_exact", completed_count),
+        ("reward_volume_raw_exact", reward_volume),
+        ("cancel_count_exact", cancel_count),
+        (
+            "migration_expected_bounties_exact",
+            migration_expected_bounties,
+        ),
+        ("migration_cursor_exact", migration_cursor),
+        ("migration_escrow_raw_exact", migration_escrow),
+        ("escrow_liability_raw_exact", escrow_liability),
+        ("platform_fees_raw_exact", platform_fees),
+        ("total_liability_raw_exact", total_liability),
+        ("custody_balance_raw_exact", custody_balance),
+    ] {
+        object.insert(
+            field.to_string(),
+            value
+                .map(|exact| serde_json::Value::String(exact.to_string()))
+                .unwrap_or(serde_json::Value::Null),
+        );
+    }
+    Ok(result)
 }
 
 /// getComputeMarketStats — Compute marketplace stats
 async fn handle_get_compute_market_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    resolve_symbol_pubkey(state, "COMPUTE")?;
+    let program = resolve_symbol_pubkey(state, "COMPUTE")?;
+    let raw = |key: &[u8]| state.state.get_program_storage("COMPUTE", key);
+    let exact_u64 = |key: &[u8]| match raw(key) {
+        None => Some(0),
+        Some(data) if data.len() == 8 => Some(u64::from_le_bytes(
+            data.as_slice()
+                .try_into()
+                .expect("exact u64 length checked"),
+        )),
+        Some(_) => None,
+    };
+    let exact_flag = |key: &[u8]| match raw(key) {
+        None => Some(false),
+        Some(data) if data.as_slice() == [0] => Some(false),
+        Some(data) if data.as_slice() == [1] => Some(true),
+        Some(_) => None,
+    };
+    let exact_address = |key: &[u8]| match raw(key) {
+        Some(data) if data.len() == 32 => {
+            let mut bytes = [0u8; 32];
+            bytes.copy_from_slice(&data);
+            Some(Pubkey(bytes))
+        }
+        _ => None,
+    };
+
+    let token_raw = raw(b"cm_token_address");
+    let token_config_present = token_raw.is_some();
+    let payment_token = exact_address(b"cm_token_address");
+    let token_config_valid = payment_token.is_some();
+    let native_licn = payment_token == Some(Pubkey([0u8; 32]));
+
+    let identity_admin =
+        exact_address(b"identity_admin").filter(|address| address.0.iter().any(|byte| *byte != 0));
+    let lichenid_address = exact_address(b"lichenid_address")
+        .filter(|address| address.0.iter().any(|byte| *byte != 0));
+    let identity_min_reputation = exact_u64(b"lichenid_min_rep");
+    let identity_gate_enabled = identity_min_reputation.is_some_and(|value| value > 0);
+    let identity_config_valid = identity_admin.is_some()
+        && identity_min_reputation.is_some()
+        && (!identity_gate_enabled || lichenid_address.is_some());
+
+    let accounting_version = exact_u64(b"cm_account_version");
+    let migration_locked = exact_flag(b"cm_account_mig_lock");
+    let escrow_liability = exact_u64(b"cm_escrow_liability");
+    let unpaid_liability = exact_u64(b"cm_total_unpaid");
+    let migration_expected_jobs = exact_u64(b"cm_account_mig_expected");
+    let migration_cursor = exact_u64(b"cm_account_mig_cursor");
+    let migration_escrow = exact_u64(b"cm_account_mig_escrow");
+    let migration_unpaid = exact_u64(b"cm_account_mig_unpaid");
+    let platform_fees = payment_token.and_then(|token| {
+        let mut key = b"platform_fee:".to_vec();
+        key.extend_from_slice(&token.0);
+        exact_u64(&key)
+    });
+    let total_liability = escrow_liability
+        .zip(unpaid_liability)
+        .zip(platform_fees)
+        .and_then(|((escrow, unpaid), fees)| {
+            escrow
+                .checked_add(unpaid)
+                .and_then(|value| value.checked_add(fees))
+        });
+    let custody_balance = payment_token.and_then(|token| {
+        if token == Pubkey([0u8; 32]) {
+            state.state.get_balance(&program).ok()
+        } else {
+            state.state.get_token_balance(&token, &program).ok()
+        }
+    });
+    let explicitly_paused = match raw(b"cm_paused") {
+        None => Some(false),
+        Some(data) if data.is_empty() || data.as_slice() == [0] => Some(false),
+        Some(data) if data.as_slice() == [1] => Some(true),
+        Some(_) => None,
+    };
+    let accounting_ready = accounting_version == Some(3)
+        && migration_locked == Some(false)
+        && escrow_liability.is_some()
+        && unpaid_liability.is_some()
+        && platform_fees.is_some()
+        && token_config_valid;
+    let solvent = accounting_ready
+        && total_liability
+            .zip(custody_balance)
+            .is_some_and(|(liability, custody)| custody >= liability);
+    let effective_paused = explicitly_paused.unwrap_or(true) || !accounting_ready;
+
     Ok(serde_json::json!({
         "job_count": cf_stats_u64(state, "COMPUTE", b"job_count"),
         "completed_count": cf_stats_u64(state, "COMPUTE", b"cm_completed_count"),
@@ -19630,6 +20831,34 @@ async fn handle_get_compute_market_stats(state: &RpcState) -> Result<serde_json:
         "agent_payment_count": cf_stats_u64(state, "COMPUTE", b"cm_agent_pay_count"),
         "agent_payment_volume": cf_stats_u64(state, "COMPUTE", b"cm_agent_pay_volume"),
         "agent_blocked_payment_count": cf_stats_u64(state, "COMPUTE", b"cm_agent_block_count"),
+        "agent_blocked_payment_count_supported": false,
+        "payment_token": payment_token.map(|value| value.to_base58()),
+        "native_licn": native_licn,
+        "token_config_present": token_config_present,
+        "token_config_valid": token_config_valid,
+        "fee_treasury": exact_address(b"cm_fee_treasury")
+            .filter(|address| address.0.iter().any(|byte| *byte != 0))
+            .map(|value| value.to_base58()),
+        "identity_admin": identity_admin.map(|value| value.to_base58()),
+        "lichenid_address": lichenid_address.map(|value| value.to_base58()),
+        "identity_min_reputation": identity_min_reputation,
+        "identity_gate_enabled": identity_gate_enabled,
+        "identity_config_valid": identity_config_valid,
+        "accounting_version": accounting_version,
+        "migration_locked": migration_locked,
+        "migration_expected_jobs": migration_expected_jobs,
+        "migration_cursor": migration_cursor,
+        "migration_escrow": migration_escrow,
+        "migration_unpaid": migration_unpaid,
+        "escrow_liability": escrow_liability,
+        "unpaid_liability": unpaid_liability,
+        "platform_fees": platform_fees,
+        "total_liability": total_liability,
+        "custody_balance": custody_balance,
+        "accounting_ready": accounting_ready,
+        "solvent": solvent,
+        "explicitly_paused": explicitly_paused,
+        "paused": effective_paused,
     }))
 }
 
@@ -19646,11 +20875,63 @@ async fn handle_get_moss_storage_stats(state: &RpcState) -> Result<serde_json::V
 /// getLichenMarketStats — NFT marketplace stats
 async fn handle_get_lichenmarket_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     resolve_symbol_pubkey(state, "MARKET")?;
+    let listing_count = cf_stats_u64(state, "MARKET", b"mm_listing_count");
+    let sale_count = cf_stats_u64(state, "MARKET", b"mm_sale_count");
+    let native_sale_volume = cf_stats_u64(state, "MARKET", b"mm_native_sale_volume");
+    let legacy_mixed_sale_volume = cf_stats_u64(state, "MARKET", b"mm_sale_volume");
+    let metrics_version = cf_stats_u64(state, "MARKET", b"mm_metrics_version");
+    let migration_locked = cf_stats_bool(state, "MARKET", b"mm_metrics_mig_lock");
+    let explicitly_paused = cf_stats_bool(state, "MARKET", b"mm_paused");
     Ok(serde_json::json!({
-        "listing_count": cf_stats_u64(state, "MARKET", b"mm_listing_count"),
-        "sale_count": cf_stats_u64(state, "MARKET", b"mm_sale_count"),
-        "sale_volume": cf_stats_u64(state, "MARKET", b"mm_sale_volume"),
-        "paused": cf_stats_bool(state, "MARKET", b"mm_paused"),
+        "listing_count": listing_count,
+        "listing_count_exact": listing_count.to_string(),
+        "sale_count": sale_count,
+        "sale_count_exact": sale_count.to_string(),
+        "native_sale_volume": native_sale_volume,
+        "native_sale_volume_raw_exact": native_sale_volume.to_string(),
+        "legacy_mixed_sale_volume": legacy_mixed_sale_volume,
+        "legacy_mixed_sale_volume_raw_exact": legacy_mixed_sale_volume.to_string(),
+        "metrics_version": metrics_version,
+        "migration_locked": migration_locked,
+        "migration_expected_token_rows": cf_stats_u64(state, "MARKET", b"mm_metrics_mig_expected"),
+        "migration_migrated_token_rows": cf_stats_u64(state, "MARKET", b"mm_metrics_mig_rows"),
+        "accounting_ready": metrics_version == 3 && !migration_locked,
+        "paused": explicitly_paused || metrics_version != 3 || migration_locked,
+    }))
+}
+
+/// getLichenMarketTokenStats — Exact raw accounting for one payment token.
+async fn handle_get_lichenmarket_token_stats(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    resolve_symbol_pubkey(state, "MARKET")?;
+    let token = parse_pubkey_param(
+        params,
+        &["token", "payment_token", "paymentToken", "address"],
+        "Invalid params: expected [payment_token]",
+        "payment_token",
+    )?;
+    let keyed = |prefix: &[u8]| {
+        let mut key = Vec::with_capacity(prefix.len() + 32);
+        key.extend_from_slice(prefix);
+        key.extend_from_slice(&token.0);
+        key
+    };
+    let sale_count = cf_stats_u64(state, "MARKET", &keyed(b"mm_token_sale_count:"));
+    let sale_volume = cf_stats_u64(state, "MARKET", &keyed(b"mm_token_sale_volume:"));
+    let realized_fees = cf_stats_u64(state, "MARKET", &keyed(b"mm_token_sale_fees:"));
+    let withdrawable_fees = cf_stats_u64(state, "MARKET", &keyed(b"mm_platform_fee:"));
+    Ok(serde_json::json!({
+        "payment_token": token.to_base58(),
+        "sale_count": sale_count,
+        "sale_count_exact": sale_count.to_string(),
+        "sale_volume": sale_volume,
+        "sale_volume_raw_exact": sale_volume.to_string(),
+        "realized_fees": realized_fees,
+        "realized_fees_raw_exact": realized_fees.to_string(),
+        "withdrawable_fees": withdrawable_fees,
+        "withdrawable_fees_raw_exact": withdrawable_fees.to_string(),
     }))
 }
 
@@ -19864,9 +21145,12 @@ async fn handle_get_neo_gas_rewards_position(
 /// getNeoZkProofServiceStatus — Neo proof-service verifier metadata.
 async fn handle_get_neo_zk_proof_service_status() -> Result<serde_json::Value, RpcError> {
     Ok(serde_json::json!({
-        "configured": true,
+        "configured": false,
+        "verification_enabled": false,
+        "status": "disabled_insecure_verifier",
+        "reason": lichen_core::zk::PROOF_SCHEME_ACCEPTANCE_DISABLED_REASON,
         "lane": "NX-960",
-        "supported_proofs": ["reserve_liability"],
+        "supported_proofs": [],
         "zk_scheme": ZkSchemeVersion::Plonky3FriPoseidon2.as_str(),
         "verifier_version": 1u64,
         "privacy_model": "transparent_aggregate_totals_no_address_list_v1",
@@ -19897,6 +21181,16 @@ async fn handle_get_neo_zk_proof_service_status() -> Result<serde_json::Value, R
 async fn handle_verify_neo_reserve_liability_proof(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
+    if !lichen_core::zk::proof_acceptance_enabled(&ProofType::ReserveLiability) {
+        return Err(RpcError {
+            code: -32090,
+            message: format!(
+                "reserve/liability proof verification is unavailable: {}",
+                lichen_core::zk::PROOF_SCHEME_ACCEPTANCE_DISABLED_REASON
+            ),
+        });
+    }
+
     let payload = single_rpc_param(
         params,
         "Expected params: [{ proof, stark_public_inputs, proof_type? }]",
@@ -19976,15 +21270,133 @@ fn parse_stark_public_inputs_value(value: &serde_json::Value) -> Result<Vec<u64>
 
 /// getSporeVaultStats — Yield vault stats
 async fn handle_get_sporevault_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    resolve_symbol_pubkey(state, "SPOREVAULT")?;
+    const MAX_VAULT_STRATEGIES: u64 = 5;
+    const PERFORMANCE_FEE_PERCENT: u64 = 10;
+    const MANAGEMENT_FEE_BPS: u64 = 200;
+    const TARGET_SLOTS_PER_YEAR: u64 = 78_894_000;
+
+    let program = resolve_symbol_pubkey(state, "SPOREVAULT")?;
+    let total_assets = cf_stats_u64(state, "SPOREVAULT", b"cv_total_assets");
+    let total_shares = cf_stats_u64(state, "SPOREVAULT", b"cv_total_shares");
+    let idle_assets = cf_stats_u64(state, "SPOREVAULT", b"cv_idle_assets");
+    let lending_assets = cf_stats_u64(state, "SPOREVAULT", b"cv_lending_assets");
+    let protocol_fees = cf_stats_u64(state, "SPOREVAULT", b"cv_protocol_fees");
+    let accounting_version = cf_stats_u64(state, "SPOREVAULT", b"cv_accounting_version");
+    let strategy_count = cf_stats_u64(state, "SPOREVAULT", b"cv_strategy_count");
+    let licn_config = state
+        .state
+        .get_program_storage("SPOREVAULT", b"cv_licn_token");
+    let licn_config_present = licn_config.is_some();
+    let licn_config_valid = licn_config
+        .as_ref()
+        .map(|address| address.len() == 32)
+        .unwrap_or(false);
+    let native_licn = licn_config
+        .as_ref()
+        .map(|address| address.len() == 32 && address.iter().all(|byte| *byte == 0))
+        .unwrap_or(false);
+    let thalllend_config = state
+        .state
+        .get_program_storage("SPOREVAULT", b"cv_thalllend_addr");
+    let thalllend_config_present = thalllend_config.is_some();
+    let thalllend_config_valid = thalllend_config
+        .as_ref()
+        .map(|address| address.len() == 32 && address.iter().any(|byte| *byte != 0))
+        .unwrap_or(false);
+    let strategy_registry_bounded = strategy_count <= MAX_VAULT_STRATEGIES;
+    let mut strategy_registry_valid = strategy_registry_bounded;
+    let mut lending_strategy_rows = 0u64;
+    let mut active_lending_strategies = 0u64;
+    let mut total_allocation = 0u64;
+    if strategy_registry_bounded {
+        for index in 0..strategy_count {
+            let type_key = format!("cv_strat_type:{index}");
+            let allocation_key = format!("cv_strat_alloc:{index}");
+            let deployed_key = format!("cv_strat_deployed:{index}");
+            let strategy_type = cf_stats_u64(state, "SPOREVAULT", type_key.as_bytes());
+            let allocation = cf_stats_u64(state, "SPOREVAULT", allocation_key.as_bytes());
+            let deployed = cf_stats_u64(state, "SPOREVAULT", deployed_key.as_bytes());
+            total_allocation = match total_allocation.checked_add(allocation) {
+                Some(total) => total,
+                None => {
+                    strategy_registry_valid = false;
+                    u64::MAX
+                }
+            };
+            if strategy_type == 1 {
+                lending_strategy_rows += 1;
+                if allocation > 0 {
+                    active_lending_strategies += 1;
+                }
+                if allocation > 100 {
+                    strategy_registry_valid = false;
+                }
+            } else if strategy_type != 0 || allocation != 0 || deployed != 0 {
+                strategy_registry_valid = false;
+            }
+        }
+        if lending_strategy_rows > 1 || total_allocation > 100 {
+            strategy_registry_valid = false;
+        }
+    }
+    let components_match_total = idle_assets
+        .checked_add(lending_assets)
+        .map(|components| components == total_assets)
+        .unwrap_or(false);
+    let share_state_consistent = (total_assets == 0) == (total_shares == 0);
+    let expected_liquid_custody = idle_assets.checked_add(protocol_fees);
+    let real_liquid_custody = if native_licn {
+        state.state.get_balance(&program).ok()
+    } else {
+        None
+    };
+    let liquid_custody_covers_accounting = expected_liquid_custody
+        .zip(real_liquid_custody)
+        .map(|(expected, actual)| actual >= expected)
+        .unwrap_or(false);
+    let paused = cf_stats_bool(state, "SPOREVAULT", b"cv_paused");
+    let operational = accounting_version == 2
+        && !paused
+        && licn_config_valid
+        && thalllend_config_valid
+        && strategy_registry_valid
+        && active_lending_strategies == 1
+        && components_match_total
+        && share_state_consistent
+        && liquid_custody_covers_accounting;
     Ok(serde_json::json!({
-        "total_assets": cf_stats_u64(state, "SPOREVAULT", b"cv_total_assets"),
-        "total_shares": cf_stats_u64(state, "SPOREVAULT", b"cv_total_shares"),
-        "strategy_count": cf_stats_u64(state, "SPOREVAULT", b"cv_strategy_count"),
+        "total_assets": total_assets,
+        "total_shares": total_shares,
+        "idle_assets": idle_assets,
+        "lending_assets": lending_assets,
+        "strategy_count": strategy_count,
+        "lending_strategy_rows": lending_strategy_rows,
+        "active_lending_strategies": active_lending_strategies,
+        "strategy_registry_bounded": strategy_registry_bounded,
+        "strategy_registry_valid": strategy_registry_valid,
+        "total_strategy_allocation": total_allocation,
         "total_earned": cf_stats_u64(state, "SPOREVAULT", b"cv_total_earned"),
         "fees_earned": cf_stats_u64(state, "SPOREVAULT", b"cv_fees_earned"),
-        "protocol_fees": cf_stats_u64(state, "SPOREVAULT", b"cv_protocol_fees"),
-        "paused": cf_stats_bool(state, "SPOREVAULT", b"cv_paused"),
+        "protocol_fees": protocol_fees,
+        "accounting_version": accounting_version,
+        "deposit_fee_bps": cf_stats_u64(state, "SPOREVAULT", b"cv_dep_fee"),
+        "withdrawal_fee_bps": cf_stats_u64(state, "SPOREVAULT", b"cv_wd_fee"),
+        "deposit_cap": cf_stats_u64(state, "SPOREVAULT", b"cv_dep_cap"),
+        "risk_tier": cf_stats_u64(state, "SPOREVAULT", b"cv_risk_tier"),
+        "performance_fee_percent": PERFORMANCE_FEE_PERCENT,
+        "management_fee_bps": MANAGEMENT_FEE_BPS,
+        "target_slots_per_year": TARGET_SLOTS_PER_YEAR,
+        "licn_config_present": licn_config_present,
+        "licn_config_valid": licn_config_valid,
+        "native_licn": native_licn,
+        "thalllend_config_present": thalllend_config_present,
+        "thalllend_config_valid": thalllend_config_valid,
+        "components_match_total": components_match_total,
+        "share_state_consistent": share_state_consistent,
+        "real_liquid_custody": real_liquid_custody,
+        "liquid_custody_covers_accounting": liquid_custody_covers_accounting,
+        "paused": paused,
+        "operational": operational,
     }))
 }
 
@@ -20349,11 +21761,17 @@ async fn handle_get_lichenoracle_stats(state: &RpcState) -> Result<serde_json::V
         }
     }
     let mut consensus_feeds = 0u64;
+    let mut stale_consensus_feeds = 0u64;
     let mut native_attestations = 0u64;
+    let current_slot = state.state.get_last_slot().unwrap_or(0);
     for asset in &tracked_assets {
         if let Ok(Some(price)) = state.state.get_oracle_consensus_price(asset) {
-            if price.price > 0 {
+            let fresh = price.slot <= current_slot
+                && current_slot - price.slot <= lichen_core::ORACLE_STALENESS_SLOTS;
+            if price.price > 0 && price.decimals == lichen_core::ORACLE_PRICE_DECIMALS && fresh {
                 consensus_feeds = consensus_feeds.saturating_add(1);
+            } else {
+                stale_consensus_feeds = stale_consensus_feeds.saturating_add(1);
             }
             native_attestations =
                 native_attestations.saturating_add(price.attestation_count as u64);
@@ -20362,16 +21780,19 @@ async fn handle_get_lichenoracle_stats(state: &RpcState) -> Result<serde_json::V
     let contract_feeds = cf_stats_u64(state, "ORACLE", b"stats_feeds");
     let contract_attestations = cf_stats_u64(state, "ORACLE", b"stats_attestations");
     let paused = cf_stats_bool(state, "ORACLE", b"oracle_paused");
+    let consensus_managed = cf_stats_bool(state, "ORACLE", b"oracle_consensus_managed");
     let operational =
-        contract_feeds >= 4 && consensus_feeds >= tracked_assets.len() as u64 && !paused;
+        consensus_managed && consensus_feeds == tracked_assets.len() as u64 && !paused;
     Ok(serde_json::json!({
         "queries": cf_stats_u64(state, "ORACLE", b"stats_queries"),
-        "feeds": contract_feeds,
+        "feeds": consensus_feeds,
         "contract_feeds": contract_feeds,
         "consensus_feeds": consensus_feeds,
+        "stale_consensus_feeds": stale_consensus_feeds,
         "attestations": contract_attestations.saturating_add(native_attestations),
         "contract_attestations": contract_attestations,
         "native_attestations": native_attestations,
+        "consensus_managed": consensus_managed,
         "paused": paused,
         "operational": operational,
     }))
@@ -20447,15 +21868,15 @@ async fn handle_get_dex_pairs(state: &RpcState) -> Result<serde_json::Value, Rpc
                     match quote.as_str() {
                         "LICN" => {
                             let licn_usd =
-                                lichen_core::consensus::licn_price_from_state(&state.state);
-                            if let Some(base_usd) = base_usd {
-                                if licn_usd > 0.0 {
+                                lichen_core::consensus::consensus_oracle_price_from_state(
+                                    &state.state,
+                                    "LICN",
+                                );
+                            match (base_usd, licn_usd) {
+                                (Some(base_usd), Some(licn_usd)) if licn_usd > 0.0 => {
                                     base_usd / licn_usd
-                                } else {
-                                    0.0
                                 }
-                            } else {
-                                0.0
+                                _ => 0.0,
                             }
                         }
                         _ => base_usd.unwrap_or(0.0),
@@ -20480,13 +21901,49 @@ async fn handle_get_oracle_prices(state: &RpcState) -> Result<serde_json::Value,
     let assets = [
         "LICN", "wSOL", "wETH", "wBNB", "wNEO", "wGAS", "wBTC", "lUSD",
     ];
+    let mut required_assets = vec!["LICN", "wSOL", "wETH", "wBNB"];
+    for (symbol, asset) in [("WNEO", "wNEO"), ("WGAS", "wGAS"), ("WBTC", "wBTC")] {
+        if state
+            .state
+            .get_symbol_registry(symbol)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            required_assets.push(asset);
+        }
+    }
     let mut prices = serde_json::Map::new();
     prices.insert("source".to_string(), serde_json::json!("native_consensus"));
+    let mut fresh_assets = std::collections::HashSet::new();
     for asset in &assets {
-        let price = lichen_core::consensus::consensus_oracle_price_from_state(&state.state, asset)
-            .unwrap_or(0.0);
+        let price = lichen_core::consensus::consensus_oracle_price_from_state(&state.state, asset);
+        if price.is_some() {
+            fresh_assets.insert(*asset);
+        }
         prices.insert(asset.to_string(), serde_json::json!(price));
     }
+    let consensus_managed = cf_stats_bool(state, "ORACLE", b"oracle_consensus_managed");
+    let paused = cf_stats_bool(state, "ORACLE", b"oracle_paused");
+    let operational = consensus_managed
+        && !paused
+        && required_assets
+            .iter()
+            .all(|asset| fresh_assets.contains(asset));
+    prices.insert("operational".to_string(), serde_json::json!(operational));
+    prices.insert(
+        "consensusManaged".to_string(),
+        serde_json::json!(consensus_managed),
+    );
+    prices.insert("paused".to_string(), serde_json::json!(paused));
+    prices.insert(
+        "requiredFeeds".to_string(),
+        serde_json::json!(required_assets.len()),
+    );
+    prices.insert(
+        "freshFeeds".to_string(),
+        serde_json::json!(fresh_assets.len()),
+    );
     Ok(serde_json::Value::Object(prices))
 }
 
@@ -22015,6 +23472,9 @@ mod tests {
         stake_info.total_debt_repaid = 13;
         stake_info.start_slot = 17;
         stake_info.blocks_produced = 123_456;
+        pool.initialize_staking_v2(0, &[pubkey]).unwrap();
+        pool.request_staking_v2_commission_change(&pubkey, 600)
+            .unwrap();
         state.put_stake_pool(&pool).unwrap();
 
         let rpc_state = make_test_rpc_state(state);
@@ -22031,12 +23491,40 @@ mod tests {
         );
         assert_eq!(validator_list[0]["bootstrap_debt"], serde_json::json!(7));
         assert_eq!(validator_list[0]["earned_amount"], serde_json::json!(11));
+        assert_eq!(
+            validator_list[0]["staking_v2_active"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            validator_list[0]["staking_v2_epoch_active"],
+            serde_json::json!(true)
+        );
+        assert_eq!(validator_list[0]["commission_rate"], serde_json::json!(500));
+        assert_eq!(
+            validator_list[0]["pending_commission_rate"],
+            serde_json::json!(600)
+        );
+        assert_eq!(
+            validator_list[0]["pending_commission_activation_epoch"],
+            serde_json::json!(2)
+        );
+        assert_eq!(
+            validator_list[0]["saturation_usage_bps"],
+            serde_json::json!(2_000)
+        );
+        assert_eq!(
+            validator_list[0]["delegation_capacity_remaining"],
+            serde_json::json!(MIN_VALIDATOR_STAKE * 4)
+        );
 
         let info =
             handle_get_validator_info(&rpc_state, Some(serde_json::json!([pubkey.to_base58()])))
                 .await
                 .unwrap();
         assert_eq!(info["blocks_proposed"], serde_json::json!(123_456));
+        assert_eq!(info["commission_rate"], serde_json::json!(500));
+        assert_eq!(info["pending_commission_rate"], serde_json::json!(600));
+        assert_eq!(info["saturation_usage_bps"], serde_json::json!(2_000));
 
         let status =
             handle_get_staking_status(&rpc_state, Some(serde_json::json!([pubkey.to_base58()])))
@@ -22051,6 +23539,58 @@ mod tests {
         assert_eq!(status["earned_amount"], serde_json::json!(11));
         assert_eq!(status["total_debt_repaid"], serde_json::json!(13));
         assert_eq!(status["start_slot"], serde_json::json!(17));
+    }
+
+    #[tokio::test]
+    async fn validator_reads_keep_next_epoch_registrations_visible() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let active = Pubkey([10u8; 32]);
+        let queued = Pubkey([11u8; 32]);
+
+        let mut set = ValidatorSet::new();
+        set.add_validator(ValidatorInfo::new(active, MIN_VALIDATOR_STAKE));
+        set.add_validator(ValidatorInfo::new(queued, MIN_VALIDATOR_STAKE));
+        state.save_validator_set(&set).unwrap();
+
+        let mut pool = StakePool::new();
+        pool.stake(active, MIN_VALIDATOR_STAKE, 0).unwrap();
+        pool.stake(queued, MIN_VALIDATOR_STAKE, 1).unwrap();
+        pool.initialize_staking_v2(0, &[active]).unwrap();
+        state.put_stake_pool(&pool).unwrap();
+
+        let rpc_state = make_test_rpc_state(state);
+        let response = handle_get_validators(&rpc_state).await.unwrap();
+        let validators = response["validators"].as_array().unwrap();
+        assert_eq!(validators.len(), 2);
+
+        let queued_json = validators
+            .iter()
+            .find(|validator| validator["pubkey"] == queued.to_base58())
+            .unwrap();
+        assert_eq!(queued_json["stake"], serde_json::json!(MIN_VALIDATOR_STAKE));
+        assert_eq!(queued_json["staking_v2_active"], serde_json::json!(true));
+        assert_eq!(
+            queued_json["staking_v2_epoch_active"],
+            serde_json::json!(false)
+        );
+        assert_eq!(queued_json["epoch_consensus_power"], serde_json::json!(0));
+        assert_eq!(
+            queued_json["delegation_capacity_remaining"],
+            serde_json::json!(0)
+        );
+
+        let detail =
+            handle_get_validator_info(&rpc_state, Some(serde_json::json!([queued.to_base58()])))
+                .await
+                .unwrap();
+        assert_eq!(detail["staking_v2_active"], serde_json::json!(true));
+        assert_eq!(detail["staking_v2_epoch_active"], serde_json::json!(false));
+        assert_eq!(detail["epoch_consensus_power"], serde_json::json!(0));
+        assert_eq!(
+            detail["delegation_capacity_remaining"],
+            serde_json::json!(0)
+        );
     }
 
     fn put_test_contract_account(
@@ -26679,6 +28219,10 @@ mod tests {
         state
             .put_contract_storage(&oracle, b"stats_feeds", &4u64.to_le_bytes())
             .unwrap();
+        state
+            .put_contract_storage(&oracle, b"oracle_consensus_managed", &[1u8])
+            .unwrap();
+        state.set_last_slot(15).unwrap();
         for (asset, slot) in [
             ("LICN", 10u64),
             ("wSOL", 11u64),
@@ -26766,6 +28310,19 @@ mod tests {
             .expect("btc-ready oracle stats should serialize");
         assert_eq!(btc_ready_stats["consensus_feeds"], serde_json::json!(6u64));
         assert_eq!(btc_ready_stats["operational"], serde_json::json!(true));
+
+        state
+            .set_last_slot(15 + lichen_core::ORACLE_STALENESS_SLOTS + 1)
+            .unwrap();
+        let stale_stats = handle_get_lichenoracle_stats(&rpc_state)
+            .await
+            .expect("stale oracle stats should serialize");
+        assert_eq!(stale_stats["consensus_feeds"], serde_json::json!(0u64));
+        assert_eq!(
+            stale_stats["stale_consensus_feeds"],
+            serde_json::json!(6u64)
+        );
+        assert_eq!(stale_stats["operational"], serde_json::json!(false));
     }
 
     #[tokio::test]
@@ -27066,15 +28623,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_neo_zk_proof_service_status_reports_reserve_liability_verifier() {
+    async fn test_neo_zk_proof_service_status_reports_disabled_verifier() {
         let status = handle_get_neo_zk_proof_service_status()
             .await
             .expect("Neo ZK proof service status should serialize");
 
         assert_eq!(status["lane"], serde_json::json!("NX-960"));
+        assert_eq!(status["configured"], serde_json::json!(false));
+        assert_eq!(status["verification_enabled"], serde_json::json!(false));
+        assert_eq!(status["supported_proofs"], serde_json::json!([]));
         assert_eq!(
-            status["supported_proofs"][0],
-            serde_json::json!("reserve_liability")
+            status["status"],
+            serde_json::json!("disabled_insecure_verifier")
         );
         assert_eq!(
             status["verifier_method"],
@@ -27087,46 +28647,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_verify_neo_reserve_liability_proof_accepts_bound_public_inputs() {
-        let proof = lichen_core::zk::Prover::new()
-            .prove_reserve_liability(
-                lichen_core::zk::circuits::reserve_liability::ReserveLiabilityCircuit::new(
-                    [1u8; 32], [2u8; 32], [3u8; 32], 2_000, 1_500, 99, 1,
-                ),
-            )
-            .expect("prove reserve/liability");
-
-        let result = handle_verify_neo_reserve_liability_proof(Some(serde_json::json!([{
-            "proof_type": "reserve_liability",
-            "proof": hex::encode(&proof.proof_bytes),
-            "stark_public_inputs": proof.stark_public_inputs,
+    async fn test_verify_neo_reserve_liability_proof_is_disabled_before_payload_parsing() {
+        let error = handle_verify_neo_reserve_liability_proof(Some(serde_json::json!([{
+            "private_witness": "must-not-be-processed",
         }])))
         .await
-        .expect("verify reserve/liability proof through RPC handler");
+        .expect_err("disabled verifier must reject before payload parsing");
 
-        assert_eq!(result["verified"], serde_json::json!(true));
-        assert_eq!(result["reserve_amount"], serde_json::json!(2_000u64));
-        assert_eq!(result["liability_amount"], serde_json::json!(1_500u64));
-        assert_eq!(result["solvency_margin"], serde_json::json!(500u64));
-        assert_eq!(result["epoch"], serde_json::json!(99u64));
+        assert_eq!(error.code, -32090);
+        assert!(error.message.contains("unavailable"), "{}", error.message);
     }
 
     #[tokio::test]
-    async fn test_verify_neo_reserve_liability_proof_rejects_wrong_type() {
+    async fn test_verify_neo_reserve_liability_proof_disabled_precedes_type_validation() {
         let error = handle_verify_neo_reserve_liability_proof(Some(serde_json::json!([{
             "proof_type": "shield",
             "proof": "",
             "stark_public_inputs": [],
         }])))
         .await
-        .expect_err("wrong proof type should fail before proof decoding");
+        .expect_err("disabled verifier should fail before proof decoding");
 
-        assert_eq!(error.code, -32602);
-        assert!(
-            error.message.contains("reserve_liability"),
-            "{}",
-            error.message
-        );
+        assert_eq!(error.code, -32090);
+        assert!(error.message.contains("unavailable"), "{}", error.message);
     }
 
     #[tokio::test]

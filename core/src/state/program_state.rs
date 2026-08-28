@@ -579,6 +579,16 @@ impl StateStore {
         kind: Option<crate::MarketActivityKind>,
         limit: usize,
     ) -> Result<Vec<crate::MarketActivity>, String> {
+        self.get_market_activity_for_program(collection, kind, None, limit)
+    }
+
+    pub fn get_market_activity_for_program(
+        &self,
+        collection: Option<&Pubkey>,
+        kind: Option<crate::MarketActivityKind>,
+        program: Option<&Pubkey>,
+        limit: usize,
+    ) -> Result<Vec<crate::MarketActivity>, String> {
         let cf = self
             .db
             .cf_handle(CF_MARKET_ACTIVITY)
@@ -626,6 +636,9 @@ impl StateStore {
         let mut items = Vec::with_capacity(limit);
         for value in rows.values().rev() {
             let activity = crate::decode_market_activity(value)?;
+            if program.is_some_and(|expected| activity.program != *expected) {
+                continue;
+            }
             if let Some(filter_kind) = kind.as_ref() {
                 if &activity.kind != filter_kind {
                     continue;

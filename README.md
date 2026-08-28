@@ -219,7 +219,7 @@ $env:LICHEN_KEYPAIR_PASSWORD = 'set-a-long-random-secret-before-first-start'
 
 Windows release assets are now part of the release contract, but if a given tag does not include them yet, use the source-build workflow for Windows until the next release is published.
 
-Release bundles now ship `lichen-validator`, `lichen-genesis`, `lichen`, `lichen-archive-v2`, `zk-prove`, `lichen-custody`, `lichen-faucet`, `seeds.json`, and the contract WASM bundle beside the operator tools so agents can keep validator, archive migration/repair, custody, faucet, shielded-transaction tooling, and runtime artifacts installed from the same signed archive. Operators should pin the current seed set under `{db-path}/seeds.json` for supervisor-managed starts, and `--auto-update=apply` refreshes that file from newer release archives during apply-mode upgrades. Validator identity keys are generated locally on first start, and external signed-metadata manifests or standalone proving/verification-key bundles are not required just to join and sync a validator.
+Release bundles now ship `lichen-validator`, `lichen-genesis`, `lichen`, `lichen-archive-v2`, `zk-prove`, `lichen-custody`, `lichen-faucet`, all governed accounting-migration and contract-call tools, `seeds.json`, and the contract WASM bundle so agents can keep validator, archive, custody, migration, repair, faucet, shielded-transaction, and runtime artifacts on the same signed provenance boundary. Operators should pin the current seed set under `{db-path}/seeds.json` for supervisor-managed starts, and `--auto-update=apply` refreshes that file from newer release archives during apply-mode upgrades. Validator identity keys are generated locally on first start, and external signed-metadata manifests or standalone proving/verification-key bundles are not required just to join and sync a validator.
 
 The validator identity is also the validator wallet/reward account. The address printed at startup is the account that receives bootstrap stake and validator rewards. Preserve the state directory, validator key files, and `LICHEN_KEYPAIR_PASSWORD`; an agent can restart or upgrade from the same state and catch up, but it cannot sign as the same validator if the key or password is lost.
 
@@ -485,7 +485,7 @@ lichen deploy ./target/wasm32-unknown-unknown/release/counter.wasm
 ### Built-In DeFi
 - **SporeSwap** — AMM decentralized exchange
 - **ThallLend** — Lending protocol
-- **SporePump** — Token launchpad (0.1 LICN to launch)
+- **SporePump** — Token launchpad (10 LICN to launch)
 - **MossStake** — Liquid staking
 
 ### Multi-Chain Bridges
@@ -536,7 +536,7 @@ README stays high-level. These are the canonical entry points for the callable d
 
 | Phase | Timeline | Milestones |
 |---|---|---|
-| **Phase 1: Live Foundation** | Live now | Mainnet + testnet live, LichenVM, LichenID, shielded pool + transparent STARK privacy, wallet/explorer/DEX/marketplace/programs/developer portal, Solana + Ethereum + BNB + Neo X + Bitcoin wrapped asset support |
+| **Phase 1: Live Foundation** | Live now | Mainnet + testnet live, LichenVM, LichenID, wallet/explorer/DEX/marketplace/programs/developer portal, Solana + Ethereum + BNB + Neo X + Bitcoin wrapped asset support. The historical shielded pool is read-only while proof scheme 0x01 is disabled pending a constrained verifier. |
 | **Phase 2: Network Expansion** | Current buildout | Validator growth and hardening, better bridge + custody UX, deeper SporeSwap and wrapped-asset liquidity, faster SDK and validator onboarding, broader app launches across payments, AI agents, identity, and compute |
 | **Phase 3: Ecosystem Scale** | Next | Larger validator footprint, deeper cross-chain liquidity and routing, stronger privacy and coordination tooling, full-stack agent economy across DeFi/payments/compute/marketplaces, institutional-grade reliability |
 

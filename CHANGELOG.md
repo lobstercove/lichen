@@ -5,9 +5,67 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.264] - 2026-08-26
+## [0.5.264] - 2026-08-28
+
+### Added
+- Adds a stopped-validator Archive V2 `role-bootstrap` command and hash-pinned
+  operator wrapper for the circular low-space legacy-retirement boundary. It
+  performs a no-write dry run, proves canonical genesis/catalog/hot/source and
+  custody prerequisites, preserves the absolute storage floor, and publishes
+  the exact checksummed marker with create-new semantics.
+- Adds bounded shared-collateral Cross Margin V2 with at most 32 active
+  positions per account, aggregate equity and tier-weighted requirements,
+  shared funding settlement, exact deposit/withdraw controls, portfolio-aware
+  liquidation, RPC state, and DEX UI support.
+- Adds a checksum-committed, resumable DEX Margin V2 migration tool and
+  fail-closed runbook. Governance freezes position mutations before manifest
+  capture, activates Funding V2 and Cross V2 atomically, retains the lock
+  through post-activation parity, and reopens trading in one final action.
+- Adds SporePay Accounting V3 with exact active/deferred escrow liability,
+  stream-by-stream reconstruction, custody-solvency activation, a sealed
+  manifest/resumable migration CLI, bounded account stream indexes, and a
+  fail-closed operator runbook.
+- Adds SporePump Accounting V3 with separately collateralized curve reserve,
+  creator royalty, graduation revenue, and withdrawable platform-fee ledgers;
+  exact custody/surplus proofs; and a checksum-sealed, contiguous, resumable
+  migration CLI whose manifest aggregates are independently rederived and whose
+  sealed manifests/receipts are durably published without partial-file windows.
+- Adds protected SporePump buy/sell execution, exact REST quotes, token metadata,
+  creator royalty claims, two-step administration, governed graduation
+  configuration/status, deterministic legacy metadata backfill, strict symbol
+  indexes, and complete JS, Python, and Rust client surfaces.
+- Adds a source-bound LichenMarket V3 migration that independently replays
+  archived calls into exact per-token sales and fees, inventories all active
+  settlement/custody rows, splits execution by the real admin, treasury,
+  offerer, and seller authorities, verifies resumable receipts on-chain, and
+  keeps activation paused through exhaustive post-state verification.
+- Adds a checksum-sealed SporeVault Accounting V2 migration utility and
+  fail-closed runbook. It captures exact native custody, protocol fees, every
+  legacy strategy row, legacy shares, and the real indexed ThallLend claim;
+  emits source-bound governed retirement/activation payloads; and verifies the
+  finalized vault while it remains paused.
+- Adds Compute Market Accounting V3 with exact escrow, unpaid-provider, and
+  withdrawable platform-fee ledgers; custody-solvency health; a source-bound,
+  checksum-sealed, resumable migration CLI; and a fail-closed operator runbook.
+- Adds BountyBoard Accounting V2 with exact active-escrow and realized-fee
+  ledgers, custody-solvency health, immutable payment terms, source-bound legacy
+  snapshot records, an atomic checksum-sealed resumable migration CLI, and a
+  fail-closed operator runbook.
+- Adds LichenAuction Accounting V3 with exact active-bid, active-offer, unpaid-
+  payout, and platform-fee liabilities; immutable royalty snapshots; contract-
+  owned escrow; a source-bound, checksum-sealed, resumable migration CLI; and a
+  fail-closed operator runbook.
+- Adds Staking V2 behind a future epoch-boundary activation marker: explicit
+  self-bond, delegation, and MossStake ownership; one dynamic security budget;
+  deterministic MossStake allocation; validator concentration limits;
+  performance weighting; and delayed bounded commission changes. Shipping the
+  implementation does not activate it on an existing network.
 
 ### Fixed
+- Allows a bounded hot store without local slot 0 to activate Archive V2 only
+  from a regular checksummed role marker that matches the exact catalog
+  identity and requested runtime policy. Fresh unmarked nodes still defer;
+  corrupt, mismatched, unsupported, or symlinked markers fail closed.
 - Publishes the same canonical block, transaction, account, program, NFT, and
   slot WebSocket fanout for peer-synced, pending-gap, and fork-adopted blocks as
   for local BFT commits. A validator that catches up by one block no longer
@@ -18,11 +76,169 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reports Explorer cadence as `Live <N>ms`, calculates live TPS from a rolling
   60-second window of canonical WebSocket block summaries, and reports total
   stake as validator stake plus Moss stake.
+- Uses Binance's documented combined-stream WebSocket protocol for one
+  multiplexed SOL/ETH/BNB/NEO/GAS/BTC feed, including combined-message parsing,
+  event-time deduplication, per-symbol freshness, bounded unlimited reconnect,
+  and a rate-limited REST fallback that cannot overwrite fresh WebSocket data.
+- Stops attesting or broadcasting indefinitely cached external prices after a
+  bounded source-staleness interval. Binance US remains an explicit US-host
+  override while other regions use the default Binance.com feed.
+- Uses exact fixed-point oracle units and source slots throughout consensus,
+  LichenOracle, genesis, DEX marks, RPC, wallet surfaces, and ThallLend. Native
+  LICN lending no longer multiplies same-asset collateral by an 8-decimal USD
+  quote; oracle health remains a freshness circuit breaker for that market.
+- Corrects ThallLend's legacy timestamp/rate mismatch: contract timestamps are
+  canonical slots, not milliseconds, and the 400ms target has 78,894,000 slots
+  per Julian year. The base rate now deterministically annualizes to 200 basis
+  points instead of the unintended roughly 50 basis points, without rewriting
+  previously accrued balances.
+- Makes ThallLend repayments and liquidations consume only the debt actually
+  retired, atomically refunds unused native LICN, caps liquidations by both the
+  50% close factor and collateral available for the bonus, rejects unconfigured
+  custody and malformed oracle state, and fails closed on liability underflow.
+- Wires fresh-genesis ThallLend deployments to the canonical live `LICN` oracle
+  feed and exposes exact rate scales, annualized rate, market configuration,
+  liquidity, utilization, repayment, custody, and oracle-health metrics through
+  contract views, RPC, and the JavaScript, Python, and Rust SDKs.
+- Replaces SporeVault's simulated strategy accounting with exact idle custody
+  plus its real ThallLend supplier claim, realizes performance and management
+  fees into liquid protocol custody, forwards native strategy value correctly,
+  requires exact deposit value, and rejects malformed immutable configuration,
+  inconsistent share bootstrap, corrupt strategy frontiers, and unsupported
+  adapters. Fresh genesis now binds ThallLend and activates one conservative
+  33% lending strategy as mandatory dependencies.
+- Exposes complete SporeVault accounting, custody coverage, fee/risk policy,
+  dependency health, operational status, rebalancing, administration, and
+  migration controls through contract views, O(1) RPC metrics, and the
+  JavaScript, Python, and Rust SDKs.
+- Binds Compute Market administration to the protocol initializer, makes the
+  LichenID and payment-token dependencies immutable and exact, rejects
+  malformed policy, lifecycle, provider, job, and accounting state, and removes
+  overlapping deadline transitions. Disputes remain resolvable while paused.
+- Makes Compute Market settlement conserve exact escrow across provider pay,
+  requester refund, platform fee, and deferred unpaid liabilities; snapshots
+  prospective fees and timeouts per job; bounds provider capacity; and rejects
+  zero code/result/policy/action hashes, zero arbitrators, replayed agent
+  actions, and non-increasing policy versions before value movement.
+- Exposes Compute Market jobs, timing, provider capacity, agent policy, exact
+  liabilities, real custody, migration state, solvency, and effective pause
+  through O(1) contract views, RPC, and complete JavaScript, Python, and Rust
+  clients. Fresh genesis now requires canonical LICN and LichenID bindings.
+- Makes BountyBoard native and token custody exact and self-contained,
+  snapshots reward asset and prospective fee per bounty, settles and refunds
+  atomically, rejects duplicate/zero-proof/self-award paths and malformed
+  control, row, or counter state, requires asset-exact attached value, protects
+  submitted work from in-window cancellation, adds revocable two-step
+  administrator rotation, and gates value mutation on Accounting V2.
+- Exposes BountyBoard submissions, payment terms, fee balances, migration
+  cursor, liabilities, real custody, solvency, dependency health, and effective
+  pause through exact contract views, O(1) RPC, and complete JavaScript, Python,
+  and Rust clients. Fresh genesis now explicitly binds native LICN and LichenID.
+- Makes margin exits and liquidations realize PnL before any penalty, credits
+  insurance only with collectible loss, records uncollateralized loss as
+  explicit bad debt, and prevents insurance governance withdrawals from
+  breaching 1:1 current open-interest coverage.
+- Replaces per-position funding scans with bounded global indexes and a
+  pool-backed claim/debt ledger, applies funding once to notional without a
+  second leverage multiplier, and uses an 8-hour 72,000-slot interval.
+- Restores the on-chain WASM dispatch paths for DEX Margin opcodes 36 through
+  52. These operations existed in source but were absent from the dispatch
+  length table and therefore would have rejected real WASM calls.
+- Makes SporePay cancellation fail closed when custody configuration is absent,
+  treats cliffs as true vesting boundaries, preserves restricted recipient
+  payouts as claimable liabilities, rejects counter/accounting overflow before
+  value movement, and prevents recipient transfers from bypassing pause,
+  reentrancy, zero-address, or LichenID policy.
+- Corrects `getSporePayStats` to read the contract's canonical `sp_*` keys
+  instead of nonexistent `cp_*` keys and exposes accounting/migration state.
+- Charges and collateralizes the configured SporePump creator royalty on both
+  buys and sells without consuming curve principal, refunds unused capped-buy
+  input exactly, and blocks partial or underfunded graduation completion.
+- Makes malformed SporePump pause, migration-lock, token-freeze, trade-config,
+  token-row, and accounting state fail closed across WASM, RPC, UI, SDK, and
+  migration tooling. Public quotes now refuse execution while Accounting V3 is
+  inactive or a token is frozen; buy quotes also honor pause and max-buy state.
+- Changes the Rust SDK read-only contract return code to a signed integer so
+  negative contract errors deserialize and remain inspectable.
+- Escrows the full native or MT-20 value of NFT and collection offers when they
+  are created, rejects ambiguous replacement and attached-value mismatches,
+  preserves funded offers across failed NFT transfers, and gates every legacy
+  offer, auction, listing, payout, and mixed-token metric behind a sealed V3
+  migration boundary.
+- Disables the unsound legacy shielded proof scheme `0x01` for every private
+  operation before proof decoding. Public pool/history reads remain available,
+  while validator RPC/REST, CLI, web-wallet, and extension private-action
+  surfaces fail closed until a separately versioned ownership-binding proof
+  system is reviewed and activated.
+- Keeps next-epoch validator registrations visible without treating them as
+  current voting power or available delegation capacity, and derives legacy
+  and Staking V2 APY projections from their respective active reward budgets.
+- Predeclares all requested local validators in genesis so the four-validator
+  gate begins with four independently owned epoch-active voters and exercises
+  genuine quorum loss, recovery, restart, and proposer rotation.
 
 ### Tests
+- Adds Archive V2 role-marker checksum, no-overwrite, idempotency, dry-run,
+  explicit-acknowledgement, fresh-unmarked deferral, exact-policy match, and
+  corrupt-marker startup regressions.
 - Adds functional block-before-slot fanout coverage and source-order guards for
   direct sync, pending-gap application, and fork adoption. Each path must emit
   exactly once after deterministic post-block effects complete.
+- Adds raw and combined Binance frame parsing, decimal bounds, malformed/control
+  frame rejection, event-time ordering, WS-versus-REST freshness, and endpoint
+  shape regression coverage.
+- Adds exact margin conservation, underwater bad-debt, negative realized-PnL,
+  insurance-solvency, funding symmetry, shared Cross V2 portfolio, liquidation,
+  withdrawal, migration, RPC, frontend, and every-opcode WASM dispatcher
+  regressions. The focused margin gate passes 145 unit and 28 adversarial tests,
+  strict Clippy, and a release WASM build.
+- Adds SporePay lifecycle-liability, partial-settlement recovery, cliff cancel,
+  identity fail-closed, transfer-policy, arithmetic-boundary, resumable
+  migration, solvency, account-index parity, RPC-key, ABI-export, SDK, and
+  release-WASM coverage.
+- Adds SporePump curve-integral parity, buy/sell liability conservation,
+  slippage, malformed-control, custody, creator claim, graduation atomicity,
+  migration manifest/receipt, exact RPC shape, ABI export, DEX UI, and
+  cross-language SDK regressions. The focused contract gate passes 73 tests;
+  the canonical release WASM is 66,002 bytes with SHA-256
+  `9e2209e5c371ad8808aca3b5d2e4448daadac4653588b5a9f68b6758fcbfdd7f`.
+- Adds LichenMarket funded-offer, custody, migration-lock, source-replay,
+  token-metric, dynamic-fee, malformed-layout, receipt-binding, and exact
+  migration-status regressions. The focused contract gate passes 61 tests and
+  the migration CLI passes 5 tests with strict Clippy.
+- Adds ThallLend canonical-slot annualization, exact overpayment/refund,
+  close-factor, collateral-cap, malformed-oracle, unconfigured-custody,
+  accounting-underflow, rate/status view, genesis wiring, RPC, ABI, and
+  cross-language SDK regressions. The focused contract gate passes 88 tests and
+  strict Clippy; the release WASM is 41,761 bytes with SHA-256
+  `e6f10dd685ea5dcc46d46193ecf732173c5d50fb16f909d867162a798dcc8806`.
+- Adds BountyBoard exact custody/accounting, malformed-state, overflow,
+  settlement-retry, immutable-term, identity, source-bound migration, RPC,
+  ABI-export, genesis-wiring, cross-language SDK, and release-WASM regressions.
+  The focused contract gate passes 53 tests; the reproducible release WASM is
+  50,080 bytes with SHA-256
+  `966a5382bf6f66797b095597eaaef7e17fee92a177164844e08695bf9141b4b3`.
+- Adds SporeVault exact-custody yield, fee accrual, native/MT-20 value,
+  reentrancy, malformed-state, source-bound legacy retirement, migration,
+  strategy, genesis, RPC, ABI, and cross-language SDK regressions. The focused
+  contract gate passes 70 tests and strict Clippy; the reproducible release
+  WASM is 45,159 bytes with SHA-256
+  `001d9b5ccfc39389c2e9cb051f63bf690a1966fb2a1d6b550fa8b5c217a0601c`.
+- Adds Compute Market identity, immutable dependency, exact-deadline,
+  settlement-conservation, deferred payout, capacity, agent replay/policy,
+  malformed-state, Accounting V3 migration, custody, genesis, RPC, ABI, and
+  cross-language SDK regressions. The focused contract gate passes 79 tests and
+  strict Clippy; the reproducible release WASM is 70,735 bytes with SHA-256
+  `38762cb50c36085878bf049ca523dc848553384caf545a83feabf68f3da65486`.
+- Passes the exact clean-build four-validator release gate with four genesis
+  voters, every validator observed as proposer, bounded hot/cold archival mode,
+  an independently initialized fresh join, corruption quarantine and replica
+  repair, source outages, a 96-transaction quorum-loss backlog, a 140-slot live
+  gap, own-state and coordinated restarts, strict volume and launchpad journeys,
+  and terminal slot-7,000 parity. All validators matched public-history root
+  `05c85c39e4e5ec572e813574df4ceda1166006b60f40d9a73a4dd39655db9e64`
+  and state root
+  `8a5a5c79fa2420debcadce20abe72dc58e78be4dbc93d2f4bca12dd1fa5d117b`.
 
 ## [0.5.263] - 2026-08-26
 

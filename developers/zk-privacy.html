@@ -92,23 +92,32 @@
         </aside>
 
         <main class="docs-main">
-            <h1>ZK Shielded Privacy Layer</h1>
-            <p class="subtitle">Transparent Plonky3/FRI zero-knowledge proofs for private value transfers on Lichen.</p>
+            <h1>Shielded Pool Compatibility and History</h1>
+            <p class="subtitle">Read-only historical state while proof scheme 0x01 remains disabled.</p>
+
+            <div class="callout callout-warning">
+                <p><strong>Security status: operations unavailable.</strong> The legacy
+                    <code>plonky3-fri-poseidon2</code> verifier accepted proofs whose private witnesses were not
+                    constrained by the AIR. It therefore did not prove note ownership, Merkle inclusion, nullifier
+                    derivation, commitment correctness, recipient binding, ranges, or transfer value conservation.
+                    Validators now reject scheme 0x01 fail-closed. RPC proof generation/verification and REST
+                    submission return an unavailable error, and CLI commands exit before reading witness files.
+                    Historical query endpoints remain available.</p>
+            </div>
 
             <!-- ── Architecture ── -->
             <section id="architecture">
                 <h2>Architecture</h2>
                 <p>
-                    Lichen's privacy layer uses a <strong>shielded UTXO pool</strong> model (similar to Zcash Sapling).
-                    Value enters the pool via <em>shield</em> operations, moves privately via <em>transfers</em>,
-                    and exits via <em>unshield</em> operations. The live runtime validates scheme-versioned proof
-                    envelopes with a native Plonky3 FRI verifier over Goldilocks while commitments, nullifiers,
-                    and Merkle nodes use canonical Poseidon2-derived 32-byte values.
+                    Lichen retains a historical <strong>shielded UTXO pool</strong> and its versioned wire format.
+                    The current runtime recognizes the legacy scheme identifier but rejects every scheme 0x01 proof.
+                    Commitments, nullifiers, and Merkle nodes remain queryable as historical Poseidon2-derived state.
                 </p>
 
                 <div class="callout callout-info">
-                    <p><strong>Pool model, not address model.</strong> There are no "shielded addresses."
-                        Notes live in a global Merkle tree. Only the holder of the note's spending key can spend it.</p>
+                    <p><strong>No current spending path.</strong> Historical notes live in a global Merkle tree, but
+                        no holder can submit shield, unshield, or transfer until a constrained, versioned verifier and
+                        an explicit migration/activation policy are implemented.</p>
                 </div>
 
                 <table class="reference-table">
@@ -125,7 +134,7 @@
                         </tr>
                         <tr>
                             <td>Proof system</td>
-                            <td>Plonky3 FRI (<code>plonky3-fri-poseidon2</code>)</td>
+                            <td>Legacy identifier <code>plonky3-fri-poseidon2</code> (scheme 0x01), disabled</td>
                         </tr>
                         <tr>
                             <td>Hash function</td>
@@ -145,20 +154,19 @@
                         </tr>
                         <tr>
                             <td>Key directory</td>
-                            <td>None required in current releases; validators and <code>zk-prove</code>
-                                operate directly on native Plonky3 proof envelopes</td>
+                            <td>No active proving/verifying key lifecycle; reactivation requires a separately reviewed
+                                sound proof scheme</td>
                         </tr>
                         <tr>
                             <td>Proof size</td>
-                            <td>Variable-length bincode-serialized Plonky3 proof payload</td>
+                            <td>Historical variable-length scheme 0x01 payload; rejected by validators</td>
                         </tr>
                     </tbody>
                 </table>
 
                 <div class="callout callout-warning">
-                    <p><strong>Current runtime.</strong> Validators and the <code>zk-prove</code> CLI no longer require
-                        bundled <code>pk_*</code>/<code>vk_*</code> files or a shared <code>~/.lichen/zk/</code>
-                        cache. Proofs are generated and verified as native Plonky3 envelopes.
+                    <p><strong>Current runtime.</strong> No shielded proof is accepted. The legacy format is retained
+                        only for decoding, fixtures, historical inspection, and transition planning.
                     </p>
                 </div>
             </section>
@@ -237,13 +245,13 @@
             <!-- ── Shield ── -->
             <section id="shield">
                 <h2>Shield (Deposit into Pool)</h2>
-                <p>Shields move value from a transparent account into the shielded pool.
-                    The sender's on-chain balance is debited, and a new commitment is inserted into the Merkle tree.</p>
+                <p><strong>Unavailable.</strong> Scheme 0x01 deposits are rejected before custody state mutates. The
+                    following sequence documents the intended historical state transition, not an active service.</p>
 
                 <h3>What happens on-chain</h3>
                 <ol>
                     <li>Sender balance is debited by <code>amount</code></li>
-                    <li>ZK proof is verified (proves commitment corresponds to declared amount)</li>
+                    <li>A future constrained proof must bind the commitment to amount and private blinding</li>
                     <li>Commitment is inserted as a new Merkle leaf</li>
                     <li>Merkle root is recalculated</li>
                     <li>Pool state counters are updated (<code>shieldCount</code>, <code>totalShielded</code>,
@@ -262,14 +270,15 @@
             <!-- ── Unshield ── -->
             <section id="unshield">
                 <h2>Unshield (Withdraw from Pool)</h2>
-                <p>Unshields move value from the pool back to a transparent account. The owner proves knowledge
-                    of a note in the Merkle tree and reveals the nullifier to prevent double-spending.</p>
+                <p><strong>Unavailable.</strong> Scheme 0x01 withdrawals are rejected. An emergency Shielded-module
+                    pause freezes exits too, because the unsound ownership verifier also affects unshield.</p>
 
                 <h3>What happens on-chain</h3>
                 <ol>
                     <li>Nullifier is checked — must not be already spent</li>
                     <li>Merkle root is verified against current pool state</li>
-                    <li>ZK proof is verified (proves: note exists in tree, nullifier is correct, recipient matches)</li>
+                    <li>A future constrained proof must establish inclusion, nullifier derivation, ownership, amount,
+                        and recipient binding</li>
                     <li>Recipient balance is credited by <code>amount</code></li>
                     <li>Nullifier is marked as spent</li>
                     <li>Pool state is updated (<code>unshieldCount</code>, <code>totalShielded</code> decreases)</li>
@@ -279,16 +288,14 @@
             <!-- ── Transfer ── -->
             <section id="transfer">
                 <h2>Transfer (Private Send)</h2>
-                <p>Transfers move value entirely within the shielded pool. The circuit is <strong>2-in-2-out</strong>:
-                    it consumes 2 input notes and creates 2 output notes. Value conservation is enforced by the ZK
-                    circuit
-                    (sum of inputs = sum of outputs).</p>
+                <p><strong>Unavailable.</strong> The historical format is <strong>2-in-2-out</strong>, but scheme 0x01
+                    did not constrain ownership or value conservation and is rejected.</p>
 
                 <h3>What happens on-chain</h3>
                 <ol>
                     <li>Both nullifiers are checked — neither can be already spent, and they must be distinct</li>
                     <li>Merkle root is verified against current pool state</li>
-                    <li>ZK proof is verified with public inputs:
+                    <li>A future constrained proof must bind all private inputs and the public inputs:
                         <code>[merkle_root, null_a, null_b, comm_c, comm_d]</code>
                     </li>
                     <li>Both nullifiers are marked as spent</li>
@@ -316,9 +323,8 @@
                 <div class="code-block">
                     <pre><code>./target/release/zk-prove shield --amount &lt;spores&gt;</code></pre>
                 </div>
-                <p>Generates a native Plonky3 proof envelope for a shield operation. No shared key directory or
-                    compatibility bundle is required.
-                </p>
+                <p>This command is disabled and exits with status 2 before generating secrets or a proof. The sample
+                    below is retained only as a description of the legacy output shape.</p>
                 <h3>Output (JSON)</h3>
                 <div class="code-block">
                     <pre><code>{
@@ -342,7 +348,7 @@
     --recipient &lt;hex_32_recipient&gt; \
     --merkle-root &lt;hex&gt; --merkle-path &lt;hex,hex,...&gt; --path-bits 0,1,0,...</code></pre>
                 </div>
-                <p>Generates a native Plonky3 proof envelope for an unshield (withdrawal) operation.</p>
+                <p>This command is disabled and exits with status 2 before reading private witness arguments.</p>
                 <h3>Prerequisites</h3>
                 <ul>
                     <li>The note secrets (<code>blinding</code>, <code>serial</code>, <code>spending_key</code>) from
@@ -369,7 +375,7 @@
                     <pre><code>./target/release/zk-prove transfer \
     --transfer-json witness.json</code></pre>
                 </div>
-                <p>Generates a native Plonky3 proof envelope for a 2-in-2-out shielded transfer.</p>
+                <p>This command is disabled and exits with status 2 before reading the witness file.</p>
 
                 <h3>Witness file format (<code>witness.json</code>)</h3>
                 <div class="code-block">
@@ -441,9 +447,8 @@
   --liability 900000000 \
   --witness-json witness.json</code></pre>
                 </div>
-                <p>Generates the NX-960 Neo reserve/liability proof-service envelope for transparent aggregate totals.
-                    The v1 statement does not claim hidden-witness solvency and does not disclose address-level
-                    liabilities.</p>
+                <p>This command is disabled with the same scheme 0x01 guard. The shown arguments are historical
+                    interface documentation only.</p>
                 <div class="code-block">
                     <pre><code>./target/release/zk-prove verify-reserve-liability \
   --proof-json neo-wgas-proof.json</code></pre>
@@ -457,7 +462,8 @@
             <!-- ── Python SDK ── -->
             <section id="python-sdk">
                 <h2>Python SDK</h2>
-                <p>The <code>lichen</code> Python package provides instruction builders for all three operations:</p>
+                <p>The <code>lichen</code> Python package retains legacy instruction builders for decoding and
+                    compatibility testing. Transactions built with them are rejected while scheme 0x01 is disabled:</p>
                 <div class="code-block">
                     <pre><code>from lichen import (
     Connection, Keypair, TransactionBuilder,
@@ -502,6 +508,11 @@ ix = transfer_instruction(
             <!-- ── Workflow ── -->
             <section id="workflow">
                 <h2>End-to-End Workflow</h2>
+                <div class="callout callout-warning">
+                    <p><strong>Do not run this historical workflow.</strong> Every proof-producing command and native
+                        submission shown below is disabled. It remains only to describe the legacy interface for
+                        migration work.</p>
+                </div>
                 <div class="code-block">
                     <pre><code># 1. Shield — deposit 0.5 LICN into the pool
 zk-prove shield --amount 500000000 > shield.json
@@ -529,7 +540,9 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
             <!-- ── RPC Methods ── -->
             <section id="rpc-methods">
                 <h2>JSON-RPC Methods</h2>
-                <p>All methods are available on the main RPC endpoint (port 8899).</p>
+                <p>Historical read methods are available on the main RPC endpoint. Proof generation, private
+                    commitment/nullifier helpers, and Neo proof verification return JSON-RPC code
+                    <code>-32090</code> without parsing private witness parameters.</p>
 
                 <h3><code>getShieldedPoolState</code></h3>
                 <p>Returns the full shielded pool state.</p>
@@ -547,7 +560,10 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
   "shieldCount": 2,
   "unshieldCount": 0,
   "transferCount": 1,
-    "zkScheme": "plonky3-fri-poseidon2"
+  "zkScheme": "plonky3-fri-poseidon2",
+  "proofAcceptanceEnabled": false,
+  "operationsAvailable": false,
+  "status": "disabled_insecure_verifier"
 }</code></pre>
                 </div>
 
@@ -582,8 +598,8 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
                 </div>
 
                 <h3><code>computeShieldNullifier</code></h3>
-                <p>Computes the native Poseidon2 nullifier for a note serial and spending key. Wallets use this
-                    before <code>isNullifierSpent</code> so recovered notes use the same nullifier as consensus.</p>
+                <p><strong>Disabled.</strong> Returns <code>-32090</code> before parsing a serial or spending key.
+                    Wallets must not send private spending witnesses to validator-hosted services.</p>
                 <div class="code-block">
                     <pre><code>// Request
 {"jsonrpc":"2.0","id":1,"method":"computeShieldNullifier","params":[
@@ -622,16 +638,14 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
                 </div>
 
                 <h3><code>getNeoZkProofServiceStatus</code></h3>
-                <p>Returns NX-960 Neo reserve/liability verifier metadata, supported proof type, public-input layout,
-                    privacy model, verifier version, and supported assets.</p>
+                <p>Returns explicit disabled status and compatibility metadata. No proof type is advertised as
+                    supported.</p>
                 <div class="code-block">
                     <pre><code>{"jsonrpc":"2.0","id":1,"method":"getNeoZkProofServiceStatus"}</code></pre>
                 </div>
 
                 <h3><code>verifyNeoReserveLiabilityProof</code></h3>
-                <p>Verifies a <code>zk-prove reserve-liability</code> proof envelope against its domain-bound public
-                    inputs. Applications must still compare the returned <code>domain_hash</code> or decoded domain
-                    metadata against the route and asset they intended to consume.</p>
+                <p><strong>Disabled.</strong> Returns <code>-32090</code> before parsing the proof envelope.</p>
                 <div class="code-block">
                     <pre><code>{"jsonrpc":"2.0","id":1,"method":"verifyNeoReserveLiabilityProof","params":[proofEnvelope]}</code></pre>
                 </div>
@@ -687,23 +701,24 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
                             <td>POST</td>
                             <td><code>/shield</code></td>
                             <td><code>{ "transaction": "&lt;base64&gt;" }</code></td>
-                            <td>Submit shield TX</td>
+                            <td>Disabled; returns HTTP 503 before transaction decoding</td>
                         </tr>
                         <tr>
                             <td>POST</td>
                             <td><code>/unshield</code></td>
                             <td><code>{ "transaction": "&lt;base64&gt;" }</code></td>
-                            <td>Submit unshield TX</td>
+                            <td>Disabled; returns HTTP 503 before transaction decoding</td>
                         </tr>
                         <tr>
                             <td>POST</td>
                             <td><code>/transfer</code></td>
                             <td><code>{ "transaction": "&lt;base64&gt;" }</code></td>
-                            <td>Submit transfer TX</td>
+                            <td>Disabled; returns HTTP 503 before transaction decoding</td>
                         </tr>
                     </tbody>
                 </table>
-                <p>All responses are wrapped in <code>{ "success": true, "data": { ... } }</code>.</p>
+                <p>GET responses use the normal success envelope. Disabled POST routes return HTTP 503 with an error
+                    body.</p>
             </section>
 
             <!-- ── Data Layouts ── -->
@@ -843,24 +858,17 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
             <section id="security">
                 <h2>Security Model</h2>
                 <ul>
-                    <li><strong>Double-spend prevention:</strong> Nullifiers are stored on-chain. Re-using a nullifier
-                        is rejected.</li>
-                    <li><strong>Value conservation:</strong> The transfer circuit constrains
-                        <code>sum(inputs) = sum(outputs)</code>; the shield circuit constrains
-                        <code>commitment = Poseidon2(amount, blinding)</code> with the declared amount.
-                    </li>
-                    <li><strong>Merkle root binding:</strong> Proofs are bound to the current Merkle root. Stale roots
-                        are rejected.</li>
-                    <li><strong>64-bit range checks:</strong> All values are range-checked to 64 bits within the circuit
-                        to prevent overflow attacks.</li>
-                    <li><strong>Compatibility artifact hashes:</strong> The pool state still exposes hashes of the
-                        bundled <code>vk_*</code> files so operators can detect artifact drift while the proving helpers
-                        transition, but the live verifier itself checks the scheme-versioned Plonky3 envelope.</li>
-                    <li><strong>Proof non-malleability:</strong> Plonky3 proof envelopes are verified against canonical
-                        public inputs reconstructed directly from the instruction fields.</li>
-                    <li><strong>Neo proof-service boundary:</strong> NX-960 reserve/liability proofs expose aggregate
-                        reserve and liability totals as public inputs. They are replay-protected by domain and
-                        statement hashes, but they are not hidden-witness solvency proofs.</li>
+                    <li><strong>Fail-closed acceptance:</strong> every legacy scheme 0x01 proof type is rejected.</li>
+                    <li><strong>State integrity:</strong> custody counters use checked arithmetic; malformed,
+                        zero, non-canonical, duplicate, missing, or over-capacity commitment state aborts.</li>
+                    <li><strong>Atomicity:</strong> account, commitment, payload, nullifier, and pool changes require a
+                        single state batch and roll back together on failure; ordinary failed transactions still pay
+                        the normal network fee.</li>
+                    <li><strong>Emergency pause:</strong> the Shielded protocol-module pause freezes shield, unshield,
+                        and transfer. Exits are not exempt while ownership verification is unsafe.</li>
+                    <li><strong>Reactivation:</strong> requires a new scheme/version bound to proof type, chain/network,
+                        private witnesses, ranges, recipient, Merkle anchor policy, value conservation, and deterministic
+                        resource limits, plus an explicit migration for historical notes.</li>
                 </ul>
             </section>
         </main>

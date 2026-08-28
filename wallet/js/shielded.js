@@ -7,7 +7,7 @@
 // - Unshield (withdraw): shielded pool → transparent
 // - Shielded transfer: private send between shielded addresses
 // - Note management: scanning commitments, tracking owned notes
-// - RPC-backed transparent STARK proof generation
+// - Read-only display of locally stored historical shielded notes
 
 // ===== Constants =====
 // SPORES_PER_LICN provided by shared/utils.js (loaded before this file)
@@ -77,17 +77,19 @@ if (typeof window !== 'undefined') {
     window.getShieldedBalanceForInput = () => formatShieldedSpores(shieldedBalanceSpores());
 }
 
-const SHIELDED_SIGNED_SUBMISSION_AVAILABLE = true;
-const SHIELDED_PRIVATE_TRANSFER_AVAILABLE = true;
+const SHIELDED_SIGNED_SUBMISSION_AVAILABLE = false;
+const SHIELDED_PRIVATE_TRANSFER_AVAILABLE = false;
+const SHIELDED_PROOF_SCHEME_DISABLED_MESSAGE =
+    'Shielded operations are temporarily unavailable because proof scheme 0x01 is disabled pending a constrained verifier.';
 
 function shieldedSubmissionUnavailable(action) {
-    const message = `${action} requires a signed shielded transaction builder and is not available in this wallet yet`;
+    const message = `${action} is unavailable. ${SHIELDED_PROOF_SCHEME_DISABLED_MESSAGE}`;
     showShieldedStatus(message, 'error');
     showToast(message);
 }
 
 function privateTransferUnavailable() {
-    const message = 'Private transfer needs native encrypted note payload storage before wallet submission can be enabled';
+    const message = SHIELDED_PROOF_SCHEME_DISABLED_MESSAGE;
     showShieldedStatus(message, 'error');
     showToast(message);
 }
@@ -758,6 +760,11 @@ async function tryDecryptNote(entry) {
  * Generates a ZK proof client-side and submits the transaction.
  */
 async function shieldLicn(amountLicn) {
+    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) {
+        shieldedSubmissionUnavailable('Shielding LICN');
+        return;
+    }
+
     if (!shieldedState.initialized) {
         showToast('Shielded wallet not initialized');
         return;
@@ -768,11 +775,6 @@ async function shieldLicn(amountLicn) {
         amountSpores = parseShieldedAmountSpores(amountLicn, 'Shield amount');
     } catch (error) {
         showToast(error.message || 'Amount must be positive');
-        return;
-    }
-
-    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) {
-        shieldedSubmissionUnavailable('Shielding LICN');
         return;
     }
 
@@ -887,6 +889,11 @@ async function shieldLicn(amountLicn) {
  * Unshield (withdraw) LICN from the shielded pool to a transparent address.
  */
 async function unshieldLicn(amountLicn, recipientAddress) {
+    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) {
+        shieldedSubmissionUnavailable('Unshielding LICN');
+        return;
+    }
+
     if (!shieldedState.initialized) {
         showToast('Shielded wallet not initialized');
         return;
@@ -915,11 +922,6 @@ async function unshieldLicn(amountLicn, recipientAddress) {
     const notesToSpend = selectExactUnshieldNotes(unspentNotes, amountSpores);
     if (!notesToSpend || notesToSpend.length === 0) {
         showToast('Unshield amount must match one note or an exact sum of your notes. Use the full shielded balance to withdraw all notes.');
-        return;
-    }
-
-    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) {
-        shieldedSubmissionUnavailable('Unshielding LICN');
         return;
     }
 
@@ -999,6 +1001,15 @@ async function unshieldLicn(amountLicn, recipientAddress) {
  * No amounts, senders, or recipients are revealed on-chain.
  */
 async function shieldedTransfer(amountLicn, recipientViewingKey) {
+    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) {
+        shieldedSubmissionUnavailable('Private transfer');
+        return;
+    }
+    if (!SHIELDED_PRIVATE_TRANSFER_AVAILABLE) {
+        privateTransferUnavailable();
+        return;
+    }
+
     if (!shieldedState.initialized) {
         showToast('Shielded wallet not initialized');
         return;
@@ -1033,15 +1044,6 @@ async function shieldedTransfer(amountLicn, recipientViewingKey) {
     const inputNotes = selectTwoInputNotes(unspentNotes, amountSpores);
     if (!inputNotes) {
         showToast('Private transfer requires two unspent shielded notes with enough balance');
-        return;
-    }
-
-    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) {
-        shieldedSubmissionUnavailable('Private transfer');
-        return;
-    }
-    if (!SHIELDED_PRIVATE_TRANSFER_AVAILABLE) {
-        privateTransferUnavailable();
         return;
     }
 
@@ -1166,12 +1168,14 @@ async function shieldedTransfer(amountLicn, recipientViewingKey) {
     }
 }
 
-// ===== Proof Generation (Client-Side) =====
+// ===== Legacy Proof Generation Entry Points (Disabled) =====
 
 /**
  * Generate a real shield proof via the RPC-backed Plonky3 prover.
  */
 async function generateShieldProof(amount, commitment, blinding) {
+    throw new Error(SHIELDED_PROOF_SCHEME_DISABLED_MESSAGE);
+
     const blindingHex = typeof blinding === 'string' ? blinding : bytesToHex(blinding || new Uint8Array(32));
     return rpc.call('generateShieldProof', [{
         amount: amount,
@@ -1184,6 +1188,8 @@ async function generateShieldProof(amount, commitment, blinding) {
  * Generate a real unshield proof via the RPC-backed Plonky3 prover.
  */
 async function generateUnshieldProof({ amount, merkleRoot, recipient, blinding, serial, spendingKey, merklePath, pathBits }) {
+    throw new Error(SHIELDED_PROOF_SCHEME_DISABLED_MESSAGE);
+
     return rpc.call('generateUnshieldProof', [{
         amount,
         merkle_root: merkleRoot,
@@ -1200,6 +1206,8 @@ async function generateUnshieldProof({ amount, merkleRoot, recipient, blinding, 
  * Generate a transfer proof via the RPC-backed Plonky3 prover.
  */
 async function generateTransferProof(witness) {
+    throw new Error(SHIELDED_PROOF_SCHEME_DISABLED_MESSAGE);
+
     return rpc.call('generateTransferProof', [{
         merkle_root: witness.merkleRoot,
         inputs: witness.inputs.map((input) => ({
@@ -1220,6 +1228,8 @@ async function generateTransferProof(witness) {
 // ===== Crypto Helpers =====
 
 async function computeCommitmentHash(value, blindingHex) {
+    throw new Error(SHIELDED_PROOF_SCHEME_DISABLED_MESSAGE);
+
     const resp = await rpc.call('computeShieldCommitment', [{
         amount: value,
         blinding: blindingHex,
@@ -1231,7 +1241,7 @@ async function computeCommitmentHash(value, blindingHex) {
 }
 
 async function computeNullifier(serialHex) {
-    if (!shieldedState.spendingKey) return null;
+    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE || !shieldedState.spendingKey) return null;
     const resp = await rpc.call('computeShieldNullifier', [{
         serial: serialHex,
         spending_key: bytesToHex(shieldedState.spendingKey),
@@ -1317,8 +1327,9 @@ async function assertPublicFeeBalance(type) {
 }
 
 function privateTransferValidationMessage() {
-    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) return 'Signed shielded transaction submission is not enabled';
-    if (!SHIELDED_PRIVATE_TRANSFER_AVAILABLE) return 'Private transfer is not enabled';
+    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE || !SHIELDED_PRIVATE_TRANSFER_AVAILABLE) {
+        return SHIELDED_PROOF_SCHEME_DISABLED_MESSAGE;
+    }
     const amountInput = document.getElementById('shieldedTransferAmount');
     const viewingKeyInput = document.getElementById('shieldedTransferRecipientVK');
     const amountText = amountInput?.value || '';
@@ -1343,8 +1354,9 @@ function privateTransferValidationMessage() {
 }
 
 function privateTransferPrereqMessage() {
-    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) return 'Signed shielded transaction submission is not enabled';
-    if (!SHIELDED_PRIVATE_TRANSFER_AVAILABLE) return 'Private transfer is not enabled';
+    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE || !SHIELDED_PRIVATE_TRANSFER_AVAILABLE) {
+        return SHIELDED_PROOF_SCHEME_DISABLED_MESSAGE;
+    }
     if (!shieldedState.initialized) return 'Initialize shielded privacy first';
     const unspentNotes = unspentShieldedNotes();
     if (shieldedBalanceSpores() <= 0n || unspentNotes.length === 0) {
@@ -1530,6 +1542,13 @@ function updateShieldedUI() {
     }
     if (transferHint) transferHint.textContent = transferMessage;
 
+    for (const button of document.querySelectorAll(
+        '[data-wallet-action="openShieldModal"], [data-wallet-action="openUnshieldModal"]',
+    )) {
+        button.disabled = !SHIELDED_SIGNED_SUBMISSION_AVAILABLE;
+        button.title = SHIELDED_SIGNED_SUBMISSION_AVAILABLE ? '' : SHIELDED_PROOF_SCHEME_DISABLED_MESSAGE;
+    }
+
     // Render note list
     renderNoteList();
 }
@@ -1546,7 +1565,7 @@ function renderNoteList() {
             <div class="shield-empty-state">
                 <i class="fas fa-shield-alt"></i>
                 <p>No shielded notes yet</p>
-                <p class="shield-empty-sub">Shield LICN to create your first private note</p>
+                <p class="shield-empty-sub">Historical notes remain visible; new shielded operations are unavailable.</p>
             </div>
         `;
         return;
@@ -1643,6 +1662,11 @@ function zkFeeDisplay(type) {
 // ===== Modal Handlers (called from wallet UI) =====
 
 function openShieldModal() {
+    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) {
+        shieldedSubmissionUnavailable('Shielding LICN');
+        return;
+    }
+
     const el = document.getElementById('shieldFeeDisplay');
     if (el) el.textContent = zkFeeDisplay('shield');
     // Wire onblur amount clamping
@@ -1671,6 +1695,11 @@ function openShieldModal() {
 }
 
 function openUnshieldModal() {
+    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) {
+        shieldedSubmissionUnavailable('Unshielding LICN');
+        return;
+    }
+
     const el = document.getElementById('unshieldFeeDisplay');
     if (el) el.textContent = zkFeeDisplay('unshield');
     const wallet = typeof getActiveWallet === 'function' ? getActiveWallet() : null;
@@ -1747,7 +1776,7 @@ function _updateShieldModalBtn() {
     if (!btn) return;
     if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) {
         btn.disabled = true;
-        btn.title = 'Signed shielded transaction submission is not enabled yet';
+        btn.title = SHIELDED_PROOF_SCHEME_DISABLED_MESSAGE;
         return;
     }
     const spendable = parseDecimalBaseUnits(window.walletBalance ?? '0', 9, 'Wallet balance');
@@ -1766,7 +1795,7 @@ function _updateUnshieldModalBtn() {
     if (!btn) return;
     if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) {
         btn.disabled = true;
-        btn.title = 'Signed shielded transaction submission is not enabled yet';
+        btn.title = SHIELDED_PROOF_SCHEME_DISABLED_MESSAGE;
         return;
     }
     const available = shieldedBalanceSpores();

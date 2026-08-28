@@ -90,8 +90,8 @@
                     <div class="carousel-slide">
                         <div class="carousel-card">
                             <div class="carousel-icon"><i class="fas fa-eye-slash"></i></div>
-                            <h3>Privacy Layer</h3>
-                            <p>Shielded transactions with ZK proofs, Pedersen commitments, nullifiers</p>
+                            <h3>Shielded History</h3>
+                            <p>Read-only while proof scheme 0x01 is disabled pending a constrained verifier</p>
                         </div>
                     </div>
                 </div>
@@ -471,13 +471,13 @@
                 <div class="tab-content" data-tab="shield">
                     <div id="shieldedStatusMsg" class="shield-status-msg"></div>
 
-                    <!-- ZK Privacy Banner -->
+                    <!-- Shielded compatibility status -->
                     <div class="tab-banner shield">
                         <div class="tab-banner-icon"><i class="fas fa-user-shield"></i></div>
                         <div class="tab-banner-text">
-                            <h3>Shielded Privacy <span class="shield-badge">Plonky3 STARK</span></h3>
-                            <p>Shield LICN with transparent STARK proofs. Public balances stay separate while shielded
-                                notes hide amounts and transfer links on-chain.</p>
+                            <h3>Shielded History <span class="shield-badge">Read-only</span></h3>
+                            <p>Proof scheme 0x01 is disabled pending a constrained verifier. Historical locally stored
+                                notes and public pool statistics remain visible; shield, unshield, and transfer are unavailable.</p>
                         </div>
                     </div>
 
@@ -490,15 +490,17 @@
                                 <div class="shield-balance-sub" id="shieldedBalanceSporesValue">0 spores</div>
                             </div>
                             <div class="shield-balance-actions">
-                                <button class="btn btn-shield btn-small" data-wallet-action="openShieldModal">
+                                <button class="btn btn-shield btn-small" data-wallet-action="openShieldModal" disabled
+                                    title="Proof scheme 0x01 is disabled pending a constrained verifier">
                                     <i class="fas fa-arrow-down"></i> Shield
                                 </button>
-                                <button class="btn btn-unshield btn-small" data-wallet-action="openUnshieldModal">
+                                <button class="btn btn-unshield btn-small" data-wallet-action="openUnshieldModal" disabled
+                                    title="Proof scheme 0x01 is disabled pending a constrained verifier">
                                     <i class="fas fa-arrow-up"></i> Unshield
                                 </button>
                             </div>
                         </div>
-                        <button class="btn btn-primary shield-transfer-btn" id="shieldedTransferOpenBtn"
+                        <button class="btn btn-primary shield-transfer-btn" id="shieldedTransferOpenBtn" disabled
                             data-wallet-action="openShieldedTransferModal">
                             <i class="fas fa-paper-plane"></i> Private Transfer
                         </button>
@@ -536,8 +538,8 @@
                         </div>
                         <div class="shield-info-box">
                             <i class="fas fa-info-circle"></i>
-                            Your spending key never leaves this device. Viewing key enables auditors to see your
-                            shielded activity without spending.
+                            Existing keys remain stored locally. While the proof service is disabled, this wallet does
+                            not send spending keys, blindings, or other private witness material to validator RPCs.
                         </div>
                     </div>
 
@@ -570,7 +572,7 @@
                             <div class="shield-empty-state">
                                 <i class="fas fa-shield-alt"></i>
                                 <p>No shielded notes yet</p>
-                                <p class="shield-empty-sub">Shield LICN to create your first private note</p>
+                                <p class="shield-empty-sub">Historical notes remain visible; new shielded operations are unavailable.</p>
                             </div>
                         </div>
                     </div>
@@ -1075,8 +1077,7 @@
             <div class="modal-body">
                 <div class="shield-modal-info">
                     <i class="fas fa-lock"></i>
-                    Move LICN from your transparent balance into the shielded pool.
-                    A ZK proof is generated client-side to protect your privacy.
+                    Unavailable while proof scheme 0x01 is disabled pending a constrained verifier.
                 </div>
                 <div class="form-group">
                     <label>Amount (LICN)</label>
@@ -1113,8 +1114,7 @@
             <div class="modal-body">
                 <div class="shield-modal-info unshield">
                     <i class="fas fa-unlock"></i>
-                    Withdraw LICN from the shielded pool to a transparent address.
-                    Requires a ZK proof verifying note ownership.
+                    Unavailable while proof scheme 0x01 is disabled pending a constrained verifier.
                 </div>
                 <div class="form-group">
                     <label>Amount (LICN)</label>
@@ -1157,8 +1157,7 @@
             <div class="modal-body">
                 <div class="shield-modal-info">
                     <i class="fas fa-user-shield"></i>
-                    Send LICN privately. Neither the amount, sender, nor recipient is revealed on-chain.
-                    Both parties maintain full privacy.
+                    Unavailable while proof scheme 0x01 is disabled pending a constrained verifier.
                 </div>
                 <div class="form-group">
                     <label>Amount (LICN)</label>

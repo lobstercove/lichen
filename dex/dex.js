@@ -606,7 +606,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Build a named-export contract call (for SporePump ABI which uses function names, not opcodes)
     function namedCallIx(contractAddr, funcName, argsBytes, value = 0) {
-        const data = JSON.stringify({ Call: { function: funcName, args: Array.from(argsBytes), value } });
+        const normalizedValue = typeof value === 'bigint' ? Number(value) : value;
+        if (!Number.isSafeInteger(normalizedValue) || normalizedValue < 0) {
+            throw new Error('Contract value exceeds the exact JSON integer range');
+        }
+        const data = JSON.stringify({ Call: { function: funcName, args: Array.from(argsBytes), value: normalizedValue } });
         return {
             program_id: CONTRACT_PROGRAM_ID,
             accounts: [wallet.address, contractAddr],
@@ -716,7 +720,21 @@ document.addEventListener('DOMContentLoaded', () => {
     // Binary encoding helpers
     function writeU64LE(view, offset, n) {
         const bn = typeof n === 'bigint' ? n : BigInt(Math.round(n));
+        if (bn < 0n || bn > 0xffffffffffffffffn) throw new Error('u64 argument out of range');
         view.setBigUint64(offset, bn, true);
+    }
+
+    function decimalToRawU64(value, decimals = 9) {
+        const raw = String(value ?? '').trim();
+        if (!/^\d+(?:\.\d+)?$/.test(raw)) throw new Error('Enter a positive decimal amount');
+        const [whole, fraction = ''] = raw.split('.');
+        if (fraction.length > decimals && /[1-9]/.test(fraction.slice(decimals))) {
+            throw new Error(`Amount supports at most ${decimals} decimal places`);
+        }
+        const normalizedFraction = fraction.slice(0, decimals).padEnd(decimals, '0');
+        const result = BigInt(whole) * (10n ** BigInt(decimals)) + BigInt(normalizedFraction || '0');
+        if (result <= 0n || result > 0xffffffffffffffffn) throw new Error('Amount is outside the u64 range');
+        return result;
     }
     function writeI32LE(view, offset, n) {
         view.setInt32(offset, n, true);
@@ -960,6 +978,16 @@ document.addEventListener('DOMContentLoaded', () => {
         writePubkey(arr, 1, caller);
         writeU64LE(view, 33, positionId);
         writeU64LE(view, 41, amount);
+        return arr;
+    }
+
+    function buildCrossCollateralArgs(opcode, caller, amount) {
+        const buf = new ArrayBuffer(41);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, opcode);
+        writePubkey(arr, 1, caller);
+        writeU64LE(view, 33, amount);
         return arr;
     }
 
@@ -1252,24 +1280,26 @@ document.addEventListener('DOMContentLoaded', () => {
         writeU64LE(view, offset, 10_000_000_000);
         return arr;
     }
-    // buy(buyer_ptr[32], token_id[8], licn_amount[8]) = 48 bytes
-    function buildCPBuyArgs(buyer, tokenId, licnSpores) {
-        const buf = new ArrayBuffer(48);
+    // buy_with_min_output(buyer[32], token_id[8], LICN[8], min_tokens[8])
+    function buildCPBuyArgs(buyer, tokenId, licnSpores, minimumTokensOut) {
+        const buf = new ArrayBuffer(56);
         const view = new DataView(buf);
         const arr = new Uint8Array(buf);
         writePubkey(arr, 0, buyer);
         writeU64LE(view, 32, tokenId);
         writeU64LE(view, 40, licnSpores);
+        writeU64LE(view, 48, minimumTokensOut);
         return arr;
     }
-    // sell(seller_ptr[32], token_id[8], token_amount[8]) = 48 bytes
-    function buildCPSellArgs(seller, tokenId, tokenSpores) {
-        const buf = new ArrayBuffer(48);
+    // sell_with_min_output(seller[32], token_id[8], tokens[8], min_LICN[8])
+    function buildCPSellArgs(seller, tokenId, tokenSpores, minimumLicnOut) {
+        const buf = new ArrayBuffer(56);
         const view = new DataView(buf);
         const arr = new Uint8Array(buf);
         writePubkey(arr, 0, seller);
         writeU64LE(view, 32, tokenId);
         writeU64LE(view, 40, tokenSpores);
+        writeU64LE(view, 48, minimumLicnOut);
         return arr;
     }
     // get_token_info(token_id[8]) = 8 bytes
@@ -1459,6 +1489,12 @@ document.addEventListener('DOMContentLoaded', () => {
         return map[base] || base;
     }
 
+    function oracleMarketForPair(pair) {
+        const baseAsset = oracleAssetForPair(pair);
+        const quote = String(pair?.quote || pair?.quoteSymbol || '').trim().toUpperCase();
+        return quote === 'LICN' && baseAsset !== 'LICN' ? `${baseAsset}/LICN` : baseAsset;
+    }
+
     function isWholeNeoLotAmount(amount) {
         const numeric = Number(amount);
         if (!Number.isFinite(numeric) || numeric <= 0) return false;
@@ -1486,6 +1522,7 @@ document.addEventListener('DOMContentLoaded', () => {
         marginSide: 'long', marginType: 'isolated', chartInterval: '15m', chartType: 'candle',
         currentView: 'trade', leverageValue: 2, lastPrice: LICHEN_GENESIS_PRICE, orderBook: { asks: [], bids: [] },
         candles: [], connected: false, tradeMode: 'spot', _wsSubs: [], _predictWsSub: null, _predictWsRefreshTimer: null, _predictCountdownTimer: null, _governanceWsSub: null, _governanceWsRefreshTimer: null, _marginRealtimeRefreshTimer: null, marginMaxLeverage: 100, marginInsuranceFund: 0, marginTotalOpenInterest: 0,
+        marginCrossEnabled: false, marginCrossBalance: 0, marginCrossEquity: 0, marginCrossEquityDeficit: 0, marginCrossTotalNotional: 0, marginCrossInitialRequired: 0, marginCrossMaintenanceRequired: 0, marginCrossFundingDebt: 0, marginCrossAvailableToWithdraw: 0, marginCrossStatus: 'inactive',
         _predictSlotAnchor: { slot: 0, ts: 0 },
         governanceMinQuorum: GOVERNANCE_MIN_QUORUM_DEFAULT,
         governanceExecutionDelaySlots: GOVERNANCE_EXECUTION_DELAY_SLOTS_DEFAULT,
@@ -2777,6 +2814,28 @@ document.addEventListener('DOMContentLoaded', () => {
         return getAvailableBalance(symbol);
     }
 
+    function getInitialMarginBps(leverage) {
+        if (leverage <= 2) return 5000;
+        if (leverage <= 3) return 3333;
+        if (leverage <= 5) return 2000;
+        if (leverage <= 10) return 1000;
+        if (leverage <= 25) return 400;
+        if (leverage <= 50) return 200;
+        return 100;
+    }
+
+    function requiredMarginRaw(notionalRaw, leverage) {
+        return Math.max(1, Math.floor(Math.max(0, Number(notionalRaw || 0)) * getInitialMarginBps(leverage) / 10000));
+    }
+
+    function requiredCrossDepositRaw(notionalRaw, leverage) {
+        const nextRequirement = Math.max(0, Number(state.marginCrossInitialRequired || 0))
+            + requiredMarginRaw(notionalRaw, leverage);
+        const signedEquity = Math.max(0, Number(state.marginCrossEquity || 0))
+            - Math.max(0, Number(state.marginCrossEquityDeficit || 0));
+        return Math.max(0, Math.ceil(nextRequirement - signedEquity));
+    }
+
     function getAvailableBalance(symbol) {
         const raw = String(symbol || '').trim();
         const canonical = canonicalTokenSymbol(raw);
@@ -2893,8 +2952,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 const insuranceAvailable = Math.max(0, state.marginInsuranceFund / PRICE_SCALE);
                 const openInterest = Math.max(0, state.marginTotalOpenInterest / PRICE_SCALE);
                 if (state.marginType === 'cross') {
-                    if (availableCollateral <= 0) disabledReason = `Insufficient ${MARGIN_COLLATERAL_SYMBOL}`;
-                    else if (requiredMargin > availableCollateral) disabledReason = `Insufficient ${MARGIN_COLLATERAL_SYMBOL}`;
+                    const crossDeposit = requiredCrossDepositRaw(Math.round(notional * PRICE_SCALE), leverage) / PRICE_SCALE;
+                    if (!state.marginCrossEnabled) disabledReason = 'Cross margin is not active';
+                    else if (!['healthy', 'maintenance'].includes(state.marginCrossStatus)) disabledReason = `Cross account ${state.marginCrossStatus}`;
+                    else if (crossDeposit > availableCollateral) disabledReason = `Insufficient ${MARGIN_COLLATERAL_SYMBOL}`;
                 } else {
                     if (requiredMargin > availableCollateral) disabledReason = `Insufficient ${MARGIN_COLLATERAL_SYMBOL}`;
                 }
@@ -2994,7 +3055,18 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     const inlineLeverage = document.getElementById('inlineLeverage'), inlineLeverageTag = document.getElementById('inlineLeverageTag');
     if (inlineLeverage) inlineLeverage.addEventListener('input', () => { const maxLev = state.marginType === 'cross' ? Math.min(state.marginMaxLeverage || 100, 3) : (state.marginMaxLeverage || 100); state.leverageValue = snapLeverageToAllowed(parseFloat(inlineLeverage.value), maxLev); inlineLeverage.value = String(state.leverageValue); if (inlineLeverageTag) inlineLeverageTag.textContent = `${state.leverageValue}x`; updateSubmitBtn(); updateMarginInfo(); });
-    document.querySelectorAll('.margin-inline-type').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.margin-inline-type').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.marginType = btn.dataset.mtype; applyLeverageConstraints(); updateMarginInfo(); updateSubmitBtn(); }));
+    document.querySelectorAll('.margin-inline-type').forEach(btn => btn.addEventListener('click', () => {
+        if (btn.dataset.mtype === 'cross' && !state.marginCrossEnabled) {
+            showNotification('Cross margin is not active on this network', 'warning');
+            return;
+        }
+        document.querySelectorAll('.margin-inline-type').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        state.marginType = btn.dataset.mtype;
+        applyLeverageConstraints();
+        updateMarginInfo();
+        updateSubmitBtn();
+    }));
 
     // F9.5a/F9.5b/F9.12a: Route info and fee estimate from actual router quote API
     let _routeQuoteTimer = null;
@@ -3280,7 +3352,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 ? MARGIN_COLLATERAL_SYMBOL
                 : (side === 'buy' ? (pair?.quote || 'lUSD') : (pair?.base || 'LICN'));
             const neededAmount = tradeMode === 'margin'
-                ? ((effectivePrice * amount) / leverageValue)
+                ? (state.marginType === 'cross'
+                    ? requiredCrossDepositRaw(Math.round(effectivePrice * amount * PRICE_SCALE), leverageValue) / PRICE_SCALE
+                    : ((effectivePrice * amount) / leverageValue))
                 : (side === 'buy' ? (effectivePrice * amount) : amount);
             const available = getAvailableBalance(neededToken);
             if (neededAmount > available) {
@@ -3400,10 +3474,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 const leverage = state.leverageValue;
                 const referencePrice = price;
                 const notional = amount * referencePrice;
-                const isolatedMarginDeposit = Math.round((notional / leverage) * PRICE_SCALE);
-                const crossMarginDeposit = isolatedMarginDeposit;
+                const isolatedMarginDeposit = requiredMarginRaw(Math.round(notional * PRICE_SCALE), leverage);
+                const crossMarginDeposit = requiredCrossDepositRaw(Math.round(notional * PRICE_SCALE), leverage);
                 const marginDeposit = state.marginType === 'cross' ? crossMarginDeposit : isolatedMarginDeposit;
-                if (marginDeposit <= 0) {
+                if (state.marginType !== 'cross' && marginDeposit <= 0) {
                     showNotification(`Insufficient ${MARGIN_COLLATERAL_SYMBOL} balance for margin`, 'warning');
                     return;
                 }
@@ -3423,6 +3497,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 ]);
                 showNotification(`${marginSide.toUpperCase()} ${state.leverageValue}x opened: ${formatAmount(amount)} ${state.activePair?.base || ''} @ ${effectiveOrderType === 'market' ? 'MARKET' : formatPrice(price || state.lastPrice)}`, 'success');
                 // F17.8: Immediate panel refresh after margin trade
+                loadMarginStats().catch(() => { });
                 loadMarginPositions().catch(() => { });
             } else {
                 // G2-04: Check reduce-only checkbox state for the contract flag
@@ -5226,9 +5301,26 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         document.querySelectorAll('.margin-inline-type').forEach(btn => {
-            btn.disabled = !enabled;
-            btn.classList.toggle('mode-disabled', !enabled);
+            const modeEnabled = enabled && (btn.dataset.mtype !== 'cross' || state.marginCrossEnabled);
+            btn.disabled = !modeEnabled;
+            btn.classList.toggle('mode-disabled', !modeEnabled);
+            if (btn.dataset.mtype === 'cross') {
+                btn.title = state.marginCrossEnabled ? 'Shared portfolio collateral (maximum 3x)' : 'Cross margin is not active';
+            }
         });
+        if (state.marginType === 'cross' && !state.marginCrossEnabled) {
+            state.marginType = 'isolated';
+            document.querySelectorAll('.margin-inline-type').forEach(btn => btn.classList.toggle('active', btn.dataset.mtype === 'isolated'));
+        }
+        const crossDeposit = document.getElementById('crossDepositBtn');
+        const crossWithdraw = document.getElementById('crossWithdrawBtn');
+        if (crossDeposit) crossDeposit.disabled = !state.marginCrossEnabled;
+        if (crossWithdraw) {
+            crossWithdraw.disabled = !state.marginCrossEnabled || state.marginCrossAvailableToWithdraw <= 0;
+            crossWithdraw.title = state.marginCrossEnabled
+                ? `Withdrawable: ${formatAmount(state.marginCrossAvailableToWithdraw / PRICE_SCALE)} ${MARGIN_COLLATERAL_SYMBOL}`
+                : 'Cross margin is not active';
+        }
     }
 
     // F10.7 FIX: Maintenance margin BPS lookup matching contract tier table
@@ -5263,18 +5355,31 @@ document.addEventListener('DOMContentLoaded', () => {
         const maintFrac = maintBps / 10000;
         // Liquidation price uses tier-appropriate maintenance BPS.
         // Long: entry * (1 - 1/leverage + maint). Short: entry * (1 + 1/leverage - maint).
-        const isolatedMargin = state.leverageValue > 0 ? (notional / state.leverageValue) : 0;
-        const effectiveMargin = state.marginType === 'cross' ? getMarginCollateralAvailable() : isolatedMargin;
+        const notionalRaw = Math.round(notional * PRICE_SCALE);
+        const isolatedMargin = requiredMarginRaw(notionalRaw, state.leverageValue) / PRICE_SCALE;
+        const crossDeposit = requiredCrossDepositRaw(notionalRaw, state.leverageValue) / PRICE_SCALE;
+        const effectiveMargin = state.marginType === 'cross'
+            ? Math.max(0, (state.marginCrossEquity - state.marginCrossEquityDeficit) / PRICE_SCALE + crossDeposit)
+            : isolatedMargin;
         const effectiveLeverage = effectiveMargin > 0 && notional > 0
             ? Math.max(1, notional / effectiveMargin)
             : Math.max(1, state.leverageValue);
         if (c) c.textContent = state.marginType === 'cross'
-            ? `${formatAmount(effectiveMargin)} ${MARGIN_COLLATERAL_SYMBOL}`
+            ? `Deposit ${formatAmount(crossDeposit)} · Equity ${formatAmount(effectiveMargin)} ${MARGIN_COLLATERAL_SYMBOL}`
             : `${formatAmount(isolatedMargin)} ${MARGIN_COLLATERAL_SYMBOL}`;
-        if (l) l.textContent = formatPrice(state.marginSide === 'long'
-            ? referencePrice * (1 - 1 / effectiveLeverage + maintFrac)
-            : referencePrice * (1 + 1 / effectiveLeverage - maintFrac));
-        if (r) r.textContent = `${(100 / effectiveLeverage).toFixed(1)}%`;
+        if (l) l.textContent = state.marginType === 'cross'
+            ? 'Portfolio'
+            : formatPrice(state.marginSide === 'long'
+                ? referencePrice * (1 - 1 / effectiveLeverage + maintFrac)
+                : referencePrice * (1 + 1 / effectiveLeverage - maintFrac));
+        if (r) {
+            if (state.marginType === 'cross') {
+                const projectedNotional = (state.marginCrossTotalNotional / PRICE_SCALE) + notional;
+                r.textContent = projectedNotional > 0 ? `${(effectiveMargin / projectedNotional * 100).toFixed(1)}%` : '—';
+            } else {
+                r.textContent = `${(100 / effectiveLeverage).toFixed(1)}%`;
+            }
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -5820,6 +5925,39 @@ document.addEventListener('DOMContentLoaded', () => {
         document.body.appendChild(modal);
     }
 
+    async function loadCrossMarginAccount() {
+        if (!wallet.address) {
+            state.marginCrossBalance = 0;
+            state.marginCrossEquity = 0;
+            state.marginCrossEquityDeficit = 0;
+            state.marginCrossTotalNotional = 0;
+            state.marginCrossInitialRequired = 0;
+            state.marginCrossMaintenanceRequired = 0;
+            state.marginCrossFundingDebt = 0;
+            state.marginCrossAvailableToWithdraw = 0;
+            state.marginCrossStatus = state.marginCrossEnabled ? 'healthy' : 'inactive';
+            return null;
+        }
+        try {
+            const { data } = await api.get(`/margin/cross-account/${wallet.address}`);
+            if (!data) return null;
+            state.marginCrossEnabled = data.enabled === true;
+            state.marginCrossBalance = Number(data.balance || 0);
+            state.marginCrossEquity = Number(data.equity || 0);
+            state.marginCrossEquityDeficit = Number(data.equityDeficit || data.equity_deficit || 0);
+            state.marginCrossTotalNotional = Number(data.totalNotional || data.total_notional || 0);
+            state.marginCrossInitialRequired = Number(data.initialRequired || data.initial_required || 0);
+            state.marginCrossMaintenanceRequired = Number(data.maintenanceRequired || data.maintenance_required || 0);
+            state.marginCrossFundingDebt = Number(data.fundingDebt || data.funding_debt || 0);
+            state.marginCrossAvailableToWithdraw = Number(data.availableToWithdraw || data.available_to_withdraw || 0);
+            state.marginCrossStatus = String(data.status || 'invalid');
+            return data;
+        } catch {
+            state.marginCrossStatus = 'unavailable';
+            return null;
+        }
+    }
+
     async function loadMarginStats() {
         try {
             const { data } = await api.get('/stats/margin');
@@ -5841,6 +5979,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data) {
                 state.marginInsuranceFund = Number(data.insuranceFund || data.insurance_fund || state.marginInsuranceFund || 0);
                 state.marginTotalOpenInterest = Number(data.totalOpenInterest || data.total_open_interest || state.marginTotalOpenInterest || 0);
+                state.marginCrossEnabled = data.crossV2Enabled === true || data.cross_v2_enabled === true;
                 const maxLev = Number(data.maxLeverage ?? data.max_leverage ?? 0);
                 if (maxLev > 0) state.marginMaxLeverage = Math.min(100, maxLev);
                 if (maxLev > 0) setProtocolParam('maxLeverage', Math.min(100, maxLev));
@@ -5848,7 +5987,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (maintenanceBps > 0) setProtocolParam('marginMaintenancePct', maintenanceBps / 100);
             }
         } catch { /* keep defaults */ }
+        await loadCrossMarginAccount();
         applyLeverageConstraints();
+        syncMarginAvailabilityUi();
         updateMarginInfo();
         syncGovernanceProtocolUi();
         // Load funding rate
@@ -5857,9 +5998,16 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data) {
                 const el = document.getElementById('marginFundingRate');
                 if (el) {
-                    const rate = (data.baseRateBps / 100).toFixed(2);
-                    el.textContent = `${rate}%/${data.intervalHours || 8}h`;
-                    el.title = `Base rate: ${rate}%/8h, Max: ${(data.maxRateBps / 100).toFixed(1)}%, Tiers: ${(data.tiers || []).length}`;
+                    const interval = Number(data.intervalHours || 8);
+                    const maxRate = Number(data.maxRateBps || 0) / 100;
+                    if (data.dynamic) {
+                        el.textContent = `Dynamic/${interval}h`;
+                        el.title = `${data.formula || 'Mark/index premium'}; cap ${maxRate.toFixed(2)}% per interval; pool-backed settlement ${data.fundingV2Enabled ? 'active' : 'inactive'}`;
+                    } else {
+                        const rate = (Number(data.baseRateBps || 0) / 100).toFixed(2);
+                        el.textContent = `${rate}%/${interval}h`;
+                        el.title = `Base rate: ${rate}%/${interval}h, cap: ${maxRate.toFixed(2)}%`;
+                    }
                 }
             }
         } catch { /* keep default */ }
@@ -5868,14 +6016,18 @@ document.addEventListener('DOMContentLoaded', () => {
     async function buildMarginOracleRefreshInstruction(pairId = state.activePairId, pair = null) {
         if (!contracts.dex_margin) throw new Error('Margin contract not loaded');
         const selectedPair = pair || pairs.find(p => Number(p.pairId || p.pair_id || 0) === Number(pairId)) || state.activePair;
-        const asset = oracleAssetForPair(selectedPair);
+        const market = oracleMarketForPair(selectedPair);
+        const requiredAssets = market.split('/');
         const { data } = await api.get('/oracle/prices');
         const feeds = Array.isArray(data?.feeds) ? data.feeds : [];
-        const feed = feeds.find(f => String(f.asset || '').toUpperCase() === String(asset).toUpperCase());
-        if (!feed || feed.stale || Number(feed.priceRaw || feed.price || 0) <= 0) {
-            throw new Error(`Fresh oracle price unavailable for ${asset}`);
+        const missing = requiredAssets.find(asset => {
+            const feed = feeds.find(f => String(f.asset || '').toUpperCase() === asset.toUpperCase());
+            return !feed || feed.stale || Number(feed.priceRaw || feed.price || 0) <= 0;
+        });
+        if (missing) {
+            throw new Error(`Fresh oracle price unavailable for ${missing}`);
         }
-        return contractIx(contracts.dex_margin, buildUpdateMarkPriceFromOracleArgs(wallet.address, pairId, asset));
+        return contractIx(contracts.dex_margin, buildUpdateMarkPriceFromOracleArgs(wallet.address, pairId, market));
     }
 
     async function submitMarginClose(positionId, fullSizeRaw, closeAmountRaw, closeType = 'market', limitPriceRaw = 0) {
@@ -5896,6 +6048,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         const oracleIx = await buildMarginOracleRefreshInstruction();
         await wallet.sendTransaction([oracleIx, ix]);
+        await loadMarginStats();
         await loadMarginPositions();
         await loadMarginHistory();
         if (wallet.address) loadBalances(wallet.address).then(() => renderBalances()).catch(() => { });
@@ -5907,6 +6060,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!Number.isFinite(positionId) || positionId <= 0) throw new Error('Invalid position ID');
         const oracleIx = await buildMarginOracleRefreshInstruction();
         await wallet.sendTransaction([oracleIx, contractIx(contracts.dex_margin, buildLiquidateArgs(wallet.address, positionId))]);
+        await loadMarginStats();
         await loadMarginPositions();
         await loadMarginHistory();
         if (wallet.address) loadBalances(wallet.address).then(() => renderBalances()).catch(() => { });
@@ -6044,6 +6198,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         try {
+            await loadCrossMarginAccount();
             const { data } = await api.get(`/margin/positions?trader=${wallet.address}`);
             if (badge) badge.textContent = Array.isArray(data) && data.length > 0 ? data.length : '';
             if (Array.isArray(data) && data.length > 0) {
@@ -6054,12 +6209,15 @@ document.addEventListener('DOMContentLoaded', () => {
                         const sideClass = side === 'Long' ? 'side-buy' : 'side-sell';
                         const marginType = pos.marginType === 'cross' ? 'Cross' : 'Isolated';
                         const collateralAsset = pos.collateralAsset || MARGIN_COLLATERAL_SYMBOL;
+                        const isCross = pos.marginType === 'cross';
                         const leverage = pos.leverage || state.leverageValue || 2;
                         // Unrealized PnL computation
                         const mark = pos.markPrice || state.lastPrice;
                         const entry = pos.entryPrice || 0;
                         const sizeRaw = pos.size || 0;
-                        const marginRaw = pos.margin || 0;
+                        const marginRaw = isCross
+                            ? Number(pos.crossCollateral ?? state.marginCrossBalance ?? 0)
+                            : Number(pos.margin || 0);
                         let pnl;
                         if (pos.status === 'closed' || pos.status === 'liquidated') {
                             pnl = pos.realizedPnl || 0;
@@ -6077,12 +6235,15 @@ document.addEventListener('DOMContentLoaded', () => {
                         // Liquidation price
                         const entryHuman = entry / PRICE_SCALE || entry;
                         const sizeHuman = sizeRaw / PRICE_SCALE || sizeRaw;
-                        const liqPrice = computeLiquidationPrice(side, entryHuman, marginHuman, sizeHuman, leverage);
+                        const liqPrice = isCross ? 0 : computeLiquidationPrice(side, entryHuman, marginHuman, sizeHuman, leverage);
                         const posId = pos.positionId || pos.id || 0;
                         // Task 5.2: Liquidation proximity — margin ratio < 120%
                         const notionalValue = sizeHuman * (mark > 0 ? mark / PRICE_SCALE : entryHuman);
-                        const marginRatioPct = notionalValue > 0 ? ((marginHuman + pnl) / notionalValue) * 100 : 999;
-                        const isLiqWarning = marginRatioPct < 120 && pos.status !== 'closed' && pos.status !== 'liquidated';
+                        const marginRatioPct = isCross
+                            ? (state.marginCrossTotalNotional > 0 ? state.marginCrossEquity / state.marginCrossTotalNotional * 100 : 999)
+                            : (notionalValue > 0 ? ((marginHuman + pnl) / notionalValue) * 100 : 999);
+                        const isLiqWarning = (isCross ? state.marginCrossStatus === 'maintenance' : marginRatioPct < 120)
+                            && pos.status !== 'closed' && pos.status !== 'liquidated';
                         const rowClass = isLiqWarning ? 'margin-pos-row liq-warning-flash' : 'margin-pos-row';
                         // SL/TP display values
                         const slPrice = pos.slPrice || 0;
@@ -6097,9 +6258,9 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <span>Size: ${formatAmount(sizeRaw / 1e9)}</span>
                                 <span>Entry: ${formatPrice(pos.entryPrice || 0)}</span>
                                 <span>Mark: ${formatPrice(mark)}</span>
-                                <span>Liq: <span class="text-warning">${liqPrice > 0 ? formatPrice(liqPrice) : '—'}</span></span>
+                                <span>Liq: <span class="text-warning">${isCross ? 'Portfolio' : (liqPrice > 0 ? formatPrice(liqPrice) : '—')}</span></span>
                                 <span class="${pnl >= 0 ? 'positive' : 'negative'}">P&L: ${pnl >= 0 ? '+' : ''}${formatPrice(pnl)} (${pnlPctStr})</span>
-                                <span>Margin: ${formatAmount(marginHuman)} ${escapeHtml(collateralAsset)}</span>
+                                <span>${isCross ? 'Shared' : 'Margin'}: ${formatAmount(marginHuman)} ${escapeHtml(collateralAsset)}</span>
                                 <span>SL: ${slPrice > 0 ? formatPrice(slPrice / PRICE_SCALE) : '—'}</span>
                                 <span>TP: ${tpPrice > 0 ? formatPrice(tpPrice / PRICE_SCALE) : '—'}</span>
                             </div>
@@ -6172,6 +6333,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             }
                             await wallet.sendTransaction([ix]);
                             showNotification(pct >= 100 ? 'Position closed' : `Closed ${pct}% of position`, 'success');
+                            await loadMarginStats();
                             await loadMarginPositions();
                             if (wallet.address) loadBalances(wallet.address).then(() => renderBalances()).catch(() => { });
                         } catch (e) { showNotification(`Close failed: ${e.message}`, 'error'); }
@@ -6193,6 +6355,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 buildPartialCloseArgs(wallet.address, posId, closeAmt)
                             )]);
                             showNotification(`Closed ${qty} units of position`, 'success');
+                            await loadMarginStats();
                             await loadMarginPositions();
                             if (wallet.address) loadBalances(wallet.address).then(() => renderBalances()).catch(() => { });
                         } catch (e) { showNotification(`Close failed: ${e.message}`, 'error'); }
@@ -6284,6 +6447,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 )]);
                                 showNotification(`Removed ${formatAmount(amountHuman)} ${collateralAsset} margin`, 'success');
                             }
+                            await loadMarginStats();
                             await loadMarginPositions();
                             if (wallet.address) loadBalances(wallet.address).then(() => renderBalances()).catch(() => { });
                         } catch (e) { showNotification(`${action === 'add' ? 'Add' : 'Remove'} margin failed: ${e.message}`, 'error'); }
@@ -6338,32 +6502,40 @@ document.addEventListener('DOMContentLoaded', () => {
                     }));
                 }
                 // Update equity stats
-                let totalMargin = 0, totalUnrealizedPnl = 0;
+                let isolatedMargin = 0, isolatedUnrealizedPnl = 0;
                 data.forEach(p => {
-                    totalMargin += (p.margin || 0) / 1e9;
+                    const isOpen = p.status !== 'closed' && p.status !== 'liquidated';
+                    if (!isOpen || p.marginType === 'cross') return;
+                    isolatedMargin += (p.margin || 0) / PRICE_SCALE;
                     const mark = p.markPrice || state.lastPrice;
                     const entry = p.entryPrice || 0;
                     const size = p.size || 0;
                     const side = p.side === 'long' ? 'Long' : 'Short';
                     let uPnl = 0;
-                    if (p.status !== 'closed' && p.status !== 'liquidated' && entry > 0 && mark > 0) {
+                    if (entry > 0 && mark > 0) {
                         uPnl = side === 'Long' ? (mark - entry) * size / PRICE_SCALE : (entry - mark) * size / PRICE_SCALE;
                     }
-                    totalUnrealizedPnl += uPnl;
+                    isolatedUnrealizedPnl += uPnl;
                 });
-                const eq = getMarginCollateralAvailable() + totalMargin + totalUnrealizedPnl;
+                const crossEquity = state.marginCrossEquity / PRICE_SCALE;
+                const crossUsed = state.marginCrossInitialRequired / PRICE_SCALE;
+                const eq = Math.max(0, isolatedMargin + isolatedUnrealizedPnl) + crossEquity;
+                const used = isolatedMargin + crossUsed;
+                const available = getMarginCollateralAvailable() + (state.marginCrossAvailableToWithdraw / PRICE_SCALE);
                 const formatMarginCollateral = value => `${formatAmount(value)} ${MARGIN_COLLATERAL_SYMBOL}`;
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
                 el('marginEquity', formatMarginCollateral(eq));
-                el('marginUsed', formatMarginCollateral(totalMargin));
-                el('marginAvailable', formatMarginCollateral(eq - totalMargin));
+                el('marginUsed', formatMarginCollateral(used));
+                el('marginAvailable', formatMarginCollateral(available));
                 return;
             } else {
                 // No positions — show empty state
                 if (container) container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;"><i class="fas fa-chart-line" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>No open positions</div>';
-                const availableCollateral = getMarginCollateralAvailable();
+                const walletAvailable = getMarginCollateralAvailable();
+                const crossEquity = state.marginCrossEquity / PRICE_SCALE;
+                const availableCollateral = walletAvailable + state.marginCrossAvailableToWithdraw / PRICE_SCALE;
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-                el('marginEquity', `${formatAmount(availableCollateral)} ${MARGIN_COLLATERAL_SYMBOL}`);
+                el('marginEquity', `${formatAmount(crossEquity)} ${MARGIN_COLLATERAL_SYMBOL}`);
                 el('marginUsed', `0 ${MARGIN_COLLATERAL_SYMBOL}`);
                 el('marginAvailable', `${formatAmount(availableCollateral)} ${MARGIN_COLLATERAL_SYMBOL}`);
             }
@@ -8854,6 +9026,62 @@ document.addEventListener('DOMContentLoaded', () => {
         marginLiquidateBtn.textContent = origText || 'Liquidate';
     });
 
+    async function adjustCrossCollateral(action, button) {
+        if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+        if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
+        if (!state.marginCrossEnabled) { showNotification('Cross margin is not active', 'warning'); return; }
+        if (!contracts.dex_margin) { showNotification('Margin contract not loaded', 'error'); return; }
+        const label = action === 'deposit' ? 'deposit' : 'withdraw';
+        const raw = window.prompt(`Enter ${MARGIN_COLLATERAL_SYMBOL} amount to ${label}:`);
+        if (raw === null) return;
+        const amountHuman = Number(raw.trim());
+        if (!Number.isFinite(amountHuman) || amountHuman <= 0 || amountHuman > 9_000_000) {
+            showNotification('Enter a valid amount', 'warning');
+            return;
+        }
+        const amountRaw = Math.round(amountHuman * PRICE_SCALE);
+        if (action === 'deposit' && amountHuman > getMarginCollateralAvailable()) {
+            showNotification(`Insufficient ${MARGIN_COLLATERAL_SYMBOL}`, 'warning');
+            return;
+        }
+        if (action === 'withdraw' && amountRaw > state.marginCrossAvailableToWithdraw) {
+            showNotification(`Only ${formatAmount(state.marginCrossAvailableToWithdraw / PRICE_SCALE)} ${MARGIN_COLLATERAL_SYMBOL} is withdrawable`, 'warning');
+            return;
+        }
+        const previousText = button.textContent;
+        button.disabled = true;
+        button.textContent = action === 'deposit' ? 'Depositing…' : 'Withdrawing…';
+        try {
+            const opcode = action === 'deposit' ? 47 : 48;
+            const pull = action === 'deposit'
+                ? prepareTokenPull(MARGIN_COLLATERAL_SYMBOL, contracts.dex_margin, amountRaw)
+                : { instructions: [], value: 0 };
+            await wallet.sendTransaction([
+                ...pull.instructions,
+                contractIx(
+                    contracts.dex_margin,
+                    buildCrossCollateralArgs(opcode, wallet.address, amountRaw),
+                    pull.value
+                )
+            ]);
+            showNotification(`${action === 'deposit' ? 'Deposited' : 'Withdrew'} ${formatAmount(amountHuman)} ${MARGIN_COLLATERAL_SYMBOL}`, 'success');
+            await loadMarginStats();
+            await loadMarginPositions();
+            await loadBalances(wallet.address);
+            renderBalances();
+        } catch (e) {
+            showNotification(`Cross collateral ${label} failed: ${e.message}`, 'error');
+        } finally {
+            button.disabled = false;
+            button.textContent = previousText;
+        }
+    }
+
+    const crossDepositBtn = document.getElementById('crossDepositBtn');
+    if (crossDepositBtn) crossDepositBtn.addEventListener('click', () => adjustCrossCollateral('deposit', crossDepositBtn));
+    const crossWithdrawBtn = document.getElementById('crossWithdrawBtn');
+    if (crossWithdrawBtn) crossWithdrawBtn.addEventListener('click', () => adjustCrossCollateral('withdraw', crossWithdrawBtn));
+
     const copyBtn = document.querySelector('.copy-btn');
     if (copyBtn) copyBtn.addEventListener('click', () => { const c = document.querySelector('.referral-link-box code'); if (c) navigator.clipboard.writeText(c.textContent).then(() => showNotification('Referral link copied!', 'success')); });
 
@@ -8861,7 +9089,16 @@ document.addEventListener('DOMContentLoaded', () => {
     // SporePump Launchpad — Full token launch + bonding curve UI
     // ═══════════════════════════════════════════════════════════════════════
 
-    const launchState = { tokens: [], selectedToken: null, tradeMode: 'buy', quoteTimer: null, holdings: {} };
+    const launchState = {
+        tokens: [],
+        selectedToken: null,
+        tradeMode: 'buy',
+        quoteTimer: null,
+        quoteSequence: 0,
+        exactQuote: null,
+        holdings: {},
+        stats: null,
+    };
 
     function getSelectedLaunchToken() {
         return launchState.tokens.find(token => Number(token.id) === Number(launchState.selectedToken)) || null;
@@ -8877,9 +9114,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!walletIsConnected()) return { ok: false, message: 'Connect wallet to trade', gate: true };
         if (!walletCanSign()) return { ok: false, message: 'Reconnect wallet to sign', gate: true };
         if (!contracts.sporepump) return { ok: false, message: 'Launchpad contract not loaded' };
+        if (!launchState.stats) return { ok: false, message: 'Waiting for verified launchpad status' };
+        if (!launchState.stats.accounting_ready) {
+            return { ok: false, message: 'Launchpad accounting migration is not complete' };
+        }
         const token = getSelectedLaunchToken();
         if (!token) return { ok: false, message: 'Select a token first' };
         if (token.graduated) return { ok: false, message: 'Graduated tokens trade on the DEX order book' };
+        if (token.frozen) return { ok: false, message: 'This token is frozen' };
+        if (launchState.tradeMode === 'buy' && launchState.stats.paused) {
+            return { ok: false, message: 'Launchpad buys are paused; sells remain available' };
+        }
         const amount = readDexDecimal(document.getElementById('launchAmountInput'));
         if (amount <= 0) return { ok: false, message: 'Enter a positive amount' };
         if (amount > 9_000_000) return { ok: false, message: 'Amount too large, maximum 9M' };
@@ -8891,6 +9136,19 @@ document.addEventListener('DOMContentLoaded', () => {
             if (holding !== null && amount > holding) {
                 return { ok: false, message: `Insufficient token balance: have ${formatAmount(holding)}` };
             }
+        }
+        let amountRaw;
+        try {
+            amountRaw = decimalToRawU64(document.getElementById('launchAmountInput')?.value, 9);
+        } catch (error) {
+            return { ok: false, message: error.message };
+        }
+        const quote = launchState.exactQuote;
+        if (!quote
+            || quote.side !== launchState.tradeMode
+            || quote.tokenId !== Number(token.id)
+            || quote.inputRaw !== amountRaw) {
+            return { ok: false, message: 'Waiting for an exact live quote' };
         }
         return { ok: true, message: launchState.tradeMode === 'buy' ? 'Ready to buy' : 'Ready to sell' };
     }
@@ -8915,6 +9173,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!walletIsConnected()) return { ok: false, message: 'Connect wallet to launch', gate: true };
         if (!walletCanSign()) return { ok: false, message: 'Reconnect wallet to sign', gate: true };
         if (!contracts.sporepump) return { ok: false, message: 'Launchpad contract not loaded' };
+        if (!launchState.stats) return { ok: false, message: 'Waiting for verified launchpad status' };
+        if (!launchState.stats.accounting_ready) {
+            return { ok: false, message: 'Launchpad accounting migration is not complete' };
+        }
+        if (launchState.stats.paused) return { ok: false, message: 'Launchpad token creation is paused' };
         const name = String(document.getElementById('launchTokenName')?.value || '').trim();
         const symbol = String(document.getElementById('launchTokenSymbol')?.value || '').trim().toUpperCase();
         const nameBytes = new TextEncoder().encode(name);
@@ -8947,13 +9210,18 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const { data } = await api.get('/launchpad/stats');
             if (data) {
+                launchState.stats = data;
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
                 el('launchTokenCount', data.token_count || 0);
                 el('launchTotalRaised', formatAmount(data.total_raised || 0) + ' LICN');
                 el('launchGraduated', data.total_graduated || 0);
                 el('launchFees', formatAmount(data.fees_collected || 0) + ' LICN');
             }
-        } catch { /* API unavailable */ }
+        } catch {
+            launchState.stats = null;
+        }
+        updateLaunchTradeButton();
+        updateLaunchCreateButton();
     }
 
     async function loadLaunchpadTokens() {
@@ -8986,6 +9254,7 @@ document.addEventListener('DOMContentLoaded', () => {
         grid.innerHTML = launchState.tokens.map(t => {
             const gradPct = (t.graduation_pct || 0).toFixed(1);
             const isGrad = t.graduated;
+            const isFrozen = Boolean(t.frozen);
             const priceStr = formatPrice(t.current_price || 0);
             const raisedStr = formatAmount(t.licn_raised || 0);
             const mcapStr = formatAmount(t.market_cap || 0);
@@ -8996,7 +9265,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return `<div class="launch-token-card ${selectedClass}" data-token-id="${t.id}">
                 <div class="ltc-header">
                     <span class="ltc-name"><i class="fas fa-coins"></i> ${escapeHtml(tokenName)} <small>${escapeHtml(tokenSymbol)}</small></span>
-                    <span class="ltc-badge ${isGrad ? 'graduated' : 'active'}">${isGrad ? 'Graduated' : 'Active'}</span>
+                    <span class="ltc-badge ${isGrad ? 'graduated' : 'active'}">${isGrad ? 'Graduated' : (isFrozen ? 'Frozen' : 'Active')}</span>
                 </div>
                 <div class="ltc-creator"><i class="fas fa-user"></i> ${escapeHtml(creatorShort)}</div>
                 <div class="ltc-stats">
@@ -9009,8 +9278,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     <span class="ltc-grad-label">${gradPct}% to graduation</span>
                 </div>
                 ${!isGrad ? `<div class="ltc-actions">
-                    <button class="btn btn-small btn-buy launch-quick-buy" data-token-id="${t.id}"><i class="fas fa-arrow-up"></i> Buy</button>
-                    <button class="btn btn-small btn-sell launch-quick-sell" data-token-id="${t.id}"><i class="fas fa-arrow-down"></i> Sell</button>
+                    <button class="btn btn-small btn-buy launch-quick-buy" data-token-id="${t.id}" ${isFrozen ? 'disabled' : ''}><i class="fas fa-arrow-up"></i> Buy</button>
+                    <button class="btn btn-small btn-sell launch-quick-sell" data-token-id="${t.id}" ${isFrozen ? 'disabled' : ''}><i class="fas fa-arrow-down"></i> Sell</button>
                 </div>` : '<div class="ltc-actions"><span style="color:var(--accent);font-size:0.8rem;"><i class="fas fa-exchange-alt"></i> Trade on DEX</span></div>'}
             </div>`;
         }).join('');
@@ -9044,6 +9313,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function selectLaunchToken(id) {
         launchState.selectedToken = id;
+        launchState.exactQuote = null;
         const t = launchState.tokens.find(x => x.id === id);
         // Update selection highlight
         document.querySelectorAll('.launch-token-card').forEach(c => c.classList.toggle('selected', parseInt(c.dataset.tokenId) === id));
@@ -9184,6 +9454,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function setLaunchSide(side) {
         launchState.tradeMode = side;
+        launchState.exactQuote = null;
         document.querySelectorAll('.launch-side-btn').forEach(b => b.classList.toggle('active', b.dataset.lside === side));
         const amtLabel = document.getElementById('launchAmountLabel');
         const amtUnit = document.getElementById('launchAmountUnit');
@@ -9199,47 +9470,64 @@ document.addEventListener('DOMContentLoaded', () => {
         updateLaunchTradeButton();
     }
 
-    function updateLaunchQuote() {
-        const amt = readDexDecimal(document.getElementById('launchAmountInput'));
-        const t = getSelectedLaunchToken();
-        const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-        if (!t || !amt) {
+    async function fetchExactLaunchQuote(tokenId, side, inputRaw) {
+        const endpoint = side === 'buy' ? 'quote' : 'sell-quote';
+        const { data } = await api.get(`/launchpad/tokens/${tokenId}/${endpoint}?amount_raw=${inputRaw}`);
+        if (!data) throw new Error('Launchpad quote was unavailable');
+        const outputField = side === 'buy' ? 'tokens_received_raw' : 'licn_received_raw';
+        const outputRaw = BigInt(data[outputField] || 0);
+        const platformFeeRaw = BigInt(data.platform_fee_raw || 0);
+        const creatorFeeRaw = BigInt(data.creator_royalty_raw || 0);
+        if (outputRaw <= 0n) throw new Error('Launchpad quote returned zero output');
+        return {
+            side,
+            tokenId: Number(tokenId),
+            inputRaw: BigInt(inputRaw),
+            outputRaw,
+            platformFeeRaw,
+            creatorFeeRaw,
+            priceImpactPct: Number(data.price_impact_pct || 0),
+        };
+    }
+
+    async function updateLaunchQuote() {
+        const sequence = ++launchState.quoteSequence;
+        const token = getSelectedLaunchToken();
+        const side = launchState.tradeMode;
+        const el = (id, value) => { const element = document.getElementById(id); if (element) element.textContent = value; };
+        launchState.exactQuote = null;
+        let inputRaw;
+        try {
+            inputRaw = decimalToRawU64(document.getElementById('launchAmountInput')?.value, 9);
+        } catch {
             el('launchQuoteTokens', '—'); el('launchQuoteImpact', '—'); el('launchQuoteFee', '—');
             updateLaunchTradeButton();
             return;
         }
-        if (launchState.tradeMode === 'buy') {
-            // Client-side bonding curve estimate
-            const licnSpores = amt * 1e9;
-            const afterFee = licnSpores * 0.99;
-            const supplyRaw = (t.supply_sold || 0) * 1e9;
-            // Quadratic solve for tokens out (same as REST API)
-            const aCoeff = 1 / (2 * 1e6);
-            const bCoeff = 1000 + supplyRaw / 1e6;
-            const disc = bCoeff * bCoeff + 4 * aCoeff * afterFee;
-            const tokensOut = disc > 0 ? (-bCoeff + Math.sqrt(disc)) / (2 * aCoeff) : 0;
-            const tokensF = tokensOut / 1e9;
-            const priceBefore = (1000 + supplyRaw / 1e6) / 1e9;
-            const priceAfter = (1000 + (supplyRaw + tokensOut) / 1e6) / 1e9;
-            const impact = priceBefore > 0 ? ((priceAfter - priceBefore) / priceBefore * 100) : 0;
-            el('launchQuoteTokens', formatAmount(tokensF) + ' tokens');
-            el('launchQuoteImpact', impact.toFixed(2) + '%');
-            el('launchQuoteFee', formatAmount(amt * 0.01) + ' LICN');
-        } else {
-            // Sell estimate
-            const tokenSpores = amt * 1e9;
-            const supplyRaw = (t.supply_sold || 0) * 1e9;
-            if (tokenSpores > supplyRaw) { el('launchQuoteTokens', 'Exceeds supply'); el('launchQuoteImpact', '—'); el('launchQuoteFee', '—'); return; }
-            // Sell refund: (BASE_PRICE * a + SLOPE * a * (2*s - a) / (2 * SLOPE_SCALE)) / norm
-            const a = tokenSpores, s = supplyRaw;
-            const refundRaw = (1000 * a + 1 * a * (2 * s - a) / (2 * 1e6)) / 1e9;
-            const refundAfterFee = refundRaw * 0.99;
-            const priceBefore = (1000 + s / 1e6) / 1e9;
-            const priceAfter = (1000 + (s - a) / 1e6) / 1e9;
-            const impact = priceBefore > 0 ? ((priceAfter - priceBefore) / priceBefore * 100) : 0;
-            el('launchQuoteTokens', formatAmount(refundAfterFee) + ' LICN');
-            el('launchQuoteImpact', impact.toFixed(2) + '%');
-            el('launchQuoteFee', formatAmount(refundRaw * 0.01) + ' LICN');
+        if (!token) {
+            el('launchQuoteTokens', '—'); el('launchQuoteImpact', '—'); el('launchQuoteFee', '—');
+            updateLaunchTradeButton();
+            return;
+        }
+        el('launchQuoteTokens', 'Loading…');
+        updateLaunchTradeButton();
+        try {
+            const quote = await fetchExactLaunchQuote(token.id, side, inputRaw);
+            if (sequence !== launchState.quoteSequence
+                || Number(launchState.selectedToken) !== Number(token.id)
+                || launchState.tradeMode !== side) return;
+            launchState.exactQuote = quote;
+            const output = Number(quote.outputRaw) / 1e9;
+            const totalFee = Number(quote.platformFeeRaw + quote.creatorFeeRaw) / 1e9;
+            el('launchQuoteTokens', `${formatAmount(output)} ${side === 'buy' ? 'tokens' : 'LICN'}`);
+            el('launchQuoteImpact', `${quote.priceImpactPct.toFixed(2)}%`);
+            el('launchQuoteFee', `${formatAmount(totalFee)} LICN`);
+        } catch (error) {
+            if (sequence !== launchState.quoteSequence) return;
+            launchState.exactQuote = null;
+            el('launchQuoteTokens', 'Quote unavailable');
+            el('launchQuoteImpact', '—');
+            el('launchQuoteFee', '—');
         }
         updateLaunchTradeButton();
     }
@@ -9302,6 +9590,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const launchAmtInput = document.getElementById('launchAmountInput');
     if (launchAmtInput) launchAmtInput.addEventListener('input', () => {
         clearTimeout(launchState.quoteTimer);
+        launchState.exactQuote = null;
         updateLaunchTradeButton();
         launchState.quoteTimer = setTimeout(updateLaunchQuote, 150);
     });
@@ -9318,20 +9607,33 @@ document.addEventListener('DOMContentLoaded', () => {
         const validation = getLaunchTradeValidation();
         if (!validation.ok) { showNotification(validation.message, 'warning'); return; }
         const tid = launchState.selectedToken;
-        const amt = readDexDecimal(document.getElementById('launchAmountInput'));
+        const inputRaw = decimalToRawU64(document.getElementById('launchAmountInput')?.value, 9);
 
         launchTradeBtn.disabled = true;
         const origText = launchTradeBtn.innerHTML;
         launchTradeBtn.textContent = 'Submitting...';
 
         try {
+            const quote = await fetchExactLaunchQuote(tid, launchState.tradeMode, inputRaw);
+            const slippageBps = BigInt(Math.max(
+                0,
+                Math.min(9_999, Math.round(Number(state.slippagePct || 0) * 100)),
+            ));
+            const minimumOutput = quote.outputRaw * (10_000n - slippageBps) / 10_000n;
             if (launchState.tradeMode === 'buy') {
-                const licnSpores = Math.round(amt * 1e9);
-                await wallet.sendTransaction([namedCallIx(contracts.sporepump, 'buy', buildCPBuyArgs(wallet.address, tid, licnSpores), licnSpores)]);
+                await wallet.sendTransaction([namedCallIx(
+                    contracts.sporepump,
+                    'buy_with_min_output',
+                    buildCPBuyArgs(wallet.address, tid, inputRaw, minimumOutput),
+                    inputRaw,
+                )]);
                 showNotification(`Bought tokens on Token #${tid}!`, 'success');
             } else {
-                const tokenSpores = Math.round(amt * 1e9);
-                await wallet.sendTransaction([namedCallIx(contracts.sporepump, 'sell', buildCPSellArgs(wallet.address, tid, tokenSpores))]);
+                await wallet.sendTransaction([namedCallIx(
+                    contracts.sporepump,
+                    'sell_with_min_output',
+                    buildCPSellArgs(wallet.address, tid, inputRaw, minimumOutput),
+                )]);
                 showNotification(`Sold tokens on Token #${tid}!`, 'success');
             }
             // Refresh

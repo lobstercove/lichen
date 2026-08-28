@@ -26,7 +26,6 @@
 
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
-#![allow(dead_code)]
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -72,6 +71,7 @@ const DEFAULT_REQUIRED_CONFIRMATIONS: u64 = 2;
 const DEFAULT_REQUEST_TIMEOUT: u64 = 43_200; // ~12 hours at 1 slot/sec
 const MAX_REQUIRED_CONFIRMATIONS: u64 = 100;
 const MIN_REQUEST_TIMEOUT: u64 = 100;
+const MAX_VALIDATOR_INTERVALS: u64 = 256;
 
 /// AUDIT-FIX G11-01: LichenCoin contract address for token transfers
 const LICHENCOIN_ADDRESS_KEY: &[u8] = b"mb_licn_addr";
@@ -82,7 +82,6 @@ const LICHENCOIN_ADDRESS_KEY: &[u8] = b"mb_licn_addr";
 
 const STATUS_PENDING: u8 = 0;
 const STATUS_COMPLETED: u8 = 1;
-const STATUS_CANCELLED: u8 = 2;
 const STATUS_EXPIRED: u8 = 3;
 
 // ============================================================================
@@ -145,6 +144,67 @@ fn burn_proof_used_key(proof: &[u8; 32]) -> Vec<u8> {
     key
 }
 
+fn source_tx_released_key(tx_hash: &[u8; 32]) -> Vec<u8> {
+    let mut key = b"bridge_st_released_".to_vec();
+    key.extend_from_slice(&hex_encode(tx_hash));
+    key
+}
+
+fn burn_proof_released_key(proof: &[u8; 32]) -> Vec<u8> {
+    let mut key = b"bridge_bp_released_".to_vec();
+    key.extend_from_slice(&hex_encode(proof));
+    key
+}
+
+fn marker_is_set(key: &[u8]) -> bool {
+    storage_get(key)
+        .map(|data| data.first().copied() == Some(1))
+        .unwrap_or(false)
+}
+
+fn source_tx_is_active(tx_hash: &[u8; 32]) -> bool {
+    storage_get(&source_tx_used_key(tx_hash)).is_some()
+        && !marker_is_set(&source_tx_released_key(tx_hash))
+}
+
+fn burn_proof_is_active(proof: &[u8; 32]) -> bool {
+    storage_get(&burn_proof_used_key(proof)).is_some()
+        && !marker_is_set(&burn_proof_released_key(proof))
+}
+
+fn request_metadata_key(prefix: &[u8], nonce: u64) -> Vec<u8> {
+    let mut key = Vec::with_capacity(prefix.len() + 20);
+    key.extend_from_slice(prefix);
+    key.extend_from_slice(&u64_to_decimal(nonce));
+    key
+}
+
+fn request_threshold_key(nonce: u64) -> Vec<u8> {
+    request_metadata_key(b"bridge_req_threshold_", nonce)
+}
+
+fn request_deadline_key(nonce: u64) -> Vec<u8> {
+    request_metadata_key(b"bridge_req_deadline_", nonce)
+}
+
+fn request_committee_version_key(nonce: u64) -> Vec<u8> {
+    request_metadata_key(b"bridge_req_committee_", nonce)
+}
+
+fn validator_interval_count_key(validator: &[u8; 32]) -> Vec<u8> {
+    let mut key = b"bridge_vi_count_".to_vec();
+    key.extend_from_slice(&hex_encode(validator));
+    key
+}
+
+fn validator_interval_key(validator: &[u8; 32], interval: u64) -> Vec<u8> {
+    let mut key = b"bridge_vi_".to_vec();
+    key.extend_from_slice(&hex_encode(validator));
+    key.push(b'_');
+    key.extend_from_slice(&u64_to_decimal(interval));
+    key
+}
+
 fn u64_to_decimal(mut n: u64) -> Vec<u8> {
     if n == 0 {
         return Vec::from(*b"0");
@@ -175,25 +235,27 @@ fn u64_to_decimal(mut n: u64) -> Vec<u8> {
 
 const BRIDGE_TX_SIZE: usize = 115;
 
-fn encode_bridge_tx(
-    addr: &[u8; 32],
+struct BridgeTxEncoding<'a> {
+    address: &'a [u8; 32],
     amount: u64,
     direction: u8,
     status: u8,
     created_slot: u64,
     confirm_count: u8,
-    chain_hash: &[u8; 32],
-    extra_hash: &[u8; 32],
-) -> Vec<u8> {
+    chain_hash: &'a [u8; 32],
+    extra_hash: &'a [u8; 32],
+}
+
+fn encode_bridge_tx(tx: BridgeTxEncoding<'_>) -> Vec<u8> {
     let mut data = Vec::with_capacity(BRIDGE_TX_SIZE);
-    data.extend_from_slice(addr);
-    data.extend_from_slice(&u64_to_bytes(amount));
-    data.push(direction);
-    data.push(status);
-    data.extend_from_slice(&u64_to_bytes(created_slot));
-    data.push(confirm_count);
-    data.extend_from_slice(chain_hash);
-    data.extend_from_slice(extra_hash);
+    data.extend_from_slice(tx.address);
+    data.extend_from_slice(&u64_to_bytes(tx.amount));
+    data.push(tx.direction);
+    data.push(tx.status);
+    data.extend_from_slice(&u64_to_bytes(tx.created_slot));
+    data.push(tx.confirm_count);
+    data.extend_from_slice(tx.chain_hash);
+    data.extend_from_slice(tx.extra_hash);
     data
 }
 
@@ -206,6 +268,23 @@ fn update_bridge_tx_status(nonce: u64, status: u8, confirm_count: u8) {
             data[50] = confirm_count;
             storage_set(&key, &data);
         }
+    }
+}
+
+fn release_expired_request_proof(tx_data: &[u8]) {
+    if tx_data.len() < BRIDGE_TX_SIZE {
+        return;
+    }
+    let mut proof = [0u8; 32];
+    proof.copy_from_slice(&tx_data[83..115]);
+    match tx_data[40] {
+        1 => {
+            storage_set(&source_tx_released_key(&proof), &[1]);
+        }
+        2 => {
+            storage_set(&burn_proof_released_key(&proof), &[1]);
+        }
+        _ => {}
     }
 }
 
@@ -223,6 +302,86 @@ fn get_required_confirmations() -> u64 {
     storage_get(b"bridge_required_confirms")
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(DEFAULT_REQUIRED_CONFIRMATIONS)
+}
+
+fn get_committee_version() -> u64 {
+    storage_get(b"bridge_committee_version")
+        .map(|data| bytes_to_u64(&data))
+        .unwrap_or(0)
+}
+
+fn next_committee_version() -> Option<u64> {
+    get_committee_version().checked_add(1)
+}
+
+fn request_required_confirmations(nonce: u64) -> u64 {
+    storage_get(&request_threshold_key(nonce))
+        .map(|data| bytes_to_u64(&data))
+        .unwrap_or_else(get_required_confirmations)
+}
+
+fn request_deadline(nonce: u64, created_slot: u64) -> Option<u64> {
+    storage_get(&request_deadline_key(nonce))
+        .map(|data| bytes_to_u64(&data))
+        .or_else(|| created_slot.checked_add(get_request_timeout()))
+}
+
+fn request_is_expired_at(nonce: u64, created_slot: u64, current_slot: u64) -> bool {
+    request_deadline(nonce, created_slot)
+        .map(|deadline| current_slot > deadline)
+        .unwrap_or(true)
+}
+
+fn validator_was_in_committee(validator: &[u8; 32], version: u64) -> bool {
+    let count = storage_get(&validator_interval_count_key(validator))
+        .map(|data| bytes_to_u64(&data))
+        .unwrap_or(0);
+    if count == 0 {
+        // Validators present before committee-history activation have no
+        // intervals until their first membership change.
+        return is_validator(validator);
+    }
+    for index in 0..count {
+        if let Some(interval) = storage_get(&validator_interval_key(validator, index)) {
+            if interval.len() >= 16 {
+                let start = bytes_to_u64(&interval[..8]);
+                let end = bytes_to_u64(&interval[8..16]);
+                if start <= version && version < end {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn validator_can_confirm(validator: &[u8; 32], nonce: u64) -> bool {
+    match storage_get(&request_committee_version_key(nonce)) {
+        Some(data) => validator_was_in_committee(validator, bytes_to_u64(&data)),
+        // Legacy pending requests retain their historical live-membership rule.
+        None => is_validator(validator),
+    }
+}
+
+fn current_request_terms(created_slot: u64) -> Result<(u64, u64, u64), u32> {
+    let required = get_required_confirmations();
+    let validator_count = storage_get(b"bridge_validator_count")
+        .map(|data| bytes_to_u64(&data))
+        .unwrap_or(0);
+    if required < 2 || required > validator_count {
+        return Err(10);
+    }
+    let deadline = created_slot.checked_add(get_request_timeout()).ok_or(9u32)?;
+    Ok((required, deadline, get_committee_version()))
+}
+
+fn snapshot_request_terms(nonce: u64, required: u64, deadline: u64, committee_version: u64) {
+    storage_set(&request_threshold_key(nonce), &u64_to_bytes(required));
+    storage_set(&request_deadline_key(nonce), &u64_to_bytes(deadline));
+    storage_set(
+        &request_committee_version_key(nonce),
+        &u64_to_bytes(committee_version),
+    );
 }
 
 fn is_validator(addr: &[u8; 32]) -> bool {
@@ -262,13 +421,6 @@ fn allocate_nonce() -> Option<u64> {
 
 fn is_zero(data: &[u8; 32]) -> bool {
     data.iter().all(|&b| b == 0)
-}
-
-fn request_is_expired(created_slot: u64, timeout: u64, current_slot: u64) -> bool {
-    match created_slot.checked_add(timeout) {
-        Some(deadline) => current_slot > deadline,
-        None => true,
-    }
 }
 
 fn has_configured_address(key: &[u8]) -> bool {
@@ -328,6 +480,9 @@ pub extern "C" fn initialize(owner_ptr: *const u8) -> u32 {
     if real_caller.0 != owner {
         return 200;
     }
+    if is_zero(&owner) {
+        return 2;
+    }
 
     if storage_get(b"bridge_owner").is_some() {
         log_info("Bridge already initialized");
@@ -336,6 +491,7 @@ pub extern "C" fn initialize(owner_ptr: *const u8) -> u32 {
 
     storage_set(b"bridge_owner", &owner);
     storage_set(b"bridge_validator_count", &u64_to_bytes(0));
+    storage_set(b"bridge_committee_version", &u64_to_bytes(0));
     storage_set(
         b"bridge_required_confirms",
         &u64_to_bytes(DEFAULT_REQUIRED_CONFIRMATIONS),
@@ -399,9 +555,39 @@ pub extern "C" fn add_bridge_validator(caller_ptr: *const u8, validator_ptr: *co
         Some(total) => total,
         None => return 5,
     };
+    let committee_version = match next_committee_version() {
+        Some(version) => version,
+        None => return 5,
+    };
+    let interval_count_key = validator_interval_count_key(&val_arr);
+    let interval_count = storage_get(&interval_count_key)
+        .map(|data| bytes_to_u64(&data))
+        .unwrap_or(0);
+    if interval_count >= MAX_VALIDATOR_INTERVALS {
+        return 6;
+    }
+    let next_interval_count = match interval_count.checked_add(1) {
+        Some(value) => value,
+        None => return 5,
+    };
+    let mut interval = Vec::with_capacity(16);
+    interval.extend_from_slice(&u64_to_bytes(committee_version));
+    interval.extend_from_slice(&u64_to_bytes(u64::MAX));
 
     storage_set(&vk, &[1]);
     storage_set(b"bridge_validator_count", &u64_to_bytes(new_count));
+    storage_set(
+        &validator_interval_key(&val_arr, interval_count),
+        &interval,
+    );
+    storage_set(
+        &interval_count_key,
+        &u64_to_bytes(next_interval_count),
+    );
+    storage_set(
+        b"bridge_committee_version",
+        &u64_to_bytes(committee_version),
+    );
 
     log_info("Bridge validator added");
     0
@@ -454,12 +640,47 @@ pub extern "C" fn remove_bridge_validator(caller_ptr: *const u8, validator_ptr: 
         return 4;
     }
 
+    let committee_version = match next_committee_version() {
+        Some(version) => version,
+        None => return 5,
+    };
+    let interval_count_key = validator_interval_count_key(&val_arr);
+    let interval_count = storage_get(&interval_count_key)
+        .map(|data| bytes_to_u64(&data))
+        .unwrap_or(0);
+    let (interval_index, next_interval_count, interval) = if interval_count == 0 {
+        let mut legacy_interval = Vec::with_capacity(16);
+        legacy_interval.extend_from_slice(&u64_to_bytes(0));
+        legacy_interval.extend_from_slice(&u64_to_bytes(committee_version));
+        (0, 1, legacy_interval)
+    } else {
+        let index = interval_count - 1;
+        let mut active_interval = match storage_get(&validator_interval_key(&val_arr, index)) {
+            Some(data) if data.len() >= 16 && bytes_to_u64(&data[8..16]) == u64::MAX => data,
+            _ => return 6,
+        };
+        active_interval[8..16].copy_from_slice(&u64_to_bytes(committee_version));
+        (index, interval_count, active_interval)
+    };
+
     // Mark as removed (set to [0] so is_validator returns false)
     storage_set(&vk, &[0]);
 
     if count > 0 {
         storage_set(b"bridge_validator_count", &u64_to_bytes(count - 1));
     }
+    storage_set(
+        &validator_interval_key(&val_arr, interval_index),
+        &interval,
+    );
+    storage_set(
+        &interval_count_key,
+        &u64_to_bytes(next_interval_count),
+    );
+    storage_set(
+        b"bridge_committee_version",
+        &u64_to_bytes(committee_version),
+    );
 
     log_info("Bridge validator removed");
     0
@@ -488,7 +709,7 @@ pub extern "C" fn set_required_confirmations(caller_ptr: *const u8, required: u6
     }
 
     // AUDIT-FIX H-12: Minimum 2 confirmations required for bridge security
-    if required < 2 || required > MAX_REQUIRED_CONFIRMATIONS {
+    if !(2..=MAX_REQUIRED_CONFIRMATIONS).contains(&required) {
         log_info("Required confirmations must be 2..100");
         return 3;
     }
@@ -651,16 +872,16 @@ pub extern "C" fn lock_tokens(
 
     // Store bridge transaction — lock is immediately complete (user-initiated)
     let current_slot = get_slot();
-    let tx_data = encode_bridge_tx(
-        &sender_arr,
+    let tx_data = encode_bridge_tx(BridgeTxEncoding {
+        address: &sender_arr,
         amount,
-        0,                // direction: lock/out
-        STATUS_COMPLETED, // lock is immediately complete
-        current_slot,
-        0, // no confirmations needed for lock
-        &chain_arr,
-        &addr_arr,
-    );
+        direction: 0,
+        status: STATUS_COMPLETED,
+        created_slot: current_slot,
+        confirm_count: 0,
+        chain_hash: &chain_arr,
+        extra_hash: &addr_arr,
+    });
     storage_set(&bridge_tx_key(nonce), &tx_data);
 
     lichen_sdk::set_return_data(&u64_to_bytes(nonce));
@@ -765,7 +986,7 @@ pub extern "C" fn submit_mint(
         return 5;
     }
     let stk = source_tx_used_key(&tx_hash_arr);
-    if storage_get(&stk).is_some() {
+    if source_tx_is_active(&tx_hash_arr) {
         log_info("Source transaction already processed (duplicate)");
         reentrancy_exit();
         return 4;
@@ -778,6 +999,16 @@ pub extern "C" fn submit_mint(
         return 6;
     }
 
+    let current_slot = get_slot();
+    let (required, deadline, committee_version) = match current_request_terms(current_slot) {
+        Ok(terms) => terms,
+        Err(code) => {
+            log_info("Current bridge committee cannot satisfy the request threshold");
+            reentrancy_exit();
+            return code;
+        }
+    };
+
     // Allocate nonce
     let nonce = match allocate_nonce() {
         Some(nonce) => nonce,
@@ -787,8 +1018,7 @@ pub extern "C" fn submit_mint(
         }
     };
 
-    let required = get_required_confirmations();
-    let current_slot = get_slot();
+    snapshot_request_terms(nonce, required, deadline, committee_version);
 
     if 1 >= required {
         // AUDIT-FIX G11-01: Transfer minted tokens to recipient
@@ -798,34 +1028,36 @@ pub extern "C" fn submit_mint(
             return rc;
         }
         storage_set(&stk, &u64_to_bytes(nonce));
-        let tx_data = encode_bridge_tx(
-            &recipient_arr,
+        storage_set(&source_tx_released_key(&tx_hash_arr), &[0]);
+        let tx_data = encode_bridge_tx(BridgeTxEncoding {
+            address: &recipient_arr,
             amount,
-            1,
-            STATUS_COMPLETED,
-            current_slot,
-            1,
-            &chain_arr,
-            &tx_hash_arr,
-        );
+            direction: 1,
+            status: STATUS_COMPLETED,
+            created_slot: current_slot,
+            confirm_count: 1,
+            chain_hash: &chain_arr,
+            extra_hash: &tx_hash_arr,
+        });
         storage_set(&bridge_tx_key(nonce), &tx_data);
         storage_set(&mint_confirm_key(nonce, &caller_arr), &[1]);
         log_info("Mint auto-completed (threshold met with 1 confirmation)");
     } else {
         // Mark source TX as used (maps to nonce for traceability)
         storage_set(&stk, &u64_to_bytes(nonce));
+        storage_set(&source_tx_released_key(&tx_hash_arr), &[0]);
 
         // Create bridge TX record as PENDING
-        let tx_data = encode_bridge_tx(
-            &recipient_arr,
+        let tx_data = encode_bridge_tx(BridgeTxEncoding {
+            address: &recipient_arr,
             amount,
-            1, // direction: mint/in
-            STATUS_PENDING,
-            current_slot,
-            1, // submitter counts as first confirmation
-            &chain_arr,
-            &tx_hash_arr,
-        );
+            direction: 1,
+            status: STATUS_PENDING,
+            created_slot: current_slot,
+            confirm_count: 1,
+            chain_hash: &chain_arr,
+            extra_hash: &tx_hash_arr,
+        });
         storage_set(&bridge_tx_key(nonce), &tx_data);
 
         // Record submitter's confirmation on-chain
@@ -878,13 +1110,6 @@ pub extern "C" fn confirm_mint(caller_ptr: *const u8, nonce: u64) -> u32 {
         return 200;
     }
 
-    // Verify caller is validator
-    if !is_validator(&caller_arr) {
-        log_info("Caller is not an authorized bridge validator");
-        reentrancy_exit();
-        return 2;
-    }
-
     // Load bridge TX
     let tx_key = bridge_tx_key(nonce);
     let tx_data = match storage_get(&tx_key) {
@@ -907,12 +1132,17 @@ pub extern "C" fn confirm_mint(caller_ptr: *const u8, nonce: u64) -> u32 {
         reentrancy_exit();
         return 6;
     }
+    if !validator_can_confirm(&caller_arr, nonce) {
+        log_info("Caller was not in the request's snapshotted committee");
+        reentrancy_exit();
+        return 2;
+    }
 
     // Check expiry
     let created_slot = bytes_to_u64(&tx_data[42..50]);
     let current_slot = get_slot();
-    let timeout = get_request_timeout();
-    if request_is_expired(created_slot, timeout, current_slot) {
+    if request_is_expired_at(nonce, created_slot, current_slot) {
+        release_expired_request_proof(&tx_data);
         update_bridge_tx_status(nonce, STATUS_EXPIRED, tx_data[50]);
         log_info("Mint request has expired");
         reentrancy_exit();
@@ -936,7 +1166,7 @@ pub extern "C" fn confirm_mint(caller_ptr: *const u8, nonce: u64) -> u32 {
     };
 
     // Check threshold
-    let required = get_required_confirmations();
+    let required = request_required_confirmations(nonce);
     if (new_count as u64) >= required {
         // AUDIT-FIX G11-01: Transfer minted tokens to recipient
         let mut recipient = [0u8; 32];
@@ -1043,13 +1273,13 @@ pub extern "C" fn submit_unlock(
         return 5;
     }
     let bpk = burn_proof_used_key(&proof_arr);
-    if storage_get(&bpk).is_some() {
+    if burn_proof_is_active(&proof_arr) {
         log_info("Burn proof already used (duplicate)");
         reentrancy_exit();
         return 4;
     }
 
-    // Check sufficient locked balance and reserve immediately
+    // Check sufficient locked balance before request-term validation.
     let locked = storage_get(b"bridge_locked_amount")
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
@@ -1058,17 +1288,25 @@ pub extern "C" fn submit_unlock(
         reentrancy_exit();
         return 3;
     }
-    // Reserve the amount immediately to prevent race conditions
-    storage_set(b"bridge_locked_amount", &u64_to_bytes(locked - amount));
 
     // Validate recipient
     if is_zero(&recipient_arr) {
         log_info("Recipient address cannot be zero");
-        // Unreserve on validation failure
-        storage_set(b"bridge_locked_amount", &u64_to_bytes(locked));
         reentrancy_exit();
         return 6;
     }
+    let current_slot = get_slot();
+    let (required, deadline, committee_version) = match current_request_terms(current_slot) {
+        Ok(terms) => terms,
+        Err(code) => {
+            log_info("Current bridge committee cannot satisfy the request threshold");
+            reentrancy_exit();
+            return code;
+        }
+    };
+
+    // Reserve the amount immediately to prevent race conditions.
+    storage_set(b"bridge_locked_amount", &u64_to_bytes(locked - amount));
 
     // Allocate nonce
     let nonce = match allocate_nonce() {
@@ -1079,29 +1317,30 @@ pub extern "C" fn submit_unlock(
             return 9;
         }
     };
+    snapshot_request_terms(nonce, required, deadline, committee_version);
 
     // Mark burn proof as used (maps to nonce)
     storage_set(&bpk, &u64_to_bytes(nonce));
+    storage_set(&burn_proof_released_key(&proof_arr), &[0]);
 
     // Create bridge TX record as PENDING
-    let current_slot = get_slot();
-    let tx_data = encode_bridge_tx(
-        &recipient_arr,
+    let no_chain = [0u8; 32];
+    let tx_data = encode_bridge_tx(BridgeTxEncoding {
+        address: &recipient_arr,
         amount,
-        2, // direction: unlock/return
-        STATUS_PENDING,
-        current_slot,
-        1,          // submitter = first confirmation
-        &[0u8; 32], // no chain hash for unlock
-        &proof_arr,
-    );
+        direction: 2,
+        status: STATUS_PENDING,
+        created_slot: current_slot,
+        confirm_count: 1,
+        chain_hash: &no_chain,
+        extra_hash: &proof_arr,
+    });
     storage_set(&bridge_tx_key(nonce), &tx_data);
 
     // Record submitter's confirmation on-chain
     storage_set(&unlock_confirm_key(nonce, &caller_arr), &[1]);
 
     // Check if threshold already met
-    let required = get_required_confirmations();
     if 1 >= required {
         // AUDIT-FIX G11-01: Transfer unlocked tokens to recipient
         let rc = transfer_out(&recipient_arr, amount);
@@ -1163,13 +1402,6 @@ pub extern "C" fn confirm_unlock(caller_ptr: *const u8, nonce: u64) -> u32 {
         return 200;
     }
 
-    // Verify caller is validator
-    if !is_validator(&caller_arr) {
-        log_info("Caller is not an authorized bridge validator");
-        reentrancy_exit();
-        return 2;
-    }
-
     // Load bridge TX
     let tx_key = bridge_tx_key(nonce);
     let tx_data = match storage_get(&tx_key) {
@@ -1192,12 +1424,16 @@ pub extern "C" fn confirm_unlock(caller_ptr: *const u8, nonce: u64) -> u32 {
         reentrancy_exit();
         return 6;
     }
+    if !validator_can_confirm(&caller_arr, nonce) {
+        log_info("Caller was not in the request's snapshotted committee");
+        reentrancy_exit();
+        return 2;
+    }
 
     // Check expiry
     let created_slot = bytes_to_u64(&tx_data[42..50]);
     let current_slot = get_slot();
-    let timeout = get_request_timeout();
-    if request_is_expired(created_slot, timeout, current_slot) {
+    if request_is_expired_at(nonce, created_slot, current_slot) {
         // Return reserved funds on expiry
         let amount = bytes_to_u64(&tx_data[32..40]);
         let locked = storage_get(b"bridge_locked_amount")
@@ -1211,6 +1447,7 @@ pub extern "C" fn confirm_unlock(caller_ptr: *const u8, nonce: u64) -> u32 {
             }
         };
         storage_set(b"bridge_locked_amount", &u64_to_bytes(restored));
+        release_expired_request_proof(&tx_data);
         update_bridge_tx_status(nonce, STATUS_EXPIRED, tx_data[50]);
         log_info("Unlock request has expired, funds returned to reserve");
         reentrancy_exit();
@@ -1234,7 +1471,7 @@ pub extern "C" fn confirm_unlock(caller_ptr: *const u8, nonce: u64) -> u32 {
     };
 
     // Check threshold
-    let required = get_required_confirmations();
+    let required = request_required_confirmations(nonce);
     if (new_count as u64) >= required {
         // AUDIT-FIX G11-01: Transfer unlocked tokens to recipient
         let mut recipient = [0u8; 32];
@@ -1288,9 +1525,8 @@ pub extern "C" fn cancel_expired_request(nonce: u64) -> u32 {
 
     let created_slot = bytes_to_u64(&tx_data[42..50]);
     let current_slot = get_slot();
-    let timeout = get_request_timeout();
 
-    if !request_is_expired(created_slot, timeout, current_slot) {
+    if !request_is_expired_at(nonce, created_slot, current_slot) {
         log_info("Request has not expired yet");
         return 3;
     }
@@ -1308,6 +1544,7 @@ pub extern "C" fn cancel_expired_request(nonce: u64) -> u32 {
         storage_set(b"bridge_locked_amount", &u64_to_bytes(restored));
     }
 
+    release_expired_request_proof(&tx_data);
     update_bridge_tx_status(nonce, STATUS_EXPIRED, tx_data[50]);
     log_info("Expired request cancelled");
     0
@@ -1336,6 +1573,45 @@ pub extern "C" fn get_bridge_status(nonce: u64) -> u32 {
             1
         }
     }
+}
+
+/// Query immutable authorization and expiry terms for a request.
+/// Returns threshold, deadline slot, and committee version as three u64 values.
+#[no_mangle]
+pub extern "C" fn get_request_terms(nonce: u64) -> u32 {
+    let tx = match storage_get(&bridge_tx_key(nonce)) {
+        Some(data) if data.len() >= BRIDGE_TX_SIZE => data,
+        _ => return 1,
+    };
+    let created_slot = bytes_to_u64(&tx[42..50]);
+    let threshold = request_required_confirmations(nonce);
+    let deadline = match request_deadline(nonce, created_slot) {
+        Some(value) => value,
+        None => return 2,
+    };
+    let committee_version = storage_get(&request_committee_version_key(nonce))
+        .map(|data| bytes_to_u64(&data))
+        .unwrap_or(0);
+    let mut terms = Vec::with_capacity(24);
+    terms.extend_from_slice(&u64_to_bytes(threshold));
+    terms.extend_from_slice(&u64_to_bytes(deadline));
+    terms.extend_from_slice(&u64_to_bytes(committee_version));
+    lichen_sdk::set_return_data(&terms);
+    0
+}
+
+/// Check whether a validator belongs to a request's immutable committee.
+#[no_mangle]
+pub extern "C" fn is_request_validator(validator_ptr: *const u8, nonce: u64) -> u32 {
+    let validator = match read_address32(validator_ptr) {
+        Some(address) => address,
+        None => return 98,
+    };
+    if storage_get(&bridge_tx_key(nonce)).is_none() {
+        return 1;
+    }
+    lichen_sdk::set_return_data(&[u8::from(validator_can_confirm(&validator, nonce))]);
+    0
 }
 
 /// Check if a specific validator has confirmed a mint request.
@@ -1395,7 +1671,7 @@ pub extern "C" fn is_source_tx_used(tx_hash_ptr: *const u8) -> u32 {
         None => return 98,
     };
 
-    if storage_get(&source_tx_used_key(&hash_arr)).is_some() {
+    if source_tx_is_active(&hash_arr) {
         lichen_sdk::set_return_data(&[1]);
     } else {
         lichen_sdk::set_return_data(&[0]);
@@ -1416,7 +1692,7 @@ pub extern "C" fn is_burn_proof_used(proof_ptr: *const u8) -> u32 {
         None => return 98,
     };
 
-    if storage_get(&burn_proof_used_key(&proof_arr)).is_some() {
+    if burn_proof_is_active(&proof_arr) {
         lichen_sdk::set_return_data(&[1]);
     } else {
         lichen_sdk::set_return_data(&[0]);
@@ -1505,8 +1781,8 @@ fn check_identity_gate(caller: &[u8]) -> bool {
     }
 
     let lichenid_addr = match storage_get(LICHENID_ADDR_KEY) {
-        Some(data) if data.len() >= 32 => data,
-        _ => return true,
+        Some(data) if data.len() == 32 => data,
+        _ => return false,
     };
 
     let mut addr = [0u8; 32];
@@ -1633,6 +1909,14 @@ mod tests {
     fn setup_no_licn() {
         test_mock::reset();
         test_mock::set_contract_address(CONTRACT_ADDR);
+    }
+
+    fn add_filler_validators(owner: [u8; 32], count: u8) {
+        for suffix in 0..count {
+            let validator = [0xE0u8.saturating_add(suffix); 32];
+            test_mock::set_caller(owner);
+            assert_eq!(add_bridge_validator(owner.as_ptr(), validator.as_ptr()), 0);
+        }
     }
 
     // =============================================
@@ -1969,6 +2253,7 @@ mod tests {
         let val1 = [2u8; 32];
         test_mock::set_caller(owner);
         add_bridge_validator(owner.as_ptr(), val1.as_ptr());
+        add_filler_validators(owner, 2);
 
         let source_tx = [0xDD; 32];
         test_mock::set_caller(val1);
@@ -1997,6 +2282,7 @@ mod tests {
         let val1 = [2u8; 32];
         test_mock::set_caller(owner);
         add_bridge_validator(owner.as_ptr(), val1.as_ptr());
+        add_filler_validators(owner, 1);
 
         let source_tx = [0xDD; 32];
         test_mock::set_caller(val1);
@@ -2025,6 +2311,7 @@ mod tests {
         let val1 = [2u8; 32];
         test_mock::set_caller(owner);
         add_bridge_validator(owner.as_ptr(), val1.as_ptr());
+        add_filler_validators(owner, 1);
 
         let source_tx = [0xDD; 32];
         test_mock::set_caller(val1);
@@ -2220,6 +2507,7 @@ mod tests {
         let val1 = [2u8; 32];
         test_mock::set_caller(owner);
         add_bridge_validator(owner.as_ptr(), val1.as_ptr());
+        add_filler_validators(owner, 1);
 
         let sender = [5u8; 32];
         test_mock::set_caller(sender);
@@ -2270,6 +2558,7 @@ mod tests {
         let val1 = [2u8; 32];
         test_mock::set_caller(owner);
         add_bridge_validator(owner.as_ptr(), val1.as_ptr());
+        add_filler_validators(owner, 2);
 
         let sender = [5u8; 32];
         test_mock::set_caller(sender);
@@ -2318,6 +2607,7 @@ mod tests {
         add_bridge_validator(owner.as_ptr(), val1.as_ptr());
         test_mock::set_caller(owner);
         add_bridge_validator(owner.as_ptr(), val2.as_ptr());
+        add_filler_validators(owner, 1);
 
         test_mock::set_caller(val1);
         submit_mint(
@@ -2338,6 +2628,7 @@ mod tests {
         // Verify status is expired
         let tx_data = test_mock::get_storage(&bridge_tx_key(0)).unwrap();
         assert_eq!(tx_data[41], STATUS_EXPIRED);
+        assert!(!source_tx_is_active(&[0xDD; 32]));
     }
 
     #[test]
@@ -2356,6 +2647,7 @@ mod tests {
         let val1 = [2u8; 32];
         test_mock::set_caller(owner);
         add_bridge_validator(owner.as_ptr(), val1.as_ptr());
+        add_filler_validators(owner, 2);
 
         // Lock tokens
         let sender = [5u8; 32];
@@ -2393,6 +2685,17 @@ mod tests {
         // Status is expired
         let tx_data = test_mock::get_storage(&bridge_tx_key(1)).unwrap();
         assert_eq!(tx_data[41], STATUS_EXPIRED);
+        assert!(!burn_proof_is_active(&burn_proof));
+        test_mock::set_caller(val1);
+        assert_eq!(
+            submit_unlock(
+                val1.as_ptr(),
+                [4u8; 32].as_ptr(),
+                500_000,
+                burn_proof.as_ptr(),
+            ),
+            0
+        );
     }
 
     #[test]
@@ -2411,6 +2714,7 @@ mod tests {
         let val1 = [2u8; 32];
         test_mock::set_caller(owner);
         add_bridge_validator(owner.as_ptr(), val1.as_ptr());
+        add_filler_validators(owner, 2);
 
         let sender = [5u8; 32];
         test_mock::set_caller(sender);
@@ -2455,6 +2759,7 @@ mod tests {
         let val1 = [2u8; 32];
         test_mock::set_caller(owner);
         add_bridge_validator(owner.as_ptr(), val1.as_ptr());
+        add_filler_validators(owner, 2);
 
         test_mock::set_caller(val1);
         submit_mint(
@@ -2579,6 +2884,7 @@ mod tests {
         let val1 = [2u8; 32];
         test_mock::set_caller(owner);
         add_bridge_validator(owner.as_ptr(), val1.as_ptr());
+        add_filler_validators(owner, 1);
 
         let source_tx = [0xDD; 32];
         test_mock::set_caller(val1);
@@ -2609,6 +2915,7 @@ mod tests {
         let val1 = [2u8; 32];
         test_mock::set_caller(owner);
         add_bridge_validator(owner.as_ptr(), val1.as_ptr());
+        add_filler_validators(owner, 1);
 
         let sender = [5u8; 32];
         test_mock::set_caller(sender);
@@ -2691,6 +2998,29 @@ mod tests {
     }
 
     #[test]
+    fn test_identity_gate_without_identity_contract_fails_closed() {
+        setup();
+        test_mock::set_slot(100);
+        let owner = [1u8; 32];
+        let sender = [3u8; 32];
+        test_mock::set_caller(owner);
+        initialize(owner.as_ptr());
+        set_identity_gate(owner.as_ptr(), 1);
+
+        test_mock::set_caller(sender);
+        assert_eq!(
+            lock_tokens(
+                sender.as_ptr(),
+                1_000_000,
+                [0xAA; 32].as_ptr(),
+                [0xBB; 32].as_ptr(),
+            ),
+            10
+        );
+        assert_eq!(bytes_to_u64(&test_mock::get_storage(b"bridge_nonce").unwrap()), 0);
+    }
+
+    #[test]
     fn test_set_identity_gate_admin_only() {
         setup();
         let owner = [1u8; 32];
@@ -2745,7 +3075,7 @@ mod tests {
     // =============================================
 
     #[test]
-    fn test_adversarial_removed_validator_cannot_confirm() {
+    fn test_request_committee_snapshot_survives_validator_rotation() {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
@@ -2777,18 +3107,157 @@ mod tests {
             [0xCC; 32].as_ptr(),
             [0xDD; 32].as_ptr(),
         );
+        assert_eq!(is_request_validator(val2.as_ptr(), 0), 0);
+        assert_eq!(test_mock::get_return_data(), vec![1]);
 
         // Owner removes val2 (count=4->3, required=3, 3>=3 -> allowed)
         test_mock::set_caller(owner);
         assert_eq!(remove_bridge_validator(owner.as_ptr(), val2.as_ptr()), 0);
 
-        // val2 tries to confirm - REJECTED (no longer validator)
+        // val2 remains eligible for the already-created request because its
+        // committee is immutable.
         test_mock::set_caller(val2);
-        assert_eq!(confirm_mint(val2.as_ptr(), 0), 2);
+        assert_eq!(confirm_mint(val2.as_ptr(), 0), 0);
+
+        // A validator added after request creation cannot authorize it.
+        let val5 = [7u8; 32];
+        test_mock::set_caller(owner);
+        assert_eq!(add_bridge_validator(owner.as_ptr(), val5.as_ptr()), 0);
+        test_mock::set_caller(val5);
+        assert_eq!(confirm_mint(val5.as_ptr(), 0), 2);
+        assert_eq!(is_request_validator(val5.as_ptr(), 0), 0);
+        assert_eq!(test_mock::get_return_data(), vec![0]);
 
         // val3 can still confirm
         test_mock::set_caller(val3);
         assert_eq!(confirm_mint(val3.as_ptr(), 0), 0);
+    }
+
+    #[test]
+    fn test_request_threshold_and_deadline_are_immutable() {
+        setup();
+        test_mock::set_slot(100);
+        let owner = [1u8; 32];
+        let val1 = [2u8; 32];
+        let val2 = [3u8; 32];
+        let val3 = [4u8; 32];
+        setup_bridge_with_validators(owner, &[val1, val2, val3]);
+        test_mock::set_caller(owner);
+        assert_eq!(set_required_confirmations(owner.as_ptr(), 3), 0);
+        assert_eq!(set_request_timeout(owner.as_ptr(), 1_000), 0);
+
+        test_mock::set_caller(val1);
+        assert_eq!(
+            submit_mint(
+                val1.as_ptr(),
+                [5u8; 32].as_ptr(),
+                500_000,
+                [0xCC; 32].as_ptr(),
+                [0xDD; 32].as_ptr(),
+            ),
+            0
+        );
+        assert_eq!(get_request_terms(0), 0);
+        let terms = test_mock::get_return_data();
+        assert_eq!(bytes_to_u64(&terms[..8]), 3);
+        assert_eq!(bytes_to_u64(&terms[8..16]), 1_100);
+        assert_eq!(bytes_to_u64(&terms[16..24]), 3);
+
+        test_mock::set_caller(owner);
+        assert_eq!(set_required_confirmations(owner.as_ptr(), 2), 0);
+        assert_eq!(set_request_timeout(owner.as_ptr(), 100), 0);
+        test_mock::set_slot(300);
+        test_mock::set_caller(val2);
+        assert_eq!(confirm_mint(val2.as_ptr(), 0), 0);
+        assert_eq!(test_mock::get_storage(&bridge_tx_key(0)).unwrap()[41], STATUS_PENDING);
+        test_mock::set_caller(val3);
+        assert_eq!(confirm_mint(val3.as_ptr(), 0), 0);
+        assert_eq!(test_mock::get_storage(&bridge_tx_key(0)).unwrap()[41], STATUS_COMPLETED);
+    }
+
+    #[test]
+    fn test_unsatisfiable_committee_rejected_before_state_mutation() {
+        setup();
+        test_mock::set_slot(100);
+        let owner = [1u8; 32];
+        let validator = [2u8; 32];
+        setup_bridge_with_validators(owner, &[validator]);
+        let source_tx = [0xDD; 32];
+        test_mock::set_caller(validator);
+        assert_eq!(
+            submit_mint(
+                validator.as_ptr(),
+                [3u8; 32].as_ptr(),
+                500_000,
+                [0xCC; 32].as_ptr(),
+                source_tx.as_ptr(),
+            ),
+            10
+        );
+        assert_eq!(
+            bytes_to_u64(&test_mock::get_storage(b"bridge_nonce").unwrap()),
+            0
+        );
+        assert!(!source_tx_is_active(&source_tx));
+
+        storage_set(b"bridge_locked_amount", &u64_to_bytes(1_000_000));
+        let proof = [0xEE; 32];
+        assert_eq!(
+            submit_unlock(
+                validator.as_ptr(),
+                [3u8; 32].as_ptr(),
+                500_000,
+                proof.as_ptr(),
+            ),
+            10
+        );
+        assert_eq!(
+            bytes_to_u64(&test_mock::get_storage(b"bridge_locked_amount").unwrap()),
+            1_000_000
+        );
+        assert!(!burn_proof_is_active(&proof));
+    }
+
+    #[test]
+    fn test_expired_source_proof_can_be_resubmitted() {
+        setup();
+        test_mock::set_slot(100);
+        let owner = [1u8; 32];
+        let val1 = [2u8; 32];
+        let val2 = [3u8; 32];
+        setup_bridge_with_validators(owner, &[val1, val2]);
+        test_mock::set_caller(owner);
+        set_request_timeout(owner.as_ptr(), 100);
+        let source_tx = [0xDD; 32];
+        test_mock::set_caller(val1);
+        assert_eq!(
+            submit_mint(
+                val1.as_ptr(),
+                [4u8; 32].as_ptr(),
+                500_000,
+                [0xCC; 32].as_ptr(),
+                source_tx.as_ptr(),
+            ),
+            0
+        );
+        assert!(source_tx_is_active(&source_tx));
+        test_mock::set_slot(201);
+        assert_eq!(cancel_expired_request(0), 0);
+        assert!(!source_tx_is_active(&source_tx));
+
+        test_mock::set_caller(val1);
+        assert_eq!(
+            submit_mint(
+                val1.as_ptr(),
+                [4u8; 32].as_ptr(),
+                500_000,
+                [0xCC; 32].as_ptr(),
+                source_tx.as_ptr(),
+            ),
+            0
+        );
+        assert!(source_tx_is_active(&source_tx));
+        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 1);
     }
 
     #[test]
@@ -2799,12 +3268,12 @@ mod tests {
         let owner = [1u8; 32];
         test_mock::set_caller(owner);
         initialize(owner.as_ptr());
-        test_mock::set_caller(owner);
-        set_required_confirmations(owner.as_ptr(), 1);
-
         let val1 = [2u8; 32];
+        let val2 = [3u8; 32];
         test_mock::set_caller(owner);
         add_bridge_validator(owner.as_ptr(), val1.as_ptr());
+        test_mock::set_caller(owner);
+        add_bridge_validator(owner.as_ptr(), val2.as_ptr());
 
         let source_tx = [0xDD; 32];
 
@@ -2852,6 +3321,7 @@ mod tests {
         add_bridge_validator(owner.as_ptr(), val1.as_ptr());
         test_mock::set_caller(owner);
         add_bridge_validator(owner.as_ptr(), val2.as_ptr());
+        add_filler_validators(owner, 1);
 
         // Submit a mint (nonce 0)
         test_mock::set_caller(val1);
@@ -2903,6 +3373,7 @@ mod tests {
         let val1 = [2u8; 32];
         test_mock::set_caller(owner);
         add_bridge_validator(owner.as_ptr(), val1.as_ptr());
+        add_filler_validators(owner, 2);
 
         // Lock 1M
         test_mock::set_caller([5u8; 32]);
@@ -2962,6 +3433,7 @@ mod tests {
         add_bridge_validator(owner.as_ptr(), val1.as_ptr());
         test_mock::set_caller(owner);
         add_bridge_validator(owner.as_ptr(), val2.as_ptr());
+        add_filler_validators(owner, 1);
 
         // Lock and submit unlock
         test_mock::set_caller([5u8; 32]);
@@ -3148,7 +3620,8 @@ mod tests {
 
         let owner = [1u8; 32];
         let val = [2u8; 32];
-        setup_bridge_with_validators(owner, &[val]);
+        let val2 = [3u8; 32];
+        setup_bridge_with_validators(owner, &[val, val2]);
 
         // Pause, then unpause
         test_mock::set_caller(owner);
@@ -3500,16 +3973,16 @@ mod tests {
         setup_bridge_with_validators(owner, &[validator]);
         test_mock::SLOT.with(|s| *s.borrow_mut() = 0);
 
-        let tx_data = encode_bridge_tx(
-            &[4u8; 32],
-            500,
-            1,
-            STATUS_PENDING,
-            u64::MAX - 10,
-            0,
-            &[0xCC; 32],
-            &[0xDD; 32],
-        );
+        let tx_data = encode_bridge_tx(BridgeTxEncoding {
+            address: &[4u8; 32],
+            amount: 500,
+            direction: 1,
+            status: STATUS_PENDING,
+            created_slot: u64::MAX - 10,
+            confirm_count: 0,
+            chain_hash: &[0xCC; 32],
+            extra_hash: &[0xDD; 32],
+        });
         storage_set(&bridge_tx_key(0), &tx_data);
 
         test_mock::set_caller(validator);

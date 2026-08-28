@@ -232,6 +232,25 @@ pub fn call_nft_transfer(
     }
 }
 
+/// Helper: Call MT-721 transfer_from for an approved marketplace/operator.
+pub fn call_nft_transfer_from(
+    nft: Address,
+    caller: Address,
+    from: Address,
+    to: Address,
+    token_id: u64,
+) -> CallResult<bool> {
+    let token_id_bytes = token_id.to_le_bytes();
+    let args = encode_layout_args(&[&caller.0, &from.0, &to.0, &token_id_bytes])?;
+
+    let call = CrossCall::new(nft, "transfer_from", args);
+
+    match call_contract(call) {
+        Ok(result) => decode_one_success_status(&result),
+        Err(e) => Err(e),
+    }
+}
+
 /// Helper: Get token balance
 pub fn call_token_balance(token: Address, account: Address) -> CallResult<u64> {
     let args = encode_layout_args(&[&account.0])?;
@@ -267,8 +286,103 @@ pub fn call_nft_owner(nft: Address, token_id: u64) -> CallResult<Address> {
     }
 }
 
+/// Query standardized MT-721 royalty terms. Contracts return exactly
+/// recipient(32) + royalty basis points(2) through return data.
+pub fn call_nft_royalty_info(nft: Address, token_id: u64) -> CallResult<(Address, u16)> {
+    let token_id_bytes = token_id.to_le_bytes();
+    let args = encode_layout_args(&[&token_id_bytes])?;
+    let call = CrossCall::new(nft, "royalty_info", args);
+
+    match call_contract(call) {
+        Ok(result) if result.len() == 34 => {
+            let mut recipient = [0u8; 32];
+            recipient.copy_from_slice(&result[..32]);
+            let bps = u16::from_le_bytes([result[32], result[33]]);
+            Ok((Address(recipient), bps))
+        }
+        Ok(_) => Err(ContractError::Custom("Invalid NFT royalty response")),
+        Err(e) => Err(e),
+    }
+}
+
 /// System program address (all zeros) — used as the target for native LICN operations.
 pub const SYSTEM_PROGRAM: Address = Address([0u8; 32]);
+
+/// Query the owner of a system-native NFT.
+pub fn call_native_nft_owner(collection: Address, token_id: u64) -> CallResult<Address> {
+    let mut args = Vec::with_capacity(40);
+    args.extend_from_slice(&collection.0);
+    args.extend_from_slice(&token_id.to_le_bytes());
+    let call = CrossCall::new(SYSTEM_PROGRAM, "nft_owner_of", args);
+
+    match call_contract(call) {
+        Ok(result) if result.len() == 32 => {
+            let mut owner = [0u8; 32];
+            owner.copy_from_slice(&result);
+            Ok(Address(owner))
+        }
+        Ok(_) => Err(ContractError::Custom("Invalid native NFT owner response")),
+        Err(e) => Err(e),
+    }
+}
+
+/// Query the token-specific approval of a system-native NFT. A zero address
+/// means no active approval.
+pub fn call_native_nft_get_approved(collection: Address, token_id: u64) -> CallResult<Address> {
+    let mut args = Vec::with_capacity(40);
+    args.extend_from_slice(&collection.0);
+    args.extend_from_slice(&token_id.to_le_bytes());
+    let call = CrossCall::new(SYSTEM_PROGRAM, "nft_get_approved", args);
+
+    match call_contract(call) {
+        Ok(result) if result.len() == 32 => {
+            let mut approved = [0u8; 32];
+            approved.copy_from_slice(&result);
+            Ok(Address(approved))
+        }
+        Ok(_) => Err(ContractError::Custom(
+            "Invalid native NFT approval response",
+        )),
+        Err(e) => Err(e),
+    }
+}
+
+/// Transfer a system-native NFT from its owner after that owner has approved
+/// the calling contract through system instruction 40.
+pub fn call_native_nft_transfer_from(
+    collection: Address,
+    from: Address,
+    to: Address,
+    token_id: u64,
+) -> CallResult<bool> {
+    let mut args = Vec::with_capacity(104);
+    args.extend_from_slice(&collection.0);
+    args.extend_from_slice(&from.0);
+    args.extend_from_slice(&to.0);
+    args.extend_from_slice(&token_id.to_le_bytes());
+    let call = CrossCall::new(SYSTEM_PROGRAM, "nft_transfer_from", args);
+
+    match call_contract(call) {
+        Ok(result) => decode_one_success_status(&result),
+        Err(e) => Err(e),
+    }
+}
+
+/// Query immutable collection royalty terms for a system-native NFT.
+pub fn call_native_nft_royalty_info(collection: Address) -> CallResult<(Address, u16)> {
+    let call = CrossCall::new(SYSTEM_PROGRAM, "nft_royalty_info", collection.0.to_vec());
+
+    match call_contract(call) {
+        Ok(result) if result.len() == 34 => {
+            let mut recipient = [0u8; 32];
+            recipient.copy_from_slice(&result[..32]);
+            let bps = u16::from_le_bytes([result[32], result[33]]);
+            Ok((Address(recipient), bps))
+        }
+        Ok(_) => Err(ContractError::Custom("Invalid native NFT royalty response")),
+        Err(e) => Err(e),
+    }
+}
 
 /// Transfer native LICN from the calling contract to a user account.
 /// Calls the system program (address zero) with the "transfer" function.

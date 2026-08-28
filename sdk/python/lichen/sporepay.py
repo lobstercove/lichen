@@ -99,6 +99,20 @@ def _encode_stream_lookup_args(stream_id: int) -> bytes:
     return _build_layout_args([0x08], [_u64_le(stream_id, "stream_id")])
 
 
+def _encode_address_args(address: PublicKey) -> bytes:
+    return _build_layout_args([0x20], [address.to_bytes()])
+
+
+def _encode_address_page_args(address: PublicKey, cursor: int, limit: int) -> bytes:
+    return _build_layout_args([
+        0x20, 0x08, 0x08,
+    ], [
+        address.to_bytes(),
+        _u64_le(cursor, "cursor"),
+        _u64_le(limit, "limit"),
+    ])
+
+
 def _decode_u64_le(data: bytes, offset: int = 0) -> int:
     return int.from_bytes(data[offset : offset + 8], "little")
 
@@ -137,6 +151,19 @@ def _decode_stream_info(stream_id: int, data: bytes) -> Dict[str, Any]:
     stream = _decode_stream(stream_id, data)
     stream["cliff_slot"] = _decode_u64_le(data, 105)
     return stream
+
+
+def _decode_stream_id_page(data: bytes) -> Dict[str, Any]:
+    if len(data) < 24:
+        raise RuntimeError("SporePay stream-ID page payload was shorter than expected")
+    returned = _decode_u64_le(data, 16)
+    if len(data) != 24 + returned * 8:
+        raise RuntimeError("SporePay stream-ID page payload length was inconsistent")
+    return {
+        "total_count": _decode_u64_le(data, 0),
+        "next_cursor": _decode_u64_le(data, 8),
+        "stream_ids": [_decode_u64_le(data, 24 + index * 8) for index in range(returned)],
+    }
 
 
 @dataclass(frozen=True)
@@ -227,8 +254,57 @@ class SporePayClient:
             "total_streamed": stats.get("total_streamed", 0),
             "total_withdrawn": stats.get("total_withdrawn", 0),
             "cancel_count": stats.get("cancel_count", 0),
+            "escrow_liability": stats.get("escrow_liability", 0),
+            "unpaid_liability": stats.get("unpaid_liability", 0),
+            "accounting_version": stats.get("accounting_version", 0),
+            "migration_locked": bool(stats.get("migration_locked")),
+            "migration_expected_streams": stats.get("migration_expected_streams", 0),
+            "migration_cursor": stats.get("migration_cursor", 0),
             "paused": bool(stats.get("paused")),
         }
+
+    async def get_unpaid_payout(self, recipient: PublicKey | str) -> int:
+        result = await self._call_readonly(
+            "get_unpaid_payout",
+            _encode_address_args(_normalize_public_key(recipient)),
+        )
+        _ensure_return_code_zero(result, "get_unpaid_payout")
+        return_data = result.get("returnData")
+        if not isinstance(return_data, str):
+            raise RuntimeError("SporePay get_unpaid_payout did not return a balance")
+        return _decode_u64_le(_decode_return_data(return_data))
+
+    async def get_sender_stream_ids(
+        self,
+        sender: PublicKey | str,
+        cursor: int = 0,
+        limit: int = 64,
+    ) -> Dict[str, Any]:
+        result = await self._call_readonly(
+            "get_sender_stream_ids",
+            _encode_address_page_args(_normalize_public_key(sender), cursor, limit),
+        )
+        _ensure_return_code_zero(result, "get_sender_stream_ids")
+        return_data = result.get("returnData")
+        if not isinstance(return_data, str):
+            raise RuntimeError("SporePay get_sender_stream_ids did not return a page")
+        return _decode_stream_id_page(_decode_return_data(return_data))
+
+    async def get_recipient_stream_ids(
+        self,
+        recipient: PublicKey | str,
+        cursor: int = 0,
+        limit: int = 64,
+    ) -> Dict[str, Any]:
+        result = await self._call_readonly(
+            "get_recipient_stream_ids",
+            _encode_address_page_args(_normalize_public_key(recipient), cursor, limit),
+        )
+        _ensure_return_code_zero(result, "get_recipient_stream_ids")
+        return_data = result.get("returnData")
+        if not isinstance(return_data, str):
+            raise RuntimeError("SporePay get_recipient_stream_ids did not return a page")
+        return _decode_stream_id_page(_decode_return_data(return_data))
 
     async def create_stream(self, sender: Keypair, params: CreateStreamParams) -> str:
         program_id = await self.get_program_id()
@@ -267,3 +343,12 @@ class SporePayClient:
         program_id = await self.get_program_id()
         args = _encode_transfer_args(recipient.pubkey(), _normalize_public_key(params.new_recipient), params.stream_id)
         return await self.connection.call_contract(recipient, program_id, "transfer_stream", args)
+
+    async def claim_unpaid_payout(self, recipient: Keypair) -> str:
+        program_id = await self.get_program_id()
+        return await self.connection.call_contract(
+            recipient,
+            program_id,
+            "claim_unpaid_payout",
+            _encode_address_args(recipient.pubkey()),
+        )

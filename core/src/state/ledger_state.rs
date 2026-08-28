@@ -292,6 +292,9 @@ impl StateStore {
             .db
             .cf_handle(CF_MARKET_ACTIVITY)
             .ok_or_else(|| "Market activity CF not found".to_string())?;
+        let market_program = self
+            .get_symbol_registry("MARKET")?
+            .map(|entry| entry.program);
 
         let mut activity_seq: u32 = 0;
 
@@ -407,9 +410,12 @@ impl StateStore {
                     batch.put_cf(&program_calls_cf, key, encoded);
                     activity_seq = activity_seq.saturating_add(1);
 
-                    if let Some(kind) =
-                        crate::market_activity_kind_for_contract_function(function.as_str())
-                    {
+                    let market_kind = (market_program == Some(program))
+                        .then(|| {
+                            crate::market_activity_kind_for_contract_function(function.as_str())
+                        })
+                        .flatten();
+                    if let Some(kind) = market_kind {
                         let market_activity = crate::build_market_activity_from_contract_call(
                             kind,
                             function,

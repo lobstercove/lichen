@@ -220,7 +220,7 @@
       "opcode": 8,
       "params": [
         {
-          "name": "marketplace_addr_ptr",
+          "name": "fee_treasury_ptr",
           "type": "Pubkey"
         }
       ],
@@ -351,6 +351,173 @@
           0
         ]
       }
+    },
+    {
+      "name": "claim_unpaid_payout",
+      "opcode": 16,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "token_ptr", "type": "Pubkey" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "get_unpaid_payout",
+      "opcode": 17,
+      "params": [
+        { "name": "token_ptr", "type": "Pubkey" },
+        { "name": "recipient_ptr", "type": "Pubkey" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "set_fee_treasury",
+      "opcode": 18,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "treasury_ptr", "type": "Pubkey" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "set_platform_fee",
+      "opcode": 19,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "fee_bps", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "withdraw_platform_fees",
+      "opcode": 20,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "token_ptr", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "get_platform_fees",
+      "opcode": 21,
+      "params": [
+        { "name": "token_ptr", "type": "Pubkey" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "get_offer_info",
+      "opcode": 22,
+      "params": [
+        { "name": "offerer_ptr", "type": "Pubkey" },
+        { "name": "nft_contract_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "cancel_offer",
+      "opcode": 23,
+      "params": [
+        { "name": "offerer_ptr", "type": "Pubkey" },
+        { "name": "nft_contract_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [1] }
+    },
+    {
+      "name": "propose_ma_admin",
+      "opcode": 24,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "next_admin_ptr", "type": "Pubkey" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "accept_ma_admin",
+      "opcode": 25,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "get_marketplace_config",
+      "opcode": 26,
+      "readonly": true,
+      "params": [],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "begin_v3_migration",
+      "opcode": 27,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "seal_v3_migration_manifest",
+      "opcode": 28,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "manifest_ptr", "type": "Pubkey" },
+        { "name": "expected_auctions", "type": "u64" },
+        { "name": "expected_offers", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "probe_canonical_royalty",
+      "opcode": 29,
+      "readonly": true,
+      "params": [
+        { "name": "nft_contract_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "migrate_v3_auction",
+      "opcode": 30,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "nft_contract_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" },
+        { "name": "royalty_recipient_ptr", "type": "Pubkey" },
+        { "name": "royalty_bps", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "migrate_v3_offer",
+      "opcode": 31,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "offerer_ptr", "type": "Pubkey" },
+        { "name": "nft_contract_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" },
+        { "name": "royalty_recipient_ptr", "type": "Pubkey" },
+        { "name": "royalty_bps", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "complete_v3_migration",
+      "opcode": 32,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "get_v3_migration_status",
+      "opcode": 33,
+      "readonly": true,
+      "params": [],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
     }
   ]
 }

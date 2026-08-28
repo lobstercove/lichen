@@ -14,6 +14,7 @@ mod join;
 mod reader;
 mod replication;
 mod retirement;
+mod role_marker;
 mod roles;
 
 /// Canonically key-sorted public-history rows reconstructed from Archive V2.
@@ -62,6 +63,10 @@ pub use replication::{
 pub use retirement::{
     ArchiveV2CategoryProof, ArchiveV2ReplicaEvidence, ArchiveV2RetirementManifest,
     ArchiveV2RetirementRequest, ArchiveV2RollbackAnchor,
+};
+pub use role_marker::{
+    load_archive_v2_role_marker, store_archive_v2_role_marker_create_new, ArchiveV2RoleMarker,
+    ARCHIVE_V2_ROLE_MARKER_FILENAME,
 };
 pub use roles::{
     ArchiveV2CapabilityAdvertisement, ArchiveV2Role, ArchiveV2RoleAdmission, ArchiveV2RoleConfig,

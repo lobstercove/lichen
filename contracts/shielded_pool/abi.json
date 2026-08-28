@@ -1,6 +1,7 @@
 {
   "contract": "shielded_pool",
   "version": "1.0",
+  "execution_model": "Native system opcodes 23/24/25 are authoritative; canonical shielded RPC serves reads; direct WASM pool methods return code 40 without state mutation.",
   "functions": [
     {
       "name": "initialize",
@@ -21,6 +22,8 @@
     {
       "name": "pause",
       "opcode": 1,
+      "native_only": true,
+      "native_only_error": 40,
       "params": [],
       "result_semantics": {
         "kind": "return_code",
@@ -32,6 +35,8 @@
     {
       "name": "unpause",
       "opcode": 2,
+      "native_only": true,
+      "native_only_error": 40,
       "params": [],
       "result_semantics": {
         "kind": "return_code",
@@ -43,6 +48,8 @@
     {
       "name": "get_pool_stats",
       "opcode": 3,
+      "canonical_rpc": "getShieldedPoolState",
+      "native_only_error": 40,
       "params": [],
       "result_semantics": {
         "kind": "return_code",
@@ -54,6 +61,8 @@
     {
       "name": "get_merkle_root",
       "opcode": 4,
+      "canonical_rpc": "getShieldedMerkleRoot",
+      "native_only_error": 40,
       "params": [],
       "result_semantics": {
         "kind": "return_code",
@@ -65,6 +74,8 @@
     {
       "name": "check_nullifier",
       "opcode": 5,
+      "canonical_rpc": "isNullifierSpent",
+      "native_only_error": 40,
       "params": [
         {
           "name": "nullifier_ptr",
@@ -81,6 +92,8 @@
     {
       "name": "get_commitments",
       "opcode": 6,
+      "canonical_rpc": "getShieldedCommitments",
+      "native_only_error": 40,
       "params": [
         {
           "name": "from_index",
@@ -97,6 +110,8 @@
     {
       "name": "shield",
       "opcode": 7,
+      "native_system_opcode": 23,
+      "native_only_error": 40,
       "params": [
         {
           "name": "args_ptr",
@@ -117,6 +132,8 @@
     {
       "name": "unshield",
       "opcode": 8,
+      "native_system_opcode": 24,
+      "native_only_error": 40,
       "params": [
         {
           "name": "args_ptr",
@@ -137,6 +154,8 @@
     {
       "name": "transfer",
       "opcode": 9,
+      "native_system_opcode": 25,
+      "native_only_error": 40,
       "params": [
         {
           "name": "args_ptr",
@@ -147,6 +166,17 @@
           "type": "u32"
         }
       ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_execution_model",
+      "opcode": 10,
+      "params": [],
       "result_semantics": {
         "kind": "return_code",
         "success_codes": [

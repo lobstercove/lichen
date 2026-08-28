@@ -58,6 +58,148 @@ struct ParsedMarketArgs {
     buyer: Option<Pubkey>,
 }
 
+fn canonical_layout_fields<'a>(args: &'a [u8], widths: &[u8]) -> Option<Vec<&'a [u8]>> {
+    if args.first().copied()? != 0xAB
+        || args.get(1..1 + widths.len())? != widths
+        || args.len()
+            != 1usize
+                .checked_add(widths.len())?
+                .checked_add(widths.iter().map(|width| usize::from(*width)).sum())?
+    {
+        return None;
+    }
+    let mut cursor = 1 + widths.len();
+    let mut fields = Vec::with_capacity(widths.len());
+    for width in widths {
+        let end = cursor.checked_add(usize::from(*width))?;
+        fields.push(args.get(cursor..end)?);
+        cursor = end;
+    }
+    Some(fields)
+}
+
+fn parse_canonical_marketplace_args(function: &str, args: &[u8]) -> Option<ParsedMarketArgs> {
+    let mut parsed = ParsedMarketArgs::default();
+    let read_pubkey = |field: &[u8]| -> Option<Pubkey> { Some(Pubkey(field.try_into().ok()?)) };
+    let read_u64 =
+        |field: &[u8]| -> Option<u64> { Some(u64::from_le_bytes(field.try_into().ok()?)) };
+
+    match function {
+        "list_nft" => {
+            let fields = canonical_layout_fields(args, &[32, 32, 8, 8, 32])?;
+            parsed.seller = read_pubkey(fields[0]);
+            parsed.collection = read_pubkey(fields[1]);
+            parsed.token_id = read_u64(fields[2]);
+            parsed.price = read_u64(fields[3]);
+            parsed.token = read_pubkey(fields[4]);
+        }
+        "list_nft_with_royalty" => {
+            let fields = canonical_layout_fields(args, &[32, 32, 8, 8, 32, 32, 4])?;
+            parsed.seller = read_pubkey(fields[0]);
+            parsed.collection = read_pubkey(fields[1]);
+            parsed.token_id = read_u64(fields[2]);
+            parsed.price = read_u64(fields[3]);
+            parsed.token = read_pubkey(fields[4]);
+        }
+        "buy_nft" | "cancel_listing" | "settle_auction" | "cancel_auction" => {
+            let fields = canonical_layout_fields(args, &[32, 32, 8])?;
+            if function == "buy_nft" {
+                parsed.buyer = read_pubkey(fields[0]);
+            } else {
+                parsed.seller = read_pubkey(fields[0]);
+            }
+            parsed.collection = read_pubkey(fields[1]);
+            parsed.token_id = read_u64(fields[2]);
+        }
+        "make_offer" => {
+            let fields = canonical_layout_fields(args, &[32, 32, 8, 8, 32])?;
+            parsed.buyer = read_pubkey(fields[0]);
+            parsed.collection = read_pubkey(fields[1]);
+            parsed.token_id = read_u64(fields[2]);
+            parsed.price = read_u64(fields[3]);
+            parsed.token = read_pubkey(fields[4]);
+        }
+        "make_offer_with_expiry" => {
+            let fields = canonical_layout_fields(args, &[32, 32, 8, 8, 32, 8])?;
+            parsed.buyer = read_pubkey(fields[0]);
+            parsed.collection = read_pubkey(fields[1]);
+            parsed.token_id = read_u64(fields[2]);
+            parsed.price = read_u64(fields[3]);
+            parsed.token = read_pubkey(fields[4]);
+        }
+        "accept_offer" | "accept_collection_offer" => {
+            let fields = canonical_layout_fields(args, &[32, 32, 8, 32])?;
+            parsed.seller = read_pubkey(fields[0]);
+            parsed.collection = read_pubkey(fields[1]);
+            parsed.token_id = read_u64(fields[2]);
+            parsed.buyer = read_pubkey(fields[3]);
+        }
+        "cancel_offer" => {
+            let fields = canonical_layout_fields(args, &[32, 32, 8])?;
+            parsed.buyer = read_pubkey(fields[0]);
+            parsed.collection = read_pubkey(fields[1]);
+            parsed.token_id = read_u64(fields[2]);
+        }
+        "update_listing_price" => {
+            let fields = canonical_layout_fields(args, &[32, 32, 8, 8])?;
+            parsed.seller = read_pubkey(fields[0]);
+            parsed.collection = read_pubkey(fields[1]);
+            parsed.token_id = read_u64(fields[2]);
+            parsed.price = read_u64(fields[3]);
+        }
+        "create_auction" => {
+            let fields = canonical_layout_fields(args, &[32, 32, 8, 8, 8, 8, 32])?;
+            parsed.seller = read_pubkey(fields[0]);
+            parsed.collection = read_pubkey(fields[1]);
+            parsed.token_id = read_u64(fields[2]);
+            parsed.price = read_u64(fields[3]);
+            parsed.token = read_pubkey(fields[6]);
+        }
+        "place_bid" => {
+            let fields = canonical_layout_fields(args, &[32, 32, 8, 8])?;
+            parsed.buyer = read_pubkey(fields[0]);
+            parsed.collection = read_pubkey(fields[1]);
+            parsed.token_id = read_u64(fields[2]);
+            parsed.price = read_u64(fields[3]);
+        }
+        "make_collection_offer" => {
+            let fields = canonical_layout_fields(args, &[32, 32, 8, 32, 8])?;
+            parsed.buyer = read_pubkey(fields[0]);
+            parsed.collection = read_pubkey(fields[1]);
+            parsed.price = read_u64(fields[2]);
+            parsed.token = read_pubkey(fields[3]);
+        }
+        "cancel_collection_offer" => {
+            let fields = canonical_layout_fields(args, &[32, 32])?;
+            parsed.buyer = read_pubkey(fields[0]);
+            parsed.collection = read_pubkey(fields[1]);
+        }
+        _ => return None,
+    }
+    Some(parsed)
+}
+
+fn apply_market_call_value(
+    function: &str,
+    value: u64,
+    mut parsed: ParsedMarketArgs,
+) -> ParsedMarketArgs {
+    if parsed.price.is_none()
+        && value > 0
+        && matches!(
+            function,
+            "buy_nft"
+                | "make_offer"
+                | "make_offer_with_expiry"
+                | "place_bid"
+                | "make_collection_offer"
+        )
+    {
+        parsed.price = Some(value);
+    }
+    parsed
+}
+
 fn parse_marketplace_args_for_function(
     function: &str,
     args: &[u8],
@@ -69,12 +211,23 @@ fn parse_marketplace_args_for_function(
         return parsed;
     }
 
+    if args.first() == Some(&0xAB) {
+        return apply_market_call_value(
+            function,
+            value,
+            parse_canonical_marketplace_args(function, args).unwrap_or_default(),
+        );
+    }
+
     let Ok(json) = serde_json::from_slice::<JsonValue>(args) else {
-        return parsed;
+        return apply_market_call_value(function, value, parsed);
     };
 
     let parse_pubkey = |val: &JsonValue| -> Option<Pubkey> {
         let s = val.as_str()?;
+        if s.is_empty() {
+            return Some(Pubkey([0u8; 32]));
+        }
         Pubkey::from_base58(s).ok()
     };
 
@@ -133,6 +286,7 @@ fn parse_marketplace_args_for_function(
             parsed.collection = pk(1);
             parsed.token_id = num(2);
             parsed.price = num(3);
+            parsed.token = pk(4);
         }
         "buy_nft" => {
             parsed.buyer = pk(0);
@@ -150,6 +304,7 @@ fn parse_marketplace_args_for_function(
             parsed.collection = pk(1);
             parsed.token_id = num(2);
             parsed.price = num(3).or_else(|| (value > 0).then_some(value));
+            parsed.token = pk(4);
         }
         "accept_offer" | "accept_collection_offer" => {
             parsed.seller = pk(0);
@@ -173,6 +328,7 @@ fn parse_marketplace_args_for_function(
             parsed.collection = pk(1);
             parsed.token_id = num(2);
             parsed.price = num(3);
+            parsed.token = pk(6);
         }
         "place_bid" => {
             parsed.buyer = pk(0);
@@ -184,6 +340,7 @@ fn parse_marketplace_args_for_function(
             parsed.buyer = pk(0);
             parsed.collection = pk(1);
             parsed.price = num(2).or_else(|| (value > 0).then_some(value));
+            parsed.token = pk(3);
         }
         "cancel_collection_offer" => {
             parsed.buyer = pk(0);
@@ -192,7 +349,7 @@ fn parse_marketplace_args_for_function(
         _ => {}
     }
 
-    parsed
+    apply_market_call_value(function, value, parsed)
 }
 
 pub fn market_activity_kind_for_contract_function(function: &str) -> Option<MarketActivityKind> {
@@ -274,6 +431,98 @@ mod tests {
             function: "buy_now".to_string(),
             tx_signature: Hash::new([0x11u8; 32]),
         }
+    }
+
+    fn canonical_args(widths: &[u8], fields: &[&[u8]]) -> Vec<u8> {
+        assert_eq!(widths.len(), fields.len());
+        let mut args = Vec::new();
+        args.push(0xAB);
+        args.extend_from_slice(widths);
+        for (width, field) in widths.iter().zip(fields) {
+            assert_eq!(usize::from(*width), field.len());
+            args.extend_from_slice(field);
+        }
+        args
+    }
+
+    #[test]
+    fn canonical_listing_parser_matches_named_export_layout() {
+        let seller = [0x11u8; 32];
+        let collection = [0x22u8; 32];
+        let token_id = 77u64.to_le_bytes();
+        let price = 9_500u64.to_le_bytes();
+        let payment_token = [0x33u8; 32];
+        let royalty_recipient = [0x44u8; 32];
+        let royalty_bps = 250u32.to_le_bytes();
+        let args = canonical_args(
+            &[32, 32, 8, 8, 32, 32, 4],
+            &[
+                &seller,
+                &collection,
+                &token_id,
+                &price,
+                &payment_token,
+                &royalty_recipient,
+                &royalty_bps,
+            ],
+        );
+
+        let parsed = parse_marketplace_args_for_function("list_nft_with_royalty", &args, 0);
+        assert_eq!(parsed.seller, Some(Pubkey(seller)));
+        assert_eq!(parsed.collection, Some(Pubkey(collection)));
+        assert_eq!(parsed.token_id, Some(77));
+        assert_eq!(parsed.price, Some(9_500));
+        assert_eq!(parsed.token, Some(Pubkey(payment_token)));
+    }
+
+    #[test]
+    fn canonical_native_purchase_uses_exact_call_value() {
+        let buyer = [0x51u8; 32];
+        let collection = [0x52u8; 32];
+        let token_id = 8u64.to_le_bytes();
+        let args = canonical_args(&[32, 32, 8], &[&buyer, &collection, &token_id]);
+
+        let parsed = parse_marketplace_args_for_function("buy_nft", &args, 42_000);
+        assert_eq!(parsed.buyer, Some(Pubkey(buyer)));
+        assert_eq!(parsed.collection, Some(Pubkey(collection)));
+        assert_eq!(parsed.token_id, Some(8));
+        assert_eq!(parsed.price, Some(42_000));
+    }
+
+    #[test]
+    fn malformed_canonical_layout_fails_closed() {
+        let buyer = [0x61u8; 32];
+        let collection = [0x62u8; 32];
+        let token_id = 9u64.to_le_bytes();
+        let mut args = canonical_args(&[32, 32, 8], &[&buyer, &collection, &token_id]);
+        args.push(0);
+
+        let parsed = parse_marketplace_args_for_function("buy_nft", &args, 0);
+        assert_eq!(parsed.buyer, None);
+        assert_eq!(parsed.collection, None);
+        assert_eq!(parsed.token_id, None);
+        assert_eq!(parsed.price, None);
+    }
+
+    #[test]
+    fn legacy_json_listing_maps_native_token_sentinel() {
+        let seller = Pubkey([0x71u8; 32]);
+        let collection = Pubkey([0x72u8; 32]);
+        let args = serde_json::to_vec(&serde_json::json!([
+            seller.to_base58(),
+            collection.to_base58(),
+            "12",
+            "8000",
+            ""
+        ]))
+        .unwrap();
+
+        let parsed = parse_marketplace_args_for_function("list_nft", &args, 0);
+        assert_eq!(parsed.seller, Some(seller));
+        assert_eq!(parsed.collection, Some(collection));
+        assert_eq!(parsed.token_id, Some(12));
+        assert_eq!(parsed.price, Some(8_000));
+        assert_eq!(parsed.token, Some(Pubkey([0u8; 32])));
     }
 
     #[test]

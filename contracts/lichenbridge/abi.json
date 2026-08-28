@@ -421,6 +421,42 @@
           0
         ]
       }
+    },
+    {
+      "name": "get_request_terms",
+      "opcode": 21,
+      "params": [
+        {
+          "name": "nonce",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "is_request_validator",
+      "opcode": 22,
+      "params": [
+        {
+          "name": "validator_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "nonce",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     }
   ]
 }

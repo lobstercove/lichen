@@ -1,6 +1,6 @@
 {
   "contract": "sporepump",
-  "version": "1.0",
+  "version": "3.1",
   "functions": [
     {
       "name": "initialize",
@@ -33,10 +33,7 @@
       ],
       "result_semantics": {
         "kind": "return_value",
-        "failure_codes": [
-          -1,
-          200
-        ]
+        "failure_codes": [-1]
       }
     },
     {
@@ -51,11 +48,12 @@
       ],
       "result_semantics": {
         "kind": "return_value",
-        "failure_codes": [-1, 200]
+        "failure_codes": [-1]
       }
     },
     {
       "name": "get_token_metadata",
+      "description": "Returns only persisted, canonical token metadata. Missing or malformed metadata fails closed; legacy rows are deterministically backfilled during Accounting V3 migration.",
       "params": [{ "name": "token_id", "type": "u64" }],
       "result_semantics": { "kind": "return_code", "success_codes": [0] }
     },
@@ -78,11 +76,18 @@
       ],
       "result_semantics": {
         "kind": "return_value",
-        "failure_codes": [
-          -1,
-          200
-        ]
+        "failure_codes": [-1]
       }
+    },
+    {
+      "name": "buy_with_min_output",
+      "params": [
+        { "name": "buyer_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" },
+        { "name": "licn_amount", "type": "u64" },
+        { "name": "minimum_tokens_out", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_value", "failure_codes": [-1] }
     },
     {
       "name": "sell",
@@ -103,11 +108,19 @@
       ],
       "result_semantics": {
         "kind": "return_value",
-        "failure_codes": [
-          -1,
-          200
-        ]
+        "failure_codes": [-1]
       }
+    },
+    {
+      "name": "sell_with_min_output",
+      "description": "Sells curve inventory with signed minimum output. The gross curve refund is removed from reserve; platform and configured creator fees are deducted from proceeds and credited as separately collateralized liabilities.",
+      "params": [
+        { "name": "seller_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" },
+        { "name": "token_amount", "type": "u64" },
+        { "name": "minimum_licn_out", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_value", "failure_codes": [-1] }
     },
     {
       "name": "get_token_info",
@@ -151,7 +164,17 @@
       }
     },
     {
+      "name": "get_sell_quote",
+      "description": "Returns the exact net LICN output after both platform and creator sell-side fees, or zero when the sale is unavailable or inconsistent.",
+      "params": [
+        { "name": "token_id", "type": "u64" },
+        { "name": "token_amount", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_value" }
+    },
+    {
       "name": "get_platform_stats",
+      "description": "Sets exact 88-byte return_data: eleven u64 LE values for token count, platform fees, curve reserve, creator liability, cumulative graduation revenue, graduated count, accounting version, migration expected count, migration cursor, migration lock, and creator royalty basis points.",
       "opcode": 7,
       "params": [],
       "result_semantics": {
@@ -358,7 +381,76 @@
       }
     },
     {
+      "name": "get_creator_royalty_balance",
+      "params": [
+        { "name": "token_id", "type": "u64" },
+        { "name": "creator_ptr", "type": "Pubkey" }
+      ],
+      "result_semantics": { "kind": "return_value" }
+    },
+    {
+      "name": "claim_creator_royalty",
+      "params": [
+        { "name": "creator_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" },
+        { "name": "amount", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "get_custody_status",
+      "params": [],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "get_accounting_migration_token",
+      "description": "Returns the exact canonical 73-byte Accounting V3 manifest row: creator, supply, raised, max supply, created slot, lifecycle state, and funded creator royalty. In-flight or inconsistent graduation state fails closed.",
+      "params": [{ "name": "token_id", "type": "u64" }],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "recover_custody_surplus",
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "begin_accounting_v3_migration",
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "expected_token_count", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "migrate_accounting_v3_token",
+      "description": "Reconstructs the next exact liability row and canonicalizes legacy metadata plus its unique symbol index. Partial, malformed, or conflicting metadata aborts without advancing the cursor.",
+      "params": [{ "name": "token_id", "type": "u64" }],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "complete_accounting_v3_migration",
+      "params": [{ "name": "caller_ptr", "type": "Pubkey" }],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "propose_admin",
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "next_admin_ptr", "type": "Pubkey" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "accept_admin",
+      "params": [{ "name": "caller_ptr", "type": "Pubkey" }],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
       "name": "get_graduation_info",
+      "description": "Sets exact 46-byte return_data. The original revenue/core/AMM 10-byte prefix is followed by router/template/governance/accounting-ready flags and tick size, lot size, minimum order, and AMM fee tier as u64 LE.",
       "opcode": 18,
       "params": [],
       "result_semantics": {
@@ -420,6 +512,7 @@
     },
     {
       "name": "abort_migration",
+      "description": "Permissionlessly releases a timed-out migration freeze. Malformed boundary-slot storage fails closed.",
       "params": [
         { "name": "keeper_ptr", "type": "Pubkey" },
         { "name": "token_id", "type": "u64" }
@@ -444,6 +537,7 @@
     },
     {
       "name": "get_graduation_status",
+      "description": "Sets exact 113-byte return_data: lifecycle state, eligibility and migration slots, candidate, pair, pool, forward/reverse routes, position, actual LICN/token liquidity, and protocol token inventory. The original 73-byte prefix is preserved.",
       "params": [{ "name": "token_id", "type": "u64" }],
       "result_semantics": { "kind": "return_code", "success_codes": [0] }
     }

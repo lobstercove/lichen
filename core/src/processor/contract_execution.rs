@@ -297,10 +297,22 @@ impl TxProcessor {
                     let mut to_account = self
                         .b_get_account(&to_key)?
                         .unwrap_or_else(|| Account::new(0, to_key));
-                    to_account.spores = to_account.spores.saturating_add(*amount);
-                    to_account.spendable = to_account.spendable.saturating_add(*amount);
+                    to_account.add_spendable(*amount).map_err(|error| {
+                        format!("Native transfer credit to {} failed: {}", to_key, error)
+                    })?;
                     self.b_put_account(&to_key, &to_account)?;
                 }
+            }
+
+            if let NativeAccountOp::NftTransfer {
+                token,
+                collection,
+                from,
+                to,
+                ..
+            } = op
+            {
+                self.b_index_nft_transfer(collection, token, from, to)?;
             }
         }
 

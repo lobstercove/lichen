@@ -57,6 +57,15 @@ class FakeConnection:
         if function_name == "get_withdrawable":
             payload = (333).to_bytes(8, "little")
             return {"success": True, "returnCode": 0, "returnData": base64.b64encode(payload).decode("ascii")}
+        if function_name == "get_unpaid_payout":
+            payload = (77).to_bytes(8, "little")
+            return {"success": True, "returnCode": 0, "returnData": base64.b64encode(payload).decode("ascii")}
+        if function_name in {"get_sender_stream_ids", "get_recipient_stream_ids"}:
+            payload = (2).to_bytes(8, "little")
+            payload += (2).to_bytes(8, "little")
+            payload += (2).to_bytes(8, "little")
+            payload += (4).to_bytes(8, "little") + (9).to_bytes(8, "little")
+            return {"success": True, "returnCode": 0, "returnData": base64.b64encode(payload).decode("ascii")}
         raise RuntimeError(f"unexpected readonly function: {function_name}")
 
     async def get_sporepay_stats(self):
@@ -65,6 +74,12 @@ class FakeConnection:
             "total_streamed": 10_000,
             "total_withdrawn": 3_000,
             "cancel_count": 1,
+            "escrow_liability": 7_000,
+            "unpaid_liability": 77,
+            "accounting_version": 3,
+            "migration_locked": False,
+            "migration_expected_streams": 0,
+            "migration_cursor": 0,
             "paused": False,
         }
 
@@ -98,6 +113,7 @@ async def test_sporepay_write_helpers_use_expected_calls() -> None:
     await client.withdraw_from_stream(recipient, WithdrawFromStreamParams(stream_id=2, amount=100))
     await client.cancel_stream(sender, 2)
     await client.transfer_stream(recipient, TransferStreamParams(stream_id=2, new_recipient=sender.pubkey()))
+    await client.claim_unpaid_payout(recipient)
 
     assert [call[2] for call in connection.calls] == [
         "create_stream",
@@ -105,6 +121,7 @@ async def test_sporepay_write_helpers_use_expected_calls() -> None:
         "withdraw_from_stream",
         "cancel_stream",
         "transfer_stream",
+        "claim_unpaid_payout",
     ]
     assert connection.calls[0][3][:6] == bytes([0xAB, 0x20, 0x20, 0x08, 0x08, 0x08])
 
@@ -117,6 +134,9 @@ async def test_sporepay_read_helpers_decode_stream_payloads() -> None:
     stream = await client.get_stream(2)
     stream_info = await client.get_stream_info(2)
     withdrawable = await client.get_withdrawable(2)
+    unpaid = await client.get_unpaid_payout("11111111111111111111111111111112")
+    sender_page = await client.get_sender_stream_ids("11111111111111111111111111111112")
+    recipient_page = await client.get_recipient_stream_ids("11111111111111111111111111111112")
     stats = await client.get_stats()
 
     assert stream is not None
@@ -125,4 +145,10 @@ async def test_sporepay_read_helpers_decode_stream_payloads() -> None:
     assert stream_info is not None
     assert stream_info["cliff_slot"] == 12
     assert withdrawable == 333
+    assert unpaid == 77
+    assert sender_page == {"total_count": 2, "next_cursor": 2, "stream_ids": [4, 9]}
+    assert recipient_page == sender_page
     assert stats["stream_count"] == 5
+    assert stats["escrow_liability"] == 7_000
+    assert stats["unpaid_liability"] == 77
+    assert stats["accounting_version"] == 3

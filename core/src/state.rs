@@ -2973,6 +2973,21 @@ mod tests {
         let all_entries = state.load_contract_storage_map(&program).unwrap();
         assert_eq!(all_entries.len(), 2);
 
+        assert_eq!(
+            state
+                .get_contract_storage_entries_with_prefix(&program, b"al", 10)
+                .unwrap(),
+            vec![(b"alpha".to_vec(), 11u64.to_le_bytes().to_vec())]
+        );
+        assert!(state
+            .get_contract_storage_entries_with_prefix(&program, b"missing", 10)
+            .unwrap()
+            .is_empty());
+        assert!(state
+            .get_contract_storage_entries_with_prefix(&program, b"", 0)
+            .unwrap()
+            .is_empty());
+
         state.delete_contract_storage(&program, b"beta").unwrap();
         assert_eq!(state.get_contract_storage(&program, b"beta").unwrap(), None);
     }
@@ -5815,6 +5830,25 @@ mod tests {
 
     #[cfg(feature = "zk")]
     #[test]
+    fn test_shielded_commitment_reads_fail_on_gaps_and_capacity_overflow() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        state.insert_shielded_commitment(1, &[0x11u8; 32]).unwrap();
+
+        let state_gap = state.get_all_shielded_commitments(2).unwrap_err();
+        assert!(state_gap.contains("Missing shielded commitment at index 0"));
+
+        let batch = state.begin_batch();
+        let batch_gap = batch.get_all_shielded_commitments(2).unwrap_err();
+        assert!(batch_gap.contains("Missing shielded commitment at index 0"));
+        assert!(batch
+            .get_all_shielded_commitments(crate::zk::TREE_CAPACITY + 1)
+            .unwrap_err()
+            .contains("exceeds tree capacity"));
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
     fn test_shielded_batch_pool_state() {
         let temp = tempdir().unwrap();
         let state = StateStore::open(temp.path()).unwrap();
@@ -6093,10 +6127,16 @@ mod tests {
         let n0 = [0x20; 32];
         let n1 = [0x21; 32];
         let n2 = [0x22; 32];
+        let mut expected_tree = crate::zk::MerkleTree::new();
+        expected_tree.insert(c0);
+        let root_after_shield = expected_tree.root();
+        expected_tree.insert(c1);
+        expected_tree.insert(c2);
+        let root_after_transfer = expected_tree.root();
         for (slot, tx) in [
             shield_tx(1, 100_000_000, c0),
-            shielded_transfer_tx(2, n0, n1, c1, c2, [0x30; 32]),
-            unshield_tx(3, 20_000_000, n2, [0x31; 32]),
+            shielded_transfer_tx(2, n0, n1, c1, c2, root_after_shield),
+            unshield_tx(3, 20_000_000, n2, root_after_transfer),
         ] {
             let block = Block::new(slot, Hash::default(), Hash::default(), [0u8; 32], vec![tx]);
             state
@@ -6146,6 +6186,19 @@ mod tests {
         assert_eq!(recent[0].1, 3);
         assert_eq!(recent[1].1, 2);
         assert_eq!(recent[2].1, 1);
+
+        let duplicate_temp = tempdir().unwrap();
+        let duplicate_state = StateStore::open(duplicate_temp.path()).unwrap();
+        for (slot, tx) in [shield_tx(1, 10, c0), shield_tx(2, 20, c0)] {
+            let block = Block::new(slot, Hash::default(), Hash::default(), [0u8; 32], vec![tx]);
+            duplicate_state
+                .put_block_atomic(&block, Some(slot), Some(slot))
+                .unwrap();
+        }
+        let duplicate_error = duplicate_state
+            .rebuild_shielded_state_from_canonical_blocks(true)
+            .unwrap_err();
+        assert!(duplicate_error.contains("Duplicate shielded commitment"));
     }
 
     // ── P2-3: Cold storage tests ──
@@ -6378,6 +6431,7 @@ mod tests {
 
         let caller = Pubkey([0x11; 32]);
         let program = Pubkey([0x22; 32]);
+        let spoof_program = Pubkey([0x23; 32]);
         let collection = Pubkey([0x33; 32]);
         let token = Pubkey([0x44; 32]);
         let owner = Pubkey([0x55; 32]);
@@ -6399,13 +6453,30 @@ mod tests {
             .serialize()
             .unwrap(),
         };
+        let spoof_contract_ix = crate::transaction::Instruction {
+            program_id: crate::CONTRACT_PROGRAM_ID,
+            accounts: vec![caller, spoof_program],
+            data: crate::ContractInstruction::Call {
+                function: "buy_nft".to_string(),
+                args: serde_json::to_vec(&serde_json::json!({
+                    "collection": collection.to_base58(),
+                    "token_id": 99,
+                    "price": "999999",
+                    "buyer": caller.to_base58(),
+                }))
+                .unwrap(),
+                value: 999_999,
+            }
+            .serialize()
+            .unwrap(),
+        };
         let nft_mint_ix = crate::transaction::Instruction {
             program_id: crate::SYSTEM_PROGRAM_ID,
             accounts: vec![caller, collection, token, owner],
             data: vec![7],
         };
         let tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
-            vec![nft_mint_ix, contract_ix],
+            vec![nft_mint_ix, contract_ix, spoof_contract_ix],
             Hash::hash(b"public-activity-blockhash"),
         ));
         let tx_signature = tx.signature();
@@ -6419,6 +6490,20 @@ mod tests {
         );
 
         for state in [&state_a, &state_b] {
+            state
+                .register_symbol(
+                    "MARKET",
+                    SymbolRegistryEntry {
+                        symbol: String::new(),
+                        program,
+                        owner: caller,
+                        name: Some("LichenMarket".to_string()),
+                        template: None,
+                        metadata: None,
+                        decimals: None,
+                    },
+                )
+                .unwrap();
             state.put_block_atomic(&block, Some(42), Some(42)).unwrap();
 
             let calls = state.get_program_calls(&program, 10, None).unwrap();
@@ -6427,6 +6512,9 @@ mod tests {
             assert_eq!(calls[0].function, "buy_nft");
             assert_eq!(calls[0].value, 9_000);
             assert_eq!(calls[0].tx_signature, tx_signature);
+
+            let spoof_calls = state.get_program_calls(&spoof_program, 10, None).unwrap();
+            assert_eq!(spoof_calls.len(), 1);
 
             let market = state
                 .get_market_activity(Some(&collection), None, 10)
@@ -6462,7 +6550,7 @@ mod tests {
                 .map(|digest| digest.entry_count)
                 .unwrap_or(0)
         };
-        assert_eq!(category_count(&manifest_a, "program_calls"), 1);
+        assert_eq!(category_count(&manifest_a, "program_calls"), 2);
         assert_eq!(category_count(&manifest_a, "market_activity"), 1);
         assert_eq!(category_count(&manifest_a, "nft_activity"), 1);
     }
@@ -6476,6 +6564,20 @@ mod tests {
         let collection = Pubkey([0x73; 32]);
         let token = Pubkey([0x74; 32]);
         let owner = Pubkey([0x75; 32]);
+        state
+            .register_symbol(
+                "MARKET",
+                SymbolRegistryEntry {
+                    symbol: String::new(),
+                    program,
+                    owner: caller,
+                    name: Some("LichenMarket".to_string()),
+                    template: None,
+                    metadata: None,
+                    decimals: None,
+                },
+            )
+            .unwrap();
         let contract_ix = crate::transaction::Instruction {
             program_id: crate::CONTRACT_PROGRAM_ID,
             accounts: vec![caller, program],

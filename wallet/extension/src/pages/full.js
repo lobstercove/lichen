@@ -554,8 +554,14 @@ async function getLiveLicnUsdPrice() {
     const response = await fetch(`${apiBase}/oracle/prices`);
     if (!response.ok) throw new Error('oracle fetch failed');
     const data = await response.json();
-    const feeds = Array.isArray(data?.feeds) ? data.feeds : [];
-    const licnFeed = feeds.find((feed) => String(feed?.asset || '').toUpperCase() === 'LICN');
+    const feeds = Array.isArray(data?.data?.feeds)
+      ? data.data.feeds
+      : (Array.isArray(data?.feeds) ? data.feeds : []);
+    const licnFeed = feeds.find((feed) =>
+      String(feed?.asset || '').toUpperCase() === 'LICN'
+      && feed?.stale !== true
+      && (!feed?.status || feed.status === 'fresh')
+    );
     const price = Number(licnFeed?.price || 0);
     if (Number.isFinite(price) && price > 0) {
       _licnUsdPriceCache = { value: price, ts: now, source: 'oracle', fallback: false };
@@ -1986,6 +1992,9 @@ async function handleFullClaim() {
 // ──────────────────────────────────────────
 let _shieldedState = { initialized: false, balance: '0', address: null, viewingKey: null, notes: [], poolStats: null };
 let _shieldedNotesPage = 1;
+const EXT_SHIELDED_OPERATIONS_AVAILABLE = false;
+const EXT_SHIELDED_DISABLED_MESSAGE =
+  'Shielded operations are temporarily unavailable because proof scheme 0x01 is disabled pending a constrained verifier.';
 
 function extensionNoteValueSpores(note) {
   return baseUnitBigIntExt(note?.value ?? 0);
@@ -2196,6 +2205,8 @@ async function encryptExtensionShieldedNoteBytes(noteBytes, encKey) {
 }
 
 async function tryDecryptExtensionShieldedNote(client, entry) {
+  if (!EXT_SHIELDED_OPERATIONS_AVAILABLE) return null;
+
   const encryptedNote = entry?.encrypted_note || entry?.encryptedNote;
   const ephemeralPk = entry?.ephemeral_pk || entry?.ephemeralPk;
   if (!_shieldedState.viewingKey || !encryptedNote || !ephemeralPk) return null;
@@ -2231,6 +2242,7 @@ async function tryDecryptExtensionShieldedNote(client, entry) {
 
 async function computeExtensionShieldedNullifier(client, note) {
   if (note?.nullifier) return note.nullifier;
+  if (!EXT_SHIELDED_OPERATIONS_AVAILABLE) return null;
   if (!_shieldedState.spendingKey || !note?.serial) return null;
   const resp = await client.call('computeShieldNullifier', [{
     serial: note.serial,
@@ -2377,6 +2389,7 @@ function selectTwoExtensionInputNotes(unspentNotes, targetAmount) {
 }
 
 function extensionPrivateTransferPrereqMessage() {
+  if (!EXT_SHIELDED_OPERATIONS_AVAILABLE) return EXT_SHIELDED_DISABLED_MESSAGE;
   if (!_shieldedState.initialized) return 'Initialize shielded privacy first';
   const unspent = unspentExtensionShieldedNotes();
   if (extensionShieldedBalanceSpores() <= 0n || unspent.length === 0) {
@@ -2454,6 +2467,8 @@ async function signAndSubmitExtensionShieldedInstructions({ wallet, password, in
 }
 
 async function submitExtensionShield({ wallet, amountLicn, password, statusEl }) {
+  if (!EXT_SHIELDED_OPERATIONS_AVAILABLE) throw new Error(EXT_SHIELDED_DISABLED_MESSAGE);
+
   const amountSpores = parseLicnAmountSporesExt(amountLicn, 'Shield amount');
 
   const client = rpc();
@@ -2538,6 +2553,8 @@ async function submitExtensionShield({ wallet, amountLicn, password, statusEl })
 }
 
 async function submitExtensionUnshield({ wallet, amountLicn, password, recipient, statusEl }) {
+  if (!EXT_SHIELDED_OPERATIONS_AVAILABLE) throw new Error(EXT_SHIELDED_DISABLED_MESSAGE);
+
   if (!_shieldedState.initialized) {
     const ok = await ensureShieldedStateInitialized(wallet, password);
     if (!ok) throw new Error('Shielded wallet not initialized');
@@ -2613,6 +2630,8 @@ async function submitExtensionUnshield({ wallet, amountLicn, password, recipient
 }
 
 async function submitExtensionPrivateTransfer({ wallet, amountLicn, password, recipientViewingKey, statusEl }) {
+  if (!EXT_SHIELDED_OPERATIONS_AVAILABLE) throw new Error(EXT_SHIELDED_DISABLED_MESSAGE);
+
   if (!_shieldedState.initialized) {
     const ok = await ensureShieldedStateInitialized(wallet, password);
     if (!ok) throw new Error('Shielded wallet not initialized');
@@ -2805,7 +2824,7 @@ async function ensureShieldedStateInitialized(wallet, providedPassword = null) {
       viewingKey: new Uint8Array(viewingKey),
     };
     await loadExtensionShieldedNotes(wallet);
-    showToast('Shielded privacy ready', 'success');
+    showToast('Shielded key storage loaded (operations are read-only)', 'info');
     return true;
   } catch (error) {
     showToast(`Shielded initialization failed: ${error?.message || error}`, 'error');
@@ -2869,6 +2888,10 @@ async function loadShieldTab() {
   const commitCount = poolStats ? (poolStats.commitmentCount ?? 0).toLocaleString() : '—';
   const unspent = sortExtensionShieldedNotesDesc(ownedNotes.filter(n => !n.spent));
   const transferPrereq = extensionPrivateTransferPrereqMessage();
+  const operationsAvailable = EXT_SHIELDED_OPERATIONS_AVAILABLE
+    && poolStats?.proofAcceptanceEnabled === true
+    && poolStats?.operationsAvailable === true;
+  const operationStatus = operationsAvailable ? '' : EXT_SHIELDED_DISABLED_MESSAGE;
   const notesTotalPages = Math.max(1, Math.ceil(unspent.length / EXT_SHIELDED_NOTES_PAGE_SIZE));
   _shieldedNotesPage = Math.min(Math.max(1, _shieldedNotesPage), notesTotalPages);
   const notesStart = (_shieldedNotesPage - 1) * EXT_SHIELDED_NOTES_PAGE_SIZE;
@@ -2890,16 +2913,16 @@ async function loadShieldTab() {
     : `<div style="text-align:center;padding:1.5rem;color:var(--text-muted);">
         <i class="fas fa-shield-alt" style="font-size:1.5rem;opacity:0.4;display:block;margin-bottom:0.5rem;"></i>
         <p style="margin:0 0 0.25rem;">No shielded notes yet</p>
-        <p style="margin:0;font-size:0.8rem;">Shield LICN to create your first private note</p>
+        <p style="margin:0;font-size:0.8rem;">Historical notes remain visible; new shielded operations are unavailable.</p>
       </div>`;
 
   container.innerHTML = `
     <div style="background:linear-gradient(135deg,rgba(16,185,129,0.1),rgba(5,150,105,0.08));padding:1.5rem;border-radius:12px;margin-bottom:1.5rem;border:1px solid rgba(16,185,129,0.12);">
       <h3 style="margin:0 0 0.5rem 0;display:flex;align-items:center;gap:0.5rem;">
-        <i class="fas fa-user-shield" style="color:#10b981;"></i> Shielded Privacy
-        <span style="font-size:0.65rem;background:rgba(16,185,129,0.15);color:#10b981;padding:0.15rem 0.5rem;border-radius:4px;font-weight:600;">Plonky3 STARK</span>
+        <i class="fas fa-user-shield" style="color:#10b981;"></i> Shielded History
+        <span style="font-size:0.65rem;background:rgba(245,158,11,0.15);color:#f59e0b;padding:0.15rem 0.5rem;border-radius:4px;font-weight:600;">Read-only</span>
       </h3>
-      <p style="margin:0;font-size:0.85rem;color:var(--text-muted);">Shield LICN with transparent STARK proofs. Notes keep amounts and transfer links private while preserving auditable execution.</p>
+      <p style="margin:0;font-size:0.85rem;color:var(--text-muted);">${escapeHtmlExt(operationStatus)} Historical locally stored notes and public pool statistics remain visible.</p>
     </div>
 
     <div style="background:var(--card-bg);padding:1.25rem;border-radius:12px;border:1px solid var(--border);margin-bottom:1.25rem;">
@@ -2910,8 +2933,8 @@ async function loadShieldTab() {
           <div style="font-size:0.7rem;color:var(--text-muted);">${shieldedBalance.toLocaleString()} spores</div>
         </div>
         <div style="display:flex;gap:0.5rem;">
-          <button class="btn btn-small btn-primary" id="extShieldBtn"><i class="fas fa-arrow-down"></i> Shield</button>
-          <button class="btn btn-small btn-secondary" id="extUnshieldBtn" ${unspent.length === 0 ? 'disabled title="No shielded balance"' : ''}><i class="fas fa-arrow-up"></i> Unshield</button>
+          <button class="btn btn-small btn-primary" id="extShieldBtn" ${operationsAvailable ? '' : `disabled title="${escapeHtmlExt(operationStatus)}"`}><i class="fas fa-arrow-down"></i> Shield</button>
+          <button class="btn btn-small btn-secondary" id="extUnshieldBtn" ${operationsAvailable && unspent.length > 0 ? '' : `disabled title="${escapeHtmlExt(operationStatus || 'No shielded balance')}"`}><i class="fas fa-arrow-up"></i> Unshield</button>
         </div>
       </div>
       <button class="btn btn-primary ${transferPrereq ? 'is-disabled' : ''}" id="extPrivateTransferBtn" style="width:100%;padding:0.75rem;opacity:${transferPrereq ? '0.62' : '1'};" aria-disabled="${transferPrereq ? 'true' : 'false'}" title="${escapeHtmlExt(transferPrereq)}">
@@ -2938,7 +2961,7 @@ async function loadShieldTab() {
       </div>
       <div style="margin-top:0.75rem;padding:0.6rem;background:rgba(59,130,246,0.06);border-radius:8px;font-size:0.75rem;color:var(--text-muted);">
         <i class="fas fa-info-circle" style="color:#3b82f6;"></i>
-        Your spending key never leaves this device. Viewing key enables auditors to see your shielded activity without spending.
+        Existing keys remain stored locally. While the proof service is disabled, this wallet does not send spending keys, blindings, or other private witness material to validator RPCs.
       </div>
     </div>
 
@@ -2988,6 +3011,11 @@ async function loadShieldTab() {
 }
 
 function showShieldModal(type) {
+  if (!EXT_SHIELDED_OPERATIONS_AVAILABLE) {
+    showToast(EXT_SHIELDED_DISABLED_MESSAGE, 'info');
+    return;
+  }
+
   if (type === 'transfer') {
     const prereq = extensionPrivateTransferPrereqMessage();
     if (prereq) { showToast(prereq, 'info'); return; }

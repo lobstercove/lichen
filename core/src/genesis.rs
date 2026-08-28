@@ -10,9 +10,12 @@ use crate::restrictions::{
     ProtocolModuleId, RestrictionMode, RestrictionReason, RestrictionRecord, RestrictionStatus,
     RestrictionTarget, NATIVE_LICN_ASSET_ID,
 };
-use crate::{Account, Hash, Pubkey, StateStore, ValidatorInfo};
+use crate::{Account, Block, Hash, Pubkey, StateStore, ValidatorInfo, MAX_BLOCK_SIZE};
+use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 
 /// System instruction opcode used in slot 0 to carry canonical genesis state.
@@ -95,6 +98,159 @@ impl GenesisStateChunk {
             "genesis state chunk",
         )
     }
+}
+
+/// Extracts and verifies the canonical state bundle embedded in slot 0.
+///
+/// This parser is shared by validator bootstrap and Archive V2 role-marker
+/// authorization so both paths enforce identical chunk, compression, digest,
+/// codec, and state-root bounds.
+pub fn extract_genesis_state_bundle(block: &Block) -> Result<Option<GenesisStateBundle>, String> {
+    let mut chunks = Vec::new();
+    for transaction in &block.transactions {
+        for instruction in &transaction.message.instructions {
+            if instruction.program_id == crate::SYSTEM_PROGRAM_ID
+                && instruction.data.len() > 1
+                && instruction.data[0] == GENESIS_STATE_CHUNK_OPCODE
+            {
+                let chunk = GenesisStateChunk::from_legacy_bincode(&instruction.data[1..])
+                    .map_err(|error| format!("invalid genesis state chunk encoding: {error}"))?;
+                chunks.push(chunk);
+            }
+        }
+    }
+
+    if chunks.is_empty() {
+        return Ok(None);
+    }
+
+    let first = chunks[0].clone();
+    if first.version != GENESIS_STATE_BUNDLE_VERSION {
+        return Err(format!(
+            "unsupported genesis state bundle version {}",
+            first.version
+        ));
+    }
+    if first.compression != "gzip" {
+        return Err(format!(
+            "unsupported genesis state compression {}",
+            first.compression
+        ));
+    }
+    if first.total_chunks == 0 || first.total_chunks as usize != chunks.len() {
+        return Err(format!(
+            "genesis state chunk count mismatch: header says {}, block has {}",
+            first.total_chunks,
+            chunks.len()
+        ));
+    }
+    if first.total_chunks > 256 {
+        return Err(format!(
+            "genesis state chunk count {} exceeds safety limit",
+            first.total_chunks
+        ));
+    }
+    if first.compressed_len > MAX_BLOCK_SIZE as u64 {
+        return Err(format!(
+            "genesis state compressed payload too large: {} bytes",
+            first.compressed_len
+        ));
+    }
+    if first.uncompressed_len > GENESIS_STATE_BUNDLE_CODEC_LIMIT_BYTES {
+        return Err(format!(
+            "genesis state uncompressed payload too large: {} bytes",
+            first.uncompressed_len
+        ));
+    }
+
+    chunks.sort_by_key(|chunk| chunk.chunk_index);
+    let mut compressed = Vec::with_capacity(first.compressed_len as usize);
+    for (expected_index, chunk) in chunks.iter().enumerate() {
+        if chunk.version != first.version
+            || chunk.state_root != first.state_root
+            || chunk.compression != first.compression
+            || chunk.compressed_len != first.compressed_len
+            || chunk.uncompressed_len != first.uncompressed_len
+            || chunk.compressed_sha256 != first.compressed_sha256
+            || chunk.total_chunks != first.total_chunks
+        {
+            return Err("genesis state chunks have inconsistent metadata".to_string());
+        }
+        if chunk.chunk_index as usize != expected_index {
+            return Err(format!(
+                "missing genesis state chunk {}, got {}",
+                expected_index, chunk.chunk_index
+            ));
+        }
+        compressed.extend_from_slice(&chunk.data);
+    }
+
+    if compressed.len() as u64 != first.compressed_len {
+        return Err(format!(
+            "genesis state compressed length mismatch: expected {}, got {}",
+            first.compressed_len,
+            compressed.len()
+        ));
+    }
+    let digest = Sha256::digest(&compressed);
+    if digest.as_slice() != first.compressed_sha256 {
+        return Err("genesis state compressed SHA-256 mismatch".to_string());
+    }
+
+    let mut decoder = GzDecoder::new(compressed.as_slice());
+    let mut raw = Vec::with_capacity(
+        first
+            .uncompressed_len
+            .min(GENESIS_STATE_BUNDLE_CODEC_LIMIT_BYTES) as usize,
+    );
+    decoder
+        .read_to_end(&mut raw)
+        .map_err(|error| format!("failed to decompress genesis state bundle: {error}"))?;
+    if raw.len() as u64 != first.uncompressed_len {
+        return Err(format!(
+            "genesis state uncompressed length mismatch: expected {}, got {}",
+            first.uncompressed_len,
+            raw.len()
+        ));
+    }
+
+    let bundle = GenesisStateBundle::from_legacy_bincode(&raw)
+        .map_err(|error| format!("invalid genesis state bundle encoding: {error}"))?;
+    if bundle.version != GENESIS_STATE_BUNDLE_VERSION {
+        return Err(format!(
+            "unsupported decoded genesis state bundle version {}",
+            bundle.version
+        ));
+    }
+    if bundle.state_root != first.state_root {
+        return Err("decoded genesis state root does not match chunk metadata".to_string());
+    }
+    if Hash(bundle.state_root) != block.header.state_root {
+        return Err(format!(
+            "decoded genesis state root {} does not match block root {}",
+            hex::encode(bundle.state_root),
+            block.header.state_root.to_hex()
+        ));
+    }
+
+    Ok(Some(bundle))
+}
+
+/// Returns the replay mode declared by the canonical genesis snapshot.
+pub fn genesis_block_declares_mossstake_slot_only(block: &Block) -> Result<bool, String> {
+    let Some(bundle) = extract_genesis_state_bundle(block)? else {
+        return Ok(false);
+    };
+    Ok(bundle
+        .categories
+        .iter()
+        .find(|category| category.name == "stats")
+        .is_some_and(|category| {
+            category.entries.iter().any(|(key, value)| {
+                key == crate::mossstake::MOSSSTAKE_SLOT_ONLY_METADATA_KEY.as_bytes()
+                    && value.as_slice() == b"1"
+            })
+        }))
 }
 
 /// Oracle prices frozen at genesis time — embedded in the genesis block for
