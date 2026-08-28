@@ -2543,9 +2543,8 @@ pub extern "C" fn respond_challenge_merkle(
     };
     let mut node = sha256_hash(chunk);
     let mut node_index = chunk_index;
-    for sibling_bytes in proof.chunks_exact(32) {
-        let mut sibling = [0u8; 32];
-        sibling.copy_from_slice(sibling_bytes);
+    for sibling_bytes in proof.as_chunks::<32>().0 {
+        let sibling = *sibling_bytes;
         node = if node_index.is_multiple_of(2) {
             sha256_pair(&node, &sibling)
         } else {
