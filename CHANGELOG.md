@@ -236,9 +236,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repair, source outages, a 96-transaction quorum-loss backlog, a 140-slot live
   gap, own-state and coordinated restarts, strict volume and launchpad journeys,
   and terminal slot-7,000 parity. All validators matched public-history root
-  `05c85c39e4e5ec572e813574df4ceda1166006b60f40d9a73a4dd39655db9e64`
+  `d3d8da9a020581e026674622114523e46659fd6252b0adc69a53d3ed713e93ed`
   and state root
-  `8a5a5c79fa2420debcadce20abe72dc58e78be4dbc93d2f4bca12dd1fa5d117b`.
+  `7638c3a2b0784297675717d2f3dcdd47405930dd451b339045c4ba8c8b94f565`.
 
 ## [0.5.263] - 2026-08-26
 

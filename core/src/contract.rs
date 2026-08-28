@@ -306,10 +306,8 @@ fn canonical_layout_descriptor(args: &[u8], params: &[Type]) -> Option<(Vec<u32>
             let data_start = 1usize.checked_add(descriptor_len)?;
             let descriptor = args.get(1..data_start)?;
             let mut layout = Vec::with_capacity(params.len());
-            for stride in descriptor.chunks_exact(4) {
-                layout.push(u32::from_le_bytes([
-                    stride[0], stride[1], stride[2], stride[3],
-                ]));
+            for stride in descriptor.as_chunks::<4>().0 {
+                layout.push(u32::from_le_bytes(*stride));
             }
             (layout, data_start)
         }
