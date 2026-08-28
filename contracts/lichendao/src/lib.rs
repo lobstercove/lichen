@@ -398,7 +398,7 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     let mut hash = H0;
 
     // Process each 512-bit (64-byte) block
-    for chunk in msg.chunks_exact(64) {
+    for chunk in msg.as_chunks::<64>().0 {
         // Prepare message schedule
         let mut w = [0u32; 64];
         for i in 0..16 {

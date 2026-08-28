@@ -3546,8 +3546,10 @@ mod tests {
 
         assert_eq!(get_accounting_migration_status(), 0);
         let status: Vec<u64> = test_mock::get_return_data()
-            .chunks_exact(8)
-            .map(bytes_to_u64)
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|value| bytes_to_u64(value))
             .collect();
         assert_eq!(status.as_slice(), &[2, 2, 100, 0, 1]);
         storage_set(BB_MIGRATION_CURSOR_KEY, &[1]);
@@ -3576,8 +3578,10 @@ mod tests {
         test_mock::set_cross_call_response(Some(u64_to_bytes(110).to_vec()));
         assert_eq!(get_accounting_health(), 0);
         let health: Vec<u64> = test_mock::get_return_data()
-            .chunks_exact(8)
-            .map(bytes_to_u64)
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|value| bytes_to_u64(value))
             .collect();
         assert_eq!(health.as_slice(), &[2, 0, 100, 10, 110, 110, 1]);
         test_mock::set_caller(admin);

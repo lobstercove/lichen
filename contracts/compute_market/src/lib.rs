@@ -4906,7 +4906,12 @@ mod tests {
         assert_eq!(claim_as(&provider, 1), 0);
         assert_eq!(get_provider_capacity(provider.as_ptr()), 0);
         let capacity = test_mock::get_return_data();
-        let values: Vec<u64> = capacity.chunks_exact(8).map(bytes_to_u64).collect();
+        let values: Vec<u64> = capacity
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|value| bytes_to_u64(value))
+            .collect();
         assert_eq!(values, vec![100, 60, 40]);
     }
 
@@ -5443,7 +5448,12 @@ mod tests {
 
         assert_eq!(get_job_timing(0), 0);
         let timing = test_mock::get_return_data();
-        let values: Vec<u64> = timing.chunks_exact(8).map(bytes_to_u64).collect();
+        let values: Vec<u64> = timing
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|value| bytes_to_u64(value))
+            .collect();
         assert_eq!(values, vec![100, 300, 250, 1_250, 300, 400]);
     }
 
@@ -5711,8 +5721,10 @@ mod tests {
         assert_eq!(migrate_accounting_v3_job(1), 0);
         assert_eq!(get_accounting_migration_status(), 0);
         let status: Vec<u64> = test_mock::get_return_data()
-            .chunks_exact(8)
-            .map(bytes_to_u64)
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|value| bytes_to_u64(value))
             .collect();
         assert_eq!(status, vec![2, 2, 100, 20, 0, 1]);
         storage_set(CM_MIGRATION_CURSOR_KEY, &[1]);
@@ -5741,8 +5753,10 @@ mod tests {
         test_mock::set_cross_call_response(Some(u64_to_bytes(130).to_vec()));
         assert_eq!(get_accounting_health(), 0);
         let health: Vec<u64> = test_mock::get_return_data()
-            .chunks_exact(8)
-            .map(bytes_to_u64)
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|value| bytes_to_u64(value))
             .collect();
         assert_eq!(health, vec![3, 0, 100, 20, 10, 130, 130, 1]);
         test_mock::set_caller(admin);

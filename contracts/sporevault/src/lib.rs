@@ -2943,7 +2943,12 @@ mod tests {
         assert_eq!(get_vault_status(), 0);
         let result = test_mock::get_return_data();
         assert_eq!(result.len(), 23 * 8);
-        let values: Vec<u64> = result.chunks_exact(8).map(bytes_to_u64).collect();
+        let values: Vec<u64> = result
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|value| bytes_to_u64(value))
+            .collect();
         assert_eq!(values[0], ACCOUNTING_VERSION_V2);
         assert_eq!(values[2], 1);
         assert_eq!(values[3], 1);

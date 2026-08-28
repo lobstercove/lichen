@@ -132,7 +132,7 @@ impl ChainClient {
             return Err("Moss storage provider layout is invalid".to_string());
         }
         let mut providers = Vec::with_capacity(provider_count);
-        for provider in data[59..required].chunks_exact(32) {
+        for provider in data[59..required].as_chunks::<32>().0 {
             providers.push(pubkey_from_slice(provider)?);
         }
         Ok(Some(StorageInfo {

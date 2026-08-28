@@ -202,8 +202,8 @@ fn load_initialized_ticks(pool_id: u64) -> Vec<i32> {
     match storage_get(&init_ticks_key(pool_id)) {
         Some(d) => {
             let mut ticks = Vec::new();
-            for chunk in d.chunks_exact(4) {
-                ticks.push(i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+            for chunk in d.as_chunks::<4>().0 {
+                ticks.push(i32::from_le_bytes(*chunk));
             }
             ticks
         }
