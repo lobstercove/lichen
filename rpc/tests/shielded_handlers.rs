@@ -10,8 +10,7 @@ use axum::body::{to_bytes, Body};
 use axum::http::Request;
 use base64::{engine::general_purpose, Engine as _};
 use lichen_core::zk::{
-    circuits::shield::ShieldCircuit, commitment_hash, nullifier_hash, MerkleTree, Prover,
-    ShieldedPoolState,
+    circuits::shield::ShieldCircuit, commitment_hash, MerkleTree, Prover, ShieldedPoolState,
 };
 use lichen_core::{
     Account, Block, Hash, Instruction, Keypair, Message, StateStore, Transaction, SYSTEM_PROGRAM_ID,
@@ -197,6 +196,48 @@ fn create_populated_app(n_commitments: u64, spent_nullifiers: &[[u8; 32]]) -> ax
     )
 }
 
+/// Create an internally inconsistent pool whose metadata claims two leaves but
+/// whose commitment index 1 is absent from storage.
+fn create_gapped_commitment_app() -> axum::Router {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let commitment_0 = test_commitment(0);
+    let commitment_1 = test_commitment(1);
+    state
+        .insert_shielded_commitment(0, &commitment_0)
+        .expect("insert commitment");
+
+    let mut tree = MerkleTree::new();
+    tree.insert(commitment_0);
+    tree.insert(commitment_1);
+    state
+        .put_shielded_pool_state(&ShieldedPoolState {
+            merkle_root: tree.root(),
+            commitment_count: 2,
+            total_shielded: 2_000_000_000,
+            nullifier_count: 0,
+            shield_count: 2,
+            unshield_count: 0,
+            transfer_count: 0,
+        })
+        .expect("put pool state");
+    put_ready_tip(&state, 1);
+
+    let _ = Box::leak(Box::new(dir));
+    build_rpc_router(
+        state,
+        None,
+        None,
+        None,
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
 struct ShieldedSubmissionHarness {
     app: axum::Router,
     mempool_rx: mpsc::Receiver<Transaction>,
@@ -319,11 +360,10 @@ fn encode_tx_base64(tx: &Transaction) -> String {
 // ── getShieldedPoolState ─────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn test_rpc_generate_shield_proof_accepts_native_blinding_bytes() {
+async fn test_rpc_generate_shield_proof_is_disabled_before_witness_processing() {
     let app = create_empty_app();
     let amount = 10_000_000_000u64;
     let blinding = [0xffu8; 32];
-    let commitment = commitment_hash(amount, &blinding);
 
     let resp = rpc_call_with_params(
         &app,
@@ -336,45 +376,33 @@ async fn test_rpc_generate_shield_proof_accepts_native_blinding_bytes() {
     .await
     .unwrap();
 
-    assert!(resp.get("error").is_none(), "unexpected error: {resp:?}");
-    let result = &resp["result"];
-    assert_eq!(result["type"], "shield");
-    assert_eq!(result["amount"], amount);
-    assert_eq!(result["commitment"], hex::encode(commitment));
-    assert!(
-        result["proof"]
-            .as_str()
-            .is_some_and(|proof| !proof.is_empty()),
-        "proof hex should be returned"
-    );
+    assert_eq!(resp["error"]["code"], -32090);
+    assert!(resp["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("unavailable")));
+    assert!(resp.get("result").is_none());
 }
 
 #[tokio::test]
-async fn test_rpc_generate_shield_proof_accepts_amount_string() {
+async fn test_rpc_generate_shield_proof_disabled_precedes_parameter_parsing() {
     let app = create_empty_app();
-    let amount = 1_000_000_001u64;
-    let blinding = [0xabu8; 32];
-    let commitment = commitment_hash(amount, &blinding);
 
     let resp = rpc_call_with_params(
         &app,
         "generateShieldProof",
-        json!([{
-            "amount": amount.to_string(),
-            "blinding": hex::encode(blinding),
-        }]),
+        json!([{"spending_key": "must-not-be-processed"}]),
     )
     .await
     .unwrap();
 
-    assert!(resp.get("error").is_none(), "unexpected error: {resp:?}");
-    let result = &resp["result"];
-    assert_eq!(result["amount"], amount);
-    assert_eq!(result["commitment"], hex::encode(commitment));
+    assert_eq!(resp["error"]["code"], -32090);
+    assert!(resp["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("unavailable")));
 }
 
 #[tokio::test]
-async fn test_rpc_shielded_amount_string_rejects_u64_overflow() {
+async fn test_rpc_compute_shield_commitment_is_disabled() {
     let app = create_empty_app();
     let blinding = [0x11u8; 32];
 
@@ -389,11 +417,10 @@ async fn test_rpc_shielded_amount_string_rejects_u64_overflow() {
     .await
     .unwrap();
 
-    let error_message = resp["error"]["message"].as_str().unwrap_or_default();
-    assert!(
-        error_message.contains("amount (u64) is required"),
-        "unexpected error: {resp:?}"
-    );
+    assert_eq!(resp["error"]["code"], -32090);
+    assert!(resp["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("unavailable")));
 }
 
 #[tokio::test]
@@ -404,6 +431,9 @@ async fn test_rpc_get_shielded_pool_state_empty() {
 
     assert_eq!(result["commitmentCount"], 0);
     assert_eq!(result["totalShielded"], 0);
+    assert_eq!(result["proofAcceptanceEnabled"], false);
+    assert_eq!(result["operationsAvailable"], false);
+    assert_eq!(result["status"], "disabled_insecure_verifier");
     // Empty Merkle root should be a 64-char hex string (32 bytes)
     assert_eq!(result["merkleRoot"].as_str().unwrap().len(), 64);
 }
@@ -495,6 +525,19 @@ async fn test_rpc_get_shielded_merkle_path_missing_params() {
 
     assert!(resp["error"].is_object());
     assert_eq!(resp["error"]["code"], -32602);
+}
+
+#[tokio::test]
+async fn test_rpc_merkle_path_rejects_missing_commitment_gap() {
+    let app = create_gapped_commitment_app();
+    let resp = rpc_call_with_params(&app, "getShieldedMerklePath", json!([1]))
+        .await
+        .unwrap();
+
+    assert_eq!(resp["error"]["code"], -32000);
+    assert!(resp["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("Missing shielded commitment at index 1")));
 }
 
 // ── isNullifierSpent ─────────────────────────────────────────────────────────
@@ -635,11 +678,10 @@ async fn test_rpc_get_shielded_commitments_returns_encrypted_note_payload() {
 }
 
 #[tokio::test]
-async fn test_rpc_compute_shield_nullifier_matches_core_poseidon2() {
+async fn test_rpc_compute_shield_nullifier_is_disabled_before_secret_processing() {
     let app = create_empty_app();
     let serial = [0x11u8; 32];
     let spending_key = [0x22u8; 32];
-    let expected = nullifier_hash(&serial, &spending_key);
 
     let resp = rpc_call_with_params(
         &app,
@@ -652,8 +694,11 @@ async fn test_rpc_compute_shield_nullifier_matches_core_poseidon2() {
     .await
     .unwrap();
 
-    assert_eq!(resp["result"]["serial"], hex::encode(serial));
-    assert_eq!(resp["result"]["nullifier"], hex::encode(expected));
+    assert_eq!(resp["error"]["code"], -32090);
+    assert!(resp["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("unavailable")));
+    assert!(resp.get("result").is_none());
 }
 
 #[tokio::test]
@@ -675,6 +720,93 @@ async fn test_rpc_get_shielded_commitments_pagination() {
     assert_eq!(comms.len(), 4);
     assert_eq!(comms[0]["index"], 3);
     assert_eq!(comms[3]["index"], 6);
+}
+
+#[tokio::test]
+async fn test_rpc_get_shielded_commitments_clamps_from_past_tip() {
+    let app = create_populated_app(3, &[]);
+    let resp = rpc_call_with_params(
+        &app,
+        "getShieldedCommitments",
+        json!([{"from": u64::MAX, "limit": 1000}]),
+    )
+    .await
+    .unwrap();
+    let result = &resp["result"];
+
+    assert_eq!(result["from"], 3);
+    assert_eq!(result["total"], 3);
+    assert!(result["commitments"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_rpc_get_shielded_commitments_rejects_missing_gap() {
+    let app = create_gapped_commitment_app();
+    let resp = rpc_call(&app, "getShieldedCommitments").await.unwrap();
+
+    assert_eq!(resp["error"]["code"], -32000);
+    assert!(resp["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("Missing shielded commitment at index 1")));
+}
+
+#[tokio::test]
+async fn test_commitment_endpoints_reject_conflicting_note_payload() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let commitment = test_commitment(0);
+    let payload = json!({
+        "commitment": hex::encode(test_commitment(99)),
+        "encrypted_note": format!("a1:{}:{}", "00".repeat(12), "11".repeat(16)),
+        "ephemeral_pk": hex::encode([0x22u8; 32]),
+    })
+    .to_string();
+    state
+        .insert_shielded_commitment(0, &commitment)
+        .expect("insert commitment");
+    state
+        .insert_shielded_note_payload(0, payload.as_bytes())
+        .expect("insert encrypted note payload");
+    let mut tree = MerkleTree::new();
+    tree.insert(commitment);
+    state
+        .put_shielded_pool_state(&ShieldedPoolState {
+            merkle_root: tree.root(),
+            commitment_count: 1,
+            total_shielded: 1_000_000_000,
+            nullifier_count: 0,
+            shield_count: 1,
+            unshield_count: 0,
+            transfer_count: 0,
+        })
+        .expect("put pool state");
+    put_ready_tip(&state, 1);
+    let app = build_rpc_router(
+        state,
+        None,
+        None,
+        None,
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+    );
+
+    let rpc_resp = rpc_call(&app, "getShieldedCommitments").await.unwrap();
+    assert_eq!(rpc_resp["error"]["code"], -32000);
+    assert!(rpc_resp["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("conflicts with its commitment")));
+
+    let rest_resp = rest_get(&app, "/api/v1/shielded/commitments")
+        .await
+        .unwrap();
+    assert_eq!(rest_resp["success"], false);
+    assert!(rest_resp["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("conflicts with its commitment")));
 }
 
 #[tokio::test]
@@ -732,6 +864,9 @@ async fn test_rest_get_pool_state_empty() {
     let data = &resp["data"];
     assert_eq!(data["commitmentCount"], 0);
     assert_eq!(data["totalShielded"], 0);
+    assert_eq!(data["proofAcceptanceEnabled"], false);
+    assert_eq!(data["operationsAvailable"], false);
+    assert_eq!(data["status"], "disabled_insecure_verifier");
 }
 
 #[tokio::test]
@@ -790,6 +925,19 @@ async fn test_rest_get_merkle_path_out_of_range() {
 
     assert_eq!(resp["success"], false);
     assert!(resp["error"].as_str().unwrap().contains("out of range"));
+}
+
+#[tokio::test]
+async fn test_rest_merkle_path_rejects_missing_commitment_gap() {
+    let app = create_gapped_commitment_app();
+    let resp = rest_get(&app, "/api/v1/shielded/merkle-path/1")
+        .await
+        .unwrap();
+
+    assert_eq!(resp["success"], false);
+    assert!(resp["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("Missing shielded commitment at index 1")));
 }
 
 // ── GET /api/v1/shielded/nullifier/:hash ─────────────────────────────────────
@@ -861,10 +1009,39 @@ async fn test_rest_get_commitments_paginated() {
     assert_eq!(comms[0]["index"], 5);
 }
 
+#[tokio::test]
+async fn test_rest_get_commitments_clamps_from_past_tip() {
+    let app = create_populated_app(3, &[]);
+    let resp = rest_get(
+        &app,
+        "/api/v1/shielded/commitments?from=18446744073709551615&limit=1000",
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["from"], 3);
+    assert_eq!(resp["data"]["total"], 3);
+    assert!(resp["data"]["commitments"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_rest_get_commitments_rejects_missing_gap() {
+    let app = create_gapped_commitment_app();
+    let resp = rest_get(&app, "/api/v1/shielded/commitments")
+        .await
+        .unwrap();
+
+    assert_eq!(resp["success"], false);
+    assert!(resp["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("Missing shielded commitment at index 1")));
+}
+
 // ── POST /api/v1/shielded/shield ─────────────────────────────────────────────
 
 #[tokio::test]
-async fn test_rest_submit_shield_invalid_base64() {
+async fn test_rest_submit_shield_disabled_precedes_base64_parsing() {
     let app = create_empty_app();
     let resp = rest_post(
         &app,
@@ -875,11 +1052,11 @@ async fn test_rest_submit_shield_invalid_base64() {
     .unwrap();
 
     assert_eq!(resp["success"], false);
-    assert!(resp["error"].as_str().unwrap().contains("Invalid base64"));
+    assert!(resp["error"].as_str().unwrap().contains("unavailable"));
 }
 
 #[tokio::test]
-async fn test_rest_submit_shield_invalid_transaction() {
+async fn test_rest_submit_shield_disabled_precedes_transaction_parsing() {
     let app = create_empty_app();
     // Valid base64 but not a valid transaction
     let resp = rest_post(
@@ -891,14 +1068,11 @@ async fn test_rest_submit_shield_invalid_transaction() {
     .unwrap();
 
     assert_eq!(resp["success"], false);
-    assert!(resp["error"]
-        .as_str()
-        .unwrap()
-        .contains("Invalid transaction"));
+    assert!(resp["error"].as_str().unwrap().contains("unavailable"));
 }
 
 #[tokio::test]
-async fn test_rest_submit_shield_rejects_invalid_signature_before_mempool() {
+async fn test_rest_submit_shield_disabled_precedes_signature_validation() {
     let mut harness = create_submission_harness();
     let mut tx = build_valid_shield_transaction(
         &harness.sender_keypair,
@@ -916,10 +1090,7 @@ async fn test_rest_submit_shield_rejects_invalid_signature_before_mempool() {
     .unwrap();
 
     assert_eq!(resp["success"], false);
-    assert!(resp["error"]
-        .as_str()
-        .unwrap()
-        .contains("Missing or invalid signature"));
+    assert!(resp["error"].as_str().unwrap().contains("unavailable"));
     assert!(matches!(
         harness.mempool_rx.try_recv(),
         Err(TryRecvError::Empty)
@@ -927,7 +1098,7 @@ async fn test_rest_submit_shield_rejects_invalid_signature_before_mempool() {
 }
 
 #[tokio::test]
-async fn test_rest_submit_shield_rejects_invalid_proof_before_mempool() {
+async fn test_rest_submit_shield_disabled_precedes_proof_parsing() {
     let mut harness = create_submission_harness();
     let mut tx = build_valid_shield_transaction(
         &harness.sender_keypair,
@@ -951,8 +1122,7 @@ async fn test_rest_submit_shield_rejects_invalid_proof_before_mempool() {
 
     assert_eq!(resp["success"], false);
     let error = resp["error"].as_str().unwrap();
-    assert!(error.contains("Transaction simulation failed"));
-    assert!(error.to_ascii_lowercase().contains("proof"));
+    assert!(error.contains("unavailable"));
     assert!(matches!(
         harness.mempool_rx.try_recv(),
         Err(TryRecvError::Empty)
@@ -960,15 +1130,13 @@ async fn test_rest_submit_shield_rejects_invalid_proof_before_mempool() {
 }
 
 #[tokio::test]
-async fn test_rest_submit_shield_accepts_valid_transaction_and_queues_mempool() {
+async fn test_rest_submit_shield_rejects_legacy_valid_transaction_before_mempool() {
     let mut harness = create_submission_harness();
     let tx = build_valid_shield_transaction(
         &harness.sender_keypair,
         harness.recent_blockhash,
         1_000_000_000,
     );
-    let expected_signature = tx.signature().to_hex();
-
     let resp = rest_post(
         &harness.app,
         "/api/v1/shielded/shield",
@@ -977,12 +1145,12 @@ async fn test_rest_submit_shield_accepts_valid_transaction_and_queues_mempool() 
     .await
     .unwrap();
 
-    assert_eq!(resp["success"], true);
-    assert_eq!(resp["data"]["signature"], expected_signature);
-    assert_eq!(resp["data"]["shieldedType"], "shield");
-
-    let queued = harness.mempool_rx.try_recv().expect("tx queued");
-    assert_eq!(queued.signature().to_hex(), expected_signature);
+    assert_eq!(resp["success"], false);
+    assert!(resp["error"].as_str().unwrap().contains("unavailable"));
+    assert!(matches!(
+        harness.mempool_rx.try_recv(),
+        Err(TryRecvError::Empty)
+    ));
 }
 
 #[tokio::test]

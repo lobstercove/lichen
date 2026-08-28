@@ -23,15 +23,16 @@ pub mod updater;
 pub mod wal;
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use flate2::read::GzDecoder;
 use futures_util::{SinkExt, StreamExt};
 use lichen_core::archive_v2::{
+    load_archive_v2_role_marker, store_archive_v2_role_marker_create_new,
     ArchiveV2AdaptiveReservePolicy, ArchiveV2CapabilityAdvertisement, ArchiveV2CapacityDecision,
     ArchiveV2CapacityGuard, ArchiveV2CapacityInputs, ArchiveV2CapacityThresholds,
     ArchiveV2CapacityTotals, ArchiveV2Catalog, ArchiveV2DirectorySource, ArchiveV2ObjectSource,
     ArchiveV2PressureAction, ArchiveV2Reader, ArchiveV2ReaderConfig, ArchiveV2Role,
-    ArchiveV2RoleAdmission, ArchiveV2RoleConfig, ArchiveV2RoleRequirements,
+    ArchiveV2RoleAdmission, ArchiveV2RoleConfig, ArchiveV2RoleMarker, ArchiveV2RoleRequirements,
     ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS, ARCHIVE_V2_ROLE_CONFIG_VERSION,
+    ARCHIVE_V2_ROLE_MARKER_FILENAME,
 };
 use lichen_core::codec::{
     deserialize_legacy_bincode_from, deserialize_legacy_bincode_strict, serialize_legacy_bincode,
@@ -50,22 +51,28 @@ use lichen_core::multisig::{
 };
 use lichen_core::nft::decode_token_state;
 #[cfg(test)]
-use lichen_core::STATE_SNAPSHOT_CATEGORIES;
+use lichen_core::{
+    archive_v2::{ArchiveV2CodecConfig, ArchiveV2SegmentCodec, ArchiveV2SegmentContents},
+    GenesisStateChunk, GENESIS_STATE_BUNDLE_VERSION, GENESIS_STATE_CHUNK_OPCODE,
+    STATE_SNAPSHOT_CATEGORIES,
+};
 use lichen_core::{
     canonical_validator_powers, compute_bft_timestamp, compute_stake_weighted_median,
-    compute_validators_hash, evm_tx_hash, Account, AccountTxsRebuildReport,
-    AccountTxsSourceInspection, Block, CanonicalCommitCertificate, ContractAbi, ContractAccount,
-    ContractInstruction, FeeConfig, FinalityTracker, ForkChoice, GenesisConfig, GenesisPrices,
-    GenesisStateBundle, GenesisStateChunk, GenesisWallet, GovernedProposalTxBackfillReport, Hash,
-    Keypair, MarketActivity, MarketActivityKind, Mempool, PqSignature, Precommit, Prevote,
-    Proposal, Pubkey, PublicHistoryImportReport, PublicHistoryManifest, RoundStep,
-    SlashingEvidence, SlashingOffense, SparseStateCommitmentReport, StakePool, StateBatch,
-    StateRootComponentReport, StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet,
-    Vote, VoteAggregator, VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CHAIN_ID_METADATA_KEY,
+    compute_validators_hash, current_active_oracle_attestations, evm_tx_hash,
+    extract_genesis_state_bundle, genesis_block_declares_mossstake_slot_only,
+    oracle_stake_quorum_reached, Account, AccountTxsRebuildReport, AccountTxsSourceInspection,
+    Block, CanonicalCommitCertificate, ContractAbi, ContractAccount, ContractInstruction,
+    FeeConfig, FinalityTracker, ForkChoice, GenesisConfig, GenesisPrices, GenesisStateBundle,
+    GenesisWallet, GovernedProposalTxBackfillReport, Hash, Keypair, MarketActivity,
+    MarketActivityKind, Mempool, PqSignature, Precommit, Prevote, Proposal, Pubkey,
+    PublicHistoryImportReport, PublicHistoryManifest, RoundStep, SlashingEvidence, SlashingOffense,
+    SparseStateCommitmentReport, StakePool, StateBatch, StateRootComponentReport, StateStore,
+    Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote, VoteAggregator, VoteAuthority,
+    BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CHAIN_ID_METADATA_KEY,
     CONSENSUS_V1_ACTIVATION_SLOT_METADATA_KEY, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE,
-    EVM_PROGRAM_ID, GENESIS_DISTRIBUTION, GENESIS_STATE_BUNDLE_VERSION, GENESIS_STATE_CHUNK_OPCODE,
-    GENESIS_SUPPLY_SPORES, MAX_TX_AGE_BLOCKS, MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE,
-    NFT_MINT_FEE, ORACLE_ASSET_MAX_LEN, ORACLE_ASSET_MIN_LEN, ORACLE_STALENESS_SLOTS,
+    EVM_PROGRAM_ID, GENESIS_DISTRIBUTION, GENESIS_SUPPLY_SPORES, MAX_TX_AGE_BLOCKS,
+    MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE, ORACLE_ASSET_MAX_LEN,
+    ORACLE_ASSET_MIN_LEN, ORACLE_PRICE_DECIMALS, ORACLE_STALENESS_SLOTS,
     PUBLIC_HISTORY_SNAPSHOT_CATEGORIES, SLASHING_EVIDENCE_CODEC_LIMIT_BYTES,
     STATE_SNAPSHOT_SPECIAL_CATEGORIES, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
     VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY, VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE,
@@ -122,7 +129,6 @@ static CHECKPOINT_MAINTENANCE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex:
 static CHECKPOINT_CREATION_TERMINALLY_PAUSED: AtomicBool = AtomicBool::new(false);
 static ACTIVE_CHECKPOINT_EXPORT_PINS: LazyLock<std::sync::Mutex<HashMap<u64, usize>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
-static ARCHIVE_V2_ROLE_MARKER_NONCE: AtomicU64 = AtomicU64::new(0);
 static ARCHIVE_V2_CAPACITY_ACTION: AtomicU64 =
     AtomicU64::new(ArchiveV2PressureAction::Normal as u64);
 const SNAPSHOT_APPLY_COMPACTION_COPIES: u64 = 2;
@@ -414,6 +420,7 @@ const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.77";
 const SHOW_CONTRACT_STORAGE_DIGEST_FLAG: &str = "--show-contract-storage-digest";
 const SHOW_STAKE_POOL_DIGEST_FLAG: &str = "--show-stake-pool-digest";
 const PREPARE_CONSENSUS_V1_ACTIVATION_FLAG: &str = "--prepare-consensus-v1-activation";
+const PREPARE_STAKING_V2_ACTIVATION_FLAG: &str = "--prepare-staking-v2-activation";
 const REPAIR_RECENT_POST_BLOCK_EFFECTS_FLAG: &str = "--repair-recent-post-block-effects";
 const RECENT_POST_BLOCK_EFFECTS_REPAIR_CONFIRMATION: &str = "recent-post-block-effects-repair:v1";
 const REPAIR_LEGACY_TESTNET_POST_EFFECT_REPLAY_DRIFT_FLAG: &str =
@@ -683,8 +690,12 @@ struct SharedOraclePrices {
     wgas_micro: Arc<AtomicU64>,
     wbtc_micro: Arc<AtomicU64>,
     ws_healthy: Arc<AtomicBool>,
-    /// Epoch-millis of the last WS message received (for staleness detection)
-    last_ws_update_ms: Arc<AtomicU64>,
+    /// Per-asset epoch-millis of the last valid Binance WebSocket price.
+    last_ws_update_ms: Arc<[AtomicU64; ORACLE_MARKET_ASSET_COUNT]>,
+    /// Per-asset Binance event time used to reject duplicate/out-of-order data.
+    last_ws_event_ms: Arc<[AtomicU64; ORACLE_MARKET_ASSET_COUNT]>,
+    /// Per-asset epoch-millis of the last valid price from WS or REST.
+    last_source_update_ms: Arc<[AtomicU64; ORACLE_MARKET_ASSET_COUNT]>,
 }
 
 impl SharedOraclePrices {
@@ -697,9 +708,155 @@ impl SharedOraclePrices {
             wgas_micro: Arc::new(AtomicU64::new(0)),
             wbtc_micro: Arc::new(AtomicU64::new(0)),
             ws_healthy: Arc::new(AtomicBool::new(false)),
-            last_ws_update_ms: Arc::new(AtomicU64::new(0)),
+            last_ws_update_ms: Arc::new(std::array::from_fn(|_| AtomicU64::new(0))),
+            last_ws_event_ms: Arc::new(std::array::from_fn(|_| AtomicU64::new(0))),
+            last_source_update_ms: Arc::new(std::array::from_fn(|_| AtomicU64::new(0))),
         }
     }
+
+    fn price(&self, asset: OracleMarketAsset) -> &AtomicU64 {
+        match asset {
+            OracleMarketAsset::Wsol => &self.wsol_micro,
+            OracleMarketAsset::Weth => &self.weth_micro,
+            OracleMarketAsset::Wbnb => &self.wbnb_micro,
+            OracleMarketAsset::Wneo => &self.wneo_micro,
+            OracleMarketAsset::Wgas => &self.wgas_micro,
+            OracleMarketAsset::Wbtc => &self.wbtc_micro,
+        }
+    }
+
+    fn record_ws_price(
+        &self,
+        asset: OracleMarketAsset,
+        price_micro: u64,
+        event_ms: u64,
+        received_ms: u64,
+    ) -> bool {
+        if price_micro == 0 || !oracle_event_time_is_acceptable(event_ms, received_ms) {
+            return false;
+        }
+        let index = asset.index();
+        let previous_event_ms = self.last_ws_event_ms[index].load(Ordering::Relaxed);
+        if event_ms > 0 && previous_event_ms >= event_ms {
+            return false;
+        }
+
+        let previous_price = self.price(asset).swap(price_micro, Ordering::Relaxed);
+        if event_ms > 0 {
+            self.last_ws_event_ms[index].fetch_max(event_ms, Ordering::Relaxed);
+        }
+        self.last_ws_update_ms[index].store(received_ms, Ordering::Relaxed);
+        self.last_source_update_ms[asset.index()].store(received_ms, Ordering::Relaxed);
+        self.ws_healthy.store(true, Ordering::Relaxed);
+        previous_price != price_micro || event_ms > previous_event_ms
+    }
+
+    fn record_rest_price(&self, asset: OracleMarketAsset, price_micro: u64, now_ms: u64) {
+        self.price(asset).store(price_micro, Ordering::Relaxed);
+        self.last_source_update_ms[asset.index()].store(now_ms, Ordering::Relaxed);
+    }
+
+    fn record_rest_price_if_ws_stale(
+        &self,
+        asset: OracleMarketAsset,
+        price_micro: u64,
+        now_ms: u64,
+        ws_max_age_ms: u64,
+    ) -> bool {
+        if self.ws_price_is_fresh(asset, now_ms, ws_max_age_ms) {
+            return false;
+        }
+        self.record_rest_price(asset, price_micro, now_ms);
+        true
+    }
+
+    fn ws_price_is_fresh(&self, asset: OracleMarketAsset, now_ms: u64, max_age_ms: u64) -> bool {
+        timestamp_is_fresh(
+            self.last_ws_update_ms[asset.index()].load(Ordering::Relaxed),
+            now_ms,
+            max_age_ms,
+        )
+    }
+
+    fn source_price_is_fresh(
+        &self,
+        asset: OracleMarketAsset,
+        now_ms: u64,
+        max_age_ms: u64,
+    ) -> bool {
+        timestamp_is_fresh(
+            self.last_source_update_ms[asset.index()].load(Ordering::Relaxed),
+            now_ms,
+            max_age_ms,
+        )
+    }
+}
+
+const ORACLE_MARKET_ASSET_COUNT: usize = 6;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OracleMarketAsset {
+    Wsol,
+    Weth,
+    Wbnb,
+    Wneo,
+    Wgas,
+    Wbtc,
+}
+
+impl OracleMarketAsset {
+    const ALL: [Self; ORACLE_MARKET_ASSET_COUNT] = [
+        Self::Wsol,
+        Self::Weth,
+        Self::Wbnb,
+        Self::Wneo,
+        Self::Wgas,
+        Self::Wbtc,
+    ];
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Wsol => 0,
+            Self::Weth => 1,
+            Self::Wbnb => 2,
+            Self::Wneo => 3,
+            Self::Wgas => 4,
+            Self::Wbtc => 5,
+        }
+    }
+
+    fn from_binance_symbol(symbol: &str) -> Option<Self> {
+        match symbol {
+            "SOLUSDT" => Some(Self::Wsol),
+            "ETHUSDT" => Some(Self::Weth),
+            "BNBUSDT" => Some(Self::Wbnb),
+            "NEOUSDT" => Some(Self::Wneo),
+            "GASUSDT" => Some(Self::Wgas),
+            "BTCUSDT" => Some(Self::Wbtc),
+            _ => None,
+        }
+    }
+}
+
+fn timestamp_is_fresh(timestamp_ms: u64, now_ms: u64, max_age_ms: u64) -> bool {
+    timestamp_ms > 0 && timestamp_ms <= now_ms && now_ms - timestamp_ms <= max_age_ms
+}
+
+fn oracle_event_time_is_acceptable(event_ms: u64, received_ms: u64) -> bool {
+    if event_ms == 0 || received_ms == 0 {
+        return false;
+    }
+    if event_ms > received_ms {
+        return event_ms - received_ms <= ORACLE_WS_EVENT_MAX_FUTURE_SKEW_MS;
+    }
+    received_ms - event_ms <= ORACLE_WS_EVENT_MAX_LAG_MS
+}
+
+fn unix_epoch_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn symbol_registered(state: &StateStore, symbol: &str) -> bool {
@@ -730,14 +887,83 @@ fn oracle_asset_symbols(state: &StateStore) -> Vec<&'static str> {
 }
 
 #[derive(Clone, Copy)]
+struct OracleFixed8Quote {
+    price: u64,
+    source_slot: u64,
+}
+
+impl OracleFixed8Quote {
+    const fn new(price: u64, source_slot: u64) -> Self {
+        Self { price, source_slot }
+    }
+}
+
+#[derive(Clone, Copy)]
 struct OraclePairPriceInputs {
-    licn_usd: f64,
-    wsol_usd: f64,
-    weth_usd: f64,
-    wbnb_usd: f64,
-    wneo_usd: f64,
-    wgas_usd: f64,
-    wbtc_usd: f64,
+    licn_usd_8dec: OracleFixed8Quote,
+    wsol_usd_8dec: OracleFixed8Quote,
+    weth_usd_8dec: OracleFixed8Quote,
+    wbnb_usd_8dec: OracleFixed8Quote,
+    wneo_usd_8dec: OracleFixed8Quote,
+    wgas_usd_8dec: OracleFixed8Quote,
+    wbtc_usd_8dec: OracleFixed8Quote,
+}
+
+#[derive(Clone, Copy)]
+struct OraclePairPrice {
+    pair_id: u64,
+    price_scaled: u64,
+    source_slot: u64,
+}
+
+const DEX_PRICE_SCALE: u64 = 1_000_000_000;
+
+fn oracle_usd_to_dex_price(price_8dec: u64) -> u64 {
+    price_8dec.checked_mul(10).unwrap_or(0)
+}
+
+fn oracle_cross_to_dex_price(quote_usd_8dec: u64, licn_usd_8dec: u64) -> u64 {
+    if quote_usd_8dec == 0 || licn_usd_8dec == 0 {
+        return 0;
+    }
+    let scaled = quote_usd_8dec as u128 * DEX_PRICE_SCALE as u128 / licn_usd_8dec as u128;
+    u64::try_from(scaled).unwrap_or(0)
+}
+
+fn oracle_micro_to_8dec(price_micro: u64) -> u64 {
+    price_micro.checked_mul(100).unwrap_or(0)
+}
+
+fn consensus_oracle_price_8dec(state: &StateStore, asset: &str) -> OracleFixed8Quote {
+    lichen_core::consensus::read_consensus_oracle_price_from_state(state, asset)
+        .filter(|(_, decimals, _)| *decimals == ORACLE_PRICE_DECIMALS)
+        .map(|(price, _, source_slot)| OracleFixed8Quote::new(price, source_slot))
+        .unwrap_or_else(|| OracleFixed8Quote::new(0, 0))
+}
+
+fn oracle_usd_pair(pair_id: u64, quote: OracleFixed8Quote) -> OraclePairPrice {
+    OraclePairPrice {
+        pair_id,
+        price_scaled: oracle_usd_to_dex_price(quote.price),
+        source_slot: quote.source_slot,
+    }
+}
+
+fn oracle_cross_pair(
+    pair_id: u64,
+    base: OracleFixed8Quote,
+    licn: OracleFixed8Quote,
+) -> OraclePairPrice {
+    let price_scaled = oracle_cross_to_dex_price(base.price, licn.price);
+    OraclePairPrice {
+        pair_id,
+        price_scaled,
+        source_slot: if price_scaled > 0 {
+            base.source_slot.min(licn.source_slot)
+        } else {
+            0
+        },
+    }
 }
 
 fn oracle_pair_prices(
@@ -745,79 +971,37 @@ fn oracle_pair_prices(
     wneo_enabled: bool,
     wgas_enabled: bool,
     wbtc_enabled: bool,
-) -> Vec<(u64, f64)> {
+) -> Vec<OraclePairPrice> {
     let OraclePairPriceInputs {
-        licn_usd,
-        wsol_usd,
-        weth_usd,
-        wbnb_usd,
-        wneo_usd,
-        wgas_usd,
-        wbtc_usd,
+        licn_usd_8dec,
+        wsol_usd_8dec,
+        weth_usd_8dec,
+        wbnb_usd_8dec,
+        wneo_usd_8dec,
+        wgas_usd_8dec,
+        wbtc_usd_8dec,
     } = inputs;
     let mut pair_prices = vec![
-        (1, licn_usd),
-        (2, wsol_usd),
-        (3, weth_usd),
-        (
-            4,
-            if licn_usd > 0.0 {
-                wsol_usd / licn_usd
-            } else {
-                0.0
-            },
-        ),
-        (
-            5,
-            if licn_usd > 0.0 {
-                weth_usd / licn_usd
-            } else {
-                0.0
-            },
-        ),
-        (6, wbnb_usd),
-        (
-            7,
-            if licn_usd > 0.0 {
-                wbnb_usd / licn_usd
-            } else {
-                0.0
-            },
-        ),
+        oracle_usd_pair(1, licn_usd_8dec),
+        oracle_usd_pair(2, wsol_usd_8dec),
+        oracle_usd_pair(3, weth_usd_8dec),
+        oracle_cross_pair(4, wsol_usd_8dec, licn_usd_8dec),
+        oracle_cross_pair(5, weth_usd_8dec, licn_usd_8dec),
+        oracle_usd_pair(6, wbnb_usd_8dec),
+        oracle_cross_pair(7, wbnb_usd_8dec, licn_usd_8dec),
     ];
 
     if wneo_enabled {
-        pair_prices.push((8, wneo_usd));
-        pair_prices.push((
-            9,
-            if licn_usd > 0.0 {
-                wneo_usd / licn_usd
-            } else {
-                0.0
-            },
-        ));
+        pair_prices.push(oracle_usd_pair(8, wneo_usd_8dec));
+        pair_prices.push(oracle_cross_pair(9, wneo_usd_8dec, licn_usd_8dec));
     }
     if wgas_enabled {
-        pair_prices.push((10, wgas_usd));
-        pair_prices.push((
-            11,
-            if licn_usd > 0.0 {
-                wgas_usd / licn_usd
-            } else {
-                0.0
-            },
-        ));
+        pair_prices.push(oracle_usd_pair(10, wgas_usd_8dec));
+        pair_prices.push(oracle_cross_pair(11, wgas_usd_8dec, licn_usd_8dec));
     }
     if wbtc_enabled {
-        pair_prices.push((12, wbtc_usd));
-        pair_prices.push((
-            13,
-            if licn_usd > 0.0 {
-                wbtc_usd / licn_usd
-            } else {
-                0.0
-            },
-        ));
+        pair_prices.push(oracle_usd_pair(12, wbtc_usd_8dec));
+        pair_prices.push(oracle_cross_pair(13, wbtc_usd_8dec, licn_usd_8dec));
     }
 
     pair_prices
@@ -3581,7 +3765,7 @@ fn instruction_may_mutate_stake_pool(ix: &lichen_core::Instruction) -> bool {
     }
 
     match ix.data.first().copied() {
-        Some(9 | 10 | 11 | 26 | 27 | 31 | 38) => true,
+        Some(9 | 10 | 11 | 26 | 27 | 31 | 38 | 39) => true,
         Some(0..=8 | 12..=25 | 28..=30 | 32..=37 | 41) => false,
         _ => true,
     }
@@ -3788,133 +3972,6 @@ fn canonicalize_startup_genesis_config(
     Ok(embedded_config)
 }
 
-fn extract_genesis_state_bundle(block: &Block) -> Result<Option<GenesisStateBundle>, String> {
-    let mut chunks = Vec::new();
-    for tx in &block.transactions {
-        for ix in &tx.message.instructions {
-            if ix.program_id == CORE_SYSTEM_PROGRAM_ID
-                && ix.data.len() > 1
-                && ix.data[0] == GENESIS_STATE_CHUNK_OPCODE
-            {
-                let chunk = GenesisStateChunk::from_legacy_bincode(&ix.data[1..])
-                    .map_err(|err| format!("invalid genesis state chunk encoding: {}", err))?;
-                chunks.push(chunk);
-            }
-        }
-    }
-
-    if chunks.is_empty() {
-        return Ok(None);
-    }
-
-    let first = chunks[0].clone();
-    if first.version != GENESIS_STATE_BUNDLE_VERSION {
-        return Err(format!(
-            "unsupported genesis state bundle version {}",
-            first.version
-        ));
-    }
-    if first.compression != "gzip" {
-        return Err(format!(
-            "unsupported genesis state compression {}",
-            first.compression
-        ));
-    }
-    if first.total_chunks == 0 || first.total_chunks as usize != chunks.len() {
-        return Err(format!(
-            "genesis state chunk count mismatch: header says {}, block has {}",
-            first.total_chunks,
-            chunks.len()
-        ));
-    }
-    if first.total_chunks > 256 {
-        return Err(format!(
-            "genesis state chunk count {} exceeds safety limit",
-            first.total_chunks
-        ));
-    }
-    if first.compressed_len > lichen_core::MAX_BLOCK_SIZE as u64 {
-        return Err(format!(
-            "genesis state compressed payload too large: {} bytes",
-            first.compressed_len
-        ));
-    }
-    if first.uncompressed_len > 64 * 1024 * 1024 {
-        return Err(format!(
-            "genesis state uncompressed payload too large: {} bytes",
-            first.uncompressed_len
-        ));
-    }
-
-    chunks.sort_by_key(|chunk| chunk.chunk_index);
-    let mut compressed = Vec::with_capacity(first.compressed_len as usize);
-    for (expected_index, chunk) in chunks.iter().enumerate() {
-        if chunk.version != first.version
-            || chunk.state_root != first.state_root
-            || chunk.compression != first.compression
-            || chunk.compressed_len != first.compressed_len
-            || chunk.uncompressed_len != first.uncompressed_len
-            || chunk.compressed_sha256 != first.compressed_sha256
-            || chunk.total_chunks != first.total_chunks
-        {
-            return Err("genesis state chunks have inconsistent metadata".to_string());
-        }
-        if chunk.chunk_index as usize != expected_index {
-            return Err(format!(
-                "missing genesis state chunk {}, got {}",
-                expected_index, chunk.chunk_index
-            ));
-        }
-        compressed.extend_from_slice(&chunk.data);
-    }
-
-    if compressed.len() as u64 != first.compressed_len {
-        return Err(format!(
-            "genesis state compressed length mismatch: expected {}, got {}",
-            first.compressed_len,
-            compressed.len()
-        ));
-    }
-    let digest = Sha256::digest(&compressed);
-    if digest.as_slice() != first.compressed_sha256 {
-        return Err("genesis state compressed SHA-256 mismatch".to_string());
-    }
-
-    let mut decoder = GzDecoder::new(compressed.as_slice());
-    let mut raw = Vec::with_capacity(first.uncompressed_len.min(64 * 1024 * 1024) as usize);
-    decoder
-        .read_to_end(&mut raw)
-        .map_err(|err| format!("failed to decompress genesis state bundle: {}", err))?;
-    if raw.len() as u64 != first.uncompressed_len {
-        return Err(format!(
-            "genesis state uncompressed length mismatch: expected {}, got {}",
-            first.uncompressed_len,
-            raw.len()
-        ));
-    }
-
-    let bundle = GenesisStateBundle::from_legacy_bincode(&raw)
-        .map_err(|err| format!("invalid genesis state bundle encoding: {}", err))?;
-    if bundle.version != GENESIS_STATE_BUNDLE_VERSION {
-        return Err(format!(
-            "unsupported decoded genesis state bundle version {}",
-            bundle.version
-        ));
-    }
-    if bundle.state_root != first.state_root {
-        return Err("decoded genesis state root does not match chunk metadata".to_string());
-    }
-    if Hash(bundle.state_root) != block.header.state_root {
-        return Err(format!(
-            "decoded genesis state root {} does not match block root {}",
-            hex::encode(bundle.state_root),
-            block.header.state_root.to_hex()
-        ));
-    }
-
-    Ok(Some(bundle))
-}
-
 fn apply_genesis_state_bundle(
     state: &StateStore,
     bundle: &GenesisStateBundle,
@@ -3934,12 +3991,8 @@ fn apply_genesis_state_bundle(
                 let Some((_, data)) = category.entries.first() else {
                     return Err("genesis stake_pool category is empty".to_string());
                 };
-                let pool: StakePool = deserialize_legacy_bincode_strict(
-                    data,
-                    data.len() as u64,
-                    "genesis stake pool",
-                )
-                .map_err(|err| format!("failed to decode genesis stake pool: {}", err))?;
+                let pool = StakePool::from_storage_bytes(data)
+                    .map_err(|err| format!("failed to decode genesis stake pool: {}", err))?;
                 state.put_stake_pool(&pool)?;
             }
             "mossstake_pool" => {
@@ -6351,53 +6404,37 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) -> Result<(), Stri
         Ok(Some(entry)) => entry.program,
         _ => Pubkey([0u8; 32]),
     };
+    let margin_pk = match state.get_symbol_registry("DEXMARGIN") {
+        Ok(Some(entry)) => entry.program,
+        _ => Pubkey([0u8; 32]),
+    };
     let feeder = match state.get_genesis_pubkey() {
         Ok(Some(gpk)) => gpk.0,
         _ => return Ok(()),
     };
 
-    const PRICE_SCALE: u64 = 1_000_000_000; // 1e9 for DEX price scaling
-
-    let wsol_usd =
-        lichen_core::consensus::consensus_oracle_price_from_state(state, "wSOL").unwrap_or(0.0);
-    let weth_usd =
-        lichen_core::consensus::consensus_oracle_price_from_state(state, "wETH").unwrap_or(0.0);
-    let wbnb_usd =
-        lichen_core::consensus::consensus_oracle_price_from_state(state, "wBNB").unwrap_or(0.0);
-    let wneo_usd =
-        lichen_core::consensus::consensus_oracle_price_from_state(state, "wNEO").unwrap_or(0.0);
-    let wgas_usd =
-        lichen_core::consensus::consensus_oracle_price_from_state(state, "wGAS").unwrap_or(0.0);
-    let wbtc_usd =
-        lichen_core::consensus::consensus_oracle_price_from_state(state, "wBTC").unwrap_or(0.0);
+    let licn_usd_8dec = consensus_oracle_price_8dec(state, "LICN");
+    let wsol_usd_8dec = consensus_oracle_price_8dec(state, "wSOL");
+    let weth_usd_8dec = consensus_oracle_price_8dec(state, "wETH");
+    let wbnb_usd_8dec = consensus_oracle_price_8dec(state, "wBNB");
+    let wneo_usd_8dec = consensus_oracle_price_8dec(state, "wNEO");
+    let wgas_usd_8dec = consensus_oracle_price_8dec(state, "wGAS");
+    let wbtc_usd_8dec = consensus_oracle_price_8dec(state, "wBTC");
     let (wneo_enabled, wgas_enabled, wbtc_enabled) = wrapped_oracle_assets_enabled(state);
-
-    if wsol_usd <= 0.0
-        && weth_usd <= 0.0
-        && wbnb_usd <= 0.0
-        && (!wneo_enabled || wneo_usd <= 0.0)
-        && (!wgas_enabled || wgas_usd <= 0.0)
-        && (!wbtc_enabled || wbtc_usd <= 0.0)
-    {
-        return Ok(());
-    }
-
-    let licn_usd = lichen_core::consensus::licn_price_from_state(state);
     let mut batch = state.begin_batch_at_slot(slot);
 
     // ── Phase A: Mirror consensus prices into ORACLE compatibility storage ──
     for asset in oracle_asset_symbols(state) {
         let consensus_feed =
-            lichen_core::consensus::read_consensus_oracle_price_from_state(state, asset)
-                .map(|(price_raw, decimals, _)| (price_raw, decimals));
-        let Some((price_raw, decimals)) = consensus_feed else {
+            lichen_core::consensus::read_consensus_oracle_price_from_state(state, asset);
+        let Some((price_raw, decimals, consensus_slot)) = consensus_feed else {
             continue;
         };
 
         // Build 49-byte oracle feed: price(8)+timestamp(8)+decimals(1)+feeder(32)
         let mut feed = Vec::with_capacity(49);
         feed.extend_from_slice(&price_raw.to_le_bytes());
-        feed.extend_from_slice(&now_ts.to_le_bytes());
+        feed.extend_from_slice(&consensus_slot.to_le_bytes());
         feed.push(decimals);
         feed.extend_from_slice(&feeder);
 
@@ -6408,20 +6445,21 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) -> Result<(), Stri
         let indexed_key = format!("{}_0", price_key);
         batch.put_contract_storage(&oracle_pk, indexed_key.as_bytes(), &feed)?;
     }
+    batch.put_contract_storage(&oracle_pk, b"oracle_consensus_managed", &[1u8])?;
 
     // ── Phase B: Write DEX price bands to DEX contract ──
-    // dex_band_{pair_id}: 16 bytes = reference_price(8) + slot(8)
+    // dex_band_{pair_id}: 16 bytes = reference_price(8) + source_slot(8)
     // The dex_core contract reads this during place_order to enforce
     // ±5% (market) / ±10% (limit) price band protection.
     let pair_prices = oracle_pair_prices(
         OraclePairPriceInputs {
-            licn_usd,
-            wsol_usd,
-            weth_usd,
-            wbnb_usd,
-            wneo_usd,
-            wgas_usd,
-            wbtc_usd,
+            licn_usd_8dec,
+            wsol_usd_8dec,
+            weth_usd_8dec,
+            wbnb_usd_8dec,
+            wneo_usd_8dec,
+            wgas_usd_8dec,
+            wbtc_usd_8dec,
         },
         wneo_enabled,
         wgas_enabled,
@@ -6429,16 +6467,33 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) -> Result<(), Stri
     );
 
     if dex_pk.0 != [0u8; 32] {
-        for (pair_id, price_f64) in &pair_prices {
-            if *price_f64 <= 0.0 {
+        for pair in &pair_prices {
+            if pair.price_scaled == 0 || pair.source_slot == 0 {
                 continue;
             }
-            let price_scaled = (*price_f64 * PRICE_SCALE as f64) as u64;
-            let band_key = format!("dex_band_{}", pair_id);
+            let band_key = format!("dex_band_{}", pair.pair_id);
             let mut band_data = Vec::with_capacity(16);
-            band_data.extend_from_slice(&price_scaled.to_le_bytes());
-            band_data.extend_from_slice(&slot.to_le_bytes());
+            band_data.extend_from_slice(&pair.price_scaled.to_le_bytes());
+            band_data.extend_from_slice(&pair.source_slot.to_le_bytes());
             batch.put_contract_storage(&dex_pk, band_key.as_bytes(), &band_data)?;
+        }
+    }
+
+    // ── Phase B2: Keep margin mark/index prices on the exact DEX pair basis ──
+    // Both values retain the oldest native source slot involved in a cross
+    // quote. This prevents a derived mirror from extending source freshness.
+    if margin_pk.0 != [0u8; 32] {
+        for pair in &pair_prices {
+            if pair.price_scaled == 0 || pair.source_slot == 0 {
+                continue;
+            }
+            let mut value = Vec::with_capacity(16);
+            value.extend_from_slice(&pair.price_scaled.to_le_bytes());
+            value.extend_from_slice(&pair.source_slot.to_le_bytes());
+            let mark_key = format!("mrg_mark_{}", pair.pair_id);
+            let index_key = format!("mrg_idx_{}", pair.pair_id);
+            batch.put_contract_storage(&margin_pk, mark_key.as_bytes(), &value)?;
+            batch.put_contract_storage(&margin_pk, index_key.as_bytes(), &value)?;
         }
     }
 
@@ -6448,11 +6503,12 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) -> Result<(), Stri
     // Candle intervals: 1m, 5m, 15m, 1h, 4h, 1d, 3d, 1w, 1y
     const CANDLE_INTERVALS: [u64; 9] = [60, 300, 900, 3600, 14400, 86400, 259200, 604800, 31536000];
 
-    for (pair_id, price_f64) in &pair_prices {
-        if *price_f64 <= 0.0 {
+    for pair in &pair_prices {
+        let pair_id = pair.pair_id;
+        let price_scaled = pair.price_scaled;
+        if price_scaled == 0 {
             continue;
         }
-        let price_scaled = (*price_f64 * PRICE_SCALE as f64) as u64;
 
         // Check if a real trade occurred within 60 seconds
         let ts_key = format!("ana_last_trade_ts_{}", pair_id);
@@ -6513,7 +6569,7 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) -> Result<(), Stri
             oracle_update_candle(
                 &mut batch,
                 &analytics_pk,
-                *pair_id,
+                pair_id,
                 interval,
                 price_scaled,
                 now_ts,
@@ -6570,8 +6626,11 @@ fn parse_committed_oracle_attestation(
     if price == 0 {
         return Err("OracleAttestation: price must be > 0".to_string());
     }
-    if decimals > 18 {
-        return Err("OracleAttestation: decimals must be 0..=18".to_string());
+    if decimals != ORACLE_PRICE_DECIMALS {
+        return Err(format!(
+            "OracleAttestation: decimals must equal canonical scale {}",
+            ORACLE_PRICE_DECIMALS
+        ));
     }
     let signer = ix
         .accounts
@@ -6606,11 +6665,9 @@ fn stage_committed_oracle_attestation_effects(
     }
     let active_validators = height_start_stake_pool.active_validators().len();
     let min_attestors = if active_validators <= 1 { 1 } else { 2 };
-    let threshold = (total_active_stake as u128) * 2 / 3;
 
     let executable = block.transactions.iter().filter(|tx| !tx.is_consensus());
     let mut staged = BTreeMap::<String, BTreeMap<Pubkey, lichen_core::OracleAttestation>>::new();
-    let mut asset_decimals = BTreeMap::<String, u8>::new();
     for (tx, result) in executable.zip(execution_results) {
         if !result.success {
             continue;
@@ -6626,7 +6683,6 @@ fn stage_committed_oracle_attestation_effects(
             if !stake_info.is_active || !stake_info.meets_minimum() {
                 return Err("OracleAttestation: signer is not an active validator".to_string());
             }
-            asset_decimals.insert(attestation.asset.clone(), attestation.decimals);
             staged.entry(attestation.asset).or_default().insert(
                 attestation.signer,
                 lichen_core::OracleAttestation {
@@ -6650,16 +6706,21 @@ fn stage_committed_oracle_attestation_effects(
             batch.put_oracle_attestation(&asset, &attestation)?;
             attestations.insert(validator, attestation);
         }
-        let attestations: Vec<_> = attestations.into_values().collect();
+        let attestations = current_active_oracle_attestations(
+            height_start_stake_pool,
+            attestations.into_values().collect(),
+        );
         let attested_stake: u128 = attestations
             .iter()
             .map(|attestation| attestation.stake as u128)
             .sum();
-        if attested_stake >= threshold && attestations.len() >= min_attestors {
+        if oracle_stake_quorum_reached(attested_stake, total_active_stake as u128)
+            && attestations.len() >= min_attestors
+        {
             batch.put_oracle_consensus_price(&lichen_core::OracleConsensusPrice {
                 asset: asset.clone(),
                 price: compute_stake_weighted_median(&attestations),
-                decimals: asset_decimals[&asset],
+                decimals: ORACLE_PRICE_DECIMALS,
                 slot: block.header.slot,
                 attestation_count: attestations.len() as u32,
             })?;
@@ -7024,6 +7085,219 @@ fn canonical_tip_at_or_past_height(state: &StateStore, height: u64) -> Option<u6
 }
 
 type EpochRewardDistributionLog = (u64, u64, usize, Vec<(Pubkey, u64, u64, u64)>);
+
+#[derive(Debug)]
+struct StakingV2EpochRewardLog {
+    epoch: u64,
+    budget: u64,
+    minted: u64,
+    performance_unminted: u64,
+    bootstrap_debt_unminted: u64,
+    validator_count: usize,
+    mossstake_reward: u64,
+}
+
+fn staking_v2_activation_slot_from_state(state: &StateStore) -> Result<Option<u64>, String> {
+    let Some(encoded) = state.get_metadata(lichen_core::STAKING_V2_ACTIVATION_SLOT_METADATA_KEY)?
+    else {
+        return Ok(None);
+    };
+    let bytes: [u8; 8] = encoded.try_into().map_err(|value: Vec<u8>| {
+        format!(
+            "invalid {} metadata length: expected 8 bytes, found {}",
+            lichen_core::STAKING_V2_ACTIVATION_SLOT_METADATA_KEY,
+            value.len()
+        )
+    })?;
+    let activation_slot = u64::from_le_bytes(bytes);
+    if activation_slot > 0 && !lichen_core::is_epoch_boundary(activation_slot) {
+        return Err(format!(
+            "{}={} is not an epoch boundary",
+            lichen_core::STAKING_V2_ACTIVATION_SLOT_METADATA_KEY,
+            activation_slot
+        ));
+    }
+    Ok(Some(activation_slot))
+}
+
+fn verify_staking_v2_activation_state_after_effects(
+    state: &StateStore,
+    completed_tip: u64,
+) -> Result<(), String> {
+    let activation = staking_v2_activation_slot_from_state(state)?;
+    let pool = state.get_stake_pool()?;
+    match (activation, pool.staking_v2_state()) {
+        (None, None) => Ok(()),
+        (None, Some(_)) => {
+            Err("committed Staking V2 state exists without activation metadata".to_string())
+        }
+        (Some(activation), None) if completed_tip >= activation => Err(format!(
+            "Staking V2 activation {} is at or behind completed tip {}, but epoch state is missing",
+            activation, completed_tip
+        )),
+        (Some(_), None) => Ok(()),
+        (Some(activation), Some(v2_state)) => {
+            if v2_state.activation_slot != activation {
+                return Err(format!(
+                    "Staking V2 activation mismatch: metadata={}, state={}",
+                    activation, v2_state.activation_slot
+                ));
+            }
+            if completed_tip < activation {
+                return Err(format!(
+                    "Staking V2 state activated at {} before completed tip {} reached its boundary",
+                    activation, completed_tip
+                ));
+            }
+            let expected_epoch = lichen_core::slot_to_epoch(completed_tip);
+            let expected_epoch_start = lichen_core::epoch_start_slot(expected_epoch);
+            if v2_state.current_epoch != expected_epoch
+                || v2_state.epoch_start_slot != expected_epoch_start
+            {
+                return Err(format!(
+                    "Staking V2 epoch state is stale at completed tip {}: epoch={} start={}, expected epoch={} start={}",
+                    completed_tip,
+                    v2_state.current_epoch,
+                    v2_state.epoch_start_slot,
+                    expected_epoch,
+                    expected_epoch_start
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn staking_v2_validator_pubkeys(
+    validator_set: &ValidatorSet,
+    pool: &StakePool,
+) -> Result<Vec<Pubkey>, String> {
+    let mut validators: Vec<_> = validator_set
+        .validators()
+        .iter()
+        .filter(|validator| !validator.pending_activation)
+        .filter_map(|validator| {
+            pool.get_stake(&validator.pubkey)
+                .filter(|stake| stake.is_active && stake.meets_minimum())
+                .map(|_| validator.pubkey)
+        })
+        .collect();
+    validators.sort_by_key(|validator| validator.0);
+    validators.dedup();
+    if validators.is_empty() {
+        return Err("Staking V2 requires at least one active consensus validator".to_string());
+    }
+    Ok(validators)
+}
+
+fn stage_reward_credit(
+    batch: &mut StateBatch,
+    recipient: &Pubkey,
+    amount: u64,
+) -> Result<(), String> {
+    if amount == 0 {
+        return Ok(());
+    }
+    let mut account = batch
+        .get_account(recipient)?
+        .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
+    account.add_spendable(amount)?;
+    batch.put_account(recipient, &account)
+}
+
+async fn stage_staking_v2_epoch_settlement(
+    validator_set: &Arc<RwLock<ValidatorSet>>,
+    stake_pool: &Arc<RwLock<StakePool>>,
+    reward_batch: &mut StateBatch,
+    epoch_end_slot: u64,
+    total_supply: u64,
+) -> Result<(StakePool, StakingV2EpochRewardLog), String> {
+    let mut candidate_pool = stake_pool.read().await.clone();
+    let inputs = candidate_pool.staking_v2_epoch_reward_inputs(epoch_end_slot)?;
+    let average_effective_stake = inputs.stake_weights.effective_stake()?;
+    let reward_budget = lichen_core::compute_epoch_security_budget(
+        inputs.stake_weights.start_slot,
+        total_supply,
+        average_effective_stake,
+    )?;
+    let settlement = candidate_pool.settle_v2_epoch_rewards_for_weights(
+        reward_budget,
+        &inputs.stake_weights,
+        &inputs.performance_bps,
+        &inputs.commission_bps,
+        inputs.stake_weights.start_slot,
+    )?;
+
+    let mut credited_accounts = 0u64;
+    let mut mossstake_reward = 0u64;
+    for validator in &settlement.validators {
+        stage_reward_credit(
+            reward_batch,
+            &validator.validator,
+            validator.liquid_operator_reward,
+        )?;
+        credited_accounts = credited_accounts
+            .checked_add(validator.liquid_operator_reward)
+            .ok_or_else(|| "Staking V2 account-credit total overflow".to_string())?;
+        for delegator in &validator.delegator_rewards {
+            if delegator.delegator == lichen_core::MOSSSTAKE_PROTOCOL_DELEGATOR {
+                mossstake_reward = mossstake_reward
+                    .checked_add(delegator.amount)
+                    .ok_or_else(|| "Staking V2 MossStake reward overflow".to_string())?;
+            } else {
+                stage_reward_credit(reward_batch, &delegator.delegator, delegator.amount)?;
+                credited_accounts = credited_accounts
+                    .checked_add(delegator.amount)
+                    .ok_or_else(|| "Staking V2 delegator-credit total overflow".to_string())?;
+            }
+        }
+    }
+    if credited_accounts
+        .checked_add(mossstake_reward)
+        .ok_or_else(|| "Staking V2 routed-reward total overflow".to_string())?
+        != settlement.total_minted
+    {
+        return Err(format!(
+            "Staking V2 reward routing mismatch: accounts={} MossStake={} minted={}",
+            credited_accounts, mossstake_reward, settlement.total_minted
+        ));
+    }
+
+    let mut mossstake_pool = reward_batch.get_mossstake_pool()?;
+    if mossstake_reward > 0 {
+        mossstake_pool.distribute_rewards_v2(mossstake_reward)?;
+    }
+
+    let next_validators = {
+        let validators = validator_set.read().await;
+        staking_v2_validator_pubkeys(&validators, &candidate_pool)?
+    };
+    candidate_pool.advance_staking_v2_epoch(epoch_end_slot, &next_validators)?;
+    candidate_pool.rebalance_mossstake_allocations(
+        mossstake_pool.st_licn_token.total_licn_staked,
+        &next_validators,
+        epoch_end_slot,
+    )?;
+
+    candidate_pool.validate_v2_invariants()?;
+    mossstake_pool.validate_invariants()?;
+    reward_batch.put_stake_pool(&candidate_pool)?;
+    reward_batch.put_mossstake_pool(&mossstake_pool)?;
+    reward_batch.add_minted(settlement.total_minted);
+
+    Ok((
+        candidate_pool,
+        StakingV2EpochRewardLog {
+            epoch: inputs.stake_weights.epoch,
+            budget: reward_budget,
+            minted: settlement.total_minted,
+            performance_unminted: settlement.plan.performance_unminted,
+            bootstrap_debt_unminted: settlement.bootstrap_debt_unminted,
+            validator_count: settlement.validators.len(),
+            mossstake_reward,
+        },
+    ))
+}
 
 /// Reverse the financial effects of a replaced block during fork choice.
 /// Attempts to debit the old producer's reward and credit treasury back.
@@ -7605,20 +7879,64 @@ async fn apply_block_effects(
         let total_supply = GENESIS_SUPPLY_SPORES
             .saturating_add(total_minted)
             .saturating_sub(total_burned);
+        let staking_v2_activation =
+            staking_v2_activation_slot_from_state(state).unwrap_or_else(|err| {
+                error!(
+                    "❌ CRITICAL: invalid Staking V2 activation metadata at slot {}: {}",
+                    slot, err
+                );
+                std::process::exit(1);
+            });
+        {
+            let pool = stake_pool.read().await;
+            match (staking_v2_activation, pool.staking_v2_state()) {
+                (None, Some(_)) => {
+                    error!(
+                        "❌ CRITICAL: committed Staking V2 state exists without activation metadata at slot {}",
+                        slot
+                    );
+                    std::process::exit(1);
+                }
+                (Some(activation), Some(v2_state))
+                    if v2_state.activation_slot != activation || slot < activation =>
+                {
+                    error!(
+                        "❌ CRITICAL: Staking V2 state/activation mismatch at slot {}: metadata={} state={}",
+                        slot, activation, v2_state.activation_slot
+                    );
+                    std::process::exit(1);
+                }
+                (Some(activation), None) if slot > activation || activation == 0 => {
+                    error!(
+                        "❌ CRITICAL: Staking V2 activation {} has passed but committed epoch state is missing at slot {}",
+                        activation, slot
+                    );
+                    std::process::exit(1);
+                }
+                _ => {}
+            }
+        }
 
         // ── Per-block: record block production (no per-slot inflation) ──
         // Inflation is distributed at epoch boundaries to ALL stakers proportionally.
         // Block producers still earn transaction fees per-block (below).
         if !stake_pool_production_already {
             let mut pool = stake_pool.write().await;
-            let legacy_high_watermark_counted = pool
-                .get_stake(&producer)
-                .map(|stake_info| stake_info.last_reward_slot >= slot)
-                .unwrap_or(false);
+            let legacy_high_watermark_counted = pool.staking_v2_state().is_none()
+                && pool
+                    .get_stake(&producer)
+                    .map(|stake_info| stake_info.last_reward_slot >= slot)
+                    .unwrap_or(false);
             if !legacy_high_watermark_counted {
                 // distribute_block_reward now only updates last_reward_slot (returns 0)
                 pool.distribute_block_reward(&producer, slot, is_liveness_only, total_supply);
-                pool.record_block_produced(&producer);
+                if let Err(e) = pool.record_block_produced(&producer) {
+                    error!(
+                        "❌ CRITICAL: failed to record validator production at slot {}: {}",
+                        slot, e
+                    );
+                    std::process::exit(1);
+                }
             } else {
                 debug!(
                     "Stake pool block-production effects for slot {} already satisfy the legacy high-water mark; backfilling marker",
@@ -7660,6 +7978,8 @@ async fn apply_block_effects(
             let mut reward_batch = state.begin_batch_at_slot(slot);
             let mut epoch_reward_log: Option<EpochRewardDistributionLog> = None;
             let mut mossstake_reward_log: Option<(u64, usize)> = None;
+            let mut staking_v2_reward_log: Option<StakingV2EpochRewardLog> = None;
+            let mut committed_staking_v2_pool: Option<StakePool> = None;
             let mut governance_changes_applied = 0usize;
 
             // ── Epoch boundary: distribute inflation to ALL stakers proportionally ──
@@ -7667,133 +7987,218 @@ async fn apply_block_effects(
             // and distribute to every active staker by stake weight, routed through
             // the vesting pipeline (bootstrap debt repayment).
             if lichen_core::is_epoch_boundary(slot) && slot > 0 {
-                let completed_epoch_start = lichen_core::epoch_start_slot(
-                    lichen_core::consensus::slot_to_epoch(slot).saturating_sub(1),
-                );
-                let epoch_mint =
-                    lichen_core::compute_epoch_mint(completed_epoch_start, total_supply);
-                let moss_reward_pool = match state.get_mossstake_pool() {
-                    Ok(moss_pool) if moss_pool.st_licn_token.total_supply > 0 => {
-                        let (_, moss_reward_pool) = lichen_core::consensus::split_epoch_mint(
-                            completed_epoch_start,
-                            total_supply,
-                        );
-                        moss_reward_pool
-                    }
-                    Ok(_) => 0,
-                    Err(e) => {
+                let staking_v2_initialized = stake_pool.read().await.staking_v2_state().is_some();
+                if staking_v2_initialized {
+                    let (candidate_pool, reward_log) = stage_staking_v2_epoch_settlement(
+                        validator_set,
+                        stake_pool,
+                        &mut reward_batch,
+                        slot,
+                        total_supply,
+                    )
+                    .await
+                    .unwrap_or_else(|err| {
                         error!(
+                            "❌ CRITICAL: failed Staking V2 epoch settlement at slot {}: {}",
+                            slot, err
+                        );
+                        std::process::exit(1);
+                    });
+                    committed_staking_v2_pool = Some(candidate_pool);
+                    staking_v2_reward_log = Some(reward_log);
+                    governance_changes_applied = reward_batch
+                        .apply_pending_governance_changes()
+                        .unwrap_or_else(|err| {
+                            error!(
+                                "❌ CRITICAL: failed to stage governance parameter changes at slot {}: {}",
+                                slot, err
+                            );
+                            std::process::exit(1);
+                        });
+                } else {
+                    let completed_epoch_start = lichen_core::epoch_start_slot(
+                        lichen_core::consensus::slot_to_epoch(slot).saturating_sub(1),
+                    );
+                    let epoch_mint =
+                        lichen_core::compute_epoch_mint(completed_epoch_start, total_supply);
+                    let moss_reward_pool = match state.get_mossstake_pool() {
+                        Ok(moss_pool) if moss_pool.st_licn_token.total_supply > 0 => {
+                            let (_, moss_reward_pool) = lichen_core::consensus::split_epoch_mint(
+                                completed_epoch_start,
+                                total_supply,
+                            );
+                            moss_reward_pool
+                        }
+                        Ok(_) => 0,
+                        Err(e) => {
+                            error!(
                             "❌ CRITICAL: failed to load MossStake pool before epoch distribution at slot {}: {}",
                             slot, e
                         );
-                        std::process::exit(1);
-                    }
-                };
-                let staker_reward_pool = if moss_reward_pool > 0 {
-                    epoch_mint.saturating_sub(moss_reward_pool)
-                } else {
-                    epoch_mint
-                };
+                            std::process::exit(1);
+                        }
+                    };
+                    let staker_reward_pool = if moss_reward_pool > 0 {
+                        epoch_mint.saturating_sub(moss_reward_pool)
+                    } else {
+                        epoch_mint
+                    };
 
-                let (total_minted, distributions) = {
-                    let mut pool = stake_pool.write().await;
-                    let result = pool.distribute_epoch_staker_rewards_from_pool(
-                        staker_reward_pool,
-                        completed_epoch_start,
-                    );
-                    let pool_snapshot = pool.clone();
-                    drop(pool);
-                    if let Err(e) = reward_batch.put_stake_pool(&pool_snapshot) {
-                        error!(
+                    let (total_minted, distributions) = {
+                        let mut pool = stake_pool.write().await;
+                        let result = pool.distribute_epoch_staker_rewards_from_pool(
+                            staker_reward_pool,
+                            completed_epoch_start,
+                        );
+                        let pool_snapshot = pool.clone();
+                        drop(pool);
+                        if let Err(e) = reward_batch.put_stake_pool(&pool_snapshot) {
+                            error!(
                             "❌ CRITICAL: failed to stage stake pool epoch reward update at slot {}: {}",
                             slot, e
                         );
-                        std::process::exit(1);
-                    }
-                    result
-                };
+                            std::process::exit(1);
+                        }
+                        result
+                    };
 
-                if total_minted > 0 {
-                    // Credit each validator's liquid reward to their on-chain account
-                    for (validator_pk, _reward, liquid, _debt_payment) in &distributions {
-                        if *liquid > 0 {
-                            let mut account = match reward_batch.get_account(validator_pk) {
-                                Ok(Some(account)) => account,
-                                Ok(None) => Account::new(0, SYSTEM_ACCOUNT_OWNER),
-                                Err(e) => {
-                                    error!(
+                    if total_minted > 0 {
+                        // Credit each validator's liquid reward to their on-chain account
+                        for (validator_pk, _reward, liquid, _debt_payment) in &distributions {
+                            if *liquid > 0 {
+                                let mut account = match reward_batch.get_account(validator_pk) {
+                                    Ok(Some(account)) => account,
+                                    Ok(None) => Account::new(0, SYSTEM_ACCOUNT_OWNER),
+                                    Err(e) => {
+                                        error!(
                                         "❌ CRITICAL: failed to load epoch reward account {} at slot {}: {}",
                                         validator_pk, slot, e
                                     );
-                                    std::process::exit(1);
-                                }
-                            };
-                            if let Err(e) = account.add_spendable(*liquid) {
-                                error!(
+                                        std::process::exit(1);
+                                    }
+                                };
+                                if let Err(e) = account.add_spendable(*liquid) {
+                                    error!(
                                     "❌ CRITICAL: overflow crediting epoch reward to {} at slot {}: {}",
                                     validator_pk, slot, e
                                 );
-                                std::process::exit(1);
-                            }
-                            if let Err(e) = reward_batch.put_account(validator_pk, &account) {
-                                error!(
+                                    std::process::exit(1);
+                                }
+                                if let Err(e) = reward_batch.put_account(validator_pk, &account) {
+                                    error!(
                                     "❌ CRITICAL: failed to stage epoch reward account {} at slot {}: {}",
                                     validator_pk, slot, e
                                 );
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
+                        reward_batch.add_minted(total_minted);
+                        epoch_reward_log = Some((
+                            lichen_core::consensus::slot_to_epoch(slot).saturating_sub(1),
+                            total_minted,
+                            distributions.len(),
+                            distributions.clone(),
+                        ));
+                    }
+
+                    // ── MossStake liquid staking reward distribution ──
+                    // Allocate MOSSSTAKE_BLOCK_SHARE_BPS (10%) of epoch inflation
+                    // to the MossStake pool, funding stLICN yield.
+                    if moss_reward_pool > 0 {
+                        match state.get_mossstake_pool() {
+                            Ok(mut moss_pool) => {
+                                if moss_pool.st_licn_token.total_supply > 0 {
+                                    if let Err(e) = moss_pool.distribute_rewards(moss_reward_pool) {
+                                        error!(
+                                        "❌ CRITICAL: failed MossStake reward accounting at slot {}: {}",
+                                        slot, e
+                                    );
+                                        std::process::exit(1);
+                                    }
+                                    let position_count = moss_pool.positions.len();
+                                    if let Err(e) = reward_batch.put_mossstake_pool(&moss_pool) {
+                                        error!(
+                                        "❌ CRITICAL: failed to stage MossStake epoch distribution at slot {}: {}",
+                                        slot, e
+                                    );
+                                        std::process::exit(1);
+                                    }
+                                    reward_batch.add_minted(moss_reward_pool);
+                                    mossstake_reward_log = Some((moss_reward_pool, position_count));
+                                }
+                            }
+                            Err(e) => {
+                                error!(
+                                "❌ CRITICAL: failed to load MossStake pool for epoch distribution at slot {}: {}",
+                                slot, e
+                            );
                                 std::process::exit(1);
                             }
                         }
                     }
-                    reward_batch.add_minted(total_minted);
-                    epoch_reward_log = Some((
-                        lichen_core::consensus::slot_to_epoch(slot).saturating_sub(1),
-                        total_minted,
-                        distributions.len(),
-                        distributions.clone(),
-                    ));
-                }
 
-                // ── MossStake liquid staking reward distribution ──
-                // Allocate MOSSSTAKE_BLOCK_SHARE_BPS (10%) of epoch inflation
-                // to the MossStake pool, funding stLICN yield.
-                if moss_reward_pool > 0 {
-                    match state.get_mossstake_pool() {
-                        Ok(mut moss_pool) => {
-                            if moss_pool.st_licn_token.total_supply > 0 {
-                                moss_pool.distribute_rewards(moss_reward_pool);
-                                let position_count = moss_pool.positions.len();
-                                if let Err(e) = reward_batch.put_mossstake_pool(&moss_pool) {
-                                    error!(
-                                        "❌ CRITICAL: failed to stage MossStake epoch distribution at slot {}: {}",
-                                        slot, e
-                                    );
-                                    std::process::exit(1);
-                                }
-                                reward_batch.add_minted(moss_reward_pool);
-                                mossstake_reward_log = Some((moss_reward_pool, position_count));
-                            }
+                    // The activation boundary itself closes the final legacy
+                    // epoch. Initialize V2 only after that settlement so all
+                    // already-earned rewards retain their deployed semantics.
+                    if staking_v2_activation == Some(slot) {
+                        let mut candidate_pool = stake_pool.read().await.clone();
+                        let active_validators = {
+                            let validators = validator_set.read().await;
+                            staking_v2_validator_pubkeys(&validators, &candidate_pool)
                         }
-                        Err(e) => {
+                        .unwrap_or_else(|err| {
                             error!(
-                                "❌ CRITICAL: failed to load MossStake pool for epoch distribution at slot {}: {}",
-                                slot, e
+                                "❌ CRITICAL: cannot initialize Staking V2 at slot {}: {}",
+                                slot, err
                             );
                             std::process::exit(1);
-                        }
+                        });
+                        candidate_pool
+                        .initialize_staking_v2(slot, &active_validators)
+                        .and_then(|_| {
+                            let mossstake_pool = reward_batch.get_mossstake_pool()?;
+                            candidate_pool.rebalance_mossstake_allocations(
+                                mossstake_pool.st_licn_token.total_licn_staked,
+                                &active_validators,
+                                slot,
+                            )?;
+                            mossstake_pool.validate_invariants()?;
+                            candidate_pool.validate_v2_invariants()
+                        })
+                        .unwrap_or_else(|err| {
+                            error!(
+                                "❌ CRITICAL: Staking V2 activation migration failed at slot {}: {}",
+                                slot, err
+                            );
+                            std::process::exit(1);
+                        });
+                        reward_batch
+                            .put_stake_pool(&candidate_pool)
+                            .unwrap_or_else(|err| {
+                                error!(
+                                "❌ CRITICAL: failed to stage Staking V2 activation at slot {}: {}",
+                                slot, err
+                            );
+                                std::process::exit(1);
+                            });
+                        committed_staking_v2_pool = Some(candidate_pool);
                     }
-                }
 
-                // ── Apply pending governance parameter changes at epoch boundary ──
-                governance_changes_applied = match reward_batch.apply_pending_governance_changes() {
-                    Ok(n) => n,
-                    Err(e) => {
-                        error!(
+                    // ── Apply pending governance parameter changes at epoch boundary ──
+                    governance_changes_applied = match reward_batch
+                        .apply_pending_governance_changes()
+                    {
+                        Ok(n) => n,
+                        Err(e) => {
+                            error!(
                             "❌ CRITICAL: failed to stage governance parameter changes at slot {}: {}",
                             slot, e
                         );
-                        std::process::exit(1);
-                    }
-                };
+                            std::process::exit(1);
+                        }
+                    };
+                }
             }
 
             if let Err(e) = reward_batch.set_reward_distribution_hash(slot, &block_hash) {
@@ -7809,6 +8214,9 @@ async fn apply_block_effects(
                     slot, e
                 );
                 std::process::exit(1);
+            }
+            if let Some(committed_pool) = committed_staking_v2_pool {
+                *stake_pool.write().await = committed_pool;
             }
 
             if let Some((epoch, total_minted, staker_count, distributions)) = epoch_reward_log {
@@ -7833,6 +8241,18 @@ async fn apply_block_effects(
                     "🌊 MossStake: minted {:.6} LICN to {} stakers (epoch)",
                     moss_reward_pool as f64 / 1_000_000_000.0,
                     position_count,
+                );
+            }
+            if let Some(log) = staking_v2_reward_log {
+                info!(
+                    "🏛️  Staking V2 epoch {}: budget {:.6} LICN, minted {:.6} to {} validators (MossStake {:.6}, performance-unminted {:.6}, bootstrap-debt-unminted {:.6})",
+                    log.epoch,
+                    log.budget as f64 / 1_000_000_000.0,
+                    log.minted as f64 / 1_000_000_000.0,
+                    log.validator_count,
+                    log.mossstake_reward as f64 / 1_000_000_000.0,
+                    log.performance_unminted as f64 / 1_000_000_000.0,
+                    log.bootstrap_debt_unminted as f64 / 1_000_000_000.0,
                 );
             }
             if governance_changes_applied > 0 {
@@ -8547,22 +8967,6 @@ fn genesis_bundle_declares_mossstake_slot_only(state: &StateStore) -> Result<boo
     Ok(declared)
 }
 
-fn genesis_block_declares_mossstake_slot_only(genesis: &Block) -> Result<bool, String> {
-    let Some(bundle) = extract_genesis_state_bundle(genesis)? else {
-        return Ok(false);
-    };
-    Ok(bundle
-        .categories
-        .iter()
-        .find(|category| category.name == "stats")
-        .map(|category| {
-            category.entries.iter().any(|(key, value)| {
-                key == MOSSSTAKE_SLOT_ONLY_METADATA_KEY.as_bytes() && value.as_slice() == b"1"
-            })
-        })
-        .unwrap_or(false))
-}
-
 fn uses_legacy_testnet_mossstake_history(state: &StateStore) -> Result<bool, String> {
     let Some(chain_id) = state_chain_id_metadata(state) else {
         return Ok(false);
@@ -9089,6 +9493,534 @@ fn maybe_run_post_block_effects_activation_admin(args: &[String]) -> Option<i32>
     }
 }
 
+fn next_staking_v2_activation_boundary(tip: u64) -> Result<u64, String> {
+    let next_epoch = lichen_core::slot_to_epoch(tip)
+        .checked_add(1)
+        .ok_or_else(|| "cannot schedule Staking V2 after the final epoch".to_string())?;
+    lichen_core::SLOTS_PER_EPOCH
+        .checked_mul(next_epoch)
+        .ok_or_else(|| "Staking V2 activation boundary overflow".to_string())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StakingV2ActivationAccountLiabilities {
+    account_count: u64,
+    total_spores: u64,
+    spendable_spores: u64,
+    staked_spores: u64,
+    locked_spores: u64,
+    ownership_mismatch_count: u64,
+    first_ownership_mismatch: Option<(Pubkey, u64, u64)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StakingV2ActivationPlan {
+    account_liabilities: StakingV2ActivationAccountLiabilities,
+    mossstake_hash: Hash,
+    mossstake_canonical_hash: Hash,
+    mossstake_active_backing: u64,
+    mossstake_pending_unstake_liability: u64,
+    active_validators: Vec<Pubkey>,
+    planned_allocation_total: u64,
+    planned_stake_pool_hash: Hash,
+    expected_migration_commitment: Hash,
+}
+
+fn decode_staking_v2_activation_account(value: &[u8]) -> Result<Account, String> {
+    let mut account = if value.first() == Some(&0xBC) {
+        deserialize_legacy_bincode_strict::<Account>(
+            &value[1..],
+            value.len().saturating_sub(1) as u64,
+            "Staking V2 activation account",
+        )?
+    } else {
+        serde_json::from_slice::<Account>(value)
+            .map_err(|err| format!("Staking V2 activation account JSON decode failed: {err}"))?
+    };
+    account.fixup_legacy();
+    let classified = account
+        .spendable
+        .checked_add(account.staked)
+        .and_then(|total| total.checked_add(account.locked))
+        .ok_or_else(|| "Staking V2 activation account classification overflow".to_string())?;
+    if classified != account.spores {
+        return Err(format!(
+            "Staking V2 activation account invariant mismatch: spores={}, classified={}",
+            account.spores, classified
+        ));
+    }
+    Ok(account)
+}
+
+fn staking_v2_activation_account_liabilities(
+    state: &StateStore,
+    pool: &StakePool,
+) -> Result<StakingV2ActivationAccountLiabilities, String> {
+    let mut report = StakingV2ActivationAccountLiabilities {
+        account_count: 0,
+        total_spores: 0,
+        spendable_spores: 0,
+        staked_spores: 0,
+        locked_spores: 0,
+        ownership_mismatch_count: 0,
+        first_ownership_mismatch: None,
+    };
+    let mut cursor: Option<Vec<u8>> = None;
+
+    loop {
+        let page = state.export_accounts_cursor_untracked(cursor.as_deref(), 4_096)?;
+        for (key, value) in page.entries {
+            let key_bytes: [u8; 32] = key.try_into().map_err(|key: Vec<u8>| {
+                format!(
+                    "Staking V2 activation found account key with invalid length {}",
+                    key.len()
+                )
+            })?;
+            let pubkey = Pubkey(key_bytes);
+            let account = decode_staking_v2_activation_account(&value)?;
+            report.account_count = report
+                .account_count
+                .checked_add(1)
+                .ok_or_else(|| "Staking V2 activation account count overflow".to_string())?;
+            report.total_spores = report
+                .total_spores
+                .checked_add(account.spores)
+                .ok_or_else(|| "Staking V2 activation account total overflow".to_string())?;
+            report.spendable_spores = report
+                .spendable_spores
+                .checked_add(account.spendable)
+                .ok_or_else(|| "Staking V2 activation spendable total overflow".to_string())?;
+            report.staked_spores = report
+                .staked_spores
+                .checked_add(account.staked)
+                .ok_or_else(|| "Staking V2 activation staked total overflow".to_string())?;
+            report.locked_spores = report
+                .locked_spores
+                .checked_add(account.locked)
+                .ok_or_else(|| "Staking V2 activation locked total overflow".to_string())?;
+
+            let self_bond = pool
+                .get_stake(&pubkey)
+                .map(|stake| stake.amount)
+                .unwrap_or(0);
+            let owned_delegations = pool.get_delegator_stakes(&pubkey).into_iter().try_fold(
+                0u64,
+                |total, (_, amount)| {
+                    total.checked_add(amount).ok_or_else(|| {
+                        "Staking V2 activation owned delegation overflow".to_string()
+                    })
+                },
+            )?;
+            let owned_active_stake = self_bond
+                .checked_add(owned_delegations)
+                .ok_or_else(|| "Staking V2 activation owned stake overflow".to_string())?;
+            if account.staked != owned_active_stake {
+                report.ownership_mismatch_count = report
+                    .ownership_mismatch_count
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        "Staking V2 activation ownership mismatch count overflow".to_string()
+                    })?;
+                if report.first_ownership_mismatch.is_none() {
+                    report.first_ownership_mismatch =
+                        Some((pubkey, account.staked, owned_active_stake));
+                }
+            }
+        }
+
+        if !page.has_more {
+            break;
+        }
+        let next_cursor = page.next_cursor.ok_or_else(|| {
+            "Staking V2 activation account scan has_more without a cursor".to_string()
+        })?;
+        if cursor.as_deref() == Some(next_cursor.as_slice()) {
+            return Err("Staking V2 activation account scan cursor did not advance".to_string());
+        }
+        cursor = Some(next_cursor);
+    }
+
+    if report.staked_spores != pool.total_stake() {
+        return Err(format!(
+            "Staking V2 activation native stake mismatch: account_staked={}, stake_pool_active={}",
+            report.staked_spores,
+            pool.total_stake()
+        ));
+    }
+    Ok(report)
+}
+
+fn build_staking_v2_activation_plan(
+    state: &StateStore,
+    pool: &StakePool,
+    chain_id: &str,
+    tip: u64,
+    requested_slot: u64,
+    state_root_before: Hash,
+) -> Result<StakingV2ActivationPlan, String> {
+    pool.validate_invariants()?;
+    if pool.staking_v2_state().is_some() {
+        return Err("Staking V2 activation plan requires a legacy stake pool".to_string());
+    }
+    if pool.mossstake_allocation_total()? != 0 {
+        return Err(
+            "Staking V2 activation found protocol-owned MossStake delegation before activation"
+                .to_string(),
+        );
+    }
+
+    let account_liabilities = staking_v2_activation_account_liabilities(state, pool)?;
+    let mossstake_pool = state.get_mossstake_pool()?;
+    mossstake_pool.validate_invariants()?;
+    let mossstake_pending_unstake_liability = mossstake_pool.pending_unstake_liability_total()?;
+    let represented_supply = account_liabilities
+        .total_spores
+        .checked_add(mossstake_pool.st_licn_token.total_licn_staked)
+        .and_then(|total| total.checked_add(mossstake_pending_unstake_liability))
+        .ok_or_else(|| "Staking V2 activation represented supply overflow".to_string())?;
+    let total_minted = state.get_total_minted()?;
+    let total_burned = state.get_total_burned()?;
+    let gross_supply = GENESIS_SUPPLY_SPORES
+        .checked_add(total_minted)
+        .ok_or_else(|| "Staking V2 activation supply overflow".to_string())?;
+    let expected_supply = gross_supply.checked_sub(total_burned).ok_or_else(|| {
+        format!(
+            "Staking V2 activation burned supply {} exceeds genesis plus minted {}",
+            total_burned, gross_supply
+        )
+    })?;
+    if represented_supply != expected_supply {
+        return Err(format!(
+            "Staking V2 activation supply mismatch: accounts={} MossStake_active={} MossStake_pending={} represented={} expected={}",
+            account_liabilities.total_spores,
+            mossstake_pool.st_licn_token.total_licn_staked,
+            mossstake_pending_unstake_liability,
+            represented_supply,
+            expected_supply
+        ));
+    }
+    if account_liabilities.ownership_mismatch_count > 0 {
+        let detail = account_liabilities
+            .first_ownership_mismatch
+            .map(|(pubkey, account_staked, owned_stake)| {
+                format!(
+                    "first mismatch {} account_staked={} owned_active_stake={}",
+                    pubkey, account_staked, owned_stake
+                )
+            })
+            .unwrap_or_else(|| "first mismatch unavailable".to_string());
+        return Err(format!(
+            "Staking V2 activation found {} account/stake ownership mismatches; {}",
+            account_liabilities.ownership_mismatch_count, detail
+        ));
+    }
+
+    let validator_set = state.load_validator_set()?;
+    let active_validators = staking_v2_validator_pubkeys(&validator_set, pool)?;
+    let mut planned_pool = pool.clone();
+    planned_pool.initialize_staking_v2(requested_slot, &active_validators)?;
+    let allocations = planned_pool.rebalance_mossstake_allocations(
+        mossstake_pool.st_licn_token.total_licn_staked,
+        &active_validators,
+        requested_slot,
+    )?;
+    planned_pool.validate_v2_invariants()?;
+    let planned_allocation_total = allocations.values().try_fold(0u64, |total, amount| {
+        total
+            .checked_add(*amount)
+            .ok_or_else(|| "Staking V2 activation planned allocation overflow".to_string())
+    })?;
+    let mossstake_hash = state.compute_mossstake_pool_hash();
+    let mossstake_canonical_hash = mossstake_pool.canonical_hash();
+    let planned_stake_pool_hash = planned_pool.canonical_hash();
+
+    let mut commitment = Vec::new();
+    commitment.extend_from_slice(b"LICHEN_STAKING_V2_MIGRATION_PLAN_V1");
+    commitment.extend_from_slice(&(chain_id.len() as u64).to_le_bytes());
+    commitment.extend_from_slice(chain_id.as_bytes());
+    commitment.extend_from_slice(&tip.to_le_bytes());
+    commitment.extend_from_slice(&requested_slot.to_le_bytes());
+    commitment.extend_from_slice(&state_root_before.0);
+    commitment.extend_from_slice(&pool.canonical_hash().0);
+    commitment.extend_from_slice(&mossstake_hash.0);
+    commitment.extend_from_slice(&mossstake_canonical_hash.0);
+    commitment.extend_from_slice(&account_liabilities.account_count.to_le_bytes());
+    commitment.extend_from_slice(&account_liabilities.total_spores.to_le_bytes());
+    commitment.extend_from_slice(&account_liabilities.spendable_spores.to_le_bytes());
+    commitment.extend_from_slice(&account_liabilities.staked_spores.to_le_bytes());
+    commitment.extend_from_slice(&account_liabilities.locked_spores.to_le_bytes());
+    commitment.extend_from_slice(&mossstake_pool.st_licn_token.total_licn_staked.to_le_bytes());
+    commitment.extend_from_slice(&mossstake_pending_unstake_liability.to_le_bytes());
+    commitment.extend_from_slice(&(active_validators.len() as u64).to_le_bytes());
+    for validator in &active_validators {
+        commitment.extend_from_slice(&validator.0);
+        commitment.extend_from_slice(
+            &allocations
+                .get(validator)
+                .copied()
+                .unwrap_or(0)
+                .to_le_bytes(),
+        );
+    }
+    commitment.extend_from_slice(&planned_stake_pool_hash.0);
+
+    Ok(StakingV2ActivationPlan {
+        account_liabilities,
+        mossstake_hash,
+        mossstake_canonical_hash,
+        mossstake_active_backing: mossstake_pool.st_licn_token.total_licn_staked,
+        mossstake_pending_unstake_liability,
+        active_validators,
+        planned_allocation_total,
+        planned_stake_pool_hash,
+        expected_migration_commitment: Hash::hash(&commitment),
+    })
+}
+
+fn persist_staking_v2_activation_slot(
+    state: &StateStore,
+    requested_slot: u64,
+) -> Result<u64, String> {
+    if requested_slot == 0 || !lichen_core::is_epoch_boundary(requested_slot) {
+        return Err(format!(
+            "Staking V2 activation {} is not a positive epoch boundary",
+            requested_slot
+        ));
+    }
+    if let Some(existing) = staking_v2_activation_slot_from_state(state)? {
+        if existing == requested_slot {
+            return Ok(existing);
+        }
+        return Err(format!(
+            "{} is already {} and cannot be changed to {}",
+            lichen_core::STAKING_V2_ACTIVATION_SLOT_METADATA_KEY,
+            existing,
+            requested_slot
+        ));
+    }
+    if state.get_stake_pool()?.staking_v2_state().is_some() {
+        return Err("cannot prepare Staking V2: committed V2 state already exists".to_string());
+    }
+
+    state.put_metadata(
+        lichen_core::STAKING_V2_ACTIVATION_SLOT_METADATA_KEY,
+        &requested_slot.to_le_bytes(),
+    )?;
+    state.sync_hot_wal()?;
+    if staking_v2_activation_slot_from_state(state)? != Some(requested_slot) {
+        return Err(format!(
+            "failed to durably verify Staking V2 activation at slot {}",
+            requested_slot
+        ));
+    }
+    Ok(requested_slot)
+}
+
+fn maybe_run_staking_v2_activation_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, PREPARE_STAKING_V2_ACTIVATION_FLAG) {
+        return None;
+    }
+
+    let network = get_flag_value(args, &["--network"])
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_else(|| "testnet".to_string());
+    if network != "testnet" && network != "mainnet" {
+        eprintln!("Refusing Staking V2 activation on unsupported network '{network}'");
+        return Some(1);
+    }
+    let requested_slot = match get_flag_value(args, &["--activation-slot"])
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        Some(slot) if slot > 0 => slot,
+        _ => {
+            eprintln!("Missing or invalid --activation-slot; expected a positive integer");
+            return Some(2);
+        }
+    };
+    let execute = has_flag(args, "--execute");
+    let expected_confirmation = format!("staking-v2-activation:{network}:{requested_slot}");
+    if execute && get_flag_value(args, &["--confirm"]) != Some(expected_confirmation.as_str()) {
+        eprintln!("Refusing write without --confirm {expected_confirmation}");
+        return Some(1);
+    }
+
+    let data_dir = restriction_schema_data_dir(args);
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("Failed to open state DB at {}: {err}", data_dir.display());
+            return Some(1);
+        }
+    };
+    let tip = match state.get_last_slot() {
+        Ok(slot) => slot,
+        Err(err) => {
+            eprintln!("Failed to read local tip: {err}");
+            return Some(1);
+        }
+    };
+    let expected_slot = match next_staking_v2_activation_boundary(tip) {
+        Ok(slot) => slot,
+        Err(err) => {
+            eprintln!("Failed to derive next Staking V2 boundary: {err}");
+            return Some(1);
+        }
+    };
+    let chain_id = state_chain_id_metadata(&state).unwrap_or_else(|| "unset".to_string());
+    let expected_chain_id = format!("lichen-{network}-1");
+    if chain_id != expected_chain_id {
+        eprintln!(
+            "Refusing {network} activation for chain_id={chain_id}; expected {expected_chain_id}"
+        );
+        return Some(1);
+    }
+    let pool = match state.get_stake_pool() {
+        Ok(pool) => pool,
+        Err(err) => {
+            eprintln!("Failed to read stake pool: {err}");
+            return Some(1);
+        }
+    };
+    if pool.staking_v2_state().is_some() {
+        eprintln!("Refusing preparation because Staking V2 state is already committed");
+        return Some(1);
+    }
+    let existing = match staking_v2_activation_slot_from_state(&state) {
+        Ok(slot) => slot,
+        Err(err) => {
+            eprintln!("Failed to read Staking V2 activation: {err}");
+            return Some(1);
+        }
+    };
+    let state_root_before = state.compute_state_root();
+    let activation_plan = match build_staking_v2_activation_plan(
+        &state,
+        &pool,
+        &chain_id,
+        tip,
+        requested_slot,
+        state_root_before,
+    ) {
+        Ok(plan) => plan,
+        Err(err) => {
+            eprintln!("Staking V2 activation dry-run failed: {err}");
+            return Some(1);
+        }
+    };
+
+    println!("data_dir={}", data_dir.display());
+    println!("network={network}");
+    println!("chain_id={chain_id}");
+    println!("last_slot={tip}");
+    println!("expected_activation_slot={expected_slot}");
+    println!("requested_activation_slot={requested_slot}");
+    println!(
+        "existing_activation_slot={}",
+        existing
+            .map(|slot| slot.to_string())
+            .unwrap_or_else(|| "unset".to_string())
+    );
+    println!("stake_pool_hash={}", pool.canonical_hash().to_hex());
+    println!(
+        "mossstake_pool_hash={}",
+        activation_plan.mossstake_hash.to_hex()
+    );
+    println!(
+        "mossstake_canonical_hash={}",
+        activation_plan.mossstake_canonical_hash.to_hex()
+    );
+    println!("state_root_before={}", state_root_before.to_hex());
+    println!(
+        "account_count={}",
+        activation_plan.account_liabilities.account_count
+    );
+    println!(
+        "account_total_spores={}",
+        activation_plan.account_liabilities.total_spores
+    );
+    println!(
+        "account_spendable_spores={}",
+        activation_plan.account_liabilities.spendable_spores
+    );
+    println!(
+        "account_staked_spores={}",
+        activation_plan.account_liabilities.staked_spores
+    );
+    println!(
+        "account_locked_spores={}",
+        activation_plan.account_liabilities.locked_spores
+    );
+    println!(
+        "account_stake_ownership_mismatches={}",
+        activation_plan.account_liabilities.ownership_mismatch_count
+    );
+    println!(
+        "mossstake_active_backing_spores={}",
+        activation_plan.mossstake_active_backing
+    );
+    println!(
+        "mossstake_pending_unstake_liability_spores={}",
+        activation_plan.mossstake_pending_unstake_liability
+    );
+    println!(
+        "planned_activation_epoch={}",
+        lichen_core::slot_to_epoch(requested_slot)
+    );
+    println!(
+        "planned_active_validator_count={}",
+        activation_plan.active_validators.len()
+    );
+    println!(
+        "planned_mossstake_allocation_spores={}",
+        activation_plan.planned_allocation_total
+    );
+    println!(
+        "planned_stake_pool_hash={}",
+        activation_plan.planned_stake_pool_hash.to_hex()
+    );
+    println!(
+        "expected_migration_commitment={}",
+        activation_plan.expected_migration_commitment.to_hex()
+    );
+    println!("execute={execute}");
+
+    if let Some(existing) = existing {
+        if existing != requested_slot {
+            eprintln!(
+                "Refusing activation change: durable slot is {existing}, requested {requested_slot}"
+            );
+            return Some(1);
+        }
+        println!("activation_ready=true");
+        println!("activation_already_persisted=true");
+        return Some(0);
+    }
+    if requested_slot != expected_slot {
+        eprintln!(
+            "Refusing activation at slot {requested_slot}: stopped local tip is {tip}, so the required next epoch boundary is {expected_slot}"
+        );
+        return Some(1);
+    }
+    println!("activation_ready=true");
+    println!("activation_already_persisted=false");
+    if !execute {
+        return Some(0);
+    }
+
+    match persist_staking_v2_activation_slot(&state, requested_slot) {
+        Ok(slot) => {
+            println!("persisted_activation_slot={slot}");
+            println!("state_root_after={}", state.compute_state_root().to_hex());
+            Some(0)
+        }
+        Err(err) => {
+            eprintln!("Failed to persist Staking V2 activation boundary: {err}");
+            Some(1)
+        }
+    }
+}
+
 fn require_post_block_effects_repairable_slot(
     block: &Block,
     activation_slot: u64,
@@ -9516,6 +10448,7 @@ async fn activate_pending_validators_for_height(
     let mut vs = validator_set.write().await;
     let mut activated = Vec::new();
     let mut changed = false;
+    let staking_v2_epoch_gated = height_pool.staking_v2_state().is_some();
     for (pubkey, resolved_stake, pending_activation) in reconciled {
         if let Some(validator) = vs.get_validator_mut(&pubkey) {
             if validator.stake != resolved_stake {
@@ -9525,6 +10458,7 @@ async fn activate_pending_validators_for_height(
             if pending_activation
                 && validator.pending_activation
                 && resolved_stake >= min_validator_stake
+                && (!staking_v2_epoch_gated || lichen_core::is_epoch_boundary(new_height))
             {
                 // Activation warmup: new validators must wait ACTIVATION_WARMUP
                 // slots before entering the consensus set.  This ensures the
@@ -11606,16 +12540,25 @@ struct VerifiedCheckpointAnchor {
     block: Block,
 }
 
-/// Default Binance REST fallback URL.
-/// Override via LICHEN_ORACLE_REST_URL (e.g. for Binance US: https://api.binance.us/api/v3/...)
-const MICRO_SCALE: f64 = 1_000_000.0;
+/// Default Binance market-data endpoints. Multi-symbol WebSocket feeds must use
+/// Binance's documented combined-stream path. US hosts override both URLs with
+/// the equivalent stream.binance.us/api.binance.us endpoints.
 const DEFAULT_BINANCE_WS_URL: &str =
-    "wss://stream.binance.com:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade/neousdt@aggTrade/gasusdt@aggTrade/btcusdt@aggTrade";
+    "wss://stream.binance.com:9443/stream?streams=solusdt@aggTrade/solusdt@ticker/ethusdt@aggTrade/ethusdt@ticker/bnbusdt@aggTrade/bnbusdt@ticker/neousdt@aggTrade/neousdt@ticker/gasusdt@aggTrade/gasusdt@ticker/btcusdt@aggTrade/btcusdt@ticker";
 const DEFAULT_BINANCE_REST_URL: &str =
     "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22,%22NEOUSDT%22,%22GASUSDT%22,%22BTCUSDT%22]";
 const DEFAULT_ORACLE_ATTEST_MIN_SECS: u64 = 30;
 const DEFAULT_ORACLE_ATTEST_MAX_STALENESS_SECS: u64 = 60;
 const DEFAULT_ORACLE_ATTEST_MIN_CHANGE_BPS: u64 = 10;
+const DEFAULT_ORACLE_SOURCE_MAX_STALENESS_SECS: u64 = 60;
+const DEFAULT_ORACLE_WS_FRESHNESS_SECS: u64 = 15;
+const DEFAULT_ORACLE_WS_READ_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_ORACLE_WS_CONNECT_TIMEOUT_SECS: u64 = 10;
+const DEFAULT_ORACLE_WS_ROTATE_SECS: u64 = 23 * 60 * 60 + 30 * 60;
+const DEFAULT_ORACLE_REST_RETRY_SECS: u64 = 5;
+const DEFAULT_ORACLE_BROADCAST_INTERVAL_MS: u64 = 100;
+const ORACLE_WS_EVENT_MAX_LAG_MS: u64 = 60_000;
+const ORACLE_WS_EVENT_MAX_FUTURE_SKEW_MS: u64 = 5_000;
 
 fn reset_24h_stats_if_expired(
     state: &StateStore,
@@ -11692,6 +12635,71 @@ struct BinanceTicker {
     price: String,
 }
 
+fn parse_positive_decimal_to_micro(raw: &str) -> Option<u64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.starts_with(['+', '-']) {
+        return None;
+    }
+
+    let mut parts = trimmed.split('.');
+    let whole_raw = parts.next()?;
+    let fractional_raw = parts.next().unwrap_or("");
+    if parts.next().is_some()
+        || whole_raw.is_empty()
+        || !whole_raw.bytes().all(|byte| byte.is_ascii_digit())
+        || !fractional_raw.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+
+    let whole = whole_raw.parse::<u64>().ok()?;
+    let mut fractional = 0u64;
+    let mut digits = 0usize;
+    for byte in fractional_raw.bytes().take(6) {
+        fractional = fractional
+            .checked_mul(10)?
+            .checked_add(u64::from(byte - b'0'))?;
+        digits += 1;
+    }
+    for _ in digits..6 {
+        fractional = fractional.checked_mul(10)?;
+    }
+
+    let scaled = whole.checked_mul(1_000_000)?.checked_add(fractional)?;
+    (scaled > 0).then_some(scaled)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BinanceWsPrice {
+    asset: OracleMarketAsset,
+    price_micro: u64,
+    event_ms: u64,
+}
+
+fn parse_binance_ws_price(text: &str) -> Option<BinanceWsPrice> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let payload = value.get("data").unwrap_or(&value);
+    let event_type = payload.get("e")?.as_str()?;
+    let symbol = payload.get("s")?.as_str()?;
+    let price_raw = match event_type {
+        "aggTrade" | "trade" => payload.get("p")?.as_str()?,
+        "24hrTicker" | "24hrMiniTicker" => payload.get("c")?.as_str()?,
+        _ => return None,
+    };
+    let asset = OracleMarketAsset::from_binance_symbol(symbol)?;
+    let price_micro = parse_positive_decimal_to_micro(price_raw)?;
+    let event_ms = payload
+        .get("E")
+        .or_else(|| payload.get("T"))
+        .and_then(serde_json::Value::as_u64)
+        .filter(|event_ms| *event_ms > 0)?;
+    Some(BinanceWsPrice {
+        asset,
+        price_micro,
+        event_ms,
+    })
+}
+
 fn env_duration_secs(name: &str, default_secs: u64) -> Duration {
     let secs = env::var(name)
         .ok()
@@ -11734,6 +12742,83 @@ fn should_submit_oracle_attestation(
     }
 }
 
+fn build_staking_v2_slash_transaction(
+    state: &StateStore,
+    chain_id: &str,
+    reporter_seed: &[u8; 32],
+    evidence: &SlashingEvidence,
+) -> Result<Transaction, String> {
+    if chain_id.is_empty() {
+        return Err("slashing transaction requires a chain id".to_string());
+    }
+    let reporter = Keypair::from_seed(reporter_seed);
+    if evidence.reporter != reporter.pubkey() {
+        return Err("slashing evidence reporter does not match local signer".to_string());
+    }
+    if !evidence.verify_with_chain_id(chain_id) {
+        return Err("slashing evidence failed strict chain-bound verification".to_string());
+    }
+    let tip = state.get_last_slot()?;
+    let recent_blockhash = state
+        .get_block_by_slot(tip)?
+        .map(|block| block.hash())
+        .ok_or_else(|| "slashing transaction requires a recent blockhash".to_string())?;
+    let evidence_bytes = serialize_legacy_bincode_limited(
+        evidence,
+        SLASHING_EVIDENCE_CODEC_LIMIT_BYTES,
+        "slashing evidence V2",
+    )?;
+    let mut data = Vec::with_capacity(1 + evidence_bytes.len());
+    data.push(27);
+    data.extend_from_slice(&evidence_bytes);
+    let instruction = lichen_core::Instruction {
+        program_id: CORE_SYSTEM_PROGRAM_ID,
+        accounts: vec![evidence.reporter, evidence.validator],
+        data,
+    };
+    let mut transaction = Transaction::new(lichen_core::Message::new(
+        vec![instruction],
+        recent_blockhash,
+    ));
+    transaction
+        .signatures
+        .push(reporter.sign(&transaction.message.signing_bytes_for_chain_id(chain_id)));
+    Ok(transaction)
+}
+
+async fn submit_staking_v2_slash_transaction(
+    state: &StateStore,
+    mempool: &Arc<Mutex<Mempool>>,
+    p2p_peer_manager: Option<&Arc<lichen_p2p::PeerManager>>,
+    local_addr: SocketAddr,
+    chain_id: &str,
+    reporter_seed: &[u8; 32],
+    evidence: &SlashingEvidence,
+) -> Result<Hash, String> {
+    let transaction = build_staking_v2_slash_transaction(state, chain_id, reporter_seed, evidence)?;
+    let transaction_hash = transaction.hash();
+    let fee_config = state
+        .get_fee_config()
+        .unwrap_or_else(|_| FeeConfig::default_from_constants());
+    let computed_fee = TxProcessor::compute_transaction_fee(&transaction, &fee_config);
+    {
+        let mut pool = mempool.lock().await;
+        pool.add_transaction(transaction.clone(), computed_fee, 0)
+            .map_err(|error| format!("failed to enqueue SlashValidator V2: {error}"))?;
+    }
+    if let Some(peer_manager) = p2p_peer_manager {
+        let message = P2PMessage::new(MessageType::Transaction(transaction), local_addr);
+        peer_manager
+            .route_to_closest(
+                &transaction_hash.0,
+                lichen_p2p::NON_CONSENSUS_FANOUT,
+                message,
+            )
+            .await;
+    }
+    Ok(transaction_hash)
+}
+
 fn build_oracle_attestation_tx(
     state: &StateStore,
     chain_id: &str,
@@ -11746,8 +12831,11 @@ fn build_oracle_attestation_tx(
     if price_raw == 0 {
         return Err("oracle attestation price must be > 0".to_string());
     }
-    if decimals > 18 {
-        return Err("oracle attestation decimals must be 0..=18".to_string());
+    if decimals != ORACLE_PRICE_DECIMALS {
+        return Err(format!(
+            "oracle attestation decimals must equal canonical scale {}",
+            ORACLE_PRICE_DECIMALS
+        ));
     }
 
     let pool = state.get_stake_pool()?;
@@ -11897,8 +12985,7 @@ fn spawn_oracle_price_feeder(
             .unwrap_or_else(|_| DEFAULT_BINANCE_WS_URL.to_string());
         let oracle_rest_url: String = std::env::var("LICHEN_ORACLE_REST_URL")
             .unwrap_or_else(|_| DEFAULT_BINANCE_REST_URL.to_string());
-        info!("🔮 Oracle WS: {}", oracle_ws_url);
-        info!("🔮 Oracle REST: {}", oracle_rest_url);
+        info!("🔮 Oracle WS and REST market-data endpoints configured");
 
         // Use the shared atomics to source validator oracle attestations.
         let wsol_micro = shared_prices.wsol_micro.clone();
@@ -11907,11 +12994,9 @@ fn spawn_oracle_price_feeder(
         let wneo_micro = shared_prices.wneo_micro.clone();
         let wgas_micro = shared_prices.wgas_micro.clone();
         let wbtc_micro = shared_prices.wbtc_micro.clone();
-        let ws_healthy = shared_prices.ws_healthy.clone();
 
         // Spawn WebSocket reader task FIRST so prices start flowing immediately
         // even while we wait for ANALYTICS symbol registry (joining node sync).
-        let last_ws_update_ms = shared_prices.last_ws_update_ms.clone();
         {
             let ws_prices = shared_prices.clone();
             let ws_url = oracle_ws_url.clone();
@@ -11972,20 +13057,47 @@ fn spawn_oracle_price_feeder(
             "LICHEN_ORACLE_ATTEST_MIN_CHANGE_BPS",
             DEFAULT_ORACLE_ATTEST_MIN_CHANGE_BPS,
         );
+        let oracle_source_max_staleness = env_duration_secs(
+            "LICHEN_ORACLE_SOURCE_MAX_STALENESS_SECS",
+            DEFAULT_ORACLE_SOURCE_MAX_STALENESS_SECS,
+        );
+        let oracle_ws_freshness = env_duration_secs(
+            "LICHEN_ORACLE_WS_FRESHNESS_SECS",
+            DEFAULT_ORACLE_WS_FRESHNESS_SECS,
+        );
+        let rest_retry_interval = env_duration_secs(
+            "LICHEN_ORACLE_REST_RETRY_SECS",
+            DEFAULT_ORACLE_REST_RETRY_SECS,
+        );
         info!(
-            "🔮 Oracle attestation cadence: min={}s max_staleness={}s change={}bps",
+            "🔮 Oracle cadence: attest_min={}s attest_max={}s change={}bps source_max_age={}s ws_max_age={}s",
             oracle_attestation_min_interval.as_secs(),
             oracle_attestation_max_staleness.as_secs(),
             oracle_attestation_min_change_bps,
+            oracle_source_max_staleness.as_secs(),
+            oracle_ws_freshness.as_secs(),
         );
 
         const PRICE_SCALE_F: f64 = 1_000_000_000.0; // 1e9 for DEX price scaling
 
-        // Candle writer loop: 5-second tick (WS broadcasts only — state is
-        // written by apply_oracle_from_block during consensus block processing).
-        // Oracle feeds + DEX bands + candles are now written deterministically in
-        // apply_oracle_from_block() during block effects — NOT here.
-        let mut write_tick = time::interval(Duration::from_secs(5));
+        // Publish low-latency ticker events whenever the external price changes.
+        // Consensus-written
+        // candles are rebroadcast at most every five seconds, and REST fallback
+        // remains rate-limited independently from this fast path.
+        let broadcast_interval_ms = env_u64(
+            "LICHEN_ORACLE_BROADCAST_INTERVAL_MS",
+            DEFAULT_ORACLE_BROADCAST_INTERVAL_MS,
+        )
+        .clamp(25, 1_000);
+        let mut write_tick = time::interval(Duration::from_millis(broadcast_interval_ms));
+        write_tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+        let mut last_rest_attempt = Instant::now()
+            .checked_sub(rest_retry_interval)
+            .unwrap_or_else(Instant::now);
+        let mut last_candle_broadcast = Instant::now()
+            .checked_sub(Duration::from_secs(5))
+            .unwrap_or_else(Instant::now);
+        let mut last_ticker_broadcast: HashMap<u64, (u64, u64, u64, Instant)> = HashMap::new();
 
         loop {
             write_tick.tick().await;
@@ -11998,90 +13110,122 @@ fn spawn_oracle_price_feeder(
             let mut cur_wgas = wgas_micro.load(Ordering::Relaxed);
             let mut cur_wbtc = wbtc_micro.load(Ordering::Relaxed);
 
-            // REST fallback if WebSocket is not healthy, no prices yet,
-            // or WS data is stale (no message received within 15 seconds).
-            let ws_stale = {
-                let last_update = last_ws_update_ms.load(Ordering::Relaxed);
-                if last_update == 0 {
-                    true // never received a WS message
-                } else {
-                    let now_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0);
-                    now_ms.saturating_sub(last_update) > 15_000
-                }
-            };
-            if !ws_healthy.load(Ordering::Relaxed)
-                || ws_stale
-                || (cur_wsol == 0
-                    && cur_weth == 0
-                    && cur_wbnb == 0
-                    && cur_wneo == 0
-                    && cur_wgas == 0
-                    && cur_wbtc == 0)
-            {
-                if let Ok(resp) = http.get(&rest_url).send().await {
+            // REST is a per-symbol fallback. A busy symbol cannot hide a stale
+            // or unsupported stream for another symbol, and REST never
+            // overwrites a still-fresh WS observation.
+            let now_ms = unix_epoch_millis();
+            let ws_freshness_ms = oracle_ws_freshness.as_millis() as u64;
+            let needs_rest = OracleMarketAsset::ALL.iter().any(|asset| {
+                shared_prices.price(*asset).load(Ordering::Relaxed) == 0
+                    || !shared_prices.ws_price_is_fresh(*asset, now_ms, ws_freshness_ms)
+            });
+            if needs_rest && last_rest_attempt.elapsed() >= rest_retry_interval {
+                last_rest_attempt = Instant::now();
+                if let Ok(resp) = http
+                    .get(&rest_url)
+                    .send()
+                    .await
+                    .and_then(|resp| resp.error_for_status())
+                {
                     if let Ok(tickers) = resp.json::<Vec<BinanceTicker>>().await {
-                        for t in &tickers {
-                            let p: f64 = t.price.parse().unwrap_or(0.0);
-                            if p <= 0.0 {
+                        for ticker in tickers {
+                            let Some(asset) =
+                                OracleMarketAsset::from_binance_symbol(&ticker.symbol)
+                            else {
                                 continue;
-                            }
-                            let micro = (p * MICRO_SCALE) as u64;
-                            match t.symbol.as_str() {
-                                "SOLUSDT" => {
-                                    wsol_micro.store(micro, Ordering::Relaxed);
-                                    cur_wsol = micro;
-                                }
-                                "ETHUSDT" => {
-                                    weth_micro.store(micro, Ordering::Relaxed);
-                                    cur_weth = micro;
-                                }
-                                "BNBUSDT" => {
-                                    wbnb_micro.store(micro, Ordering::Relaxed);
-                                    cur_wbnb = micro;
-                                }
-                                "NEOUSDT" => {
-                                    wneo_micro.store(micro, Ordering::Relaxed);
-                                    cur_wneo = micro;
-                                }
-                                "GASUSDT" => {
-                                    wgas_micro.store(micro, Ordering::Relaxed);
-                                    cur_wgas = micro;
-                                }
-                                "BTCUSDT" => {
-                                    wbtc_micro.store(micro, Ordering::Relaxed);
-                                    cur_wbtc = micro;
-                                }
-                                _ => {}
+                            };
+                            if let Some(price_micro) =
+                                parse_positive_decimal_to_micro(&ticker.price)
+                            {
+                                shared_prices.record_rest_price_if_ws_stale(
+                                    asset,
+                                    price_micro,
+                                    now_ms,
+                                    ws_freshness_ms,
+                                );
                             }
                         }
                     }
                 }
+
+                cur_wsol = wsol_micro.load(Ordering::Relaxed);
+                cur_weth = weth_micro.load(Ordering::Relaxed);
+                cur_wbnb = wbnb_micro.load(Ordering::Relaxed);
+                cur_wneo = wneo_micro.load(Ordering::Relaxed);
+                cur_wgas = wgas_micro.load(Ordering::Relaxed);
+                cur_wbtc = wbtc_micro.load(Ordering::Relaxed);
+            }
+
+            // Never attest or broadcast an indefinitely cached external price.
+            // If both WS and REST stop updating a symbol, that symbol fails
+            // closed while the last finalized consensus price ages naturally.
+            let source_max_age_ms = oracle_source_max_staleness.as_millis() as u64;
+            if !shared_prices.source_price_is_fresh(
+                OracleMarketAsset::Wsol,
+                now_ms,
+                source_max_age_ms,
+            ) {
+                cur_wsol = 0;
+            }
+            if !shared_prices.source_price_is_fresh(
+                OracleMarketAsset::Weth,
+                now_ms,
+                source_max_age_ms,
+            ) {
+                cur_weth = 0;
+            }
+            if !shared_prices.source_price_is_fresh(
+                OracleMarketAsset::Wbnb,
+                now_ms,
+                source_max_age_ms,
+            ) {
+                cur_wbnb = 0;
+            }
+            if !shared_prices.source_price_is_fresh(
+                OracleMarketAsset::Wneo,
+                now_ms,
+                source_max_age_ms,
+            ) {
+                cur_wneo = 0;
+            }
+            if !shared_prices.source_price_is_fresh(
+                OracleMarketAsset::Wgas,
+                now_ms,
+                source_max_age_ms,
+            ) {
+                cur_wgas = 0;
+            }
+            if !shared_prices.source_price_is_fresh(
+                OracleMarketAsset::Wbtc,
+                now_ms,
+                source_max_age_ms,
+            ) {
+                cur_wbtc = 0;
             }
 
             // NOTE: Oracle feed writes, DEX price band writes, candle writes,
             // last-price writes, and 24h stats writes are ALL handled
             // deterministically in apply_oracle_from_block() during block effects.
-            // This feeder submits signed native oracle attestation txs and
-            // reads consensus-written state to broadcast WS events.
+            // This feeder submits signed native oracle attestation txs. Ticker
+            // prices follow the freshest validated external observation, while
+            // candle and 24-hour statistics are read from consensus-written
+            // state before they are broadcast.
 
             let (wneo_enabled, wgas_enabled, wbtc_enabled) = wrapped_oracle_assets_enabled(&state);
             let mut attestation_prices = vec![
                 ("LICN", GenesisPrices::default().licn_usd_8dec),
-                ("wSOL", cur_wsol.saturating_mul(100)),
-                ("wETH", cur_weth.saturating_mul(100)),
-                ("wBNB", cur_wbnb.saturating_mul(100)),
+                ("wSOL", oracle_micro_to_8dec(cur_wsol)),
+                ("wETH", oracle_micro_to_8dec(cur_weth)),
+                ("wBNB", oracle_micro_to_8dec(cur_wbnb)),
             ];
             if wneo_enabled {
-                attestation_prices.push(("wNEO", cur_wneo.saturating_mul(100)));
+                attestation_prices.push(("wNEO", oracle_micro_to_8dec(cur_wneo)));
             }
             if wgas_enabled {
-                attestation_prices.push(("wGAS", cur_wgas.saturating_mul(100)));
+                attestation_prices.push(("wGAS", oracle_micro_to_8dec(cur_wgas)));
             }
             if wbtc_enabled {
-                attestation_prices.push(("wBTC", cur_wbtc.saturating_mul(100)));
+                attestation_prices.push(("wBTC", oracle_micro_to_8dec(cur_wbtc)));
             }
             for (asset, price_raw) in attestation_prices {
                 if price_raw == 0 {
@@ -12102,19 +13246,19 @@ fn spawn_oracle_price_feeder(
                 }
             }
 
-            let wsol_usd = cur_wsol as f64 / MICRO_SCALE;
-            let weth_usd = cur_weth as f64 / MICRO_SCALE;
-            let wbnb_usd = cur_wbnb as f64 / MICRO_SCALE;
-            let wneo_usd = cur_wneo as f64 / MICRO_SCALE;
-            let wgas_usd = cur_wgas as f64 / MICRO_SCALE;
-            let wbtc_usd = cur_wbtc as f64 / MICRO_SCALE;
+            let wsol_usd_8dec = oracle_micro_to_8dec(cur_wsol);
+            let weth_usd_8dec = oracle_micro_to_8dec(cur_weth);
+            let wbnb_usd_8dec = oracle_micro_to_8dec(cur_wbnb);
+            let wneo_usd_8dec = oracle_micro_to_8dec(cur_wneo);
+            let wgas_usd_8dec = oracle_micro_to_8dec(cur_wgas);
+            let wbtc_usd_8dec = oracle_micro_to_8dec(cur_wbtc);
 
-            if wsol_usd <= 0.0
-                && weth_usd <= 0.0
-                && wbnb_usd <= 0.0
-                && wneo_usd <= 0.0
-                && wgas_usd <= 0.0
-                && wbtc_usd <= 0.0
+            if wsol_usd_8dec == 0
+                && weth_usd_8dec == 0
+                && wbnb_usd_8dec == 0
+                && wneo_usd_8dec == 0
+                && wgas_usd_8dec == 0
+                && wbtc_usd_8dec == 0
             {
                 continue;
             }
@@ -12122,31 +13266,35 @@ fn spawn_oracle_price_feeder(
             // WS broadcasts — read consensus state and emit to WebSocket clients
             let current_slot = state.get_last_slot().unwrap_or(0);
 
-            let licn_usd: f64 = lichen_core::consensus::licn_price_from_state(&state);
+            let licn_usd_8dec = consensus_oracle_price_8dec(&state, "LICN");
             let pair_prices = oracle_pair_prices(
                 OraclePairPriceInputs {
-                    licn_usd,
-                    wsol_usd,
-                    weth_usd,
-                    wbnb_usd,
-                    wneo_usd,
-                    wgas_usd,
-                    wbtc_usd,
+                    licn_usd_8dec,
+                    wsol_usd_8dec: OracleFixed8Quote::new(wsol_usd_8dec, current_slot),
+                    weth_usd_8dec: OracleFixed8Quote::new(weth_usd_8dec, current_slot),
+                    wbnb_usd_8dec: OracleFixed8Quote::new(wbnb_usd_8dec, current_slot),
+                    wneo_usd_8dec: OracleFixed8Quote::new(wneo_usd_8dec, current_slot),
+                    wgas_usd_8dec: OracleFixed8Quote::new(wgas_usd_8dec, current_slot),
+                    wbtc_usd_8dec: OracleFixed8Quote::new(wbtc_usd_8dec, current_slot),
                 },
                 wneo_enabled,
                 wgas_enabled,
                 wbtc_enabled,
             );
+            let broadcast_candles = last_candle_broadcast.elapsed() >= Duration::from_secs(5);
 
-            for (pair_id, price_f64) in &pair_prices {
-                if *price_f64 <= 0.0 {
+            for pair in &pair_prices {
+                let pair_id = pair.pair_id;
+                let price_scaled = pair.price_scaled;
+                if price_scaled == 0 {
                     continue;
                 }
+                let price_f64 = price_scaled as f64 / PRICE_SCALE_F;
 
-                // ── WS broadcast: read consensus-written state and emit ──
-                // Candles, last price, and 24h stats are written deterministically
-                // by apply_oracle_from_block() during block processing. This feeder
-                // only READS that data and broadcasts it via WebSocket.
+                // ── WS broadcast: low-latency price plus consensus analytics ──
+                // The ticker price follows the validated external observation.
+                // Candles and 24h stats are written deterministically by
+                // apply_oracle_from_block() and only read here.
 
                 // Read 24h stats written by consensus
                 let stats_key = format!("ana_24h_{}", pair_id);
@@ -12160,147 +13308,163 @@ fn spawn_oracle_price_feeder(
                 let open_raw = u64::from_le_bytes(stats[24..32].try_into().unwrap_or([0; 8]));
                 let open_f = open_raw as f64 / PRICE_SCALE_F;
                 let change_24h = if open_f > 0.0 {
-                    ((*price_f64 - open_f) / open_f) * 100.0
+                    ((price_f64 - open_f) / open_f) * 100.0
                 } else {
                     0.0
                 };
-                dex_broadcaster.emit_ticker(
-                    *pair_id, *price_f64, *price_f64, *price_f64, volume_24h, change_24h,
+                let ticker_signature = (price_f64.to_bits(), change_24h.to_bits(), volume_24h);
+                let ticker_due = last_ticker_broadcast.get(&pair_id).is_none_or(
+                    |(price_bits, change_bits, previous_volume, emitted_at)| {
+                        (*price_bits, *change_bits, *previous_volume) != ticker_signature
+                            || emitted_at.elapsed() >= Duration::from_secs(5)
+                    },
                 );
+                if ticker_due {
+                    dex_broadcaster.emit_ticker(
+                        pair_id, price_f64, price_f64, price_f64, volume_24h, change_24h,
+                    );
+                    last_ticker_broadcast.insert(
+                        pair_id,
+                        (
+                            ticker_signature.0,
+                            ticker_signature.1,
+                            ticker_signature.2,
+                            Instant::now(),
+                        ),
+                    );
+                }
 
                 // ── WS broadcast: candle updates for all intervals ──
                 // Read consensus-written candles and broadcast via WebSocket
-                for &ci in &candle_intervals {
-                    let count_key_c = format!("ana_cc_{}_{}", pair_id, ci);
-                    let candle_count_c: u64 =
-                        match state.get_contract_storage(&analytics_pk, count_key_c.as_bytes()) {
+                if broadcast_candles {
+                    for &ci in &candle_intervals {
+                        let count_key_c = format!("ana_cc_{}_{}", pair_id, ci);
+                        let candle_count_c: u64 = match state
+                            .get_contract_storage(&analytics_pk, count_key_c.as_bytes())
+                        {
                             Ok(Some(d)) if d.len() >= 8 => {
                                 u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8]))
                             }
                             _ => 0,
                         };
-                    if candle_count_c > 0 {
-                        let sequence = candle_count_c - 1;
-                        let idx_c = analytics_candle_storage_index(sequence, ci);
-                        let ck = format!("ana_c_{}_{}_{}", pair_id, ci, idx_c);
-                        if let Ok(Some(cd)) =
-                            state.get_contract_storage(&analytics_pk, ck.as_bytes())
-                        {
-                            if cd.len() >= 48 {
-                                let o = u64::from_le_bytes(cd[0..8].try_into().unwrap_or([0; 8]))
-                                    as f64
-                                    / PRICE_SCALE_F;
-                                let h = u64::from_le_bytes(cd[8..16].try_into().unwrap_or([0; 8]))
-                                    as f64
-                                    / PRICE_SCALE_F;
-                                let l = u64::from_le_bytes(cd[16..24].try_into().unwrap_or([0; 8]))
-                                    as f64
-                                    / PRICE_SCALE_F;
-                                let c = u64::from_le_bytes(cd[24..32].try_into().unwrap_or([0; 8]))
-                                    as f64
-                                    / PRICE_SCALE_F;
-                                let v = u64::from_le_bytes(cd[32..40].try_into().unwrap_or([0; 8]));
-                                dex_broadcaster.emit_candle(
-                                    *pair_id,
-                                    ci,
-                                    o,
-                                    h,
-                                    l,
-                                    c,
-                                    v,
-                                    current_slot,
-                                );
+                        if candle_count_c > 0 {
+                            let sequence = candle_count_c - 1;
+                            let idx_c = analytics_candle_storage_index(sequence, ci);
+                            let ck = format!("ana_c_{}_{}_{}", pair_id, ci, idx_c);
+                            if let Ok(Some(cd)) =
+                                state.get_contract_storage(&analytics_pk, ck.as_bytes())
+                            {
+                                if cd.len() >= 48 {
+                                    let o =
+                                        u64::from_le_bytes(cd[0..8].try_into().unwrap_or([0; 8]))
+                                            as f64
+                                            / PRICE_SCALE_F;
+                                    let h =
+                                        u64::from_le_bytes(cd[8..16].try_into().unwrap_or([0; 8]))
+                                            as f64
+                                            / PRICE_SCALE_F;
+                                    let l =
+                                        u64::from_le_bytes(cd[16..24].try_into().unwrap_or([0; 8]))
+                                            as f64
+                                            / PRICE_SCALE_F;
+                                    let c =
+                                        u64::from_le_bytes(cd[24..32].try_into().unwrap_or([0; 8]))
+                                            as f64
+                                            / PRICE_SCALE_F;
+                                    let v =
+                                        u64::from_le_bytes(cd[32..40].try_into().unwrap_or([0; 8]));
+                                    dex_broadcaster.emit_candle(
+                                        pair_id,
+                                        ci,
+                                        o,
+                                        h,
+                                        l,
+                                        c,
+                                        v,
+                                        current_slot,
+                                    );
+                                }
                             }
                         }
                     }
                 }
             }
 
-            debug!(
-                "🔮 Oracle candles updated: wSOL=${:.2} wETH=${:.2} wBNB=${:.2} wNEO=${:.2} wGAS=${:.2} wBTC=${:.2}",
-                wsol_usd, weth_usd, wbnb_usd, wneo_usd, wgas_usd, wbtc_usd
-            );
+            if broadcast_candles {
+                last_candle_broadcast = Instant::now();
+            }
         }
     });
 }
 
-/// Binance WebSocket reader loop with auto-reconnect.
-/// Connects to aggTrade streams, parses prices, stores in atomics.
-/// On disconnect, retries with exponential backoff (1s → 30s max).
+/// Binance WebSocket reader loop with unlimited auto-reconnect.
+/// Parses both raw and documented combined-stream payloads. Connection health
+/// becomes true only after a valid, recognized price—not merely after a TCP/TLS
+/// handshake—and per-symbol event times reject out-of-order observations.
 async fn binance_ws_loop(prices: SharedOraclePrices, ws_url: String) {
     let mut backoff_secs: u64 = 1;
-
-    // Read timeout: if no WS message arrives within this window,
-    // treat the connection as dead and reconnect.  Binance aggTrade
-    // streams for SOL/ETH/BNB/NEO/GAS/BTC produce messages during
-    // active trading.  30s silence is a clear signal of a stale
-    // connection (TCP half-open, silent Binance-side close, etc.).
-    const WS_READ_TIMEOUT: Duration = Duration::from_secs(30);
+    let read_timeout = env_duration_secs(
+        "LICHEN_ORACLE_WS_READ_TIMEOUT_SECS",
+        DEFAULT_ORACLE_WS_READ_TIMEOUT_SECS,
+    );
+    let connect_timeout = env_duration_secs(
+        "LICHEN_ORACLE_WS_CONNECT_TIMEOUT_SECS",
+        DEFAULT_ORACLE_WS_CONNECT_TIMEOUT_SECS,
+    );
+    let connection_max_age = env_duration_secs(
+        "LICHEN_ORACLE_WS_ROTATE_SECS",
+        DEFAULT_ORACLE_WS_ROTATE_SECS,
+    );
 
     loop {
-        info!("🔮 Binance WebSocket connecting to {}...", ws_url);
+        info!("🔮 Binance WebSocket connecting to multiplexed market stream");
         prices.ws_healthy.store(false, Ordering::Relaxed);
 
-        match tokio_tungstenite::connect_async(ws_url.as_str()).await {
-            Ok((ws_stream, _)) => {
-                info!("🔮 Binance WebSocket connected (real-time aggTrade feed)");
-                backoff_secs = 1; // reset backoff on successful connect
-                prices.ws_healthy.store(true, Ordering::Relaxed);
-
+        let connection = tokio::time::timeout(
+            connect_timeout,
+            tokio_tungstenite::connect_async(ws_url.as_str()),
+        )
+        .await;
+        let mut received_valid_price = false;
+        match connection {
+            Ok(Ok((ws_stream, _))) => {
+                info!("🔮 Binance WebSocket connected; awaiting valid market data");
                 let (mut write, mut read) = ws_stream.split();
+                let connected_at = Instant::now();
 
                 loop {
-                    let msg_result = match tokio::time::timeout(WS_READ_TIMEOUT, read.next()).await
-                    {
+                    // Binance and Binance.US market-stream connections are
+                    // forcibly disconnected at 24 hours. Rotate before that
+                    // boundary so REST fallback can bridge a planned reconnect.
+                    if connected_at.elapsed() >= connection_max_age {
+                        info!("🔮 Binance WebSocket rotating before provider connection limit");
+                        break;
+                    }
+                    let msg_result = match tokio::time::timeout(read_timeout, read.next()).await {
                         Ok(Some(msg)) => msg,
                         Ok(None) => {
                             // Stream ended
                             break;
                         }
                         Err(_) => {
-                            warn!("🔮 Binance WebSocket read timeout ({}s with no data), reconnecting", WS_READ_TIMEOUT.as_secs());
+                            warn!(
+                                "🔮 Binance WebSocket read timeout ({}s), reconnecting",
+                                read_timeout.as_secs()
+                            );
                             break;
                         }
                     };
                     match msg_result {
                         Ok(tungstenite::Message::Text(ref text)) => {
-                            // Record that we received a message (for feeder staleness check)
-                            let now_ms = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_millis() as u64)
-                                .unwrap_or(0);
-                            prices.last_ws_update_ms.store(now_ms, Ordering::Relaxed);
-
-                            // aggTrade format: {"e":"aggTrade","s":"SOLUSDT","p":"82.30",...}
-                            if let Ok(trade) = serde_json::from_str::<serde_json::Value>(text) {
-                                if let (Some(sym), Some(price_str)) =
-                                    (trade["s"].as_str(), trade["p"].as_str())
-                                {
-                                    let price: f64 = price_str.parse().unwrap_or(0.0);
-                                    if price > 0.0 {
-                                        let micro = (price * MICRO_SCALE) as u64;
-                                        match sym {
-                                            "SOLUSDT" => {
-                                                prices.wsol_micro.store(micro, Ordering::Relaxed)
-                                            }
-                                            "ETHUSDT" => {
-                                                prices.weth_micro.store(micro, Ordering::Relaxed)
-                                            }
-                                            "BNBUSDT" => {
-                                                prices.wbnb_micro.store(micro, Ordering::Relaxed)
-                                            }
-                                            "NEOUSDT" => {
-                                                prices.wneo_micro.store(micro, Ordering::Relaxed)
-                                            }
-                                            "GASUSDT" => {
-                                                prices.wgas_micro.store(micro, Ordering::Relaxed)
-                                            }
-                                            "BTCUSDT" => {
-                                                prices.wbtc_micro.store(micro, Ordering::Relaxed)
-                                            }
-                                            _ => {}
-                                        }
-                                    }
+                            if let Some(update) = parse_binance_ws_price(text) {
+                                let received_ms = unix_epoch_millis();
+                                if prices.record_ws_price(
+                                    update.asset,
+                                    update.price_micro,
+                                    update.event_ms,
+                                    received_ms,
+                                ) {
+                                    received_valid_price = true;
                                 }
                             }
                         }
@@ -12329,15 +13493,27 @@ async fn binance_ws_loop(prices: SharedOraclePrices, ws_url: String) {
                 prices.ws_healthy.store(false, Ordering::Relaxed);
                 warn!("🔮 Binance WebSocket disconnected, reconnecting...");
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 warn!("🔮 Binance WebSocket connect failed: {}", e);
+            }
+            Err(_) => {
+                warn!(
+                    "🔮 Binance WebSocket connect timeout ({}s)",
+                    connect_timeout.as_secs()
+                );
             }
         }
 
-        // Exponential backoff: 1 → 2 → 4 → 8 → 16 → 30 (capped)
-        let delay = backoff_secs.min(30);
+        // Unlimited reconnect with bounded exponential backoff. A connection
+        // resets the backoff only after it proves it can deliver valid data.
+        if received_valid_price {
+            backoff_secs = 1;
+        }
+        let delay = backoff_secs;
         tokio::time::sleep(Duration::from_secs(delay)).await;
-        backoff_secs = (backoff_secs * 2).min(60);
+        if !received_valid_price {
+            backoff_secs = backoff_secs.saturating_mul(2).min(30);
+        }
     }
 }
 
@@ -19134,17 +20310,6 @@ impl ArchiveV2ObjectSource for CapacityGatedArchiveV2Source {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RuntimeArchiveV2RoleMarker {
-    marker_version: u16,
-    identity: lichen_core::archive_v2::ArchiveV2Identity,
-    role_config: ArchiveV2RoleConfig,
-    genesis_mossstake_slot_only: bool,
-}
-
-const ARCHIVE_V2_ROLE_MARKER_MAGIC: &[u8] = b"LICHEN-AV2-ROLE\0";
-const ARCHIVE_V2_ROLE_MARKER_MAX_BYTES: usize = 64 * 1024;
 const ARCHIVE_V2_FRESH_SYNC_ADMISSION_METADATA_KEY: &str = "archive_v2_fresh_sync_admission_v1";
 
 fn archive_v2_fresh_sync_admission_fingerprint(
@@ -19327,10 +20492,10 @@ fn activate_runtime_archive_v2(
             catalog.identity.network_id
         ));
     }
-    let marker_path = config.root.join("role-config-v1.bin");
+    let marker_path = config.root.join(ARCHIVE_V2_ROLE_MARKER_FILENAME);
     let existing_marker = marker_path
         .exists()
-        .then(|| load_runtime_archive_v2_role_marker(&marker_path))
+        .then(|| load_archive_v2_role_marker(&marker_path))
         .transpose()?;
     if let Some(marker) = existing_marker.as_ref() {
         if marker.identity != catalog.identity {
@@ -19482,7 +20647,7 @@ fn activate_runtime_archive_v2(
             config.root.display()
         )
     })?;
-    let expected_marker = RuntimeArchiveV2RoleMarker {
+    let expected_marker = ArchiveV2RoleMarker {
         marker_version: 1,
         identity: catalog.identity.clone(),
         role_config: config.role_config.clone(),
@@ -19496,7 +20661,7 @@ fn activate_runtime_archive_v2(
             ));
         }
     } else {
-        store_runtime_archive_v2_role_marker(&marker_path, &expected_marker)?;
+        store_archive_v2_role_marker_create_new(&marker_path, &expected_marker)?;
     }
 
     let mut sources: Vec<Arc<dyn ArchiveV2ObjectSource>> = config
@@ -19584,83 +20749,45 @@ fn validate_deferred_runtime_archive_v2(
     Ok(())
 }
 
-fn load_runtime_archive_v2_role_marker(path: &Path) -> Result<RuntimeArchiveV2RoleMarker, String> {
-    let encoded =
-        fs::read(path).map_err(|error| format!("failed reading {}: {error}", path.display()))?;
-    let minimum = ARCHIVE_V2_ROLE_MARKER_MAGIC.len() + 4 + 32;
-    if encoded.len() < minimum || !encoded.starts_with(ARCHIVE_V2_ROLE_MARKER_MAGIC) {
-        return Err("Archive V2 role marker is truncated".to_string());
+fn archive_v2_role_marker_authorizes_no_genesis_start(
+    config: &RuntimeArchiveV2Config,
+    chain_id: &str,
+) -> Result<bool, String> {
+    let marker_path = config.root.join(ARCHIVE_V2_ROLE_MARKER_FILENAME);
+    let marker = match fs::symlink_metadata(&marker_path) {
+        Ok(_) => load_archive_v2_role_marker(&marker_path)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "failed inspecting Archive V2 role marker {}: {error}",
+                marker_path.display()
+            ));
+        }
+    };
+    if marker.marker_version != 1 {
+        return Err(format!(
+            "unsupported Archive V2 role marker version {}",
+            marker.marker_version
+        ));
     }
-    let offset = ARCHIVE_V2_ROLE_MARKER_MAGIC.len();
-    let payload_len = u32::from_le_bytes(
-        encoded[offset..offset + 4]
-            .try_into()
-            .map_err(|_| "Archive V2 role marker length is truncated".to_string())?,
-    ) as usize;
-    if payload_len > ARCHIVE_V2_ROLE_MARKER_MAX_BYTES {
-        return Err("Archive V2 role marker is too large".to_string());
+    let catalog = ArchiveV2Catalog::load(&config.root.join("catalog.av2"))
+        .map_err(|error| error.to_string())?;
+    if catalog.identity.network_id != chain_id {
+        return Err(format!(
+            "Archive V2 catalog network {} does not match chain id {chain_id}",
+            catalog.identity.network_id
+        ));
     }
-    let start = offset + 4;
-    let end = start
-        .checked_add(payload_len)
-        .ok_or_else(|| "Archive V2 role marker length overflow".to_string())?;
-    if end.checked_add(32) != Some(encoded.len())
-        || Hash::hash(&encoded[start..end]).0 != encoded[end..]
-    {
-        return Err("Archive V2 role marker checksum mismatch".to_string());
+    if marker.identity != catalog.identity {
+        return Err("Archive V2 role marker identity conflicts with the catalog".to_string());
     }
-    deserialize_legacy_bincode_strict(
-        &encoded[start..end],
-        ARCHIVE_V2_ROLE_MARKER_MAX_BYTES as u64,
-        "Archive V2 role marker",
-    )
-}
-
-fn store_runtime_archive_v2_role_marker(
-    path: &Path,
-    marker: &RuntimeArchiveV2RoleMarker,
-) -> Result<(), String> {
-    let payload = serialize_legacy_bincode(marker, "Archive V2 role marker")?;
-    if payload.len() > ARCHIVE_V2_ROLE_MARKER_MAX_BYTES {
-        return Err("Archive V2 role marker is too large".to_string());
+    if marker.role_config != config.role_config {
+        return Err(format!(
+            "Archive V2 role marker authorizes {}, but startup requested {}",
+            marker.role_config.role, config.role_config.role
+        ));
     }
-    let mut encoded =
-        Vec::with_capacity(ARCHIVE_V2_ROLE_MARKER_MAGIC.len() + 4 + payload.len() + 32);
-    encoded.extend_from_slice(ARCHIVE_V2_ROLE_MARKER_MAGIC);
-    encoded.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    encoded.extend_from_slice(&payload);
-    encoded.extend_from_slice(&Hash::hash(&payload).0);
-    let parent = path
-        .parent()
-        .ok_or_else(|| "Archive V2 role marker has no parent".to_string())?;
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("failed creating {}: {error}", parent.display()))?;
-    let temporary = parent.join(format!(
-        ".role-config.{}.{}.tmp",
-        std::process::id(),
-        ARCHIVE_V2_ROLE_MARKER_NONCE.fetch_add(1, Ordering::Relaxed)
-    ));
-    let mut file = fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&temporary)
-        .map_err(|error| format!("failed creating {}: {error}", temporary.display()))?;
-    let result = (|| {
-        file.write_all(&encoded)
-            .map_err(|error| format!("failed writing role marker: {error}"))?;
-        file.sync_all()
-            .map_err(|error| format!("failed syncing role marker: {error}"))?;
-        drop(file);
-        fs::rename(&temporary, path)
-            .map_err(|error| format!("failed publishing role marker: {error}"))?;
-        fs::File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| format!("failed syncing role marker directory: {error}"))
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result
+    Ok(true)
 }
 
 fn validate_mainnet_archive_contiguous_tip(
@@ -19783,6 +20910,9 @@ fn main() {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_post_block_effects_activation_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_staking_v2_activation_admin(&args) {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_recent_post_block_effects_repair_admin(&args) {
@@ -20558,7 +21688,21 @@ async fn run_validator() {
     let archive_v2_capability = Arc::new(RwLock::new(None));
     let mut deferred_archive_v2_config = None;
     if let Some(config) = archive_v2_config {
-        if startup_genesis_block.is_none() {
+        let marker_authorizes_no_genesis_start = if startup_genesis_block.is_none() {
+            match archive_v2_role_marker_authorizes_no_genesis_start(
+                &config,
+                &genesis_config.chain_id,
+            ) {
+                Ok(authorized) => authorized,
+                Err(error) => {
+                    error!("FATAL: Archive V2 role marker validation failed: {}", error);
+                    return;
+                }
+            }
+        } else {
+            false
+        };
+        if startup_genesis_block.is_none() && !marker_authorizes_no_genesis_start {
             if let Err(error) =
                 validate_deferred_runtime_archive_v2(&config, &genesis_config.chain_id)
             {
@@ -20574,6 +21718,11 @@ async fn run_validator() {
             );
             deferred_archive_v2_config = Some(config);
         } else {
+            if marker_authorizes_no_genesis_start {
+                info!(
+                    "🗄️  Activating Archive V2 from the verified role marker because slot 0 is outside the bounded hot store"
+                );
+            }
             match activate_runtime_archive_v2(
                 &state,
                 config,
@@ -22172,7 +23321,6 @@ async fn run_validator() {
         // PHASE-3: Clones needed for consensus-based slashing (opcode 27)
         let mempool_for_slash_blocks = mempool.clone();
         let slash_keypair_seed_for_blocks = validator_keypair.to_seed();
-        let p2p_config_for_slash_blocks = p2p_config.clone();
         let p2p_pm_for_slash_blocks = p2p_pm.clone();
         let bft_committing_for_blocks = bft_committing_slot.clone();
         let block_apply_lock_for_blocks = block_apply_lock.clone();
@@ -22180,8 +23328,10 @@ async fn run_validator() {
         let ws_event_tx_for_blocks = canonical_ws_event_tx.clone();
         let block_receiver_handle = tokio::spawn(async move {
             info!("🔄 Block receiver started");
-            // 1.7: Track (slot, validator) → block_hash to detect double-block equivocation
-            let mut seen_blocks: HashMap<(u64, [u8; 32]), Hash> = HashMap::new();
+            // Track only signature-verified headers. The full pair is required
+            // for independently verifiable, chain-bound DoubleBlockV2 proof.
+            let mut seen_blocks: HashMap<(u64, [u8; 32]), (Hash, lichen_core::BlockHeader)> =
+                HashMap::new();
             // VOTE-AUTHORITY: The shared VoteAuthority (Arc<Mutex<VoteAuthority>>)
             // is the sole gatekeeper for vote signing. Both the block receiver and
             // block producer use it. If slot is already voted, try_vote returns None.
@@ -22572,12 +23722,14 @@ async fn run_validator() {
                 // every chainable block is rechecked against the local pre-block
                 // validator set immediately before replay/storage.
 
-                // 1.7: Double-block equivocation detection
+                // Detect equivocation only after producer signature and block
+                // structure verification. V2 retains both signed headers so
+                // every validator can verify the fault independently.
                 {
                     let key = (block_slot, block.header.validator);
                     let block_hash = block.hash();
-                    if let Some(prev_hash) = seen_blocks.get(&key) {
-                        if *prev_hash != block_hash {
+                    if let Some((prev_hash, prev_header)) = seen_blocks.get(&key).cloned() {
+                        if prev_hash != block_hash {
                             error!(
                                 "🚨 CRITICAL: Double-block equivocation detected! Validator {} produced two different blocks for slot {} (hash1={}, hash2={})",
                                 Pubkey(block.header.validator).to_base58(),
@@ -22586,13 +23738,25 @@ async fn run_validator() {
                                 block_hash.to_hex(),
                             );
 
-                            // Create slashing evidence and submit to tracker
-                            let evidence = SlashingEvidence::new(
+                            let staking_v2_active =
+                                staking_v2_activation_slot_from_state(&state_for_blocks)
+                                    .ok()
+                                    .flatten()
+                                    .is_some_and(|activation_slot| block_slot >= activation_slot);
+                            let offense = if staking_v2_active {
+                                SlashingOffense::DoubleBlockV2 {
+                                    header_1: prev_header,
+                                    header_2: block.header.clone(),
+                                }
+                            } else {
                                 SlashingOffense::DoubleBlock {
                                     slot: block_slot,
-                                    block_hash_1: *prev_hash,
+                                    block_hash_1: prev_hash,
                                     block_hash_2: block_hash,
-                                },
+                                }
+                            };
+                            let evidence = SlashingEvidence::new(
+                                offense,
                                 Pubkey(block.header.validator),
                                 block_slot,
                                 validator_pubkey_for_block_slash,
@@ -22600,75 +23764,62 @@ async fn run_validator() {
                             );
 
                             let mut slasher = slashing_for_blocks.lock().await;
-                            if slasher.add_evidence(evidence.clone()) {
+                            let recorded = if staking_v2_active {
+                                slasher.add_evidence_with_chain_id(
+                                    evidence.clone(),
+                                    &block_signature_chain_id,
+                                )
+                            } else {
+                                slasher.add_evidence(evidence.clone())
+                            };
+                            let tracker_snapshot = recorded.then(|| slasher.clone());
+                            drop(slasher);
+                            if recorded {
+                                if let Some(snapshot) = tracker_snapshot {
+                                    if let Err(error) =
+                                        state_for_blocks.put_slashing_tracker(&snapshot)
+                                    {
+                                        error!(
+                                            "Failed to durably persist DoubleBlock evidence: {}",
+                                            error
+                                        );
+                                        continue;
+                                    }
+                                }
                                 info!(
                                     "⚔️  DoubleBlock slashing evidence recorded for {}",
                                     Pubkey(block.header.validator).to_base58()
                                 );
-                                // Broadcast evidence to network
                                 let evidence_msg = P2PMessage::new(
                                     MessageType::SlashingEvidence(evidence.clone()),
                                     local_addr,
                                 );
                                 peer_mgr_for_sync.broadcast(evidence_msg).await;
 
-                                // PHASE-3: Submit SlashValidator tx through consensus
-                                // (opcode 27) so all nodes apply the same penalty
-                                if let Ok(evidence_bytes) = serialize_legacy_bincode_limited(
-                                    &evidence,
-                                    SLASHING_EVIDENCE_CODEC_LIMIT_BYTES,
-                                    "slashing evidence",
-                                ) {
-                                    let mut ix_data = vec![27u8];
-                                    ix_data.extend_from_slice(&evidence_bytes);
-                                    let tip = state_for_blocks.get_last_slot().unwrap_or(0);
-                                    if let Ok(Some(tip_block)) =
-                                        state_for_blocks.get_block_by_slot(tip)
+                                if staking_v2_active {
+                                    match submit_staking_v2_slash_transaction(
+                                        &state_for_blocks,
+                                        &mempool_for_slash_blocks,
+                                        Some(&p2p_pm_for_slash_blocks),
+                                        local_addr,
+                                        &block_signature_chain_id,
+                                        &slash_keypair_seed_for_blocks,
+                                        &evidence,
+                                    )
+                                    .await
                                     {
-                                        let ix = lichen_core::Instruction {
-                                            program_id: lichen_core::processor::SYSTEM_PROGRAM_ID,
-                                            accounts: vec![Pubkey(block.header.validator)],
-                                            data: ix_data,
-                                        };
-                                        let msg =
-                                            lichen_core::Message::new(vec![ix], tip_block.hash());
-                                        let mut tx = Transaction::new(msg);
-                                        let kp = Keypair::from_seed(&slash_keypair_seed_for_blocks);
-                                        let chain_id = runtime_genesis_config_for_blocks
-                                            .read()
-                                            .await
-                                            .chain_id
-                                            .clone();
-                                        let sig = kp.sign(
-                                            &tx.message.signing_bytes_for_chain_id(&chain_id),
-                                        );
-                                        tx.signatures.push(sig);
-                                        {
-                                            let mut pool = mempool_for_slash_blocks.lock().await;
-                                            if let Err(e) = pool.add_transaction(tx.clone(), 0, 0) {
-                                                warn!("⚠️  Failed to add SlashValidator tx to mempool: {}", e);
-                                            }
-                                        }
-                                        let target_id = tx.hash().0;
-                                        let slash_msg = lichen_p2p::P2PMessage::new(
-                                            lichen_p2p::MessageType::Transaction(tx),
-                                            p2p_config_for_slash_blocks.listen_addr,
-                                        );
-                                        p2p_pm_for_slash_blocks
-                                            .route_to_closest(
-                                                &target_id,
-                                                lichen_p2p::NON_CONSENSUS_FANOUT,
-                                                slash_msg,
-                                            )
-                                            .await;
-                                        info!(
-                                            "📝 Submitted SlashValidator tx for DoubleBlock by {}",
+                                        Ok(transaction_hash) => info!(
+                                            "📝 Submitted proof-carrying SlashValidator V2 tx {} for DoubleBlock by {}",
+                                            transaction_hash.to_hex(),
                                             Pubkey(block.header.validator).to_base58()
-                                        );
+                                        ),
+                                        Err(error) => warn!(
+                                            "⚠️  Failed to submit proof-carrying DoubleBlock slash: {}",
+                                            error
+                                        ),
                                     }
                                 }
                             }
-                            drop(slasher);
 
                             // Reject the conflicting block
                             continue;
@@ -22709,7 +23860,7 @@ async fn run_validator() {
                             }
                         }
                     }
-                    seen_blocks.insert(key, block_hash);
+                    seen_blocks.insert(key, (block_hash, block.header.clone()));
 
                     // Prune entries older than 1000 slots to bound memory
                     if block_slot > prune_below_slot + 2000 {
@@ -23506,12 +24657,18 @@ async fn run_validator() {
                                         err
                                     )
                                 });
-                                genesis_seed_margin_prices(
+                                if let Err(err) = genesis_seed_margin_prices(
                                     &state_for_blocks,
                                     &gpk,
-                                    block.header.timestamp,
+                                    block.header.slot,
                                     &genesis_prices,
-                                );
+                                ) {
+                                    tracing::error!(
+                                        "genesis margin seeding during sync failed: {}",
+                                        err
+                                    );
+                                    std::process::exit(1);
+                                }
                                 if let Err(err) = genesis_seed_analytics_prices(
                                     &state_for_blocks,
                                     &gpk,
@@ -23595,11 +24752,17 @@ async fn run_validator() {
                                 // Legacy genesis replay has no opcode-41 stats bundle, so
                                 // seed the non-root consensus oracle prices before later
                                 // block replay depends on them.
-                                genesis_seed_consensus_oracle_prices(
+                                if let Err(err) = genesis_seed_consensus_oracle_prices(
                                     &state_for_blocks,
                                     0, // genesis slot
                                     &genesis_prices,
-                                );
+                                ) {
+                                    error!(
+                                        "Failed to seed consensus oracle prices during genesis sync: {}",
+                                        err
+                                    );
+                                    std::process::exit(1);
+                                }
 
                                 // NOW store the genesis block and advance last_slot.
                                 // This must happen AFTER reconstruction so the block
@@ -24918,12 +26081,6 @@ async fn run_validator() {
         let local_addr_for_slash = p2p_config.listen_addr;
         let finality_for_votes = finality_tracker.clone();
         let state_for_votes = state.clone();
-        // PHASE-3: Clones needed for consensus-based slashing (opcode 27)
-        let mempool_for_slash_votes = mempool.clone();
-        let slash_keypair_seed_for_votes = validator_keypair.to_seed();
-        let p2p_config_for_slash_votes = p2p_config.clone();
-        let runtime_genesis_config_for_votes = runtime_genesis_config.clone();
-
         tokio::spawn(async move {
             info!("🔄 Vote receiver started");
 
@@ -24961,6 +26118,19 @@ async fn run_validator() {
                             vote.slot
                         );
 
+                        let staking_v2_active =
+                            staking_v2_activation_slot_from_state(&state_for_votes)
+                                .ok()
+                                .flatten()
+                                .is_some_and(|activation_slot| vote.slot >= activation_slot);
+                        if staking_v2_active {
+                            warn!(
+                                "Ignoring legacy unbound Vote equivocation at slot {}; proof-carrying BFT prevote/precommit evidence is authoritative after Staking V2 activation",
+                                vote.slot
+                            );
+                            continue;
+                        }
+
                         let evidence = SlashingEvidence::new(
                             SlashingOffense::DoubleVote {
                                 slot: vote.slot,
@@ -24973,15 +26143,15 @@ async fn run_validator() {
                             vote.timestamp / 1000,
                         );
 
-                        // Add to slashing tracker
                         let mut slasher = slashing_for_votes.lock().await;
-                        if slasher.add_evidence(evidence.clone()) {
+                        let recorded = slasher.add_evidence(evidence.clone());
+                        drop(slasher);
+                        if recorded {
                             info!(
-                                "⚔️  Slashing evidence recorded for {}",
+                                "⚔️  Legacy slashing evidence recorded for {}",
                                 vote.validator.to_base58()
                             );
 
-                            // Broadcast evidence to network
                             if let Some(ref peer_mgr) = peer_mgr_for_slash {
                                 let evidence_msg = P2PMessage::new(
                                     MessageType::SlashingEvidence(evidence.clone()),
@@ -24989,63 +26159,7 @@ async fn run_validator() {
                                 );
                                 peer_mgr.broadcast(evidence_msg).await;
                             }
-
-                            // PHASE-3: Submit SlashValidator tx through consensus
-                            // (opcode 27) so all nodes apply the same penalty
-                            if let Ok(evidence_bytes) = serialize_legacy_bincode_limited(
-                                &evidence,
-                                SLASHING_EVIDENCE_CODEC_LIMIT_BYTES,
-                                "slashing evidence",
-                            ) {
-                                let mut ix_data = vec![27u8];
-                                ix_data.extend_from_slice(&evidence_bytes);
-                                let tip = state_for_votes.get_last_slot().unwrap_or(0);
-                                if let Ok(Some(tip_block)) = state_for_votes.get_block_by_slot(tip)
-                                {
-                                    let ix = lichen_core::Instruction {
-                                        program_id: lichen_core::processor::SYSTEM_PROGRAM_ID,
-                                        accounts: vec![vote.validator],
-                                        data: ix_data,
-                                    };
-                                    let msg = lichen_core::Message::new(vec![ix], tip_block.hash());
-                                    let mut tx = Transaction::new(msg);
-                                    let kp = Keypair::from_seed(&slash_keypair_seed_for_votes);
-                                    let chain_id = runtime_genesis_config_for_votes
-                                        .read()
-                                        .await
-                                        .chain_id
-                                        .clone();
-                                    let sig =
-                                        kp.sign(&tx.message.signing_bytes_for_chain_id(&chain_id));
-                                    tx.signatures.push(sig);
-                                    {
-                                        let mut pool = mempool_for_slash_votes.lock().await;
-                                        if let Err(e) = pool.add_transaction(tx.clone(), 0, 0) {
-                                            warn!("⚠️  Failed to add SlashValidator tx to mempool: {}", e);
-                                        }
-                                    }
-                                    if let Some(ref peer_mgr) = peer_mgr_for_slash {
-                                        let target_id = tx.hash().0;
-                                        let slash_msg = lichen_p2p::P2PMessage::new(
-                                            lichen_p2p::MessageType::Transaction(tx),
-                                            p2p_config_for_slash_votes.listen_addr,
-                                        );
-                                        peer_mgr
-                                            .route_to_closest(
-                                                &target_id,
-                                                lichen_p2p::NON_CONSENSUS_FANOUT,
-                                                slash_msg,
-                                            )
-                                            .await;
-                                    }
-                                    info!(
-                                        "📝 Submitted SlashValidator tx for DoubleVote by {}",
-                                        vote.validator.to_base58()
-                                    );
-                                }
-                            }
                         }
-                        drop(slasher);
                         continue; // Don't add double vote
                     }
                 } else {
@@ -28913,6 +30027,7 @@ async fn run_validator() {
     // Process slashing evidence received from P2P peers
     {
         let slashing_for_evidence = slashing_tracker.clone();
+        let state_for_evidence = state.clone();
         tokio::spawn(async move {
             while let Some(evidence) = slashing_evidence_rx.recv().await {
                 info!(
@@ -28921,17 +30036,58 @@ async fn run_validator() {
                     evidence.validator.to_base58()
                 );
                 let mut slasher = slashing_for_evidence.lock().await;
-                if slasher.add_evidence(evidence.clone()) {
-                    info!(
-                        "⚔️  Evidence recorded for {} — sweep will apply penalty",
-                        evidence.validator.to_base58()
-                    );
-                    // AUDIT-FIX CRITICAL-1: Do NOT call should_slash()/slash() here.
-                    // The P2P handler must only record evidence. The periodic sweep
-                    // (every 100 slots) applies the correct tiered economic penalty.
-                    // Previously, calling slash() here marked the validator as slashed
-                    // without any economic penalty, and the sweep then skipped it
-                    // because is_slashed() returned true — a complete penalty bypass.
+                let tip = state_for_evidence.get_last_slot().unwrap_or(0);
+                let execution_slot = match tip.checked_add(1) {
+                    Some(slot) => slot,
+                    None => {
+                        warn!("Rejecting slashing evidence at terminal u64 slot");
+                        continue;
+                    }
+                };
+                let staking_v2_active = staking_v2_activation_slot_from_state(&state_for_evidence)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|activation| execution_slot >= activation);
+                let accepted = if staking_v2_active {
+                    let offense_slot = evidence.offense_slot();
+                    offense_slot == evidence.evidence_slot
+                        && offense_slot <= execution_slot
+                        && execution_slot.saturating_sub(offense_slot)
+                            <= lichen_core::SLASHING_V2_EVIDENCE_WINDOW_SLOTS
+                        && state_chain_id_metadata(&state_for_evidence)
+                            .filter(|chain_id| !chain_id.is_empty())
+                            .is_some_and(|chain_id| {
+                                slasher.add_evidence_with_chain_id(evidence.clone(), &chain_id)
+                            })
+                } else {
+                    slasher.add_evidence(evidence.clone())
+                };
+                let tracker_snapshot = accepted.then(|| slasher.clone());
+                drop(slasher);
+                if accepted {
+                    if let Some(snapshot) = tracker_snapshot {
+                        if let Err(error) = state_for_evidence.put_slashing_tracker(&snapshot) {
+                            error!(
+                                "Failed to durably persist received slashing evidence: {}",
+                                error
+                            );
+                            continue;
+                        }
+                    }
+                    if staking_v2_active {
+                        info!(
+                            "⚔️  Evidence recorded for {}; proof-carrying V2 penalties are applied only by the reporter-signed on-chain transaction",
+                            evidence.validator.to_base58()
+                        );
+                        // A receiving validator cannot sign for the original
+                        // reporter. The origin broadcasts both this proof and
+                        // its transaction; opcode 27 is the sole V2 mutation.
+                    } else {
+                        info!(
+                            "⚔️  Legacy evidence recorded for {}",
+                            evidence.validator.to_base58()
+                        );
+                    }
                 } else {
                     debug!(
                         "Duplicate or invalid evidence for {}",
@@ -30177,6 +31333,14 @@ async fn run_validator() {
             error!("FATAL: failed BFT startup post-effect gate: {}", e);
             std::process::exit(1);
         }
+        let completed_tip = state.get_last_slot().unwrap_or(0);
+        if let Err(e) = verify_staking_v2_activation_state_after_effects(&state, completed_tip) {
+            error!(
+                "FATAL: failed Staking V2 startup activation gate at completed tip {}: {}",
+                completed_tip, e
+            );
+            std::process::exit(1);
+        }
     }
     parent_hash = get_parent_hash(&state);
 
@@ -30261,6 +31425,7 @@ async fn run_validator() {
                 &state,
                 &validator_set,
                 &stake_pool,
+                &slashing_tracker,
                 &vote_aggregator,
                 &mempool,
                 &processor,
@@ -30300,6 +31465,7 @@ async fn run_validator() {
                 &state,
                 &validator_set,
                 &stake_pool,
+                &slashing_tracker,
                 &vote_aggregator,
                 &mempool,
                 &processor,
@@ -30338,6 +31504,7 @@ async fn run_validator() {
                 &state,
                 &validator_set,
                 &stake_pool,
+                &slashing_tracker,
                 &vote_aggregator,
                 &mempool,
                 &processor,
@@ -30595,6 +31762,7 @@ async fn run_validator() {
                         &state,
                         &validator_set,
                         &stake_pool,
+                        &slashing_tracker,
                         &vote_aggregator,
                         &mempool,
                         &processor,
@@ -30638,6 +31806,7 @@ async fn run_validator() {
                 &state,
                 &validator_set,
                 &stake_pool,
+                &slashing_tracker,
                 &vote_aggregator,
                 &mempool,
                 &processor,
@@ -30810,9 +31979,10 @@ async fn run_validator() {
                     &bft,
                     &mut consensus_wal,
                     &state,
-                    &validator_set,
-                    &stake_pool,
-                    &vote_aggregator,
+                   &validator_set,
+                   &stake_pool,
+                    &slashing_tracker,
+                   &vote_aggregator,
                     &mempool,
                     &processor,
                     &finality_tracker,
@@ -30856,9 +32026,10 @@ async fn run_validator() {
                     &bft,
                     &mut consensus_wal,
                     &state,
-                    &validator_set,
-                    &stake_pool,
-                    &vote_aggregator,
+                   &validator_set,
+                   &stake_pool,
+                    &slashing_tracker,
+                   &vote_aggregator,
                     &mempool,
                     &processor,
                     &finality_tracker,
@@ -30902,9 +32073,10 @@ async fn run_validator() {
                     &bft,
                     &mut consensus_wal,
                     &state,
-                    &validator_set,
-                    &stake_pool,
-                    &vote_aggregator,
+                       &validator_set,
+                       &stake_pool,
+                        &slashing_tracker,
+                       &vote_aggregator,
                     &mempool,
                     &processor,
                     &finality_tracker,
@@ -31000,9 +32172,10 @@ async fn run_validator() {
                             &bft,
                             &mut consensus_wal,
                             &state,
-                            &validator_set,
-                            &stake_pool,
-                            &vote_aggregator,
+                       &validator_set,
+                       &stake_pool,
+                        &slashing_tracker,
+                       &vote_aggregator,
                             &mempool,
                             &processor,
                             &finality_tracker,
@@ -31058,9 +32231,10 @@ async fn run_validator() {
                         &bft,
                         &mut consensus_wal,
                         &state,
-                        &validator_set,
-                        &stake_pool,
-                        &vote_aggregator,
+                       &validator_set,
+                       &stake_pool,
+                        &slashing_tracker,
+                       &vote_aggregator,
                         &mempool,
                         &processor,
                         &finality_tracker,
@@ -31147,9 +32321,10 @@ async fn run_validator() {
                                     &bft,
                                     &mut consensus_wal,
                                     &state,
-                                    &validator_set,
-                                    &stake_pool,
-                                    &vote_aggregator,
+                           &validator_set,
+                           &stake_pool,
+                            &slashing_tracker,
+                           &vote_aggregator,
                                     &mempool,
                                     &processor,
                                     &finality_tracker,
@@ -31220,6 +32395,7 @@ async fn run_validator() {
                             &state,
                             &validator_set,
                             &stake_pool,
+                            &slashing_tracker,
                             &vote_aggregator,
                             &mempool,
                             &processor,
@@ -31314,6 +32490,7 @@ async fn run_validator() {
                                 &state,
                                 &validator_set,
                                 &stake_pool,
+                                &slashing_tracker,
                                 &vote_aggregator,
                                 &mempool,
                                 &processor,
@@ -31499,6 +32676,7 @@ async fn run_validator() {
                                 &state,
                                 &validator_set,
                                 &stake_pool,
+                                &slashing_tracker,
                                 &vote_aggregator,
                                 &mempool,
                                 &processor,
@@ -31532,6 +32710,7 @@ async fn run_validator() {
                         &state,
                         &validator_set,
                         &stake_pool,
+                        &slashing_tracker,
                         &vote_aggregator,
                         &mempool,
                         &processor,
@@ -31999,6 +33178,7 @@ async fn execute_consensus_actions(
     state: &StateStore,
     validator_set: &Arc<RwLock<ValidatorSet>>,
     stake_pool: &Arc<RwLock<StakePool>>,
+    slashing_tracker: &Arc<Mutex<lichen_core::SlashingTracker>>,
     vote_aggregator: &Arc<RwLock<VoteAggregator>>,
     mempool: &Arc<Mutex<Mempool>>,
     processor: &Arc<TxProcessor>,
@@ -32620,10 +33800,8 @@ async fn execute_consensus_actions(
             vote_type,
             hash_1,
             hash_2,
+            offense,
         } => {
-            // G-9 evidence reactor: log BFT-level equivocation and record
-            // it in the slashing tracker. The evidence is also broadcast
-            // so other validators can verify and apply the same penalty.
             warn!(
                 "⚔️  BFT EVIDENCE: Double-{} by {} at h={} r={} (hash1={} vs hash2={})",
                 vote_type,
@@ -32637,11 +33815,89 @@ async fn execute_consensus_actions(
                     .map(|h| hex::encode(&h.0[..4]))
                     .unwrap_or_else(|| "nil".into()),
             );
-            // NOTE: Full evidence submission (SlashingEvidence + SlashValidator tx)
-            // requires storing both conflicting signed messages. The SlashingTracker
-            // already handles Vote-level and Block-level evidence. BFT-level
-            // evidence is logged for monitoring; full provable evidence is a
-            // Phase 2 enhancement once signed prevote/precommit are retained.
+            let staking_v2_active = staking_v2_activation_slot_from_state(state)
+                .ok()
+                .flatten()
+                .is_some_and(|activation_slot| height >= activation_slot);
+            if !staking_v2_active {
+                warn!(
+                    "BFT equivocation at height {} occurred before Staking V2 activation; proof is retained in the WAL but cannot cross the legacy slashing boundary",
+                    height
+                );
+                return;
+            }
+            let chain_id = match state_chain_id_metadata(state) {
+                Some(chain_id) if !chain_id.is_empty() => chain_id,
+                _ => {
+                    error!("BFT: cannot verify equivocation without chain id");
+                    return;
+                }
+            };
+            let evidence_timestamp = state
+                .get_last_slot()
+                .ok()
+                .and_then(|tip| state.get_block_by_slot(tip).ok().flatten())
+                .map(|block| block.header.timestamp)
+                .unwrap_or(0);
+            let evidence = SlashingEvidence::new(
+                offense,
+                validator,
+                height,
+                bft.validator_pubkey,
+                evidence_timestamp,
+            );
+            if !evidence.verify_with_chain_id(&chain_id) {
+                error!(
+                    "BFT: internally generated {} equivocation proof failed strict verification",
+                    vote_type
+                );
+                return;
+            }
+            let tracker_snapshot = {
+                let mut tracker = slashing_tracker.lock().await;
+                tracker.add_evidence_with_chain_id(evidence.clone(), &chain_id);
+                tracker.clone()
+            };
+            if let Err(error) = state.put_slashing_tracker(&tracker_snapshot) {
+                error!(
+                    "BFT: refusing to broadcast equivocation evidence that was not durably recorded: {}",
+                    error
+                );
+                return;
+            }
+            if let Some(ref peer_manager) = p2p_peer_manager {
+                peer_manager
+                    .broadcast(P2PMessage::new(
+                        MessageType::SlashingEvidence(evidence.clone()),
+                        p2p_config.listen_addr,
+                    ))
+                    .await;
+            }
+            let reporter_seed = validator_keypair.to_seed();
+            match submit_staking_v2_slash_transaction(
+                state,
+                mempool,
+                p2p_peer_manager.as_ref(),
+                p2p_config.listen_addr,
+                &chain_id,
+                &reporter_seed,
+                &evidence,
+            )
+            .await
+            {
+                Ok(transaction_hash) => info!(
+                    "📝 Submitted proof-carrying SlashValidator V2 tx {} for BFT {} equivocation by {}",
+                    transaction_hash.to_hex(),
+                    vote_type,
+                    validator.to_base58()
+                ),
+                Err(error) => warn!(
+                    "⚠️  Failed to submit proof-carrying BFT {} slash for {}: {}",
+                    vote_type,
+                    validator.to_base58(),
+                    error
+                ),
+            }
         }
 
         ConsensusAction::Multiple(actions) => {
@@ -32654,6 +33910,7 @@ async fn execute_consensus_actions(
                     state,
                     validator_set,
                     stake_pool,
+                    slashing_tracker,
                     vote_aggregator,
                     mempool,
                     processor,
@@ -33534,7 +34791,7 @@ mod tests {
 
     #[test]
     fn stake_pool_reload_detector_tracks_known_stake_pool_opcodes() {
-        for opcode in [9, 10, 11, 26, 27, 31] {
+        for opcode in [9, 10, 11, 26, 27, 31, 38, 39] {
             let block =
                 make_block_with_txs(vec![make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, opcode)]);
             assert!(
@@ -35548,7 +36805,7 @@ mod tests {
 
         let mut committed_pool = initial_pool;
         committed_pool.distribute_block_reward(&validator, 1, true, GENESIS_SUPPLY_SPORES);
-        committed_pool.record_block_produced(&validator);
+        committed_pool.record_block_produced(&validator).unwrap();
         state
             .put_stake_pool(&committed_pool)
             .expect("persist simulated block effects");
@@ -35678,11 +36935,7 @@ mod tests {
                 },
                 lichen_core::GenesisStateCategory {
                     name: "stake_pool".to_string(),
-                    entries: vec![(
-                        b"pool".to_vec(),
-                        serialize_legacy_bincode(&pool, "test stake pool")
-                            .expect("serialize stake pool"),
-                    )],
+                    entries: vec![(b"pool".to_vec(), pool.storage_bytes().unwrap())],
                 },
                 lichen_core::GenesisStateCategory {
                     name: "mossstake_pool".to_string(),
@@ -36843,7 +38096,9 @@ mod tests {
 
         let actual = state.compute_state_root();
         let mut expected_pool = corrupted_pool.clone();
-        expected_pool.record_block_produced(&validator.pubkey());
+        expected_pool
+            .record_block_produced(&validator.pubkey())
+            .unwrap();
         let mut expected_batch = state.begin_batch_at_slot(parent.header.slot);
         expected_batch
             .put_stake_pool(&expected_pool)
@@ -37881,6 +39136,7 @@ mod tests {
         register_test_symbol(&state, "ORACLE", Pubkey([1u8; 32]));
         register_test_symbol(&state, "ANALYTICS", Pubkey([2u8; 32]));
         register_test_symbol(&state, "DEX", Pubkey([3u8; 32]));
+        register_test_symbol(&state, "DEXMARGIN", Pubkey([9u8; 32]));
 
         let genesis_key = Keypair::generate();
         state
@@ -37904,6 +39160,7 @@ mod tests {
         block.header.slot = 8;
         block.header.timestamp = 1_700_000_000;
         block.oracle_prices = vec![("wSOL".to_string(), 123), ("wETH".to_string(), 456)];
+        state.set_last_slot(8).expect("set committed test slot");
 
         apply_oracle_from_block(&state, &block).expect("apply consensus oracle mirror");
 
@@ -37922,6 +39179,11 @@ mod tests {
             .expect("get DEX registry")
             .expect("DEX registry present")
             .program;
+        let margin_program = state
+            .get_symbol_registry("DEXMARGIN")
+            .expect("get DEXMARGIN registry")
+            .expect("DEXMARGIN registry present")
+            .program;
 
         let oracle_wsol = state
             .get_contract_storage(&oracle_program, b"price_wSOL")
@@ -37931,6 +39193,17 @@ mod tests {
         assert_eq!(
             u64::from_le_bytes(oracle_wsol[0..8].try_into().expect("wSOL raw")),
             8_250_000_000
+        );
+        assert_eq!(
+            u64::from_le_bytes(oracle_wsol[8..16].try_into().expect("wSOL source slot")),
+            7,
+            "the mirror must preserve the consensus quote slot"
+        );
+        assert_eq!(
+            state
+                .get_contract_storage(&oracle_program, b"oracle_consensus_managed")
+                .expect("read consensus-managed mode"),
+            Some(vec![1u8])
         );
 
         let dex_band = state
@@ -37942,6 +39215,25 @@ mod tests {
             u64::from_le_bytes(dex_band[0..8].try_into().expect("dex band raw")),
             82_500_000_000
         );
+        assert_eq!(
+            u64::from_le_bytes(dex_band[8..16].try_into().expect("dex band source slot")),
+            7
+        );
+
+        for key in [b"mrg_mark_2".as_slice(), b"mrg_idx_2".as_slice()] {
+            let value = state
+                .get_contract_storage(&margin_program, key)
+                .expect("read margin oracle projection")
+                .expect("margin oracle projection present");
+            assert_eq!(
+                u64::from_le_bytes(value[0..8].try_into().expect("margin price")),
+                82_500_000_000
+            );
+            assert_eq!(
+                u64::from_le_bytes(value[8..16].try_into().expect("margin source slot")),
+                7
+            );
+        }
 
         let analytics_price = state
             .get_contract_storage(&analytics_program, b"ana_lp_2")
@@ -38045,6 +39337,7 @@ mod tests {
         let mut block = make_block_with_txs(vec![]);
         block.header.slot = 8;
         block.header.timestamp = 1_700_000_000;
+        state.set_last_slot(8).expect("set committed test slot");
 
         apply_oracle_from_block(&state, &block).expect("apply consensus oracle mirror");
 
@@ -38301,6 +39594,50 @@ mod tests {
     }
 
     #[test]
+    fn oracle_pair_projection_uses_checked_fixed_point_arithmetic() {
+        let prices = oracle_pair_prices(
+            OraclePairPriceInputs {
+                licn_usd_8dec: OracleFixed8Quote::new(10_000_000, 90),
+                wsol_usd_8dec: OracleFixed8Quote::new(8_250_000_000, 95),
+                weth_usd_8dec: OracleFixed8Quote::new(200_000_000_000, 96),
+                wbnb_usd_8dec: OracleFixed8Quote::new(61_000_000_000, 97),
+                wneo_usd_8dec: OracleFixed8Quote::new(307_500_000, 98),
+                wgas_usd_8dec: OracleFixed8Quote::new(165_000_000, 99),
+                wbtc_usd_8dec: OracleFixed8Quote::new(10_000_000_000_000, 100),
+            },
+            true,
+            true,
+            true,
+        );
+        let price = |pair_id| {
+            prices
+                .iter()
+                .find_map(|pair| (pair.pair_id == pair_id).then_some(pair.price_scaled))
+                .unwrap_or(0)
+        };
+        let source_slot = |pair_id| {
+            prices
+                .iter()
+                .find_map(|pair| (pair.pair_id == pair_id).then_some(pair.source_slot))
+                .unwrap_or(0)
+        };
+
+        assert_eq!(price(1), 100_000_000);
+        assert_eq!(price(2), 82_500_000_000);
+        assert_eq!(price(4), 825_000_000_000);
+        assert_eq!(price(13), 1_000_000_000_000_000);
+        assert_eq!(source_slot(2), 95);
+        assert_eq!(
+            source_slot(4),
+            90,
+            "cross quotes use the oldest source slot"
+        );
+        assert_eq!(oracle_usd_to_dex_price(u64::MAX), 0);
+        assert_eq!(oracle_micro_to_8dec(u64::MAX), 0);
+        assert_eq!(oracle_cross_to_dex_price(1, 0), 0);
+    }
+
+    #[test]
     fn oracle_attestation_defaults_bound_validator_ingress() {
         const {
             assert!(DEFAULT_ORACLE_ATTEST_MIN_SECS < DEFAULT_ORACLE_ATTEST_MAX_STALENESS_SECS);
@@ -38308,6 +39645,137 @@ mod tests {
         assert_eq!(DEFAULT_ORACLE_ATTEST_MIN_SECS, 30);
         assert_eq!(DEFAULT_ORACLE_ATTEST_MAX_STALENESS_SECS, 60);
         assert_eq!(DEFAULT_ORACLE_ATTEST_MIN_CHANGE_BPS, 10);
+    }
+
+    #[test]
+    fn binance_decimal_parser_is_exact_bounded_and_positive() {
+        assert_eq!(parse_positive_decimal_to_micro("123"), Some(123_000_000));
+        assert_eq!(
+            parse_positive_decimal_to_micro(" 145.12345678 "),
+            Some(145_123_456)
+        );
+        assert_eq!(parse_positive_decimal_to_micro("0.000001"), Some(1));
+        assert_eq!(parse_positive_decimal_to_micro("1."), Some(1_000_000));
+
+        for invalid in ["", "0", "0.0000009", "+1", "-1", ".5", "1.2.3", "NaN"] {
+            assert_eq!(
+                parse_positive_decimal_to_micro(invalid),
+                None,
+                "{invalid:?} must not become an oracle price"
+            );
+        }
+        assert_eq!(
+            parse_positive_decimal_to_micro("18446744073710"),
+            None,
+            "whole-unit scaling must not overflow u64"
+        );
+    }
+
+    #[test]
+    fn binance_ws_parser_accepts_raw_and_combined_trade_and_ticker_frames() {
+        let raw = parse_binance_ws_price(
+            r#"{"e":"aggTrade","E":1720000000123,"s":"SOLUSDT","p":"145.12345678"}"#,
+        )
+        .expect("parse raw aggregate trade");
+        assert_eq!(
+            raw,
+            BinanceWsPrice {
+                asset: OracleMarketAsset::Wsol,
+                price_micro: 145_123_456,
+                event_ms: 1_720_000_000_123,
+            }
+        );
+
+        let combined = parse_binance_ws_price(
+            r#"{"stream":"btcusdt@ticker","data":{"e":"24hrTicker","E":1720000000456,"s":"BTCUSDT","c":"65000.12500000"}}"#,
+        )
+        .expect("parse combined ticker");
+        assert_eq!(
+            combined,
+            BinanceWsPrice {
+                asset: OracleMarketAsset::Wbtc,
+                price_micro: 65_000_125_000,
+                event_ms: 1_720_000_000_456,
+            }
+        );
+    }
+
+    #[test]
+    fn binance_ws_parser_rejects_control_unknown_and_timeless_frames() {
+        for invalid in [
+            r#"{"result":null,"id":1}"#,
+            r#"{"e":"bookTicker","E":1720000000123,"s":"SOLUSDT","b":"1"}"#,
+            r#"{"e":"aggTrade","E":1720000000123,"s":"DOGEUSDT","p":"0.1"}"#,
+            r#"{"e":"aggTrade","s":"SOLUSDT","p":"145.1"}"#,
+            r#"{"e":"aggTrade","E":1720000000123,"s":"SOLUSDT","p":"0"}"#,
+        ] {
+            assert_eq!(
+                parse_binance_ws_price(invalid),
+                None,
+                "unexpected accepted frame: {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_oracle_prices_deduplicate_event_time_and_protect_fresh_ws_data() {
+        let prices = SharedOraclePrices::new();
+        let asset = OracleMarketAsset::Weth;
+
+        assert!(prices.record_ws_price(asset, 2_500_000_000, 10_000, 20_000));
+        assert!(!prices.record_ws_price(asset, 2_600_000_000, 10_000, 20_001));
+        assert!(!prices.record_ws_price(asset, 2_400_000_000, 9_999, 20_002));
+        assert_eq!(prices.price(asset).load(Ordering::Relaxed), 2_500_000_000);
+        assert!(prices.ws_price_is_fresh(asset, 34_999, 15_000));
+        assert!(!prices.record_rest_price_if_ws_stale(asset, 2_300_000_000, 34_999, 15_000));
+        assert_eq!(prices.price(asset).load(Ordering::Relaxed), 2_500_000_000);
+
+        assert!(prices.record_rest_price_if_ws_stale(asset, 2_300_000_000, 35_001, 15_000));
+        assert_eq!(prices.price(asset).load(Ordering::Relaxed), 2_300_000_000);
+        assert!(prices.source_price_is_fresh(asset, 95_001, 60_000));
+        assert!(!prices.source_price_is_fresh(asset, 95_002, 60_000));
+    }
+
+    #[test]
+    fn shared_oracle_prices_reject_stale_and_future_dated_provider_events() {
+        let prices = SharedOraclePrices::new();
+        let asset = OracleMarketAsset::Wsol;
+        let received_ms = 1_000_000;
+
+        assert!(!prices.record_ws_price(
+            asset,
+            100_000_000,
+            received_ms - ORACLE_WS_EVENT_MAX_LAG_MS - 1,
+            received_ms,
+        ));
+        assert!(!prices.record_ws_price(
+            asset,
+            100_000_000,
+            received_ms + ORACLE_WS_EVENT_MAX_FUTURE_SKEW_MS + 1,
+            received_ms,
+        ));
+        assert_eq!(prices.price(asset).load(Ordering::Relaxed), 0);
+        assert!(!prices.ws_healthy.load(Ordering::Relaxed));
+
+        assert!(prices.record_ws_price(asset, 100_000_000, received_ms - 1, received_ms));
+        assert!(!prices.ws_price_is_fresh(asset, received_ms - 1, 15_000));
+    }
+
+    #[test]
+    fn default_binance_feed_is_one_documented_multi_asset_combined_stream() {
+        let stream_list = DEFAULT_BINANCE_WS_URL
+            .strip_prefix("wss://stream.binance.com:9443/stream?streams=")
+            .expect("documented combined-stream endpoint");
+        assert!(!DEFAULT_BINANCE_WS_URL.contains("/ws/"));
+
+        let streams = stream_list.split('/').collect::<Vec<_>>();
+        assert_eq!(streams.len(), ORACLE_MARKET_ASSET_COUNT * 2);
+        for symbol in [
+            "solusdt", "ethusdt", "bnbusdt", "neousdt", "gasusdt", "btcusdt",
+        ] {
+            assert!(streams.contains(&format!("{symbol}@aggTrade").as_str()));
+            assert!(streams.contains(&format!("{symbol}@ticker").as_str()));
+        }
     }
 
     #[test]
@@ -38455,7 +39923,7 @@ mod tests {
         pool.stake(producer, MIN_VALIDATOR_STAKE, 0)
             .expect("stake producer");
         pool.distribute_block_reward(&producer, 7, true, GENESIS_SUPPLY_SPORES);
-        pool.record_block_produced(&producer);
+        pool.record_block_produced(&producer).unwrap();
         state.put_stake_pool(&pool).expect("put stake pool");
         assert!(
             state
@@ -38498,6 +39966,151 @@ mod tests {
                 .get_stake_pool_production_hash(7)
                 .expect("read production marker"),
             Some(block.hash())
+        );
+    }
+
+    #[test]
+    fn staking_v2_activation_and_next_epoch_settlement_route_exact_rewards() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let producer = Pubkey([71u8; 32]);
+        let direct_delegator = Pubkey([72u8; 32]);
+        let moss_staker = Pubkey([73u8; 32]);
+        let activation_slot = lichen_core::SLOTS_PER_EPOCH;
+        state
+            .put_metadata(
+                lichen_core::STAKING_V2_ACTIVATION_SLOT_METADATA_KEY,
+                &activation_slot.to_le_bytes(),
+            )
+            .expect("put V2 activation");
+
+        let mut validator_set = ValidatorSet::new();
+        let mut validator = ValidatorInfo::new(producer, 0);
+        validator.stake = MIN_VALIDATOR_STAKE;
+        validator_set.add_validator(validator);
+        let validator_set = Arc::new(RwLock::new(validator_set));
+
+        let delegated = MIN_VALIDATOR_STAKE / 10;
+        let mut pool = StakePool::new();
+        pool.stake(producer, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake producer");
+        pool.delegate(direct_delegator, &producer, delegated)
+            .expect("delegate directly");
+        state.put_stake_pool(&pool).expect("put legacy stake pool");
+        let stake_pool = Arc::new(RwLock::new(pool));
+
+        let mut mossstake_pool = MossStakePool::new();
+        mossstake_pool
+            .stake(moss_staker, delegated, 0)
+            .expect("stake through MossStake");
+        state
+            .put_mossstake_pool(&mossstake_pool)
+            .expect("put MossStake pool");
+
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let activation_block = Block::new(
+            activation_slot,
+            Hash::default(),
+            Hash::default(),
+            producer.0,
+            vec![],
+        );
+        runtime.block_on(apply_block_effects(
+            &state,
+            &validator_set,
+            &stake_pool,
+            &activation_block,
+            false,
+            MIN_VALIDATOR_STAKE,
+        ));
+
+        let activated = state.get_stake_pool().expect("read activated pool");
+        let activated_state = activated.staking_v2_state().expect("V2 initialized");
+        assert_eq!(activated_state.activation_slot, activation_slot);
+        assert_eq!(activated_state.current_epoch, 1);
+        let initial_moss_backing = state
+            .get_mossstake_pool()
+            .expect("read activated MossStake pool")
+            .st_licn_token
+            .total_licn_staked;
+        assert_eq!(
+            activated.mossstake_allocation_total().unwrap(),
+            initial_moss_backing
+        );
+        let minted_after_legacy = state.get_total_minted().expect("read legacy mint");
+
+        // Model a fully performing one-validator epoch without executing
+        // hundreds of thousands of otherwise empty test blocks. The boundary
+        // block below contributes the final production count.
+        let mut completed = activated;
+        completed
+            .get_stake_mut(&producer)
+            .expect("producer stake")
+            .blocks_produced += lichen_core::SLOTS_PER_EPOCH - 1;
+        completed.validate_v2_invariants().unwrap();
+        state
+            .put_stake_pool(&completed)
+            .expect("put completed epoch counters");
+        runtime.block_on(async {
+            *stake_pool.write().await = completed;
+        });
+
+        let settlement_slot = activation_slot + lichen_core::SLOTS_PER_EPOCH;
+        let settlement_block = Block::new(
+            settlement_slot,
+            activation_block.hash(),
+            Hash::default(),
+            producer.0,
+            vec![],
+        );
+        runtime.block_on(apply_block_effects(
+            &state,
+            &validator_set,
+            &stake_pool,
+            &settlement_block,
+            false,
+            MIN_VALIDATOR_STAKE,
+        ));
+
+        let settled = state.get_stake_pool().expect("read settled pool");
+        let settled_state = settled.staking_v2_state().expect("V2 remains active");
+        assert_eq!(settled_state.current_epoch, 2);
+        assert_eq!(settled_state.last_settled_epoch, Some(1));
+        assert_eq!(
+            settled_state
+                .validators
+                .get(&producer)
+                .expect("current producer accounting")
+                .production_baseline,
+            lichen_core::SLOTS_PER_EPOCH + 1
+        );
+        assert!(
+            state.get_total_minted().expect("read V2 mint") > minted_after_legacy,
+            "a fully performing epoch must mint its dynamic security budget"
+        );
+        assert!(
+            state
+                .get_account(&direct_delegator)
+                .expect("read direct delegator")
+                .expect("direct delegator credited")
+                .spendable
+                > 0
+        );
+        let rewarded_moss = state
+            .get_mossstake_pool()
+            .expect("read rewarded MossStake pool");
+        assert!(rewarded_moss.st_licn_token.total_licn_staked > initial_moss_backing);
+        assert!(
+            rewarded_moss
+                .positions
+                .get(&moss_staker)
+                .expect("MossStake position")
+                .rewards_earned
+                > 0
+        );
+        assert_eq!(
+            settled.mossstake_allocation_total().unwrap(),
+            rewarded_moss.st_licn_token.total_licn_staked
         );
     }
 
@@ -38610,6 +40223,163 @@ mod tests {
         assert_eq!(
             post_block_effects_activation_slot(&state).expect("read activated state"),
             Some(8)
+        );
+    }
+
+    #[test]
+    fn staking_v2_activation_admin_requires_next_epoch_and_exact_confirmation() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        {
+            let state = StateStore::open(temp_dir.path()).expect("open state");
+            state
+                .put_metadata(CHAIN_ID_METADATA_KEY, b"lichen-testnet-1")
+                .expect("put chain id");
+            let validator = Pubkey([0x71; 32]);
+            let mut stake_pool = StakePool::new();
+            stake_pool
+                .stake(validator, MIN_VALIDATOR_STAKE, 0)
+                .expect("stake activation validator");
+            state
+                .put_stake_pool(&stake_pool)
+                .expect("put legacy stake pool");
+            state
+                .put_mossstake_pool(&MossStakePool::new())
+                .expect("put empty MossStake pool");
+
+            let mut validator_account =
+                Account::new(MIN_VALIDATOR_STAKE / 1_000_000_000, SYSTEM_ACCOUNT_OWNER);
+            validator_account
+                .stake(MIN_VALIDATOR_STAKE)
+                .expect("classify validator stake");
+            state
+                .put_account(&validator, &validator_account)
+                .expect("put validator account");
+            let reserve = Pubkey([0x72; 32]);
+            state
+                .put_account(
+                    &reserve,
+                    &Account::new(
+                        (GENESIS_SUPPLY_SPORES - MIN_VALIDATOR_STAKE) / 1_000_000_000,
+                        SYSTEM_ACCOUNT_OWNER,
+                    ),
+                )
+                .expect("put remaining supply account");
+
+            let mut validators = ValidatorSet::new();
+            let mut validator_info = ValidatorInfo::new(validator, 0);
+            validator_info.stake = MIN_VALIDATOR_STAKE;
+            validators.add_validator(validator_info);
+            state
+                .save_validator_set(&validators)
+                .expect("put validator set");
+            let tip = Block::new(777, Hash::default(), Hash::default(), [1u8; 32], vec![]);
+            state
+                .put_block_atomic(&tip, None, None)
+                .expect("store stopped tip");
+        }
+        let path = temp_dir.path().to_string_lossy().into_owned();
+        let expected_slot = lichen_core::SLOTS_PER_EPOCH;
+        let args = |slot: u64, execute: bool, confirmation: Option<String>| {
+            let mut args = vec![
+                "lichen-validator".to_string(),
+                PREPARE_STAKING_V2_ACTIVATION_FLAG.to_string(),
+                "--network".to_string(),
+                "testnet".to_string(),
+                "--db-path".to_string(),
+                path.clone(),
+                "--activation-slot".to_string(),
+                slot.to_string(),
+            ];
+            if execute {
+                args.push("--execute".to_string());
+            }
+            if let Some(confirmation) = confirmation {
+                args.extend(["--confirm".to_string(), confirmation]);
+            }
+            args
+        };
+
+        assert_eq!(
+            maybe_run_staking_v2_activation_admin(&args(expected_slot * 2, false, None)),
+            Some(1)
+        );
+        assert_eq!(
+            maybe_run_staking_v2_activation_admin(&args(expected_slot, false, None)),
+            Some(0)
+        );
+        assert_eq!(
+            staking_v2_activation_slot_from_state(
+                &StateStore::open(temp_dir.path()).expect("read dry-run state")
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            maybe_run_staking_v2_activation_admin(&args(expected_slot, true, None)),
+            Some(1)
+        );
+        let confirmation = format!("staking-v2-activation:testnet:{expected_slot}");
+        assert_eq!(
+            maybe_run_staking_v2_activation_admin(&args(expected_slot, true, Some(confirmation))),
+            Some(0)
+        );
+        let state = StateStore::open(temp_dir.path()).expect("read prepared state");
+        assert_eq!(
+            staking_v2_activation_slot_from_state(&state).unwrap(),
+            Some(expected_slot)
+        );
+        verify_staking_v2_activation_state_after_effects(&state, 777)
+            .expect("future activation may remain uninitialized");
+        assert!(
+            verify_staking_v2_activation_state_after_effects(&state, expected_slot)
+                .unwrap_err()
+                .contains("epoch state is missing")
+        );
+
+        let validator = Pubkey([0x71; 32]);
+        let mut pool = state.get_stake_pool().expect("read activation pool");
+        pool.initialize_staking_v2(expected_slot, &[validator])
+            .expect("initialize V2 at boundary");
+        state.put_stake_pool(&pool).expect("persist V2 pool");
+        verify_staking_v2_activation_state_after_effects(&state, expected_slot)
+            .expect("exact activated epoch state");
+        assert!(verify_staking_v2_activation_state_after_effects(
+            &state,
+            expected_slot + lichen_core::SLOTS_PER_EPOCH
+        )
+        .unwrap_err()
+        .contains("epoch state is stale"));
+    }
+
+    #[test]
+    fn staking_v2_activation_liability_scan_detects_legacy_unowned_stake() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let validator = Pubkey([0x81; 32]);
+        let legacy_staker = Pubkey([0x82; 32]);
+        let mut pool = StakePool::new();
+        pool.stake(validator, MIN_VALIDATOR_STAKE, 0)
+            .expect("record legacy validator-bucket stake");
+
+        state
+            .put_account(&validator, &Account::new(0, SYSTEM_ACCOUNT_OWNER))
+            .expect("put validator account");
+        let mut staker_account =
+            Account::new(MIN_VALIDATOR_STAKE / 1_000_000_000, SYSTEM_ACCOUNT_OWNER);
+        staker_account
+            .stake(MIN_VALIDATOR_STAKE)
+            .expect("classify legacy staker balance");
+        state
+            .put_account(&legacy_staker, &staker_account)
+            .expect("put legacy staker account");
+
+        let report = staking_v2_activation_account_liabilities(&state, &pool)
+            .expect("scan aggregate-compatible legacy stake");
+        assert_eq!(report.staked_spores, pool.total_stake());
+        assert_eq!(report.ownership_mismatch_count, 2);
+        assert_eq!(
+            report.first_ownership_mismatch,
+            Some((validator, 0, MIN_VALIDATOR_STAKE))
         );
     }
 
@@ -45163,8 +46933,8 @@ mod tests {
     #[test]
     fn archive_v2_role_marker_is_checksummed_and_roundtrips() {
         let root = tempfile::tempdir().expect("create role marker root");
-        let path = root.path().join("role-config-v1.bin");
-        let marker = RuntimeArchiveV2RoleMarker {
+        let path = root.path().join(ARCHIVE_V2_ROLE_MARKER_FILENAME);
+        let marker = ArchiveV2RoleMarker {
             marker_version: 1,
             identity: lichen_core::archive_v2::ArchiveV2Identity {
                 network_id: "marker-testnet".to_string(),
@@ -45178,14 +46948,257 @@ mod tests {
             },
             genesis_mossstake_slot_only: true,
         };
-        store_runtime_archive_v2_role_marker(&path, &marker).unwrap();
-        assert_eq!(load_runtime_archive_v2_role_marker(&path).unwrap(), marker);
+        store_archive_v2_role_marker_create_new(&path, &marker).unwrap();
+        assert_eq!(load_archive_v2_role_marker(&path).unwrap(), marker);
         let mut damaged = fs::read(&path).unwrap();
         let last = damaged.len() - 1;
         damaged[last] ^= 1;
         fs::write(&path, damaged).unwrap();
-        assert!(load_runtime_archive_v2_role_marker(&path)
+        assert!(load_archive_v2_role_marker(&path)
             .unwrap_err()
             .contains("checksum"));
+    }
+
+    #[test]
+    fn archive_v2_no_genesis_start_requires_exact_valid_role_marker() {
+        let root = tempfile::tempdir().expect("create Archive V2 root");
+        let config = resolve_runtime_archive_v2_config(&[
+            "validator".to_string(),
+            "--archive-v2-role=consensus".to_string(),
+            format!("--archive-v2-root={}", root.path().display()),
+            "--archive-v2-recent-history-slots=200000".to_string(),
+        ])
+        .unwrap()
+        .unwrap();
+        let identity = lichen_core::archive_v2::ArchiveV2Identity {
+            network_id: "marker-start-testnet".to_string(),
+            genesis_hash: Hash::hash(b"marker-start-genesis"),
+        };
+        ArchiveV2Catalog::empty(identity.clone())
+            .unwrap()
+            .store_atomic(&root.path().join("catalog.av2"))
+            .unwrap();
+
+        assert!(!archive_v2_role_marker_authorizes_no_genesis_start(
+            &config,
+            "marker-start-testnet"
+        )
+        .unwrap());
+
+        let marker = ArchiveV2RoleMarker {
+            marker_version: 1,
+            identity,
+            role_config: config.role_config.clone(),
+            genesis_mossstake_slot_only: false,
+        };
+        let marker_path = root.path().join(ARCHIVE_V2_ROLE_MARKER_FILENAME);
+        store_archive_v2_role_marker_create_new(&marker_path, &marker).unwrap();
+        assert!(archive_v2_role_marker_authorizes_no_genesis_start(
+            &config,
+            "marker-start-testnet"
+        )
+        .unwrap());
+
+        let conflicting_config = resolve_runtime_archive_v2_config(&[
+            "validator".to_string(),
+            "--archive-v2-role=consensus".to_string(),
+            format!("--archive-v2-root={}", root.path().display()),
+            "--archive-v2-recent-history-slots=210000".to_string(),
+        ])
+        .unwrap()
+        .unwrap();
+        assert!(archive_v2_role_marker_authorizes_no_genesis_start(
+            &conflicting_config,
+            "marker-start-testnet"
+        )
+        .unwrap_err()
+        .contains("authorizes"));
+
+        let mut damaged = fs::read(&marker_path).unwrap();
+        let last = damaged.len() - 1;
+        damaged[last] ^= 1;
+        fs::write(&marker_path, damaged).unwrap();
+        assert!(archive_v2_role_marker_authorizes_no_genesis_start(
+            &config,
+            "marker-start-testnet"
+        )
+        .unwrap_err()
+        .contains("checksum"));
+    }
+
+    #[test]
+    fn archive_v2_valid_marker_activates_bounded_hot_state_without_slot_zero() {
+        let data = tempfile::tempdir().expect("create bounded hot state");
+        let archive = tempfile::tempdir().expect("create Archive V2 root");
+        fs::create_dir_all(archive.path().join("objects")).unwrap();
+        fs::create_dir_all(archive.path().join("manifests")).unwrap();
+        fs::write(data.path().join("genesis.json"), b"recovery").unwrap();
+
+        let mut blocks = vec![Block::genesis(
+            Hash::hash(b"marker-activation-state-0"),
+            1,
+            Vec::new(),
+        )];
+        for slot in 1..=10 {
+            let parent = blocks.last().unwrap().hash();
+            blocks.push(Block::new_with_timestamp(
+                slot,
+                parent,
+                Hash::hash(format!("marker-activation-state-{slot}").as_bytes()),
+                [0x42; 32],
+                Vec::new(),
+                slot + 1,
+            ));
+        }
+        let identity = lichen_core::archive_v2::ArchiveV2Identity {
+            network_id: "marker-activation-testnet".to_string(),
+            genesis_hash: blocks[0].hash(),
+        };
+        let (object, manifest) = ArchiveV2SegmentCodec::encode(
+            identity.clone(),
+            None,
+            Hash::default(),
+            &ArchiveV2SegmentContents::from_blocks(blocks[..10].to_vec()),
+            &ArchiveV2CodecConfig::default(),
+        )
+        .unwrap();
+        fs::write(
+            archive
+                .path()
+                .join("objects")
+                .join(format!("{}.av2s", manifest.segment_object_hash.to_hex())),
+            object,
+        )
+        .unwrap();
+        fs::write(
+            archive
+                .path()
+                .join("manifests")
+                .join(format!("{}.av2m", manifest.segment_object_hash.to_hex())),
+            manifest.encode_canonical().unwrap(),
+        )
+        .unwrap();
+        let mut catalog = ArchiveV2Catalog::empty(identity.clone()).unwrap();
+        catalog.append(manifest).unwrap();
+        catalog
+            .store_atomic(&archive.path().join("catalog.av2"))
+            .unwrap();
+
+        let state = StateStore::open(data.path()).unwrap();
+        state
+            .put_block_atomic(&blocks[9], Some(9), Some(9))
+            .unwrap();
+        state
+            .put_block_atomic(&blocks[10], Some(10), Some(10))
+            .unwrap();
+        assert!(state.get_block_by_slot(0).unwrap().is_none());
+
+        let config = RuntimeArchiveV2Config {
+            role_config: ArchiveV2RoleConfig {
+                version: ARCHIVE_V2_ROLE_CONFIG_VERSION,
+                role: ArchiveV2Role::Consensus,
+                recent_history_slots: 1,
+                verified_cache_quota_bytes: 0,
+                advertise_deep_history: false,
+            },
+            root: archive.path().to_path_buf(),
+            cache_root: None,
+            source_roots: Vec::new(),
+            source_urls: Vec::new(),
+            source_timeout: Duration::from_secs(1),
+            source_max_object_bytes: 2 * 1024 * 1024 * 1024,
+            max_decoded_segments: 1,
+        };
+        let marker = ArchiveV2RoleMarker {
+            marker_version: 1,
+            identity,
+            role_config: config.role_config.clone(),
+            genesis_mossstake_slot_only: false,
+        };
+        store_archive_v2_role_marker_create_new(
+            &archive.path().join(ARCHIVE_V2_ROLE_MARKER_FILENAME),
+            &marker,
+        )
+        .unwrap();
+
+        let capability = activate_runtime_archive_v2(
+            &state,
+            config,
+            "marker-activation-testnet",
+            data.path(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(capability.role, ArchiveV2Role::Consensus);
+        assert!(!capability.serves_deep_history);
+        assert!(state.has_archive_v2_reader());
+        assert_eq!(capability.identity.genesis_hash, blocks[0].hash());
+        assert_eq!(
+            state.archive_v2_status().unwrap().role.as_deref(),
+            Some("consensus")
+        );
+        assert_eq!(state.cached_genesis_mossstake_slot_only(), Some(false));
+    }
+
+    #[test]
+    fn proof_carrying_slash_transaction_is_reporter_signed_and_account_bound() {
+        let temp_dir = tempfile::tempdir().expect("create state directory");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let genesis = Block::genesis(Hash::default(), 0, Vec::new());
+        state.put_block(&genesis).expect("store genesis");
+        state.set_last_slot(0).expect("set tip");
+
+        let chain_id = "lichen-validator-slashing-test";
+        let reporter = Keypair::generate();
+        let offender = Keypair::generate();
+        let mut block_1 = Block::new_with_timestamp(
+            1,
+            genesis.hash(),
+            Hash::hash(b"state-a"),
+            offender.pubkey().0,
+            Vec::new(),
+            1_700_000_000,
+        );
+        block_1.sign_with_chain_id(&offender, chain_id);
+        let mut block_2 = block_1.clone();
+        block_2.header.state_root = Hash::hash(b"state-b");
+        block_2.sign_with_chain_id(&offender, chain_id);
+        let evidence = SlashingEvidence::new(
+            SlashingOffense::DoubleBlockV2 {
+                header_1: block_1.header,
+                header_2: block_2.header,
+            },
+            offender.pubkey(),
+            1,
+            reporter.pubkey(),
+            1_700_000_001,
+        );
+
+        let transaction =
+            build_staking_v2_slash_transaction(&state, chain_id, &reporter.to_seed(), &evidence)
+                .expect("build slash transaction");
+        let instruction = &transaction.message.instructions[0];
+        assert_eq!(instruction.data[0], 27);
+        assert_eq!(
+            instruction.accounts,
+            vec![reporter.pubkey(), offender.pubkey()]
+        );
+        assert_eq!(
+            transaction.required_signers_ordered().unwrap(),
+            vec![reporter.pubkey()]
+        );
+        transaction
+            .verify_required_signatures_with_chain_id(chain_id)
+            .expect("reporter signature must verify");
+
+        let wrong_reporter = Keypair::generate();
+        let error = build_staking_v2_slash_transaction(
+            &state,
+            chain_id,
+            &wrong_reporter.to_seed(),
+            &evidence,
+        )
+        .unwrap_err();
+        assert!(error.contains("reporter"));
     }
 }

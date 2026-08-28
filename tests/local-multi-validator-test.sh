@@ -38,6 +38,7 @@ fi
 RELEASE_BIN_DIR="${BUILD_TARGET_DIR}/release"
 MAX_VALIDATORS="${1:-4}"
 export LICHEN_LOCAL_VALIDATOR_COUNT="$MAX_VALIDATORS"
+export LICHEN_LOCAL_GENESIS_VALIDATOR_COUNT="$MAX_VALIDATORS"
 WARMUP_SLOTS=100  # Must match ACTIVATION_WARMUP in validator/src/main.rs
 REUSE_EXISTING_CLUSTER="${LICHEN_REUSE_EXISTING_CLUSTER:-0}"
 REUSE_HEALTH_TIMEOUT_SECS="${LICHEN_REUSE_HEALTH_TIMEOUT_SECS:-120}"
@@ -62,6 +63,7 @@ ARCHIVE_V2_HTTPS_SOURCE_PORT=9443
 ARCHIVE_V2_HTTPS_SOURCE_TOKEN="local-archive-v2-gate-token"
 LOCAL_GATE_LOCK_DIR="${TMPDIR:-/tmp}/lichen-local-multi-validator-test.lock"
 LOCAL_GATE_LOCK_HELD=0
+GENESIS_QUORUM_BOOTSTRAP=0
 
 export LICHEN_LOCAL_DEV=1
 export LICHEN_LOCAL_ARCHIVE_COLD="${LICHEN_LOCAL_ARCHIVE_COLD:-1}"
@@ -348,11 +350,12 @@ cleanup() {
 }
 
 cleanup_and_release_local_gate_lock() {
-    local exit_status=$?
+    gate_exit_status=$?
+    trap - EXIT
 
-    cleanup "$exit_status"
+    cleanup "$gate_exit_status"
     release_local_gate_lock
-    return "$exit_status"
+    exit "$gate_exit_status"
 }
 
 acquire_local_gate_lock
@@ -489,6 +492,17 @@ try:
     r=json.load(sys.stdin).get('result',{})
     vs=r.get('validators',[]) if isinstance(r,dict) else []
     print(len([v for v in vs if v.get('stake',0) > 0]))
+except: print(0)
+" 2>/dev/null || echo 0
+}
+
+get_epoch_active_validator_count() {
+    rpc_query "$1" "getValidators" | python3 -c "
+import json,sys
+try:
+    r=json.load(sys.stdin).get('result',{})
+    vs=r.get('validators',[]) if isinstance(r,dict) else []
+    print(len([v for v in vs if v.get('staking_v2_epoch_active') is True]))
 except: print(0)
 " 2>/dev/null || echo 0
 }
@@ -1517,6 +1531,36 @@ verify_fresh_archive_v2_role_rejoins() {
     local identity_file="/tmp/lichen-testnet/v3-role-validator-keypair.json"
     local node_identity_file="/tmp/lichen-testnet/v3-role-node-identity.json"
     local role_log pid recent_slot error_message restored_pubkey
+    local original_state_saved=false
+
+    if [[ "$(archive_v2_health_role "$(rpc_port "$validator_num")")" != "full-archive" ]]; then
+        stop_validator_pid "${VALIDATOR_PIDS[$validator_num]:-}"
+        wait_validator_resources_released "$validator_num" \
+            || fail "V3 did not release resources before its fresh full-archive join"
+        rm -rf "$original_state" "$original_cold"
+        install -m 0600 "$(db_path "$validator_num")/validator-keypair.json" "$identity_file"
+        if [[ -f "$(db_path "$validator_num")/home/.lichen/node_identity.json" ]]; then
+            install -m 0600 \
+                "$(db_path "$validator_num")/home/.lichen/node_identity.json" \
+                "$node_identity_file"
+        else
+            rm -f "$node_identity_file"
+        fi
+        mv "$(db_path "$validator_num")" "$original_state"
+        if [[ -d "$(cold_path "$validator_num")" ]]; then
+            mv "$(cold_path "$validator_num")" "$original_cold"
+        fi
+        original_state_saved=true
+
+        reset_fresh_role_state_with_identity \
+            "$validator_num" "$identity_file" "$node_identity_file"
+        role_log="/tmp/lichen-testnet/v3-fresh-full-archive.log"
+        start_archive_v2_validator "$validator_num" "$role_log"
+        pid="$ARCHIVE_V2_STARTED_PID"
+        VALIDATOR_PIDS[$validator_num]="$pid"
+        wait_for_archive_v2_role_catchup \
+            "$validator_num" "full-archive" "$pid" "$role_log"
+    fi
 
     [[ "$(archive_v2_health_role "$(rpc_port "$validator_num")")" == "full-archive" ]] \
         || fail "Initial fresh V3 join was not admitted as full-archive"
@@ -1529,18 +1573,20 @@ verify_fresh_archive_v2_role_rejoins() {
     stop_validator_pid "${VALIDATOR_PIDS[$validator_num]:-}"
     wait_validator_resources_released "$validator_num" \
         || fail "V3 did not release resources before fresh role rejoin matrix"
-    rm -rf "$original_state" "$original_cold"
-    install -m 0600 "$(db_path "$validator_num")/validator-keypair.json" "$identity_file"
-    if [[ -f "$(db_path "$validator_num")/home/.lichen/node_identity.json" ]]; then
-        install -m 0600 \
-            "$(db_path "$validator_num")/home/.lichen/node_identity.json" \
-            "$node_identity_file"
-    else
-        rm -f "$node_identity_file"
-    fi
-    mv "$(db_path "$validator_num")" "$original_state"
-    if [[ -d "$(cold_path "$validator_num")" ]]; then
-        mv "$(cold_path "$validator_num")" "$original_cold"
+    if ! $original_state_saved; then
+        rm -rf "$original_state" "$original_cold"
+        install -m 0600 "$(db_path "$validator_num")/validator-keypair.json" "$identity_file"
+        if [[ -f "$(db_path "$validator_num")/home/.lichen/node_identity.json" ]]; then
+            install -m 0600 \
+                "$(db_path "$validator_num")/home/.lichen/node_identity.json" \
+                "$node_identity_file"
+        else
+            rm -f "$node_identity_file"
+        fi
+        mv "$(db_path "$validator_num")" "$original_state"
+        if [[ -d "$(cold_path "$validator_num")" ]]; then
+            mv "$(cold_path "$validator_num")" "$original_cold"
+        fi
     fi
 
     reset_fresh_role_state_with_identity "$validator_num" "$identity_file" "$node_identity_file"
@@ -2380,69 +2426,148 @@ mkdir -p /tmp/lichen-testnet
 ok "State flushed"
 
 # ═══════════════════════════════════════════════════════════════
-# PHASE 1: Start V1 (genesis)
+# PHASE 1: Start the frozen-epoch genesis quorum
 # ═══════════════════════════════════════════════════════════════
 log "═══════════════════════════════════════════════════════════"
-log "PHASE 1: Starting V1 (genesis validator)"
+log "PHASE 1: Starting ${MAX_VALIDATORS}-validator genesis quorum"
 log "═══════════════════════════════════════════════════════════"
 
+# V1 owns genesis creation. The launcher pre-generates every local validator
+# identity and includes each one in the frozen Staking V2 genesis epoch. Start
+# the remaining validators as soon as genesis exists so no single-validator
+# shortcut can make a nominal four-validator gate pass without BFT quorum.
 LICHEN_DISABLE_SUPERVISOR=1 "$REPO_ROOT/run-validator.sh" testnet 1 \
     > "$V1_LOG" 2>&1 &
 V1_PID=$!
+VALIDATOR_PIDS[1]="$V1_PID"
 VALIDATOR_LOGS[1]="$V1_LOG"
 log "V1 started (PID: $V1_PID)"
 
-# Wait for V1 to produce blocks
-log "Waiting for V1 to produce blocks..."
-for i in $(seq 1 60); do
-    sleep 2
-    if ! kill -0 $V1_PID 2>/dev/null; then
+GENESIS_READY=false
+for i in $(seq 1 120); do
+    sleep 1
+    if ! kill -0 "$V1_PID" 2>/dev/null; then
         warn "V1 crashed! Log tail:"
-        tail -30 "$V1_LOG"
-        fail "V1 crashed during startup"
+        tail -40 "$V1_LOG"
+        fail "V1 crashed during genesis creation"
     fi
-    SLOT=$(get_slot $V1_RPC)
-    if [[ "$SLOT" -gt 3 ]]; then
-        ok "V1 producing blocks! Slot: $SLOT"
+
+    ALL_IDENTITIES_READY=true
+    for validator_num in $(seq 1 "$MAX_VALIDATORS"); do
+        [[ -f "$(db_path "$validator_num")/validator-keypair.json" ]] \
+            || ALL_IDENTITIES_READY=false
+    done
+    if [[ -f "$(db_path 1)/CURRENT" && -f "$(db_path 1)/genesis.json" ]] \
+        && $ALL_IDENTITIES_READY; then
+        GENESIS_READY=true
         break
     fi
-    [[ $i -lt 60 ]] || fail "V1 failed to produce blocks after 120s"
 done
+$GENESIS_READY || fail "Genesis and all frozen-epoch validator identities were not ready within 120s"
 
-# Wait for V1 keypair to exist
-for w in $(seq 1 10); do
-    [[ -f "$(db_path 1)/validator-keypair.json" ]] && break
+GENESIS_CONFIGS_PROVISIONED=false
+for i in $(seq 1 30); do
+    ALL_GENESIS_CONFIGS_MATCH=true
+    for validator_num in $(seq 2 "$MAX_VALIDATORS"); do
+        cmp -s "$(db_path 1)/genesis.json" "$(db_path "$validator_num")/genesis.json" \
+            || ALL_GENESIS_CONFIGS_MATCH=false
+    done
+    if $ALL_GENESIS_CONFIGS_MATCH; then
+        GENESIS_CONFIGS_PROVISIONED=true
+        break
+    fi
+    if ! kill -0 "$V1_PID" 2>/dev/null; then
+        tail -40 "$V1_LOG"
+        fail "V1 exited before provisioning the frozen-epoch genesis configs"
+    fi
     sleep 1
 done
+$GENESIS_CONFIGS_PROVISIONED \
+    || fail "The authoritative genesis config was not provisioned across all validators"
+ok "Authoritative genesis config is provisioned across the frozen-epoch quorum"
 
-# Extract V1 pubkey
-V1_PUBKEY=$(grep -m1 '"publicKeyBase58"' "$(db_path 1)/validator-keypair.json" \
-    | sed -E 's/.*"publicKeyBase58"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
-ok "V1 pubkey: $V1_PUBKEY"
+ALL_PUBKEYS=()
+for validator_num in $(seq 1 "$MAX_VALIDATORS"); do
+    validator_pubkey="$(grep -m1 '"publicKeyBase58"' "$(db_path "$validator_num")/validator-keypair.json" \
+        | sed -E 's/.*"publicKeyBase58"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+    [[ -n "$validator_pubkey" ]] || fail "Could not extract V${validator_num} genesis identity"
+    if (( validator_num > 1 )); then
+        for existing_index in $(seq 0 $((validator_num - 2))); do
+            [[ "${ALL_PUBKEYS[$existing_index]}" != "$validator_pubkey" ]] \
+                || fail "V${validator_num} has duplicate genesis identity $validator_pubkey"
+        done
+    fi
+    ALL_PUBKEYS+=("$validator_pubkey")
+    ok "V${validator_num} genesis pubkey: $validator_pubkey (unique)"
+done
+V1_PUBKEY="${ALL_PUBKEYS[0]}"
 
-VCNT=$(get_validator_count $V1_RPC)
-SLOT=$(get_slot $V1_RPC)
-ok "Phase 1 complete: validators=$VCNT, slot=$SLOT"
+for validator_num in $(seq 2 "$MAX_VALIDATORS"); do
+    assert_joiner_starts_without_copied_chain_state "$validator_num"
+    validator_log="$(log_path "$validator_num")"
+    LICHEN_DISABLE_SUPERVISOR=1 "$REPO_ROOT/run-validator.sh" testnet "$validator_num" \
+        > "$validator_log" 2>&1 &
+    VALIDATOR_PIDS[$validator_num]=$!
+    VALIDATOR_LOGS[$validator_num]="$validator_log"
+    log "V${validator_num} started from independent empty state (PID: ${VALIDATOR_PIDS[$validator_num]})"
+done
 
-if [[ "$VCNT" -ne 1 ]]; then
-    warn "Expected 1 validator at genesis, got $VCNT"
-    warn "This means the local node is leaking to production seeds!"
-    fail "Validator count mismatch — check seeds.json isolation"
-fi
+log "Waiting for all frozen-epoch validators to sync and establish BFT finality..."
+GENESIS_CLUSTER_READY=false
+for i in $(seq 1 900); do
+    sleep 2
+    LIVE_COUNT=0
+    MAX_SLOT=0
+    MIN_SLOT=999999999999
+    for validator_num in $(seq 1 "$MAX_VALIDATORS"); do
+        validator_pid="${VALIDATOR_PIDS[$validator_num]:-}"
+        if ! kill -0 "$validator_pid" 2>/dev/null; then
+            warn "V${validator_num} crashed during genesis-quorum startup! Log tail:"
+            tail -60 "${VALIDATOR_LOGS[$validator_num]}"
+            fail "V${validator_num} crashed during genesis-quorum startup"
+        fi
+        validator_slot="$(get_slot "$(rpc_port "$validator_num")")"
+        if [[ "$validator_slot" -gt 0 ]]; then
+            LIVE_COUNT=$((LIVE_COUNT + 1))
+            (( validator_slot > MAX_SLOT )) && MAX_SLOT="$validator_slot"
+            (( validator_slot < MIN_SLOT )) && MIN_SLOT="$validator_slot"
+        fi
+    done
+    STAKED_CNT="$(get_staked_validator_count "$V1_RPC")"
+    EPOCH_ACTIVE_CNT="$(get_epoch_active_validator_count "$V1_RPC")"
+    VCNT="$(get_validator_count "$V1_RPC")"
+    SPREAD=$((MAX_SLOT - MIN_SLOT))
+    if [[ "$LIVE_COUNT" -eq "$MAX_VALIDATORS"
+        && "$STAKED_CNT" -eq "$MAX_VALIDATORS"
+        && "$EPOCH_ACTIVE_CNT" -eq "$MAX_VALIDATORS"
+        && "$VCNT" -eq "$MAX_VALIDATORS"
+        && "$MIN_SLOT" -gt 3 && "$SPREAD" -le 20 ]]; then
+        GENESIS_CLUSTER_READY=true
+        break
+    fi
+    if [[ $((i % 15)) -eq 0 ]]; then
+        log "  Genesis quorum: live=$LIVE_COUNT/$MAX_VALIDATORS staked=$STAKED_CNT epoch-active=$EPOCH_ACTIVE_CNT registered=$VCNT min=$MIN_SLOT max=$MAX_SLOT spread=$SPREAD"
+    fi
+done
+$GENESIS_CLUSTER_READY || fail "The frozen-epoch genesis quorum did not become healthy within 1800s"
+
+SLOT="$(get_slot "$V1_RPC")"
+ok "Genesis quorum active: validators=$VCNT epoch-active=$EPOCH_ACTIVE_CNT slot=$SLOT spread=$SPREAD"
+verify_chain_producing "with the complete frozen-epoch genesis quorum" "$V1_RPC" 10
 
 if [[ "$MAX_VALIDATORS" -lt 2 ]]; then
     ok "PASS: Single validator test complete"
     exit 0
 fi
 
-# ═══════════════════════════════════════════════════════════════
-# PHASE 2+: Add joining validators
-# ═══════════════════════════════════════════════════════════════
-ALL_PUBKEYS=("$V1_PUBKEY")
-VALIDATOR_PIDS[1]="$V1_PID"
-JOIN_START=2
+# All validators joined from independently owned state during genesis-quorum
+# startup. Later phases still remove and rebuild V3 across full/cache/consensus
+# roles, so fresh high-tip archive admission remains covered.
+GENESIS_QUORUM_BOOTSTRAP=1
+JOIN_START=$((MAX_VALIDATORS + 1))
 fi
 
+if (( JOIN_START <= MAX_VALIDATORS )); then
 for V_NUM in $(seq "$JOIN_START" "$MAX_VALIDATORS"); do
     log "═══════════════════════════════════════════════════════════"
     log "PHASE ${V_NUM}: Adding V${V_NUM} to network"
@@ -2560,6 +2685,14 @@ for V_NUM in $(seq "$JOIN_START" "$MAX_VALIDATORS"); do
         verify_fresh_archive_v2_role_rejoins
     fi
 done
+fi
+
+if [[ "$GENESIS_QUORUM_BOOTSTRAP" == "1" && "$MAX_VALIDATORS" -ge 4 ]]; then
+    wait_for_archive_v2_retention_boundary
+    verify_bounded_cold_migration_progress
+    prepare_archive_v2_fresh_join_roots
+    verify_fresh_archive_v2_role_rejoins
+fi
 
 if [[ "$MAX_VALIDATORS" -ge 4 && "$SKIP_JOINER_RESTART_CHECK" != "1" ]]; then
     verify_loaded_backlog_liveness

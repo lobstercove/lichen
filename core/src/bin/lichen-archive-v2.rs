@@ -6,7 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use lichen_core::archive_v2::{
-    benchmark_archive_v2_range, discover_archive_v2_catalog, ArchiveV2AdaptiveReservePolicy,
+    benchmark_archive_v2_range, discover_archive_v2_catalog, load_archive_v2_role_marker,
+    store_archive_v2_role_marker_create_new, ArchiveV2AdaptiveReservePolicy,
     ArchiveV2BenchmarkCandidate, ArchiveV2BenchmarkPlan, ArchiveV2BuildOptions, ArchiveV2Builder,
     ArchiveV2CapacityDecision, ArchiveV2CapacityGuard, ArchiveV2CapacityInputs,
     ArchiveV2CapacityThresholds, ArchiveV2CapacityTotals, ArchiveV2Catalog, ArchiveV2CodecConfig,
@@ -14,13 +15,15 @@ use lichen_core::archive_v2::{
     ArchiveV2LegacyLossDeclaration, ArchiveV2Manifest, ArchiveV2MirrorLimits,
     ArchiveV2PressureAction, ArchiveV2Reader, ArchiveV2ReaderConfig, ArchiveV2ReplicaEvidence,
     ArchiveV2ReplicaPolicy, ArchiveV2ReplicaTransport, ArchiveV2Replicator,
-    ArchiveV2RetirementManifest, ArchiveV2Role, ArchiveV2RoleConfig, ArchiveV2RoleRequirements,
-    ArchiveV2RollbackAnchor, ArchiveV2SegmentCodec, ARCHIVE_V2_CATALOG_VERSION,
-    ARCHIVE_V2_FORMAT_VERSION, ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS, ARCHIVE_V2_ROLE_CONFIG_VERSION,
+    ArchiveV2RetirementManifest, ArchiveV2Role, ArchiveV2RoleAdmission, ArchiveV2RoleConfig,
+    ArchiveV2RoleMarker, ArchiveV2RoleRequirements, ArchiveV2RollbackAnchor, ArchiveV2SegmentCodec,
+    ARCHIVE_V2_CATALOG_VERSION, ARCHIVE_V2_FORMAT_VERSION, ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS,
+    ARCHIVE_V2_ROLE_CONFIG_VERSION, ARCHIVE_V2_ROLE_MARKER_FILENAME,
 };
 use lichen_core::codec::serialized_size_legacy_bincode;
 use lichen_core::{
-    keypair_password_from_env, plaintext_keypair_allowed_for_local_dev, ArchiveV2RetirementLimits,
+    genesis_block_declares_mossstake_slot_only, keypair_password_from_env,
+    plaintext_keypair_allowed_for_local_dev, ArchiveV2RetirementLimits,
     ArchiveV2RetirementPassReport, ArchiveV2RetirementPhase, ArchiveV2RetirementReclaimLimits,
     Hash, KeypairFile, StateStore,
 };
@@ -53,6 +56,7 @@ fn run(raw: Vec<String>) -> Result<(), String> {
     match command.as_str() {
         "status" => run_status(&args),
         "role-preflight" => run_role_preflight(&args),
+        "role-bootstrap" => run_role_bootstrap(&args),
         "snapshot-hot" => run_snapshot_hot(&args),
         "verify" => run_verify(&args),
         "repair" => run_repair(&args),
@@ -70,7 +74,7 @@ fn run(raw: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         _ => Err(format!(
-            "unknown command {command:?}; expected status, role-preflight, snapshot-hot, verify, repair, declare-legacy-loss, build, mirror, restore, retirement-authorize, retirement-pass, retirement-reclaim, profile-source, or benchmark"
+            "unknown command {command:?}; expected status, role-preflight, role-bootstrap, snapshot-hot, verify, repair, declare-legacy-loss, build, mirror, restore, retirement-authorize, retirement-pass, retirement-reclaim, profile-source, or benchmark"
         )),
     }
 }
@@ -336,27 +340,48 @@ fn runtime_role_capacity_decision(
     .map_err(|error| error.to_string())
 }
 
-/// Read-only, fail-closed admission report for the exact runtime Archive V2
-/// role boundary. Deployment automation must run this against the same paths
-/// and source roots that it will place in the validator service configuration.
-fn run_role_preflight(args: &CommandArgs) -> Result<(), String> {
-    args.ensure_only(
-        &[
-            "state-dir",
-            "cold-store",
-            "root",
-            "role",
-            "recent-history-slots",
-            "cache-root",
-            "cache-quota-bytes",
-            "source-root",
-            "source-max-object-bytes",
-            "wal",
-            "identity-file",
-            "recovery-file",
-        ],
-        &[],
-    )?;
+#[derive(Debug)]
+struct RolePreflightAssessment {
+    role: ArchiveV2Role,
+    role_config: ArchiveV2RoleConfig,
+    admission: ArchiveV2RoleAdmission,
+    capacity: ArchiveV2CapacityDecision,
+    identity: ArchiveV2Identity,
+    catalog_root: Hash,
+    catalog_segments: usize,
+    catalog_end_slot: Option<u64>,
+    finalized_slot: u64,
+    required_archive_end: Option<u64>,
+    hot_start: u64,
+    complete_hot_window: bool,
+    complete_catalog_verified: bool,
+    catalog_tip_matches_state: bool,
+    every_segment_local: bool,
+    independent_consensus_state: bool,
+    consensus_wal_and_identity: bool,
+    recovery_data_present: bool,
+    authenticated_sources: u32,
+    source_catalogs_match: bool,
+    source_complete_inventories: u32,
+    genesis_mossstake_slot_only: bool,
+}
+
+const ROLE_PREFLIGHT_VALUES: &[&str] = &[
+    "state-dir",
+    "cold-store",
+    "root",
+    "role",
+    "recent-history-slots",
+    "cache-root",
+    "cache-quota-bytes",
+    "source-root",
+    "source-max-object-bytes",
+    "wal",
+    "identity-file",
+    "recovery-file",
+];
+
+fn evaluate_role_preflight(args: &CommandArgs) -> Result<RolePreflightAssessment, String> {
     let state_dir = PathBuf::from(args.required("state-dir")?);
     let root = PathBuf::from(args.required("root")?);
     let role = args
@@ -429,9 +454,12 @@ fn run_role_preflight(args: &CommandArgs) -> Result<(), String> {
                 && !cache.starts_with(&state_path)
                 && !state_path.starts_with(cache)
         });
+    let canonical_wal = fs::canonicalize(&wal).ok();
     let consensus_wal_and_identity = regular_nonempty_file(&wal)
         && regular_nonempty_file(&identity_file)
-        && wal.starts_with(&state_path);
+        && canonical_wal
+            .as_ref()
+            .is_some_and(|canonical| canonical.starts_with(&state_path));
     let recovery_data_present = regular_nonempty_file(&recovery_file);
 
     let mut state = StateStore::open_read_only_with_cache_mb(&state_dir, Some(256))?;
@@ -447,6 +475,7 @@ fn run_role_preflight(args: &CommandArgs) -> Result<(), String> {
     if local_genesis.hash() != catalog.identity.genesis_hash {
         return Err("Archive V2 catalog genesis conflicts with local state".to_string());
     }
+    let genesis_mossstake_slot_only = genesis_block_declares_mossstake_slot_only(&local_genesis)?;
     let hot_start = finalized_slot.saturating_sub(recent_history_slots.saturating_sub(1));
     let complete_hot_window = state
         .verify_hot_canonical_block_range(hot_start, finalized_slot)
@@ -479,6 +508,15 @@ fn run_role_preflight(args: &CommandArgs) -> Result<(), String> {
     for source in &source_roots {
         let canonical = fs::canonicalize(source)
             .map_err(|error| format!("failed resolving source {}: {error}", source.display()))?;
+        if canonical == archive_path
+            || canonical == state_path
+            || cache_path.as_ref().is_some_and(|cache| cache == &canonical)
+        {
+            return Err(format!(
+                "Archive V2 source {} is not independent from state, archive, or cache storage",
+                source.display()
+            ));
+        }
         if !unique_sources.insert(canonical) {
             return Err("Archive V2 source roots must be unique".to_string());
         }
@@ -537,38 +575,199 @@ fn run_role_preflight(args: &CommandArgs) -> Result<(), String> {
     let admission = role_config
         .admit(&requirements)
         .map_err(|error| error.to_string())?;
-    let admitted = admission.admitted && capacity.action == ArchiveV2PressureAction::Normal;
+    Ok(RolePreflightAssessment {
+        role,
+        role_config,
+        admission,
+        capacity,
+        identity: catalog.identity,
+        catalog_root: catalog.catalog_root,
+        catalog_segments: catalog.entries.len(),
+        catalog_end_slot: catalog.entries.last().map(|entry| entry.manifest.end_slot),
+        finalized_slot,
+        required_archive_end,
+        hot_start,
+        complete_hot_window,
+        complete_catalog_verified,
+        catalog_tip_matches_state,
+        every_segment_local,
+        independent_consensus_state,
+        consensus_wal_and_identity,
+        recovery_data_present,
+        authenticated_sources,
+        source_catalogs_match,
+        source_complete_inventories,
+        genesis_mossstake_slot_only,
+    })
+}
+
+fn print_role_preflight_assessment(
+    operation: &str,
+    assessment: &RolePreflightAssessment,
+    runtime_admitted: bool,
+    bootstrap_authorized: Option<bool>,
+    marker_path: Option<&Path>,
+    marker_created: Option<bool>,
+    dry_run: bool,
+) -> Result<(), String> {
     print_json(&json!({
-        "operation": "role_preflight",
-        "role": role,
-        "admitted": admitted,
-        "role_admission": admission,
-        "capacity": capacity,
-        "network_id": catalog.identity.network_id,
-        "genesis_hash": catalog.identity.genesis_hash.to_hex(),
-        "catalog_root": catalog.catalog_root.to_hex(),
-        "catalog_segments": catalog.entries.len(),
-        "catalog_end_slot": catalog.entries.last().map(|entry| entry.manifest.end_slot),
-        "finalized_slot": finalized_slot,
-        "required_archive_end": required_archive_end,
-        "hot_start_slot": hot_start,
-        "complete_hot_window": complete_hot_window,
-        "complete_catalog_verified": complete_catalog_verified,
-        "catalog_tip_matches_state": catalog_tip_matches_state,
-        "every_segment_local": every_segment_local,
-        "independent_consensus_state": independent_consensus_state,
-        "consensus_wal_and_identity": consensus_wal_and_identity,
-        "recovery_data_present": recovery_data_present,
-        "authenticated_source_catalogs": authenticated_sources,
-        "source_catalogs_match": source_catalogs_match,
-        "source_complete_inventories": source_complete_inventories,
-    }))?;
+        "operation": operation,
+        "role": assessment.role,
+        "admitted": runtime_admitted,
+        "runtime_admitted": runtime_admitted,
+        "bootstrap_authorized": bootstrap_authorized,
+        "role_admission": assessment.admission,
+        "capacity": assessment.capacity,
+        "network_id": assessment.identity.network_id,
+        "genesis_hash": assessment.identity.genesis_hash.to_hex(),
+        "catalog_root": assessment.catalog_root.to_hex(),
+        "catalog_segments": assessment.catalog_segments,
+        "catalog_end_slot": assessment.catalog_end_slot,
+        "finalized_slot": assessment.finalized_slot,
+        "required_archive_end": assessment.required_archive_end,
+        "hot_start_slot": assessment.hot_start,
+        "complete_hot_window": assessment.complete_hot_window,
+        "complete_catalog_verified": assessment.complete_catalog_verified,
+        "catalog_tip_matches_state": assessment.catalog_tip_matches_state,
+        "every_segment_local": assessment.every_segment_local,
+        "independent_consensus_state": assessment.independent_consensus_state,
+        "consensus_wal_and_identity": assessment.consensus_wal_and_identity,
+        "recovery_data_present": assessment.recovery_data_present,
+        "authenticated_source_catalogs": assessment.authenticated_sources,
+        "source_catalogs_match": assessment.source_catalogs_match,
+        "source_complete_inventories": assessment.source_complete_inventories,
+        "genesis_mossstake_slot_only": assessment.genesis_mossstake_slot_only,
+        "marker_path": marker_path,
+        "marker_created": marker_created,
+        "dry_run": dry_run,
+    }))
+}
+
+/// Read-only, fail-closed admission report for the exact runtime Archive V2
+/// role boundary. Deployment automation must run this against the same paths
+/// and source roots that it will place in the validator service configuration.
+fn run_role_preflight(args: &CommandArgs) -> Result<(), String> {
+    args.ensure_only(ROLE_PREFLIGHT_VALUES, &[])?;
+    let assessment = evaluate_role_preflight(args)?;
+    let admitted = assessment.admission.admitted
+        && assessment.capacity.action == ArchiveV2PressureAction::Normal;
+    print_role_preflight_assessment(
+        "role_preflight",
+        &assessment,
+        admitted,
+        None,
+        None,
+        None,
+        false,
+    )?;
     if !admitted {
         return Err(
             "Archive V2 role preflight did not reach an admitted Normal-capacity state".to_string(),
         );
     }
     Ok(())
+}
+
+/// Creates the exact runtime role marker needed to retire legacy cold history
+/// while a validator is stopped. This command permits a non-Normal capacity
+/// result only for the circular low-space transition; it never admits runtime
+/// startup and never weakens the network's absolute mutable-storage floor.
+fn run_role_bootstrap(args: &CommandArgs) -> Result<(), String> {
+    args.ensure_only(
+        ROLE_PREFLIGHT_VALUES,
+        &[
+            "acknowledge-stopped-validator",
+            "acknowledge-low-space-legacy-retirement",
+            "dry-run",
+        ],
+    )?;
+    if !args.flag("acknowledge-stopped-validator")
+        || !args.flag("acknowledge-low-space-legacy-retirement")
+    {
+        return Err(
+            "role bootstrap requires --acknowledge-stopped-validator and --acknowledge-low-space-legacy-retirement"
+                .to_string(),
+        );
+    }
+    if args.optional("cold-store")?.is_none() {
+        return Err("role bootstrap requires --cold-store to prove canonical slot 0".to_string());
+    }
+
+    let assessment = evaluate_role_preflight(args)?;
+    if !assessment.admission.admitted {
+        print_role_preflight_assessment(
+            "role_bootstrap",
+            &assessment,
+            false,
+            Some(false),
+            None,
+            None,
+            args.flag("dry-run"),
+        )?;
+        return Err("Archive V2 role bootstrap semantic admission failed".to_string());
+    }
+    if assessment.capacity.hot_available_bytes < assessment.capacity.absolute_reserve_bytes {
+        print_role_preflight_assessment(
+            "role_bootstrap",
+            &assessment,
+            false,
+            Some(false),
+            None,
+            None,
+            args.flag("dry-run"),
+        )?;
+        return Err(format!(
+            "Archive V2 role bootstrap refuses to cross the {} byte network storage floor",
+            assessment.capacity.absolute_reserve_bytes
+        ));
+    }
+
+    let marker = ArchiveV2RoleMarker {
+        marker_version: 1,
+        identity: assessment.identity.clone(),
+        role_config: assessment.role_config.clone(),
+        genesis_mossstake_slot_only: assessment.genesis_mossstake_slot_only,
+    };
+    let marker_path = PathBuf::from(args.required("root")?).join(ARCHIVE_V2_ROLE_MARKER_FILENAME);
+    let mut marker_created = false;
+    match fs::symlink_metadata(&marker_path) {
+        Ok(_) => {
+            let existing = load_archive_v2_role_marker(&marker_path)?;
+            if existing != marker {
+                return Err(
+                    "existing Archive V2 role marker conflicts with the verified bootstrap authorization"
+                        .to_string(),
+                );
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if !args.flag("dry-run") {
+                store_archive_v2_role_marker_create_new(&marker_path, &marker)?;
+                if load_archive_v2_role_marker(&marker_path)? != marker {
+                    return Err(
+                        "published Archive V2 role marker failed read-back verification"
+                            .to_string(),
+                    );
+                }
+                marker_created = true;
+            }
+        }
+        Err(error) => {
+            return Err(format!(
+                "failed inspecting Archive V2 role marker {}: {error}",
+                marker_path.display()
+            ));
+        }
+    }
+    print_role_preflight_assessment(
+        "role_bootstrap",
+        &assessment,
+        assessment.capacity.action == ArchiveV2PressureAction::Normal,
+        Some(true),
+        Some(&marker_path),
+        Some(marker_created),
+        args.flag("dry-run"),
+    )
 }
 
 fn checkpoint_sst_symlink_bytes(root: &Path) -> Result<(u64, u64), String> {
@@ -2330,7 +2529,7 @@ fn write_bytes_create_new(path: &Path, encoded: &[u8]) -> Result<(), String> {
 
 fn print_usage() {
     println!(
-        "lichen-archive-v2 <status|role-preflight|snapshot-hot|verify|repair|declare-legacy-loss|build|mirror|restore|retirement-authorize|retirement-pass|retirement-reclaim|profile-source|benchmark> [options]\n\
+        "lichen-archive-v2 <status|role-preflight|role-bootstrap|snapshot-hot|verify|repair|declare-legacy-loss|build|mirror|restore|retirement-authorize|retirement-pass|retirement-reclaim|profile-source|benchmark> [options]\n\
          Run `lichen-archive-v2 <command> --help` is intentionally unsupported; unknown options fail closed.\n\
          Retirement authorization accepts paired --start-slot/--end-slot bounds inside one verified segment; omitting both authorizes the full segment.\n\
          Replica specifications use name:failure-domain:path. Retirement evidence uses destination,failure-domain,verified-unix-seconds. Verify and mirror default to one object per pass."
@@ -2596,6 +2795,110 @@ mod tests {
         assert_eq!(command, "mirror");
         assert_eq!(args.repeated("destination").len(), 2);
         assert!(CommandArgs::parse(vec!["status".to_string(), "unexpected".to_string()]).is_err());
+    }
+
+    fn role_bootstrap_fixture_args(
+        temporary: &tempfile::TempDir,
+        dry_run: bool,
+    ) -> (CommandArgs, PathBuf) {
+        let state_dir = temporary.path().join("state");
+        let cold_store = temporary.path().join("cold");
+        let archive_root = temporary.path().join("archive-v2");
+        fs::create_dir_all(&archive_root).unwrap();
+
+        let mut state = StateStore::open(&state_dir).unwrap();
+        let genesis = lichen_core::Block::genesis(Hash::hash(b"bootstrap-state"), 1, Vec::new());
+        state.put_block_atomic(&genesis, Some(0), Some(0)).unwrap();
+        state.open_cold_store(&cold_store).unwrap();
+        drop(state);
+
+        let identity = ArchiveV2Identity {
+            network_id: "lichen-testnet-1".to_string(),
+            genesis_hash: genesis.hash(),
+        };
+        ArchiveV2Catalog::empty(identity)
+            .unwrap()
+            .store_atomic(&archive_root.join("catalog.av2"))
+            .unwrap();
+        let wal = state_dir.join("consensus.wal");
+        let identity_file = state_dir.join("validator-keypair.json");
+        let recovery_file = state_dir.join("genesis.json");
+        fs::write(&wal, b"wal").unwrap();
+        fs::write(&identity_file, b"identity").unwrap();
+        fs::write(&recovery_file, b"recovery").unwrap();
+
+        let mut raw = vec![
+            "role-bootstrap".to_string(),
+            "--state-dir".to_string(),
+            state_dir.display().to_string(),
+            "--cold-store".to_string(),
+            cold_store.display().to_string(),
+            "--root".to_string(),
+            archive_root.display().to_string(),
+            "--role".to_string(),
+            "consensus".to_string(),
+            "--recent-history-slots".to_string(),
+            "200000".to_string(),
+            "--wal".to_string(),
+            wal.display().to_string(),
+            "--identity-file".to_string(),
+            identity_file.display().to_string(),
+            "--recovery-file".to_string(),
+            recovery_file.display().to_string(),
+            "--acknowledge-stopped-validator".to_string(),
+            "--acknowledge-low-space-legacy-retirement".to_string(),
+        ];
+        if dry_run {
+            raw.push("--dry-run".to_string());
+        }
+        let (_, args) = CommandArgs::parse(raw).unwrap();
+        (args, archive_root.join(ARCHIVE_V2_ROLE_MARKER_FILENAME))
+    }
+
+    #[test]
+    fn role_bootstrap_dry_run_never_writes_and_publish_is_idempotent() {
+        let temporary = tempfile::tempdir().unwrap();
+        let (dry_run, marker_path) = role_bootstrap_fixture_args(&temporary, true);
+        run_role_bootstrap(&dry_run).unwrap();
+        assert!(!marker_path.exists());
+
+        let (_, mut publish) = CommandArgs::parse(vec!["role-bootstrap".to_string()]).unwrap();
+        publish.values = dry_run.values;
+        publish.flags = dry_run.flags;
+        publish.flags.remove("dry-run");
+        run_role_bootstrap(&publish).unwrap();
+        let first = fs::read(&marker_path).unwrap();
+        run_role_bootstrap(&publish).unwrap();
+        assert_eq!(fs::read(&marker_path).unwrap(), first);
+        assert_eq!(
+            load_archive_v2_role_marker(&marker_path)
+                .unwrap()
+                .role_config
+                .recent_history_slots,
+            200_000
+        );
+
+        publish.values.insert(
+            "recent-history-slots".to_string(),
+            vec!["210000".to_string()],
+        );
+        publish.flags.insert("dry-run".to_string());
+        assert!(run_role_bootstrap(&publish)
+            .unwrap_err()
+            .contains("conflicts"));
+        assert_eq!(fs::read(&marker_path).unwrap(), first);
+    }
+
+    #[test]
+    fn role_bootstrap_requires_explicit_acknowledgements_before_state_access() {
+        let (_, args) = CommandArgs::parse(vec![
+            "role-bootstrap".to_string(),
+            "--state-dir".to_string(),
+            "/does/not/exist".to_string(),
+        ])
+        .unwrap();
+        let error = run_role_bootstrap(&args).unwrap_err();
+        assert!(error.contains("acknowledge-stopped-validator"));
     }
 
     #[test]

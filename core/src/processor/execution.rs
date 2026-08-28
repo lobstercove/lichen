@@ -678,10 +678,17 @@ impl TxProcessor {
                     if ix.program_id == SYSTEM_PROGRAM_ID {
                         if let Some(&opcode) = ix.data.first() {
                             match opcode {
-                                9 | 10 | 11 | 26 | 27 | 31 | 38 => {
+                                9 | 10 | 11 | 26 | 27 | 31 | 38 | 39 => {
                                     accounts.insert(CONFLICT_KEY_STAKE_POOL);
+                                    if opcode == 27 {
+                                        accounts.insert(CONFLICT_KEY_MOSSSTAKE_POOL);
+                                    }
                                 }
-                                13..=16 => {
+                                13 | 14 => {
+                                    accounts.insert(CONFLICT_KEY_STAKE_POOL);
+                                    accounts.insert(CONFLICT_KEY_MOSSSTAKE_POOL);
+                                }
+                                15 | 16 => {
                                     accounts.insert(CONFLICT_KEY_MOSSSTAKE_POOL);
                                 }
                                 21 | 22 | 32 | 33 => {

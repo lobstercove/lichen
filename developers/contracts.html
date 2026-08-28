@@ -845,9 +845,9 @@ match call_contract(call) {
                             <code>ThallLendClient</code> for the stable lending flow: deposit, withdraw, borrow,
                             repay, liquidate, account/protocol reads, interest reads, and stats, plus
                             <code>SporeVaultClient</code> for vault/user/strategy reads, aggregate stats, and the
-                            common deposit/withdraw/harvest flow. BountyBoard still does not have a first-class
-                            helper, but the base transports expose its aggregate stats method. Most other contracts
-                            still use the generic
+                            common deposit/withdraw/harvest flow. <code>BountyBoardClient</code> covers exact bounty,
+                            submission, terms, accounting, lifecycle, administration, and migration operations. Most
+                            other contracts still use the generic
                             <code>callContract()</code>, <code>call_contract()</code>, or
                             <code>Client::call_contract()</code> surface plus contract-specific RPC reads.
                         </p>
@@ -912,9 +912,9 @@ curl -X POST https://testnet-api.lichen.network \
                 </div>
 
                 <h3>BountyBoard Off-Chain Example</h3>
-                <p>Given first-class helper client coverage, resolve <code>BOUNTY</code> once, then use
-                    <code>BountyBoardClient</code> for bounty reads, stats, and the full create/submit/approve/cancel
-                    lifecycle. CLI and raw RPC calls remain available for admin paths:
+                <p>Resolve <code>BOUNTY</code> once, then use <code>BountyBoardClient</code> for exact reads, native or
+                    token creation, submit/update/approve/cancel flows, administration, and Accounting V2 migration.
+                    CLI and raw RPC calls remain available for independent operational verification:
                 </p>
                 <div class="code-block">
                     <div class="code-header"><span>Real CLI / RPC Commands</span><button
@@ -923,7 +923,7 @@ curl -X POST https://testnet-api.lichen.network \
 
 # Replace &lt;BOUNTY_ADDRESS&gt; with the program from the lookup result.
 lichen --rpc-url https://testnet-api.lichen.network --output json \
-    call &lt;BOUNTY_ADDRESS&gt; get_bounty_count
+    call &lt;BOUNTY_ADDRESS&gt; get_bounty_count_exact
 
 lichen --rpc-url https://testnet-api.lichen.network --output json \
     call &lt;BOUNTY_ADDRESS&gt; get_platform_stats

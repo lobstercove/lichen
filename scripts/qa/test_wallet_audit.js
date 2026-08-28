@@ -334,9 +334,10 @@ test('shielded.js confirm handlers call shield/unshield operations', () => {
         'confirmUnshield must validate recipient input');
 });
 
-test('shielded.js uses signed transaction builders for supported shielded flows', () => {
-    assert(shieldedSrc.includes('SHIELDED_SIGNED_SUBMISSION_AVAILABLE = true'), 'Shield/unshield signed submission should be enabled once the wallet builder is wired');
-    assert(shieldedSrc.includes('SHIELDED_PRIVATE_TRANSFER_AVAILABLE = true'), 'Private transfer should be enabled through the signed native transaction path');
+test('shielded.js fails closed while proof scheme 0x01 is disabled', () => {
+    assert(shieldedSrc.includes('SHIELDED_SIGNED_SUBMISSION_AVAILABLE = false'), 'Shield/unshield submission must remain disabled');
+    assert(shieldedSrc.includes('SHIELDED_PRIVATE_TRANSFER_AVAILABLE = false'), 'Private transfer must remain disabled');
+    assert(shieldedSrc.includes('SHIELDED_PROOF_SCHEME_DISABLED_MESSAGE'), 'Wallet must explain the proof-scheme disablement');
     assert(shieldedSrc.includes('async function submitShieldTransaction'), 'Shield flow must build and submit a signed shield transaction');
     assert(shieldedSrc.includes('async function submitUnshieldTransaction'), 'Unshield flow must build and submit a signed unshield transaction');
     assert(shieldedSrc.includes('async function submitShieldedTransferTransaction'), 'Private transfer flow must build and submit a signed transfer transaction');
@@ -1097,13 +1098,15 @@ test('shielded.js does not overwrite encrypted note storage after a failed decry
         'shielded storage should not fall back to unscoped local note storage');
 });
 
-test('shielded.js rescans commitment pages to restore owned notes from encrypted payloads', () => {
+test('shielded.js retains historical commitment paging but suspends secret-bearing note recovery', () => {
     assert(shieldedSrc.includes('while (!Number.isFinite(totalCommitments) || totalCommitments <= 0 || from < totalCommitments)'),
         'shielded sync should page through commitments instead of reading one short page');
     assert(shieldedSrc.includes('const note = await tryDecryptNote(entry);'),
         'shielded sync should attempt to decrypt encrypted note payloads from RPC');
     assert(shieldedSrc.includes('entry?.encrypted_note || entry?.encryptedNote'),
         'shielded sync should accept canonical snake_case and REST camelCase encrypted-note fields');
+    assert(shieldedSrc.includes('throw new Error(SHIELDED_PROOF_SCHEME_DISABLED_MESSAGE);'),
+        'commitment verification must fail before sending a private blinding to validator RPC');
 });
 
 console.log('\nW-23: Trusted RPC split for critical wallet flows');
@@ -1498,9 +1501,11 @@ test('shielded.js resolves note commitment indexes from chain commitments', () =
         'new shield notes should be marked pending instead of saving an unverified guessed index');
 });
 
-test('shielded.js asks RPC for native Poseidon2 nullifiers', () => {
+test('shielded.js does not send spending keys to the disabled nullifier RPC helper', () => {
     assert(shieldedSrc.includes("rpc.call('computeShieldNullifier'"),
-        'wallet must use the core/RPC native nullifier helper');
+        'legacy helper should remain identifiable for compatibility cleanup');
+    assert(shieldedSrc.includes('if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE || !shieldedState.spendingKey) return null;'),
+        'wallet must stop before the legacy RPC call while shielded operations are disabled');
     assert(!shieldedSrc.includes('const data = new Uint8Array([\n        ...hexToBytes(serialHex),'),
         'wallet must not derive shielded nullifiers with an ad hoc client hash');
 });

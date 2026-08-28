@@ -1,0 +1,28 @@
+[package]
+name = "lichen-moss-provider"
+version = "0.5.264"
+edition = "2021"
+license = "MIT"
+authors = ["Lichen Labs <trading.lobster@lichen.network>"]
+description = "Content-addressed Moss Storage provider and proof daemon"
+
+[dependencies]
+axum = { version = "0.7", features = ["multipart"] }
+base64 = "0.22"
+bs58 = "0.5"
+futures-util = "0.3"
+http-body-util = "0.1"
+lichen-client-sdk = { path = "../sdk/rust" }
+lichen-core = { package = "lobstercove-lichen-core", path = "../core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3.8"
+tower = { version = "0.5", features = ["util"] }

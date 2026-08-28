@@ -1,8 +1,8 @@
-// ThallLend v2 - Decentralized Lending Protocol
+// ThallLend v3 - Decentralized Lending Protocol
 // Deposit collateral, borrow assets, earn interest
 // Per whitepaper: collateralized lending with liquidation mechanics
 //
-// v2 additions:
+// v2/v3 additions:
 //   - Flash loans with fee (0.09%)
 //   - Emergency pause (admin)
 //   - Reentrancy guard enforcement on all mutating functions
@@ -10,56 +10,69 @@
 //   - Admin reserve factor updates
 //   - Protocol deposit cap
 //   - Interest rate query view function
-//   - Oracle price integration via lichenoracle cross-contract call
+//   - Optional LichenOracle freshness circuit breaker for the LICN market
 
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 extern crate alloc;
-use alloc::vec::Vec;
-use lichen_sdk::crosscall::{call_contract, CrossCall};
+use alloc::{vec, vec::Vec};
+use lichen_sdk::crosscall::{call_contract, encode_layout_args, CrossCall};
 use lichen_sdk::{
-    bytes_to_u64, get_caller, get_contract_address, get_timestamp, log_info,
-    receive_token_or_native, set_return_data, storage_get, storage_set, transfer_token_or_native,
-    u64_to_bytes, Address,
+    balance_of_token_or_native, bytes_to_u64, get_caller, get_contract_address, get_timestamp,
+    get_value, is_native_token, log_info, receive_token_or_native, set_return_data, storage_get,
+    storage_set, transfer_token_or_native, u64_to_bytes, Address,
 };
 
 // Oracle configuration key (stores lichenoracle contract address)
 const ORACLE_ADDR_KEY: &[u8] = b"ll_oracle_addr";
 const ORACLE_ASSET_KEY: &[u8] = b"ll_oracle_asset";
+const MAX_ORACLE_ASSET_KEY_LEN: u32 = 64;
 
 /// Query the configured oracle price feed.
-/// Returns 1:1 only when no oracle feed has been configured yet.
+/// Returns 1:1 only when neither oracle configuration key exists. Any partial,
+/// malformed, zero-address, empty, or oversized configuration fails closed.
 fn try_get_oracle_price() -> Option<u64> {
-    if let Some(oracle_bytes) = storage_get(ORACLE_ADDR_KEY) {
-        if oracle_bytes.len() == 32 {
-            let asset = match storage_get(ORACLE_ASSET_KEY) {
-                Some(asset) if !asset.is_empty() => asset,
-                _ => return Some(1),
-            };
-            let mut oracle_addr = [0u8; 32];
-            oracle_addr.copy_from_slice(&oracle_bytes);
-            if is_zero_addr(&oracle_addr) {
-                return Some(1);
+    let oracle_bytes = storage_get(ORACLE_ADDR_KEY);
+    let asset = storage_get(ORACLE_ASSET_KEY);
+    if oracle_bytes.is_none() && asset.is_none() {
+        return Some(1);
+    }
+
+    let (Some(oracle_bytes), Some(asset)) = (oracle_bytes, asset) else {
+        log_info("Oracle configuration is incomplete");
+        return None;
+    };
+    if oracle_bytes.len() != 32
+        || asset.is_empty()
+        || asset.len() > MAX_ORACLE_ASSET_KEY_LEN as usize
+    {
+        log_info("Oracle configuration is malformed");
+        return None;
+    }
+
+    let mut oracle_addr = [0u8; 32];
+    oracle_addr.copy_from_slice(&oracle_bytes);
+    if is_zero_addr(&oracle_addr) {
+        log_info("Oracle configuration contains the zero address");
+        return None;
+    }
+
+    let mut args = Vec::with_capacity(asset.len() + 8);
+    args.extend_from_slice(&asset);
+    args.extend_from_slice(&(asset.len() as u64).to_le_bytes());
+    let call = CrossCall::new(Address(oracle_addr), "get_price_value", args);
+    if let Ok(result) = call_contract(call) {
+        if result.len() >= 8 {
+            let price = bytes_to_u64(&result[..8]);
+            if price > 0 {
+                return Some(price);
             }
-            let mut args = Vec::with_capacity(asset.len() + 8);
-            args.extend_from_slice(&asset);
-            args.extend_from_slice(&(asset.len() as u64).to_le_bytes());
-            let call = CrossCall::new(Address(oracle_addr), "get_price_value", args);
-            if let Ok(result) = call_contract(call) {
-                if result.len() >= 8 {
-                    let price = bytes_to_u64(&result[..8]);
-                    if price > 0 {
-                        return Some(price);
-                    }
-                }
-            }
-            log_info("Configured oracle query failed");
-            return None;
         }
     }
-    // Fallback: 1:1 valuation (oracle not configured)
-    Some(1)
+    log_info("Configured oracle query failed");
+    None
 }
 
 /// Query the configured oracle price feed for legacy view/tests.
@@ -107,11 +120,15 @@ const LIQUIDATION_THRESHOLD_PERCENT: u64 = 85;
 /// Liquidation bonus: 5% discount for liquidators
 const LIQUIDATION_BONUS_PERCENT: u64 = 5;
 
-/// Base interest rate: 2% annual (in basis points per slot, assuming 400ms slots)
-/// ~788,400,000 slots/year → 2% / 788M ≈ 0.0000000254 per slot
-/// We use a scaled rate: 254 per 10^10 per slot
+/// Base borrow rate: approximately 2% annual at the 400ms target cadence.
+/// Contract `get_timestamp()` is the canonical slot number, despite its legacy
+/// name. There are 78,894,000 target slots per Julian year, and 254 / 1e12 per
+/// slot annualizes to 200 basis points after deterministic integer rounding.
 const BASE_RATE_SCALED: u64 = 254;
-const RATE_SCALE: u64 = 10_000_000_000;
+const RATE_SCALE: u64 = 1_000_000_000_000;
+const TARGET_SLOT_MILLIS: u64 = 400;
+const MILLIS_PER_JULIAN_YEAR: u64 = 31_557_600_000;
+const SLOTS_PER_YEAR: u64 = MILLIS_PER_JULIAN_YEAR / TARGET_SLOT_MILLIS;
 
 /// Utilization kink: at 80% utilization, rate increases sharply
 const UTILIZATION_KINK_PERCENT: u64 = 80;
@@ -126,6 +143,7 @@ const ADMIN_KEY: &[u8] = b"ll_admin";
 /// Flash loan fee: 9 basis points (0.09%)
 const FLASH_LOAN_FEE_BPS: u64 = 9;
 const BPS_SCALE: u64 = 10_000;
+const MAX_FLASH_CALLBACK_DATA_LEN: u32 = 128;
 
 /// Maximum deposit cap (0 = unlimited)
 const DEPOSIT_CAP_KEY: &[u8] = b"ll_deposit_cap";
@@ -147,10 +165,14 @@ const MAX_RATE_PER_SLOT: u64 = 25_400; // 100x base rate
 /// AUDIT-FIX G9-01: LichenCoin contract address — required for actual token transfers
 const LICHENCOIN_ADDRESS_KEY: &[u8] = b"ll_licn_addr";
 
-/// P9-SC-01: Compound-style borrow index scale factor.
-/// Global `ll_borrow_index` starts at this value (1e9) and grows with interest.
-/// Per-user `bix:HEXADDR` stores the index when the user last interacted.
+/// Compound-style index scale factor.
+///
+/// Global borrow and deposit indexes start at this value (1e9) and grow with
+/// accrued interest. Per-user `bix:HEXADDR` and `dix:HEXADDR` checkpoints make
+/// both borrower debt and supplier claims settle lazily without iterating over
+/// every account.
 const BORROW_INDEX_SCALE: u64 = 1_000_000_000;
+const DEPOSIT_INDEX_SCALE: u64 = 1_000_000_000;
 
 // ============================================================================
 // STORAGE HELPERS
@@ -213,6 +235,7 @@ struct LendingAccountingSnapshot {
     reserves: Option<Vec<u8>>,
     last_update: Option<Vec<u8>>,
     borrow_index: Option<Vec<u8>>,
+    deposit_index: Option<Vec<u8>>,
 }
 
 fn snapshot_lending_accounting() -> LendingAccountingSnapshot {
@@ -222,6 +245,7 @@ fn snapshot_lending_accounting() -> LendingAccountingSnapshot {
         reserves: storage_get(b"ll_reserves"),
         last_update: storage_get(b"ll_last_update"),
         borrow_index: storage_get(b"ll_borrow_index"),
+        deposit_index: storage_get(b"ll_deposit_index"),
     }
 }
 
@@ -231,6 +255,7 @@ fn restore_lending_accounting(snapshot: LendingAccountingSnapshot) {
     restore_storage_value(b"ll_reserves", &snapshot.reserves);
     restore_storage_value(b"ll_last_update", &snapshot.last_update);
     restore_storage_value(b"ll_borrow_index", &snapshot.borrow_index);
+    restore_storage_value(b"ll_deposit_index", &snapshot.deposit_index);
 }
 
 fn is_paused() -> bool {
@@ -251,8 +276,8 @@ fn load_licn_addr() -> [u8; 32] {
     storage_get(LICHENCOIN_ADDRESS_KEY)
         .map(|d| {
             let mut a = [0u8; 32];
-            if d.len() >= 32 {
-                a.copy_from_slice(&d[..32]);
+            if d.len() == 32 {
+                a.copy_from_slice(&d);
             }
             a
         })
@@ -261,7 +286,7 @@ fn load_licn_addr() -> [u8; 32] {
 
 fn licn_address_configured() -> bool {
     storage_get(LICHENCOIN_ADDRESS_KEY)
-        .map(|bytes| bytes.len() >= 32)
+        .map(|bytes| bytes.len() == 32)
         .unwrap_or(false)
 }
 
@@ -269,15 +294,19 @@ fn oracle_feed_configured() -> bool {
     storage_get(ORACLE_ADDR_KEY)
         .map(|bytes| {
             let mut addr = [0u8; 32];
-            if bytes.len() >= 32 {
-                addr.copy_from_slice(&bytes[..32]);
+            if bytes.len() == 32 {
+                addr.copy_from_slice(&bytes);
             }
-            !is_zero_addr(&addr)
+            bytes.len() == 32 && !is_zero_addr(&addr)
         })
         .unwrap_or(false)
         && storage_get(ORACLE_ASSET_KEY)
-            .map(|asset| !asset.is_empty())
+            .map(|asset| !asset.is_empty() && asset.len() <= MAX_ORACLE_ASSET_KEY_LEN as usize)
             .unwrap_or(false)
+}
+
+fn oracle_configuration_present() -> bool {
+    storage_get(ORACLE_ADDR_KEY).is_some() || storage_get(ORACLE_ASSET_KEY).is_some()
 }
 
 fn is_zero_addr(a: &[u8; 32]) -> bool {
@@ -299,12 +328,41 @@ fn utilization_percent(total_deposits: u64, total_borrows: u64) -> u64 {
     u128_to_u64_saturating((total_borrows as u128) * 100 / (total_deposits as u128))
 }
 
-fn collateral_limit(amount: u64, price: u64, percent: u64) -> u64 {
-    u128_to_u64_saturating((amount as u128) * (price as u128) * (percent as u128) / 100)
+fn collateral_limit(amount: u64, percent: u64) -> u64 {
+    u128_to_u64_saturating((amount as u128) * (percent as u128) / 100)
+}
+
+fn liquidation_collateral(repay_amount: u64) -> Option<u64> {
+    let seized =
+        repay_amount as u128 + repay_amount as u128 * LIQUIDATION_BONUS_PERCENT as u128 / 100;
+    u64::try_from(seized).ok()
+}
+
+/// Largest repayment whose principal plus liquidation bonus fits in the
+/// borrower's remaining collateral. Binary search handles small rounding cases
+/// exactly and avoids an approximation that can strand sub-bonus dust.
+fn max_repay_for_collateral(collateral: u64) -> u64 {
+    let mut low = 0u64;
+    let mut high = collateral;
+    while low < high {
+        let mid = low + (high - low) / 2 + 1;
+        match liquidation_collateral(mid) {
+            Some(seized) if seized <= collateral => low = mid,
+            _ => high = mid - 1,
+        }
+    }
+    low
+}
+
+fn flash_loan_fee(amount: u64) -> u64 {
+    let rounded = u128_to_u64_saturating(
+        (amount as u128 * FLASH_LOAN_FEE_BPS as u128).div_ceil(BPS_SCALE as u128),
+    );
+    rounded.max(1)
 }
 
 fn current_rate_per_slot(total_deposits: u64, total_borrows: u64) -> u64 {
-    let utilization = utilization_percent(total_deposits, total_borrows);
+    let utilization = utilization_percent(total_deposits, total_borrows).min(100);
 
     let rate_per_slot = if utilization <= UTILIZATION_KINK_PERCENT {
         (BASE_RATE_SCALED as u128) + ((utilization as u128) * (BASE_RATE_SCALED as u128) * 2 / 100)
@@ -320,6 +378,12 @@ fn current_rate_per_slot(total_deposits: u64, total_borrows: u64) -> u64 {
     } else {
         rate_per_slot as u64
     }
+}
+
+fn annual_rate_bps(rate_per_slot: u64) -> u64 {
+    u128_to_u64_saturating(
+        rate_per_slot as u128 * SLOTS_PER_YEAR as u128 * BPS_SCALE as u128 / RATE_SCALE as u128,
+    )
 }
 
 fn quote_accrued_interest(principal: u64, elapsed_slots: u64) -> u64 {
@@ -364,16 +428,44 @@ fn transfer_out(recipient: &[u8; 32], amount: u64) -> u32 {
 }
 
 fn receive_licn_in(payer: &[u8; 32], amount: u64) -> bool {
-    let token = if licn_address_configured() {
-        Address(load_licn_addr())
-    } else {
-        Address([0u8; 32])
-    };
-    receive_token_or_native(token, Address(*payer), get_contract_address(), amount).unwrap_or(false)
+    if !licn_address_configured() {
+        log_info("Lichencoin address not configured");
+        return false;
+    }
+
+    let token = Address(load_licn_addr());
+    if !is_native_token(&token) {
+        return receive_token_or_native(token, Address(*payer), get_contract_address(), amount)
+            .unwrap_or(false);
+    }
+
+    let received = get_value();
+    if received < amount {
+        return false;
+    }
+    let excess = received - amount;
+    if excess == 0 {
+        return true;
+    }
+
+    // Native payable value is credited before execution. Return every unused
+    // spore in the same atomic call instead of silently converting a caller's
+    // maximum repayment into protocol surplus.
+    transfer_token_or_native(token, get_contract_address(), Address(*payer), excess)
+        .unwrap_or(false)
 }
 
 fn get_deposit_cap() -> u64 {
     load_u64(DEPOSIT_CAP_KEY)
+}
+
+fn current_deposit_index() -> u64 {
+    let index = load_u64(b"ll_deposit_index");
+    if index == 0 {
+        DEPOSIT_INDEX_SCALE
+    } else {
+        index
+    }
 }
 
 /// P9-SC-01: Settle a user's borrow balance using the global borrow index.
@@ -444,6 +536,55 @@ fn compute_current_borrow(hex: &[u8; 64]) -> u64 {
     )
 }
 
+/// Settle a supplier's balance using the global deposit index.
+fn settle_user_deposit(hex: &[u8; 64]) -> u64 {
+    let global_index = current_deposit_index();
+
+    let deposit_key = make_key(b"dep:", hex);
+    let stored_deposit = load_u64(&deposit_key);
+    if stored_deposit == 0 {
+        return 0;
+    }
+
+    let index_key = make_key(b"dix:", hex);
+    let user_index = load_u64(&index_key);
+    let effective_user_index = if user_index == 0 {
+        DEPOSIT_INDEX_SCALE
+    } else {
+        user_index
+    };
+    if global_index == effective_user_index {
+        return stored_deposit;
+    }
+
+    let actual_deposit = u128_to_u64_saturating(
+        stored_deposit as u128 * global_index as u128 / effective_user_index as u128,
+    );
+    store_u64(&deposit_key, actual_deposit);
+    store_u64(&index_key, global_index);
+    actual_deposit
+}
+
+/// Compute a supplier's current balance without mutating its checkpoint.
+fn compute_current_deposit(hex: &[u8; 64]) -> u64 {
+    let global_index = current_deposit_index();
+
+    let stored_deposit = load_u64(&make_key(b"dep:", hex));
+    if stored_deposit == 0 {
+        return 0;
+    }
+
+    let user_index = load_u64(&make_key(b"dix:", hex));
+    let effective_user_index = if user_index == 0 {
+        DEPOSIT_INDEX_SCALE
+    } else {
+        user_index
+    };
+    u128_to_u64_saturating(
+        stored_deposit as u128 * global_index as u128 / effective_user_index as u128,
+    )
+}
+
 // ============================================================================
 // PROTOCOL STATE
 // ============================================================================
@@ -474,6 +615,7 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     store_u64(b"ll_reserve_factor", 10); // 10% of interest goes to reserves
                                          // P9-SC-01: Initialize borrow index for Compound-style per-borrower tracking
     store_u64(b"ll_borrow_index", BORROW_INDEX_SCALE);
+    store_u64(b"ll_deposit_index", DEPOSIT_INDEX_SCALE);
 
     log_info("ThallLend initialized");
     0
@@ -540,7 +682,8 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u32 {
 
     // Update user deposit
     let dep_key = make_key(b"dep:", &hex);
-    let prev_deposit = load_u64(&dep_key);
+    let dix_key = make_key(b"dix:", &hex);
+    let prev_deposit = settle_user_deposit(&hex);
     let new_deposit = match prev_deposit.checked_add(amount) {
         Some(v) => v,
         None => {
@@ -549,6 +692,7 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u32 {
         }
     };
     store_u64(&dep_key, new_deposit);
+    store_u64(&dix_key, current_deposit_index());
 
     // Update total deposits
     store_u64(b"ll_total_deposits", new_total);
@@ -585,15 +729,31 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
     }
 
     let hex = hex_encode_addr(&depositor);
+    let dep_key = make_key(b"dep:", &hex);
+    let dix_key = make_key(b"dix:", &hex);
+    let deposit_before = storage_get(&dep_key);
+    let dix_before = storage_get(&dix_key);
     let accounting_before = snapshot_lending_accounting();
 
     accrue_interest();
 
-    let dep_key = make_key(b"dep:", &hex);
-    let current_deposit = load_u64(&dep_key);
+    let current_deposit = settle_user_deposit(&hex);
     if amount > current_deposit {
+        restore_storage_value(&dep_key, &deposit_before);
+        restore_storage_value(&dix_key, &dix_before);
+        restore_lending_accounting(accounting_before);
         log_info("Insufficient deposit balance");
         return 2;
+    }
+
+    let total = load_u64(b"ll_total_deposits");
+    let total_borrows = load_u64(b"ll_total_borrows");
+    if amount > total.saturating_sub(total_borrows) {
+        restore_storage_value(&dep_key, &deposit_before);
+        restore_storage_value(&dix_key, &dix_before);
+        restore_lending_accounting(accounting_before);
+        log_info("Insufficient available pool liquidity");
+        return 4;
     }
 
     // Check health factor after withdrawal
@@ -602,29 +762,40 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
     let new_deposit = current_deposit - amount;
 
     if current_borrow > 0 {
-        let collateral_price = match try_get_oracle_price() {
-            Some(price) => price,
-            None => {
-                log_info("Oracle price unavailable");
-                return 6;
-            }
-        };
-        let max_borrow = collateral_limit(new_deposit, collateral_price, COLLATERAL_FACTOR_PERCENT);
+        if try_get_oracle_price().is_none() {
+            restore_storage_value(&dep_key, &deposit_before);
+            restore_storage_value(&dix_key, &dix_before);
+            restore_lending_accounting(accounting_before);
+            log_info("Oracle price unavailable");
+            return 6;
+        }
+        let max_borrow = collateral_limit(new_deposit, COLLATERAL_FACTOR_PERCENT);
         if current_borrow > max_borrow {
+            restore_storage_value(&dep_key, &deposit_before);
+            restore_storage_value(&dix_key, &dix_before);
+            restore_lending_accounting(accounting_before);
             log_info("Withdrawal would make position unhealthy");
             return 3;
         }
     }
 
     store_u64(&dep_key, new_deposit);
-    let total = load_u64(b"ll_total_deposits");
-    store_u64(b"ll_total_deposits", total.saturating_sub(amount));
+    store_u64(&dix_key, current_deposit_index());
+    let Some(new_total_deposits) = total.checked_sub(amount) else {
+        restore_storage_value(&dep_key, &deposit_before);
+        restore_storage_value(&dix_key, &dix_before);
+        restore_lending_accounting(accounting_before);
+        log_info("Deposit liability accounting underflow");
+        return 5;
+    };
+    store_u64(b"ll_total_deposits", new_total_deposits);
 
     // AUDIT-FIX G9-01: Transfer tokens to withdrawer
     let rc = transfer_out(&depositor, amount);
     if rc != 0 {
         // Revert bookkeeping on transfer failure
-        store_u64(&dep_key, current_deposit);
+        restore_storage_value(&dep_key, &deposit_before);
+        restore_storage_value(&dix_key, &dix_before);
         restore_lending_accounting(accounting_before);
         return rc;
     }
@@ -670,24 +841,25 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
 
     accrue_interest();
 
-    let dep_key = make_key(b"dep:", &hex);
-    let deposit_val = load_u64(&dep_key);
+    let deposit_val = compute_current_deposit(&hex);
     // P9-SC-01: Settle existing borrow via index before adding new amount
     let current_borrow = settle_user_borrow(&hex);
 
     // AUDIT-FIX CON-10/C-3: Use the configured oracle feed, not borrower bytes.
-    let collateral_price = match try_get_oracle_price() {
-        Some(price) => price,
-        None => {
-            restore_storage_value(&borrow_key, &borrow_before);
-            restore_storage_value(&bix_key, &bix_before);
-            restore_storage_value(&ts_key, &ts_before);
-            restore_lending_accounting(accounting_before);
-            log_info("Oracle price unavailable");
-            return 6;
-        }
-    };
-    let max_borrow = collateral_limit(deposit_val, collateral_price, COLLATERAL_FACTOR_PERCENT);
+    if try_get_oracle_price().is_none() {
+        restore_storage_value(&borrow_key, &borrow_before);
+        restore_storage_value(&bix_key, &bix_before);
+        restore_storage_value(&ts_key, &ts_before);
+        restore_lending_accounting(accounting_before);
+        log_info("Oracle price unavailable");
+        return 6;
+    }
+    // ThallLend currently lends and escrows the same LICN asset. Its USD price
+    // cancels from both sides of the health ratio; multiplying by an 8-decimal
+    // quote would fabricate borrowing power. A configured oracle is therefore
+    // a freshness/market-health circuit breaker, while solvency remains LICN
+    // amount against LICN amount.
+    let max_borrow = collateral_limit(deposit_val, COLLATERAL_FACTOR_PERCENT);
     let new_borrow = match current_borrow.checked_add(amount) {
         Some(v) => v,
         None => {
@@ -786,21 +958,22 @@ pub extern "C" fn repay(borrower_ptr: *const u8, amount: u64) -> u32 {
         return 200;
     }
 
-    // AUDIT-FIX G9-01: Verify incoming custody covers repayment
-    if !receive_licn_in(&borrower, amount) {
-        log_info("Insufficient repayment payment");
-        return 30;
-    }
-
     let hex = hex_encode_addr(&borrower);
+    let borrow_key = make_key(b"bor:", &hex);
+    let bix_key = make_key(b"bix:", &hex);
+    let accounting_before = snapshot_lending_accounting();
+    let borrow_before = storage_get(&borrow_key);
+    let bix_before = storage_get(&bix_key);
 
     accrue_interest();
 
     // P9-SC-01: Settle borrow via index to get true amount owed
     let current_borrow = settle_user_borrow(&hex);
-    let borrow_key = make_key(b"bor:", &hex);
 
     if current_borrow == 0 {
+        restore_storage_value(&borrow_key, &borrow_before);
+        restore_storage_value(&bix_key, &bix_before);
+        restore_lending_accounting(accounting_before);
         log_info("No outstanding borrow");
         return 2;
     }
@@ -810,16 +983,32 @@ pub extern "C" fn repay(borrower_ptr: *const u8, amount: u64) -> u32 {
     } else {
         amount
     };
+
+    // Pull only the debt actually retired. In native LICN mode the payable
+    // maximum is refunded down to this exact amount by receive_licn_in.
+    if !receive_licn_in(&borrower, repay_amount) {
+        restore_storage_value(&borrow_key, &borrow_before);
+        restore_storage_value(&bix_key, &bix_before);
+        restore_lending_accounting(accounting_before);
+        log_info("Insufficient repayment payment or refund failed");
+        return 30;
+    }
+
     store_u64(&borrow_key, current_borrow - repay_amount);
 
     let total_borrows = load_u64(b"ll_total_borrows");
-    store_u64(
-        b"ll_total_borrows",
-        total_borrows.saturating_sub(repay_amount),
-    );
+    let Some(new_total_borrows) = total_borrows.checked_sub(repay_amount) else {
+        restore_storage_value(&borrow_key, &borrow_before);
+        restore_storage_value(&bix_key, &bix_before);
+        restore_lending_accounting(accounting_before);
+        log_info("Borrow liability accounting underflow");
+        return 5;
+    };
+    store_u64(b"ll_total_borrows", new_total_borrows);
 
     // Track repay count
     store_u64(REPAY_COUNT_KEY, load_u64(REPAY_COUNT_KEY).saturating_add(1));
+    set_return_data(&u64_to_bytes(repay_amount));
     log_info("Repayment successful");
     0
 }
@@ -840,21 +1029,15 @@ pub extern "C" fn liquidate(
         None => return 21,
     };
 
-    let mut _liquidator = [0u8; 32];
+    let mut liquidator = [0u8; 32];
     unsafe {
-        core::ptr::copy_nonoverlapping(liquidator_ptr, _liquidator.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(liquidator_ptr, liquidator.as_mut_ptr(), 32);
     }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
-    if real_caller.0 != _liquidator {
+    if real_caller.0 != liquidator {
         return 200;
-    }
-
-    // AUDIT-FIX G9-01: Verify incoming custody covers liquidation repayment
-    if !receive_licn_in(&_liquidator, repay_amount) {
-        log_info("Insufficient liquidation payment");
-        return 30;
     }
 
     let mut borrower = [0u8; 32];
@@ -863,75 +1046,117 @@ pub extern "C" fn liquidate(
     }
     let hex = hex_encode_addr(&borrower);
     let dep_key = make_key(b"dep:", &hex);
+    let dix_key = make_key(b"dix:", &hex);
     let borrow_key = make_key(b"bor:", &hex);
     let bix_key = make_key(b"bix:", &hex);
     let accounting_before = snapshot_lending_accounting();
     let deposit_before = storage_get(&dep_key);
+    let dix_before = storage_get(&dix_key);
     let borrow_before = storage_get(&borrow_key);
     let bix_before = storage_get(&bix_key);
     let liquidation_count_before = storage_get(LIQUIDATION_COUNT_KEY);
 
     accrue_interest();
 
-    let deposit = load_u64(&dep_key);
+    let deposit = settle_user_deposit(&hex);
     // P9-SC-01: Settle borrow via index to check true health
     let current_borrow = settle_user_borrow(&hex);
 
     if current_borrow == 0 {
+        restore_storage_value(&dep_key, &deposit_before);
+        restore_storage_value(&dix_key, &dix_before);
+        restore_storage_value(&borrow_key, &borrow_before);
+        restore_storage_value(&bix_key, &bix_before);
+        restore_lending_accounting(accounting_before);
         log_info("No borrow to liquidate");
         return 2;
     }
 
     // Check if position is liquidatable
     // AUDIT-FIX CON-10/C-3: Use the configured oracle feed, not borrower bytes.
-    let collateral_price = match try_get_oracle_price() {
-        Some(price) => price,
-        None => {
-            log_info("Oracle price unavailable");
-            return 6;
-        }
-    };
-    let liquidation_limit =
-        collateral_limit(deposit, collateral_price, LIQUIDATION_THRESHOLD_PERCENT);
+    if try_get_oracle_price().is_none() {
+        restore_storage_value(&dep_key, &deposit_before);
+        restore_storage_value(&dix_key, &dix_before);
+        restore_storage_value(&borrow_key, &borrow_before);
+        restore_storage_value(&bix_key, &bix_before);
+        restore_lending_accounting(accounting_before);
+        log_info("Oracle price unavailable");
+        return 6;
+    }
+    let liquidation_limit = collateral_limit(deposit, LIQUIDATION_THRESHOLD_PERCENT);
     if current_borrow <= liquidation_limit {
+        restore_storage_value(&dep_key, &deposit_before);
+        restore_storage_value(&dix_key, &dix_before);
+        restore_storage_value(&borrow_key, &borrow_before);
+        restore_storage_value(&bix_key, &bix_before);
+        restore_lending_accounting(accounting_before);
         log_info("Position is healthy, cannot liquidate");
         return 3;
     }
 
-    // Can only liquidate up to 50% of the borrow at once
-    let max_repay = current_borrow / 2;
-    let actual_repay = if repay_amount > max_repay {
-        max_repay
-    } else {
-        repay_amount
-    };
+    // Close at most 50% of debt per call, while never accepting more repayment
+    // than the remaining collateral can compensate at the configured bonus.
+    // Ceiling division keeps a one-spore debt liquidatable.
+    let close_factor_limit = current_borrow / 2 + current_borrow % 2;
+    let collateral_repay_limit = max_repay_for_collateral(deposit);
+    let actual_repay = repay_amount
+        .min(close_factor_limit)
+        .min(collateral_repay_limit);
+    if actual_repay == 0 {
+        restore_storage_value(&dep_key, &deposit_before);
+        restore_storage_value(&dix_key, &dix_before);
+        restore_storage_value(&borrow_key, &borrow_before);
+        restore_storage_value(&bix_key, &bix_before);
+        restore_lending_accounting(accounting_before);
+        log_info("No collateral-backed liquidation repayment available");
+        return 7;
+    }
+
+    // Pull only the amount actually used. Native payable excess is refunded
+    // atomically; MT-20 mode calls transfer_from for this exact amount only.
+    if !receive_licn_in(&liquidator, actual_repay) {
+        restore_storage_value(&dep_key, &deposit_before);
+        restore_storage_value(&dix_key, &dix_before);
+        restore_storage_value(&borrow_key, &borrow_before);
+        restore_storage_value(&bix_key, &bix_before);
+        restore_lending_accounting(accounting_before);
+        log_info("Insufficient liquidation payment or refund failed");
+        return 30;
+    }
 
     // Collateral seized = repay_amount * (1 + bonus)
-    // AUDIT-FIX L6-01: Use u128 throughout to prevent overflow on large repay amounts
-    let collateral_seized = (actual_repay as u128
-        + (actual_repay as u128 * LIQUIDATION_BONUS_PERCENT as u128 / 100))
-        as u64;
-    let actual_seized = if collateral_seized > deposit {
-        deposit
-    } else {
-        collateral_seized
+    let Some(actual_seized) = liquidation_collateral(actual_repay) else {
+        restore_storage_value(&dep_key, &deposit_before);
+        restore_storage_value(&dix_key, &dix_before);
+        restore_storage_value(&borrow_key, &borrow_before);
+        restore_storage_value(&bix_key, &bix_before);
+        restore_lending_accounting(accounting_before);
+        log_info("Liquidation collateral calculation overflow");
+        return 8;
     };
 
     // Update borrower
     store_u64(&borrow_key, current_borrow - actual_repay);
     store_u64(&dep_key, deposit - actual_seized);
+    store_u64(&dix_key, current_deposit_index());
 
     // Update totals
     let total_borrows = load_u64(b"ll_total_borrows");
-    store_u64(
-        b"ll_total_borrows",
-        total_borrows.saturating_sub(actual_repay),
-    );
     let total_deposits = load_u64(b"ll_total_deposits");
-    store_u64(
-        b"ll_total_deposits",
-        total_deposits.saturating_sub(actual_seized),
-    );
+    let (Some(new_total_borrows), Some(new_total_deposits)) = (
+        total_borrows.checked_sub(actual_repay),
+        total_deposits.checked_sub(actual_seized),
+    ) else {
+        restore_storage_value(&dep_key, &deposit_before);
+        restore_storage_value(&dix_key, &dix_before);
+        restore_storage_value(&borrow_key, &borrow_before);
+        restore_storage_value(&bix_key, &bix_before);
+        restore_lending_accounting(accounting_before);
+        log_info("Liquidation accounting underflow");
+        return 5;
+    };
+    store_u64(b"ll_total_borrows", new_total_borrows);
+    store_u64(b"ll_total_deposits", new_total_deposits);
 
     // Track liquidation count
     store_u64(
@@ -940,11 +1165,12 @@ pub extern "C" fn liquidate(
     );
 
     // AUDIT-FIX G9-01: Transfer seized collateral to liquidator
-    let rc = transfer_out(&_liquidator, actual_seized);
+    let rc = transfer_out(&liquidator, actual_seized);
     if rc != 0 {
         // Revert all bookkeeping on transfer failure
         restore_storage_value(&borrow_key, &borrow_before);
         restore_storage_value(&dep_key, &deposit_before);
+        restore_storage_value(&dix_key, &dix_before);
         restore_storage_value(&bix_key, &bix_before);
         restore_storage_value(LIQUIDATION_COUNT_KEY, &liquidation_count_before);
         restore_lending_accounting(accounting_before);
@@ -952,8 +1178,12 @@ pub extern "C" fn liquidate(
     }
     log_info("Liquidation executed");
 
-    // Return seized collateral amount in return data
-    set_return_data(&u64_to_bytes(actual_seized));
+    // Preserve the legacy first field (seized collateral) and append the exact
+    // repayment consumed so clients can reconcile a capped/refunded request.
+    let mut result = Vec::with_capacity(16);
+    result.extend_from_slice(&u64_to_bytes(actual_seized));
+    result.extend_from_slice(&u64_to_bytes(actual_repay));
+    set_return_data(&result);
     0
 }
 
@@ -969,12 +1199,9 @@ fn accrue_interest() {
         return;
     }
 
-    let elapsed_ms = now - last_update;
-    // Convert to approximate slots (400ms each)
-    let elapsed_slots = elapsed_ms / 400;
-    if elapsed_slots == 0 {
-        return;
-    }
+    // The compatibility host call is the canonical slot number, not wall-clock
+    // milliseconds. Treating it as milliseconds divided accrual by another 400.
+    let elapsed_slots = now - last_update;
 
     let total_deposits = load_u64(b"ll_total_deposits");
     let total_borrows = load_u64(b"ll_total_borrows");
@@ -1001,26 +1228,68 @@ fn accrue_interest() {
                 .min(interest);
         let depositor_interest = interest - reserve_amount;
 
-        // Increase total borrows by interest (borrowers owe more)
-        store_u64(b"ll_total_borrows", total_borrows.saturating_add(interest));
-        // Increase total deposits by depositor's share (depositors earn)
-        store_u64(
-            b"ll_total_deposits",
-            total_deposits.saturating_add(depositor_interest),
-        );
-        // Track protocol reserves
+        let new_total_borrows = match total_borrows.checked_add(interest) {
+            Some(value) => value,
+            None => {
+                log_info("Interest accrual rejected: total borrow overflow");
+                return;
+            }
+        };
+        let new_total_deposits = match total_deposits.checked_add(depositor_interest) {
+            Some(value) => value,
+            None => {
+                log_info("Interest accrual rejected: total deposit overflow");
+                return;
+            }
+        };
         let reserves = load_u64(b"ll_reserves");
-        store_u64(b"ll_reserves", reserves.saturating_add(reserve_amount));
+        let new_reserves = match reserves.checked_add(reserve_amount) {
+            Some(value) => value,
+            None => {
+                log_info("Interest accrual rejected: reserve overflow");
+                return;
+            }
+        };
+
+        let old_borrow_index = load_u64(b"ll_borrow_index");
+        let borrow_index_delta = u128_to_u64_saturating(
+            (old_borrow_index as u128) * (rate_per_slot as u128) * (elapsed_slots as u128)
+                / (RATE_SCALE as u128),
+        );
+        let new_borrow_index = match old_borrow_index.checked_add(borrow_index_delta) {
+            Some(value) => value,
+            None => {
+                log_info("Interest accrual rejected: borrow index overflow");
+                return;
+            }
+        };
+
+        let old_deposit_index = current_deposit_index();
+        let deposit_index_delta = u128_to_u64_saturating(
+            old_deposit_index as u128 * depositor_interest as u128 / total_deposits as u128,
+        );
+        let new_deposit_index = match old_deposit_index.checked_add(deposit_index_delta) {
+            Some(value) => value,
+            None => {
+                log_info("Interest accrual rejected: deposit index overflow");
+                return;
+            }
+        };
+
+        // Increase total borrows by interest (borrowers owe more)
+        store_u64(b"ll_total_borrows", new_total_borrows);
+        // Increase total deposits by depositor's share (depositors earn)
+        store_u64(b"ll_total_deposits", new_total_deposits);
+        // Track protocol reserves
+        store_u64(b"ll_reserves", new_reserves);
 
         // P9-SC-01: Update global borrow index proportionally.
         // index_delta = old_index * rate_per_slot * elapsed_slots / RATE_SCALE
         // (same factor as interest / total_borrows)
-        let old_index = load_u64(b"ll_borrow_index");
-        let index_delta = u128_to_u64_saturating(
-            (old_index as u128) * (rate_per_slot as u128) * (elapsed_slots as u128)
-                / (RATE_SCALE as u128),
-        );
-        store_u64(b"ll_borrow_index", old_index.saturating_add(index_delta));
+        store_u64(b"ll_borrow_index", new_borrow_index);
+        // Supplier claims grow by their exact pro-rata share of depositor
+        // interest, while rounding dust remains as protocol surplus.
+        store_u64(b"ll_deposit_index", new_deposit_index);
     }
 
     store_u64(b"ll_last_update", now);
@@ -1039,7 +1308,7 @@ pub extern "C" fn get_account_info(user_ptr: *const u8) -> u32 {
     }
     let hex = hex_encode_addr(&user);
 
-    let deposit = load_u64(&make_key(b"dep:", &hex));
+    let deposit = compute_current_deposit(&hex);
     // P9-SC-01: Use index-adjusted borrow for accurate health factor
     let borrow = compute_current_borrow(&hex);
 
@@ -1083,69 +1352,151 @@ pub extern "C" fn get_protocol_stats() -> u32 {
 // v2: FLASH LOANS
 // ============================================================================
 
-/// Borrow a flash loan — must be repaid with fee in the same transaction.
-/// Step 1: flash_borrow records the loan, step 2: flash_repay settles it.
+/// Legacy two-call flash borrowing is disabled because it could commit the
+/// outgoing transfer without proving repayment in the same transaction.
+/// `flash_repay` remains available only to unwind a pre-upgrade active loan.
 #[no_mangle]
-pub extern "C" fn flash_borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
+pub extern "C" fn flash_borrow(_borrower_ptr: *const u8, _amount: u64) -> u32 {
+    log_info("Legacy flash_borrow is disabled; use flash_execute");
+    40
+}
+
+/// Execute a flash loan atomically through the receiver callback
+/// `on_lichen_flash_loan(initiator, token, amount, fee, data, data_len)`.
+/// The entire top-level call fails unless the pool's real custody balance is
+/// restored with the fee before this function returns.
+#[no_mangle]
+pub extern "C" fn flash_execute(
+    receiver_ptr: *const u8,
+    amount: u64,
+    data_ptr: *const u8,
+    data_len: u32,
+) -> u32 {
     if amount == 0 {
         return 1;
+    }
+    if data_len > MAX_FLASH_CALLBACK_DATA_LEN {
+        log_info("Flash callback data is too large");
+        return 5;
     }
     if is_paused() {
         log_info("Protocol is paused");
         return 20;
     }
-
-    let mut _borrower = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(borrower_ptr, _borrower.as_mut_ptr(), 32);
+    if load_u64(FLASH_BORROWED_KEY) > 0 {
+        log_info("A legacy flash loan must be settled before flash execution");
+        return 2;
     }
-
-    // AUDIT-FIX: verify caller matches transaction signer
-    let real_caller = get_caller();
-    if real_caller.0 != _borrower {
-        return 200;
+    if !licn_address_configured() {
+        log_info("Lichencoin address not configured");
+        return 30;
     }
     let _reentrancy_guard = match reentrancy_enter() {
         Some(guard) => guard,
         None => return 21,
     };
 
-    // Check no active flash loan
-    if load_u64(FLASH_BORROWED_KEY) > 0 {
-        log_info("Flash loan already active");
-        return 2;
+    let mut receiver = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(receiver_ptr, receiver.as_mut_ptr(), 32);
+    }
+    let self_addr = get_contract_address();
+    if is_zero_addr(&receiver) || receiver == self_addr.0 {
+        log_info("Flash receiver must be a separate executable contract");
+        return 6;
     }
 
-    // Check pool has sufficient liquidity
+    let mut callback_data = vec![0u8; data_len as usize];
+    if data_len > 0 {
+        unsafe {
+            core::ptr::copy_nonoverlapping(data_ptr, callback_data.as_mut_ptr(), data_len as usize);
+        }
+    }
+
+    let accounting_before = snapshot_lending_accounting();
+    accrue_interest();
     let total_deposits = load_u64(b"ll_total_deposits");
     let total_borrows = load_u64(b"ll_total_borrows");
-    let available = total_deposits.saturating_sub(total_borrows);
-    if amount > available {
+    if amount > total_deposits.saturating_sub(total_borrows) {
+        restore_lending_accounting(accounting_before);
         log_info("Insufficient pool liquidity for flash loan");
         return 3;
     }
 
-    // AUDIT-FIX NEW-M2: round-up fee (consistent with lichenswap), u128 intermediate
-    let fee = ((amount as u128 * FLASH_LOAN_FEE_BPS as u128 + (BPS_SCALE as u128 - 1))
-        / BPS_SCALE as u128) as u64;
-    let fee = if fee == 0 { 1 } else { fee }; // minimum 1 spore fee
+    let fee = flash_loan_fee(amount);
+    let new_reserves = match load_u64(b"ll_reserves").checked_add(fee) {
+        Some(value) => value,
+        None => {
+            restore_lending_accounting(accounting_before);
+            log_info("Flash loan fee would overflow reserves");
+            return 4;
+        }
+    };
+    let token = Address(load_licn_addr());
+    let starting_balance = match balance_of_token_or_native(token, self_addr) {
+        Ok(balance) if balance >= amount => balance,
+        _ => {
+            restore_lending_accounting(accounting_before);
+            log_info("Pool custody balance is unavailable or insufficient");
+            return 31;
+        }
+    };
 
-    // Record flash loan
-    store_u64(FLASH_BORROWED_KEY, amount);
-    store_u64(FLASH_FEE_KEY, fee);
-
-    // AUDIT-FIX G9-01: Transfer flash loan tokens to borrower
-    let rc = transfer_out(&_borrower, amount);
-    if rc != 0 {
-        // Revert flash loan state on transfer failure
-        store_u64(FLASH_BORROWED_KEY, 0);
-        store_u64(FLASH_FEE_KEY, 0);
-        return rc;
+    if transfer_out(&receiver, amount) != 0 {
+        restore_lending_accounting(accounting_before);
+        log_info("Flash loan transfer failed");
+        return 32;
     }
 
-    // Return fee in return data so borrower knows what to repay
+    let initiator = get_caller();
+    let amount_bytes = amount.to_le_bytes();
+    let fee_bytes = fee.to_le_bytes();
+    let data_len_bytes = data_len.to_le_bytes();
+    let callback_args = match encode_layout_args(&[
+        &initiator.0,
+        &token.0,
+        &amount_bytes,
+        &fee_bytes,
+        &callback_data,
+        &data_len_bytes,
+    ]) {
+        Ok(args) => args,
+        Err(_) => {
+            restore_lending_accounting(accounting_before);
+            return 33;
+        }
+    };
+    if call_contract(CrossCall::new(
+        Address(receiver),
+        "on_lichen_flash_loan",
+        callback_args,
+    ))
+    .is_err()
+    {
+        restore_lending_accounting(accounting_before);
+        log_info("Flash loan callback failed");
+        return 33;
+    }
+
+    let required_balance = match starting_balance.checked_add(fee) {
+        Some(value) => value,
+        None => {
+            restore_lending_accounting(accounting_before);
+            return 4;
+        }
+    };
+    match balance_of_token_or_native(token, self_addr) {
+        Ok(ending_balance) if ending_balance >= required_balance => {}
+        _ => {
+            restore_lending_accounting(accounting_before);
+            log_info("Flash loan callback did not restore principal and fee");
+            return 34;
+        }
+    }
+
+    store_u64(b"ll_reserves", new_reserves);
     set_return_data(&u64_to_bytes(fee));
-    log_info("Flash loan issued");
+    log_info("Atomic flash loan completed");
     0
 }
 
@@ -1207,7 +1558,8 @@ pub extern "C" fn flash_repay(borrower_ptr: *const u8, repay_amount: u64) -> u32
 // v2: ADMIN OPERATIONS
 // ============================================================================
 
-/// Admin pauses the protocol (blocks new deposits, borrows, withdrawals)
+/// Admin pauses new deposits, borrows, and flash loans. Withdrawals,
+/// repayments, and liquidations remain available so users can reduce risk.
 #[no_mangle]
 pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
@@ -1419,14 +1771,17 @@ pub extern "C" fn set_oracle_feed(
         log_info("Cannot set empty oracle asset key");
         return 3;
     }
-    if oracle_feed_configured() {
+    if asset_len > MAX_ORACLE_ASSET_KEY_LEN {
+        log_info("Oracle asset key is too long");
+        return 5;
+    }
+    if oracle_configuration_present() {
         log_info("Oracle feed already configured");
         return 4;
     }
 
-    let mut asset = Vec::with_capacity(asset_len as usize);
+    let mut asset = vec![0u8; asset_len as usize];
     unsafe {
-        asset.set_len(asset_len as usize);
         core::ptr::copy_nonoverlapping(asset_ptr, asset.as_mut_ptr(), asset_len as usize);
     }
 
@@ -1456,6 +1811,58 @@ pub extern "C" fn get_interest_rate() -> u32 {
     result.extend_from_slice(&u64_to_bytes(rate_per_slot));
     result.extend_from_slice(&u64_to_bytes(utilization));
     result.extend_from_slice(&u64_to_bytes(available));
+    set_return_data(&result);
+    0
+}
+
+/// Get the deterministic borrow-rate model:
+/// [rate_scale, slots_per_year, base_rate_per_slot, current_rate_per_slot,
+///  current_annual_bps, utilization_kink_pct, max_rate_per_slot].
+#[no_mangle]
+pub extern "C" fn get_rate_model() -> u32 {
+    let total_deposits = load_u64(b"ll_total_deposits");
+    let total_borrows = load_u64(b"ll_total_borrows");
+    let current_rate = current_rate_per_slot(total_deposits, total_borrows);
+
+    let mut result = Vec::with_capacity(56);
+    for value in [
+        RATE_SCALE,
+        SLOTS_PER_YEAR,
+        BASE_RATE_SCALED,
+        current_rate,
+        annual_rate_bps(current_rate),
+        UTILIZATION_KINK_PERCENT,
+        MAX_RATE_PER_SLOT,
+    ] {
+        result.extend_from_slice(&u64_to_bytes(value));
+    }
+    set_return_data(&result);
+    0
+}
+
+/// Get operational market configuration:
+/// [paused, licn_configured, native_licn, oracle_config_present,
+///  oracle_config_valid, deposit_cap, reserve_factor_pct,
+///  collateral_factor_pct, liquidation_threshold_pct, liquidation_bonus_pct].
+#[no_mangle]
+pub extern "C" fn get_market_status() -> u32 {
+    let licn_configured = licn_address_configured();
+    let native_licn = licn_configured && is_zero_addr(&load_licn_addr());
+    let mut result = Vec::with_capacity(80);
+    for value in [
+        is_paused() as u64,
+        licn_configured as u64,
+        native_licn as u64,
+        oracle_configuration_present() as u64,
+        oracle_feed_configured() as u64,
+        get_deposit_cap(),
+        load_u64(b"ll_reserve_factor"),
+        COLLATERAL_FACTOR_PERCENT,
+        LIQUIDATION_THRESHOLD_PERCENT,
+        LIQUIDATION_BONUS_PERCENT,
+    ] {
+        result.extend_from_slice(&u64_to_bytes(value));
+    }
     set_return_data(&result);
     0
 }
@@ -1534,6 +1941,7 @@ mod tests {
         assert_eq!(result, 0);
         let stored = test_mock::get_storage(ADMIN_KEY);
         assert_eq!(stored, Some(admin.to_vec()));
+        assert_eq!(load_u64(b"ll_deposit_index"), DEPOSIT_INDEX_SCALE);
     }
 
     #[test]
@@ -1556,6 +1964,32 @@ mod tests {
         test_mock::set_value(1_000_000);
         assert_eq!(deposit(user.as_ptr(), 1_000_000), 0);
         assert_eq!(load_u64(b"ll_total_deposits"), 1_000_000);
+    }
+
+    #[test]
+    fn test_native_deposit_refunds_value_above_credited_amount() {
+        setup_no_licn();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(initialize(admin.as_ptr()), 0);
+        let native_licn = [0u8; 32];
+        assert_eq!(
+            set_lichencoin_address(admin.as_ptr(), native_licn.as_ptr()),
+            0
+        );
+
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(1_000);
+        assert_eq!(deposit(user.as_ptr(), 600), 0);
+        assert_eq!(load_u64(b"ll_total_deposits"), 600);
+
+        let (target, function, args, _) =
+            test_mock::get_last_cross_call().expect("native deposit refund");
+        assert_eq!(target, [0u8; 32]);
+        assert_eq!(function, "transfer");
+        assert_eq!(&args[..32], &user);
+        assert_eq!(bytes_to_u64(&args[32..40]), 400);
     }
 
     #[test]
@@ -1663,15 +2097,18 @@ mod tests {
 
         let hex = hex_encode_addr(&user);
         let dep_key = make_key(b"dep:", &hex);
+        let dix_key = make_key(b"dix:", &hex);
         test_mock::set_timestamp(11_000);
         let accounting_before = snapshot_lending_accounting();
-        let deposit_before = load_u64(&dep_key);
+        let deposit_before = storage_get(&dep_key);
+        let dix_before = storage_get(&dix_key);
 
         test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
         assert_eq!(withdraw(user.as_ptr(), 1_000), 31);
 
         assert_eq!(snapshot_lending_accounting(), accounting_before);
-        assert_eq!(load_u64(&dep_key), deposit_before);
+        assert_eq!(storage_get(&dep_key), deposit_before);
+        assert_eq!(storage_get(&dix_key), dix_before);
     }
 
     #[test]
@@ -1685,6 +2122,24 @@ mod tests {
         test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000);
         assert_eq!(withdraw(user.as_ptr(), 2_000_000), 2);
+    }
+
+    #[test]
+    fn test_withdraw_fails_closed_on_inconsistent_pool_liquidity() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let user = [2u8; 32];
+        let user_hex = hex_encode_addr(&user);
+        let dep_key = make_key(b"dep:", &user_hex);
+        store_u64(&dep_key, 100);
+        store_u64(b"ll_total_deposits", 50);
+
+        test_mock::set_caller(user);
+        assert_eq!(withdraw(user.as_ptr(), 100), 4);
+        assert_eq!(load_u64(&dep_key), 100);
+        assert_eq!(load_u64(b"ll_total_deposits"), 50);
     }
 
     #[test]
@@ -1885,6 +2340,38 @@ mod tests {
     }
 
     #[test]
+    fn test_oracle_quote_cannot_inflate_same_asset_borrowing_power() {
+        setup();
+        let admin = [1u8; 32];
+        let oracle = [7u8; 32];
+        let asset = b"LICN";
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        assert_eq!(
+            set_oracle_feed(
+                admin.as_ptr(),
+                oracle.as_ptr(),
+                asset.as_ptr(),
+                asset.len() as u32,
+            ),
+            0
+        );
+
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
+        assert_eq!(deposit(user.as_ptr(), 1_000_000), 0);
+        test_mock::set_cross_call_response(Some(u64_to_bytes(10_000_000).to_vec()));
+
+        assert_eq!(
+            borrow(user.as_ptr(), 750_001),
+            2,
+            "an 8-decimal USD quote must not multiply LICN-against-LICN collateral"
+        );
+        assert_eq!(load_u64(b"ll_total_borrows"), 0);
+    }
+
+    #[test]
     fn test_get_oracle_price_uses_configured_feed_surface() {
         setup();
         let admin = [1u8; 32];
@@ -2003,6 +2490,65 @@ mod tests {
         test_mock::set_value(999_999);
         assert_eq!(repay(user.as_ptr(), 999_999), 0);
         assert_eq!(load_u64(b"ll_total_borrows"), 0);
+        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 500_000);
+        let (_, function, args, _) =
+            test_mock::get_last_cross_call().expect("repayment transfer_from call");
+        assert_eq!(function, "transfer_from");
+        assert_eq!(bytes_to_u64(&args[args.len() - 8..]), 500_000);
+    }
+
+    #[test]
+    fn test_repay_fails_closed_on_total_borrow_underflow() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let borrower = [2u8; 32];
+        let borrower_hex = hex_encode_addr(&borrower);
+        let borrow_key = make_key(b"bor:", &borrower_hex);
+        store_u64(&borrow_key, 100);
+        store_u64(&make_key(b"bix:", &borrower_hex), BORROW_INDEX_SCALE);
+        store_u64(b"ll_total_deposits", 1_000);
+        store_u64(b"ll_total_borrows", 50);
+
+        test_mock::set_caller(borrower);
+        assert_eq!(repay(borrower.as_ptr(), 100), 5);
+        assert_eq!(load_u64(&borrow_key), 100);
+        assert_eq!(load_u64(b"ll_total_borrows"), 50);
+    }
+
+    #[test]
+    fn test_native_repay_overpay_refunds_every_unused_spore() {
+        setup_no_licn();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(initialize(admin.as_ptr()), 0);
+        let native_licn = [0u8; 32];
+        assert_eq!(
+            set_lichencoin_address(admin.as_ptr(), native_licn.as_ptr()),
+            0
+        );
+
+        let borrower = [2u8; 32];
+        let borrower_hex = hex_encode_addr(&borrower);
+        store_u64(&make_key(b"bor:", &borrower_hex), 500_000);
+        store_u64(&make_key(b"bix:", &borrower_hex), BORROW_INDEX_SCALE);
+        store_u64(b"ll_total_deposits", 1_000_000);
+        store_u64(b"ll_total_borrows", 500_000);
+
+        test_mock::set_caller(borrower);
+        test_mock::set_value(900_000);
+        assert_eq!(repay(borrower.as_ptr(), 900_000), 0);
+        assert_eq!(load_u64(b"ll_total_borrows"), 0);
+        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 500_000);
+
+        let (target, function, args, value) =
+            test_mock::get_last_cross_call().expect("native overpayment refund");
+        assert_eq!(target, [0u8; 32]);
+        assert_eq!(function, "transfer");
+        assert_eq!(&args[..32], &borrower);
+        assert_eq!(bytes_to_u64(&args[32..40]), 400_000);
+        assert_eq!(value, 0);
     }
 
     // AUDIT-FIX G9-01: Repay rejects failed incoming token custody.
@@ -2046,6 +2592,131 @@ mod tests {
         );
         let borrow_after = load_u64(&bor_key);
         assert!(borrow_after < 860_000);
+    }
+
+    #[test]
+    fn test_liquidation_caps_close_factor_and_reports_exact_repayment() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let borrower = [2u8; 32];
+        let borrower_hex = hex_encode_addr(&borrower);
+        store_u64(&make_key(b"dep:", &borrower_hex), 1_000_000);
+        store_u64(&make_key(b"dix:", &borrower_hex), DEPOSIT_INDEX_SCALE);
+        store_u64(&make_key(b"bor:", &borrower_hex), 900_000);
+        store_u64(&make_key(b"bix:", &borrower_hex), BORROW_INDEX_SCALE);
+        store_u64(b"ll_total_deposits", 1_000_000);
+        store_u64(b"ll_total_borrows", 900_000);
+
+        let liquidator = [3u8; 32];
+        test_mock::set_caller(liquidator);
+        assert_eq!(
+            liquidate(liquidator.as_ptr(), borrower.as_ptr(), 900_000),
+            0
+        );
+        let result = test_mock::get_return_data();
+        assert_eq!(result.len(), 16);
+        assert_eq!(bytes_to_u64(&result[..8]), 472_500);
+        assert_eq!(bytes_to_u64(&result[8..16]), 450_000);
+        assert_eq!(load_u64(b"ll_total_borrows"), 450_000);
+    }
+
+    #[test]
+    fn test_liquidation_caps_repayment_to_compensating_collateral() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let borrower = [2u8; 32];
+        let borrower_hex = hex_encode_addr(&borrower);
+        store_u64(&make_key(b"dep:", &borrower_hex), 100);
+        store_u64(&make_key(b"dix:", &borrower_hex), DEPOSIT_INDEX_SCALE);
+        store_u64(&make_key(b"bor:", &borrower_hex), 900);
+        store_u64(&make_key(b"bix:", &borrower_hex), BORROW_INDEX_SCALE);
+        store_u64(b"ll_total_deposits", 100);
+        store_u64(b"ll_total_borrows", 900);
+
+        let liquidator = [3u8; 32];
+        test_mock::set_caller(liquidator);
+        assert_eq!(liquidate(liquidator.as_ptr(), borrower.as_ptr(), 450), 0);
+        let result = test_mock::get_return_data();
+        assert_eq!(bytes_to_u64(&result[..8]), 100);
+        assert_eq!(bytes_to_u64(&result[8..16]), 96);
+        assert_eq!(load_u64(b"ll_total_deposits"), 0);
+        assert_eq!(load_u64(b"ll_total_borrows"), 804);
+    }
+
+    #[test]
+    fn test_liquidation_fails_closed_on_total_deposit_underflow() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let borrower = [2u8; 32];
+        let borrower_hex = hex_encode_addr(&borrower);
+        let dep_key = make_key(b"dep:", &borrower_hex);
+        let borrow_key = make_key(b"bor:", &borrower_hex);
+        store_u64(&dep_key, 1_000);
+        store_u64(&make_key(b"dix:", &borrower_hex), DEPOSIT_INDEX_SCALE);
+        store_u64(&borrow_key, 900);
+        store_u64(&make_key(b"bix:", &borrower_hex), BORROW_INDEX_SCALE);
+        store_u64(b"ll_total_deposits", 100);
+        store_u64(b"ll_total_borrows", 900);
+
+        let liquidator = [3u8; 32];
+        test_mock::set_caller(liquidator);
+        assert_eq!(liquidate(liquidator.as_ptr(), borrower.as_ptr(), 100), 5);
+        assert_eq!(load_u64(&dep_key), 1_000);
+        assert_eq!(load_u64(&borrow_key), 900);
+        assert_eq!(load_u64(b"ll_total_deposits"), 100);
+        assert_eq!(load_u64(b"ll_total_borrows"), 900);
+    }
+
+    #[test]
+    fn test_native_liquidation_refund_failure_reverts_before_charging() {
+        setup_no_licn();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let native_licn = [0u8; 32];
+        assert_eq!(
+            set_lichencoin_address(admin.as_ptr(), native_licn.as_ptr()),
+            0
+        );
+
+        let borrower = [2u8; 32];
+        let borrower_hex = hex_encode_addr(&borrower);
+        let dep_key = make_key(b"dep:", &borrower_hex);
+        let borrow_key = make_key(b"bor:", &borrower_hex);
+        store_u64(&dep_key, 1_000_000);
+        store_u64(&make_key(b"dix:", &borrower_hex), DEPOSIT_INDEX_SCALE);
+        store_u64(&borrow_key, 900_000);
+        store_u64(&make_key(b"bix:", &borrower_hex), BORROW_INDEX_SCALE);
+        store_u64(b"ll_total_deposits", 1_000_000);
+        store_u64(b"ll_total_borrows", 900_000);
+
+        let liquidator = [3u8; 32];
+        test_mock::set_caller(liquidator);
+        test_mock::set_value(900_000);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        assert_eq!(
+            liquidate(liquidator.as_ptr(), borrower.as_ptr(), 900_000),
+            30
+        );
+        assert_eq!(load_u64(&dep_key), 1_000_000);
+        assert_eq!(load_u64(&borrow_key), 900_000);
+        assert_eq!(load_u64(b"ll_total_borrows"), 900_000);
+
+        let (target, function, args, _) =
+            test_mock::get_last_cross_call().expect("native liquidation refund");
+        assert_eq!(target, [0u8; 32]);
+        assert_eq!(function, "transfer");
+        assert_eq!(&args[..32], &liquidator);
+        assert_eq!(bytes_to_u64(&args[32..40]), 450_000);
     }
 
     #[test]
@@ -2204,6 +2875,33 @@ mod tests {
     }
 
     #[test]
+    fn test_get_account_info_reports_indexed_supplier_claim() {
+        setup();
+        test_mock::set_timestamp(1_000);
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(10_000_000);
+        assert_eq!(deposit(user.as_ptr(), 10_000_000), 0);
+        assert_eq!(borrow(user.as_ptr(), 5_000_000), 0);
+
+        test_mock::set_timestamp(101_000);
+        accrue_interest();
+        let hex = hex_encode_addr(&user);
+        let stored_principal = load_u64(&make_key(b"dep:", &hex));
+        let expected_claim = compute_current_deposit(&hex);
+        assert!(expected_claim > stored_principal);
+
+        assert_eq!(get_account_info(user.as_ptr()), 0);
+        let ret = test_mock::get_return_data();
+        assert_eq!(bytes_to_u64(&ret[0..8]), expected_claim);
+        assert_eq!(load_u64(&make_key(b"dep:", &hex)), stored_principal);
+    }
+
+    #[test]
     fn test_get_protocol_stats() {
         setup();
         let admin = [1u8; 32];
@@ -2238,37 +2936,32 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_flash_borrow_repay() {
+    fn test_legacy_flash_repay_remains_available_for_upgrade_unwind() {
         setup();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
-        let user = [2u8; 32];
-        test_mock::set_caller(user);
-        test_mock::set_value(1_000_000);
-        deposit(user.as_ptr(), 1_000_000);
-
         let borrower = [3u8; 32];
         test_mock::set_caller(borrower);
-        // Flash borrow 100,000
-        assert_eq!(flash_borrow(borrower.as_ptr(), 100_000), 0);
-        let fee_data = test_mock::get_return_data();
-        let fee = bytes_to_u64(&fee_data);
-        assert_eq!(fee, 90); // 0.09% of 100_000 = 90
+        store_u64(FLASH_BORROWED_KEY, 100_000);
+        store_u64(FLASH_FEE_KEY, 90);
 
-        // Underpayment rejected (amount check, before value check)
         assert_eq!(flash_repay(borrower.as_ptr(), 100_000), 2);
-
-        // Full repayment with fee — need value attached
-        test_mock::set_value(100_090);
         assert_eq!(flash_repay(borrower.as_ptr(), 100_090), 0);
-
-        // Reserves increased by fee
         assert_eq!(load_u64(b"ll_reserves"), 90);
+        assert_eq!(load_u64(FLASH_BORROWED_KEY), 0);
     }
 
     #[test]
-    fn test_flash_borrow_no_liquidity() {
+    fn test_legacy_flash_borrow_is_disabled() {
+        setup();
+        let borrower = [3u8; 32];
+        assert_eq!(flash_borrow(borrower.as_ptr(), 100_000), 40);
+        assert_eq!(load_u64(FLASH_BORROWED_KEY), 0);
+    }
+
+    #[test]
+    fn test_atomic_flash_execute_no_liquidity() {
         setup();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
@@ -2278,27 +2971,90 @@ mod tests {
         test_mock::set_value(1_000);
         deposit(user.as_ptr(), 1_000);
 
-        let borrower = [3u8; 32];
-        test_mock::set_caller(borrower);
-        assert_eq!(flash_borrow(borrower.as_ptr(), 2_000), 3);
+        let receiver = [3u8; 32];
+        assert_eq!(flash_execute(receiver.as_ptr(), 2_000, [].as_ptr(), 0), 3);
     }
 
     #[test]
-    fn test_flash_double_borrow_rejected() {
+    fn test_atomic_flash_execute_rejects_underpayment_and_restores_accounting() {
         setup();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
-        let user = [2u8; 32];
-        test_mock::set_caller(user);
-        test_mock::set_value(1_000_000);
-        deposit(user.as_ptr(), 1_000_000);
+        store_u64(b"ll_total_deposits", 1_000_000);
+        store_u64(b"ll_total_borrows", 100_000);
+        let accounting_before = snapshot_lending_accounting();
 
-        let borrower = [3u8; 32];
-        test_mock::set_caller(borrower);
-        assert_eq!(flash_borrow(borrower.as_ptr(), 100_000), 0);
-        // Second borrow while first active
-        assert_eq!(flash_borrow(borrower.as_ptr(), 50_000), 2);
+        let receiver = [3u8; 32];
+        test_mock::set_cross_call_responses(std::vec![
+            u64_to_bytes(1_000_000).to_vec(),
+            0u32.to_le_bytes().to_vec(),
+            0u32.to_le_bytes().to_vec(),
+            u64_to_bytes(1_000_089).to_vec(),
+        ]);
+        assert_eq!(
+            flash_execute(receiver.as_ptr(), 100_000, [].as_ptr(), 0),
+            34
+        );
+        assert_eq!(snapshot_lending_accounting(), accounting_before);
+        assert_eq!(test_mock::get_storage(REENTRANCY_KEY), None);
+    }
+
+    #[test]
+    fn test_atomic_flash_execute_rejects_transfer_failure() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        store_u64(b"ll_total_deposits", 1_000_000);
+
+        let receiver = [3u8; 32];
+        test_mock::set_cross_call_responses(std::vec![
+            u64_to_bytes(1_000_000).to_vec(),
+            2u32.to_le_bytes().to_vec(),
+        ]);
+        assert_eq!(
+            flash_execute(receiver.as_ptr(), 100_000, [].as_ptr(), 0),
+            32
+        );
+        assert_eq!(load_u64(b"ll_reserves"), 0);
+        assert_eq!(test_mock::get_storage(REENTRANCY_KEY), None);
+    }
+
+    #[test]
+    fn test_atomic_flash_execute_validates_receiver_and_callback_data() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let zero = [0u8; 32];
+        assert_eq!(flash_execute(zero.as_ptr(), 1, [].as_ptr(), 0), 6);
+        assert_eq!(flash_execute(CONTRACT_ADDR.as_ptr(), 1, [].as_ptr(), 0), 6);
+
+        let receiver = [3u8; 32];
+        let oversized = [0u8; MAX_FLASH_CALLBACK_DATA_LEN as usize + 1];
+        assert_eq!(
+            flash_execute(
+                receiver.as_ptr(),
+                1,
+                oversized.as_ptr(),
+                oversized.len() as u32,
+            ),
+            5
+        );
+    }
+
+    #[test]
+    fn test_atomic_flash_execute_rejects_active_legacy_loan() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        store_u64(FLASH_BORROWED_KEY, 100_000);
+
+        let receiver = [3u8; 32];
+        assert_eq!(flash_execute(receiver.as_ptr(), 50_000, [].as_ptr(), 0), 2);
     }
 
     #[test]
@@ -2316,14 +3072,10 @@ mod tests {
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
-        let user = [2u8; 32];
-        test_mock::set_caller(user);
-        test_mock::set_value(1_000_000);
-        deposit(user.as_ptr(), 1_000_000);
-
         let borrower = [3u8; 32];
         test_mock::set_caller(borrower);
-        assert_eq!(flash_borrow(borrower.as_ptr(), 100_000), 0);
+        store_u64(FLASH_BORROWED_KEY, 100_000);
+        store_u64(FLASH_FEE_KEY, 90);
 
         // Repay amount sufficient but incoming token custody fails.
         test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
@@ -2345,7 +3097,7 @@ mod tests {
         // Operations blocked
         assert_eq!(deposit(user.as_ptr(), 1_000), 20);
         assert_eq!(borrow(user.as_ptr(), 1_000), 20);
-        assert_eq!(flash_borrow(user.as_ptr(), 1_000), 20);
+        assert_eq!(flash_execute(user.as_ptr(), 1_000, [].as_ptr(), 0), 20);
 
         // Double pause rejected
         test_mock::set_caller(admin);
@@ -2498,7 +3250,7 @@ mod tests {
     }
 
     #[test]
-    fn test_flash_loan_minimum_fee() {
+    fn test_atomic_flash_execute_collects_minimum_fee() {
         setup();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
@@ -2508,16 +3260,17 @@ mod tests {
         test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000);
 
-        // Very small borrow — fee would be 0, but minimum is 1
-        let borrower = [3u8; 32];
-        test_mock::set_caller(borrower);
-        assert_eq!(flash_borrow(borrower.as_ptr(), 100), 0);
+        let receiver = [3u8; 32];
+        test_mock::set_cross_call_responses(std::vec![
+            u64_to_bytes(1_000_000).to_vec(),
+            0u32.to_le_bytes().to_vec(),
+            0u32.to_le_bytes().to_vec(),
+            u64_to_bytes(1_000_001).to_vec(),
+        ]);
+        assert_eq!(flash_execute(receiver.as_ptr(), 100, [].as_ptr(), 0), 0);
         let fee = bytes_to_u64(&test_mock::get_return_data());
-        assert_eq!(fee, 1); // Minimum fee
-
-        // Repay with value
-        test_mock::set_value(101);
-        assert_eq!(flash_repay(borrower.as_ptr(), 101), 0);
+        assert_eq!(fee, 1);
+        assert_eq!(load_u64(b"ll_reserves"), 1);
     }
 
     #[test]
@@ -2580,11 +3333,72 @@ mod tests {
         store_u64(b"ll_total_deposits", 1_000_000);
         store_u64(b"ll_total_borrows", 800_000);
 
-        assert_eq!(get_accrued_interest(500_000, 1_000), 0);
+        assert_eq!(get_accrued_interest(500_000_000_000, 1_000), 0);
 
         let quoted = bytes_to_u64(&test_mock::get_return_data());
-        assert_eq!(quoted, quote_accrued_interest(500_000, 1_000));
+        assert_eq!(quoted, quote_accrued_interest(500_000_000_000, 1_000));
         assert!(quoted > 0);
+    }
+
+    #[test]
+    fn test_rate_units_annualize_base_to_two_percent() {
+        assert_eq!(SLOTS_PER_YEAR, 78_894_000);
+        assert_eq!(annual_rate_bps(BASE_RATE_SCALED), 200);
+        assert_eq!(current_rate_per_slot(1_000, 0), BASE_RATE_SCALED);
+        assert_eq!(annual_rate_bps(current_rate_per_slot(1_000, 800)), 520);
+        assert_eq!(annual_rate_bps(current_rate_per_slot(1_000, 1_000)), 921);
+        assert_eq!(
+            current_rate_per_slot(1, u64::MAX),
+            current_rate_per_slot(1, 1)
+        );
+    }
+
+    #[test]
+    fn test_interest_elapsed_time_is_canonical_slots_without_ms_division() {
+        setup();
+        store_u64(b"ll_total_deposits", 1_000_000_000_000);
+        store_u64(b"ll_total_borrows", 500_000_000_000);
+        store_u64(b"ll_borrow_index", BORROW_INDEX_SCALE);
+        store_u64(b"ll_deposit_index", DEPOSIT_INDEX_SCALE);
+        store_u64(b"ll_last_update", 100);
+        test_mock::set_timestamp(101);
+
+        accrue_interest();
+
+        // At 50% utilization the rate is 508 / 1e12 per canonical slot.
+        assert_eq!(load_u64(b"ll_total_borrows"), 500_000_000_254);
+        assert_eq!(load_u64(b"ll_last_update"), 101);
+    }
+
+    #[test]
+    fn test_rate_and_market_views_publish_scales_and_configuration() {
+        setup_no_licn();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let native_licn = [0u8; 32];
+        assert_eq!(
+            set_lichencoin_address(admin.as_ptr(), native_licn.as_ptr()),
+            0
+        );
+
+        assert_eq!(get_rate_model(), 0);
+        let rate = test_mock::get_return_data();
+        assert_eq!(rate.len(), 56);
+        assert_eq!(bytes_to_u64(&rate[0..8]), RATE_SCALE);
+        assert_eq!(bytes_to_u64(&rate[8..16]), SLOTS_PER_YEAR);
+        assert_eq!(bytes_to_u64(&rate[16..24]), BASE_RATE_SCALED);
+        assert_eq!(bytes_to_u64(&rate[32..40]), 200);
+
+        assert_eq!(get_market_status(), 0);
+        let status = test_mock::get_return_data();
+        assert_eq!(status.len(), 80);
+        assert_eq!(bytes_to_u64(&status[0..8]), 0);
+        assert_eq!(bytes_to_u64(&status[8..16]), 1);
+        assert_eq!(bytes_to_u64(&status[16..24]), 1);
+        assert_eq!(bytes_to_u64(&status[24..32]), 0);
+        assert_eq!(bytes_to_u64(&status[32..40]), 0);
+        assert_eq!(bytes_to_u64(&status[48..56]), 10);
     }
 
     // ========================================================================
@@ -2682,6 +3496,51 @@ mod tests {
     }
 
     #[test]
+    fn test_set_oracle_feed_rejects_oversized_asset_key_without_mutation() {
+        setup();
+        let admin = [1u8; 32];
+        let oracle = [7u8; 32];
+        let asset = [b'A'; MAX_ORACLE_ASSET_KEY_LEN as usize + 1];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        assert_eq!(
+            set_oracle_feed(
+                admin.as_ptr(),
+                oracle.as_ptr(),
+                asset.as_ptr(),
+                asset.len() as u32,
+            ),
+            5
+        );
+        assert_eq!(test_mock::get_storage(ORACLE_ADDR_KEY), None);
+        assert_eq!(test_mock::get_storage(ORACLE_ASSET_KEY), None);
+    }
+
+    #[test]
+    fn test_partial_or_malformed_oracle_configuration_fails_closed() {
+        setup();
+        let admin = [1u8; 32];
+        let oracle = [7u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        storage_set(ORACLE_ADDR_KEY, &oracle);
+        assert_eq!(try_get_oracle_price(), None);
+        assert!(!oracle_feed_configured());
+        assert_eq!(
+            set_oracle_feed(admin.as_ptr(), oracle.as_ptr(), b"LICN/USD".as_ptr(), 8),
+            4
+        );
+
+        storage_set(ORACLE_ASSET_KEY, b"");
+        assert_eq!(try_get_oracle_price(), None);
+        storage_set(ORACLE_ADDR_KEY, &[7u8; 31]);
+        storage_set(ORACLE_ASSET_KEY, b"LICN/USD");
+        assert_eq!(try_get_oracle_price(), None);
+    }
+
+    #[test]
     fn test_withdraw_without_licn_configured() {
         setup_no_licn();
         let admin = [1u8; 32];
@@ -2690,7 +3549,10 @@ mod tests {
         let user = [2u8; 32];
         test_mock::set_caller(user);
         test_mock::set_value(1_000_000);
-        deposit(user.as_ptr(), 1_000_000);
+        assert_eq!(deposit(user.as_ptr(), 1_000_000), 30);
+        let user_hex = hex_encode_addr(&user);
+        store_u64(&make_key(b"dep:", &user_hex), 1_000_000);
+        store_u64(b"ll_total_deposits", 1_000_000);
         // Withdraw should fail because lichencoin not configured for outgoing transfer
         assert_eq!(withdraw(user.as_ptr(), 500_000), 30);
         // Bookkeeping should be reverted
@@ -2706,14 +3568,17 @@ mod tests {
         let user = [2u8; 32];
         test_mock::set_caller(user);
         test_mock::set_value(1_000_000);
-        deposit(user.as_ptr(), 1_000_000);
+        assert_eq!(deposit(user.as_ptr(), 1_000_000), 30);
+        let user_hex = hex_encode_addr(&user);
+        store_u64(&make_key(b"dep:", &user_hex), 1_000_000);
+        store_u64(b"ll_total_deposits", 1_000_000);
         assert_eq!(borrow(user.as_ptr(), 500_000), 30);
         // Bookkeeping should be reverted
         assert_eq!(load_u64(b"ll_total_borrows"), 0);
     }
 
     #[test]
-    fn test_flash_borrow_without_licn_configured() {
+    fn test_flash_execute_without_licn_configured() {
         setup_no_licn();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
@@ -2721,12 +3586,13 @@ mod tests {
         let user = [2u8; 32];
         test_mock::set_caller(user);
         test_mock::set_value(1_000_000);
-        deposit(user.as_ptr(), 1_000_000);
-        let borrower = [3u8; 32];
-        test_mock::set_caller(borrower);
-        assert_eq!(flash_borrow(borrower.as_ptr(), 100_000), 30);
-        // Flash state should be reverted
-        assert_eq!(load_u64(FLASH_BORROWED_KEY), 0);
+        assert_eq!(deposit(user.as_ptr(), 1_000_000), 30);
+        store_u64(b"ll_total_deposits", 1_000_000);
+        let receiver = [3u8; 32];
+        assert_eq!(
+            flash_execute(receiver.as_ptr(), 100_000, [].as_ptr(), 0),
+            30
+        );
     }
 
     #[test]
@@ -2877,6 +3743,96 @@ mod tests {
         // But stored values should NOT change (read-only)
         assert_eq!(load_u64(&bor_key), stored_before);
         assert_eq!(load_u64(&bix_key), checkpoint_before);
+    }
+
+    // ========================================================================
+    // Supplier deposit-index accounting tests
+    // ========================================================================
+
+    #[test]
+    fn test_supplier_interest_is_settled_and_withdrawable() {
+        setup();
+        test_mock::set_timestamp(1_000);
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let supplier = [2u8; 32];
+        test_mock::set_caller(supplier);
+        test_mock::set_value(6_000_000);
+        assert_eq!(deposit(supplier.as_ptr(), 6_000_000), 0);
+
+        let borrower = [3u8; 32];
+        test_mock::set_caller(borrower);
+        test_mock::set_value(10_000_000);
+        assert_eq!(deposit(borrower.as_ptr(), 10_000_000), 0);
+        assert_eq!(borrow(borrower.as_ptr(), 5_000_000), 0);
+
+        test_mock::set_timestamp(101_000);
+        accrue_interest();
+        let supplier_hex = hex_encode_addr(&supplier);
+        let claim = compute_current_deposit(&supplier_hex);
+        assert!(claim > 6_000_000, "supplier did not earn interest");
+
+        test_mock::set_caller(supplier);
+        assert_eq!(withdraw(supplier.as_ptr(), claim), 0);
+        assert_eq!(load_u64(&make_key(b"dep:", &supplier_hex)), 0);
+        assert_eq!(
+            load_u64(&make_key(b"dix:", &supplier_hex)),
+            current_deposit_index()
+        );
+    }
+
+    #[test]
+    fn test_supplier_interest_is_proportional_with_bounded_rounding_dust() {
+        setup();
+        test_mock::set_timestamp(1_000);
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let supplier_a = [2u8; 32];
+        test_mock::set_caller(supplier_a);
+        test_mock::set_value(3_000_000);
+        assert_eq!(deposit(supplier_a.as_ptr(), 3_000_000), 0);
+
+        let supplier_b = [3u8; 32];
+        test_mock::set_caller(supplier_b);
+        test_mock::set_value(7_000_000);
+        assert_eq!(deposit(supplier_b.as_ptr(), 7_000_000), 0);
+        assert_eq!(borrow(supplier_b.as_ptr(), 5_000_000), 0);
+
+        let total_before = load_u64(b"ll_total_deposits");
+        test_mock::set_timestamp(1_001_000);
+        accrue_interest();
+        let depositor_interest = load_u64(b"ll_total_deposits") - total_before;
+        assert!(depositor_interest > 0);
+
+        let claim_a = compute_current_deposit(&hex_encode_addr(&supplier_a));
+        let claim_b = compute_current_deposit(&hex_encode_addr(&supplier_b));
+        let earned_a = claim_a - 3_000_000;
+        let earned_b = claim_b - 7_000_000;
+        let distributed = earned_a + earned_b;
+
+        assert!(distributed <= depositor_interest);
+        assert!(depositor_interest - distributed <= 2);
+        assert!((earned_a as u128 * 7).abs_diff(earned_b as u128 * 3) <= 7);
+    }
+
+    #[test]
+    fn test_missing_supplier_checkpoint_uses_initial_index_for_migration() {
+        setup();
+        let supplier = [2u8; 32];
+        let supplier_hex = hex_encode_addr(&supplier);
+        let dep_key = make_key(b"dep:", &supplier_hex);
+        let dix_key = make_key(b"dix:", &supplier_hex);
+        store_u64(&dep_key, 1_000_000);
+        store_u64(b"ll_deposit_index", 1_100_000_000);
+
+        assert_eq!(test_mock::get_storage(&dix_key), None);
+        assert_eq!(compute_current_deposit(&supplier_hex), 1_100_000);
+        assert_eq!(settle_user_deposit(&supplier_hex), 1_100_000);
+        assert_eq!(load_u64(&dix_key), 1_100_000_000);
     }
 
     #[test]

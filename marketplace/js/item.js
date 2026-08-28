@@ -6,7 +6,7 @@
     var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl)
         || (typeof window.getMarketRpcUrl === 'function' ? window.getMarketRpcUrl() : null)
         || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function' ? LICHEN_CONFIG.rpc() : null);
-    var CONTRACT_PROGRAM_ID = null;
+    var CONTRACT_PROGRAM_ID = bs58encode(new Uint8Array(32).fill(0xFF));
     var SYSTEM_PROGRAM_ID = null;
 
     var currentWallet = null;
@@ -143,9 +143,8 @@
     async function resolveMarketplaceProgram() {
         if (marketplaceProgram) return marketplaceProgram;
         try {
-            var entry = await marketTrustedRpcCall('getSymbolRegistry', ['LICHENMARKET']);
+            var entry = await marketTrustedRpcCall('getSymbolRegistry', ['MARKET']);
             marketplaceProgram = entry && (entry.program || entry.program_id) ? (entry.program || entry.program_id) : null;
-            if (marketplaceProgram) CONTRACT_PROGRAM_ID = marketplaceProgram;
         } catch (_) { }
         return marketplaceProgram;
     }
@@ -256,6 +255,9 @@
         if (!url || typeof url !== 'string') return null;
         var value = url.trim();
         if (!value) return null;
+        if (value.indexOf('moss://') === 0 && typeof window.resolveMossUri === 'function') {
+            return window.resolveMossUri(value) || null;
+        }
         if (value.indexOf('ipfs://') === 0) {
             return 'https://ipfs.io/ipfs/' + value.slice('ipfs://'.length);
         }
@@ -636,9 +638,14 @@
         } else if (isListed) {
             // BUYER VIEW — NFT is listed
             if (currentWallet) {
+                var listingNeedsMigration = currentListing && currentListing.settlement_ready === false;
+                var buyMarkup = listingNeedsMigration
+                    ? '<button class="btn btn-large btn-secondary btn-block" id="buyBtn" disabled>' +
+                    '<i class="fas fa-shield-alt"></i> Listing Migration Pending</button>'
+                    : '<button class="btn btn-large btn-primary btn-block" id="buyBtn">' +
+                    '<i class="fas fa-shopping-cart"></i> Buy Now</button>';
                 actionContainer.innerHTML =
-                    '<button class="btn btn-large btn-primary btn-block" id="buyBtn">' +
-                    '<i class="fas fa-shopping-cart"></i> Buy Now</button>' +
+                    buyMarkup +
                     '<button class="btn btn-large btn-secondary btn-block" id="makeOfferBtn" style="margin-top:8px;">' +
                     '<i class="fas fa-hand-holding-usd"></i> Make Offer</button>' +
                     '<div style="margin-top:8px;">' +
@@ -646,7 +653,7 @@
                     '<input type="text" id="offerExpiryHours" class="form-input" inputmode="numeric" data-market-numeric="true" data-decimal="false" data-min="0" placeholder="e.g. 24" ' +
                     'style="width:100%;padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-primary);color:var(--text-primary);font-size:14px;">' +
                     '</div>';
-                document.getElementById('buyBtn').addEventListener('click', handleBuy);
+                if (!listingNeedsMigration) document.getElementById('buyBtn').addEventListener('click', handleBuy);
                 document.getElementById('makeOfferBtn').addEventListener('click', handleMakeOffer);
             } else {
                 actionContainer.innerHTML =
@@ -853,6 +860,10 @@
         lazyAddresses();
         if (!currentWallet || !currentNFT) {
             showToast('Connect wallet to buy', 'error');
+            return;
+        }
+        if (!currentListing || currentListing.settlement_ready === false) {
+            showToast('This listing must complete its V3 migration before purchase', 'error');
             return;
         }
 

@@ -68,6 +68,9 @@ impl Pool {
                 return Err(ContractError::Custom("Insufficient liquidity minted"));
             }
         } else {
+            if self.reserve_a == 0 || self.reserve_b == 0 {
+                return Err(ContractError::StorageError);
+            }
             // Subsequent liquidity providers
             // Calculate liquidity proportional to pool reserves (u128 to avoid overflow)
             let liquidity_a = ((amount_a as u128) * (self.total_liquidity as u128)
@@ -87,13 +90,29 @@ impl Pool {
         }
 
         // Update reserves
-        self.reserve_a += amount_a;
-        self.reserve_b += amount_b;
-        self.total_liquidity += liquidity;
+        let reserve_a = self
+            .reserve_a
+            .checked_add(amount_a)
+            .ok_or(ContractError::Overflow)?;
+        let reserve_b = self
+            .reserve_b
+            .checked_add(amount_b)
+            .ok_or(ContractError::Overflow)?;
+        let total_liquidity = self
+            .total_liquidity
+            .checked_add(liquidity)
+            .ok_or(ContractError::Overflow)?;
 
         // Update provider's liquidity balance
         let current_balance = self.get_liquidity_balance(provider);
-        self.set_liquidity_balance(provider, current_balance + liquidity)?;
+        let provider_balance = current_balance
+            .checked_add(liquidity)
+            .ok_or(ContractError::Overflow)?;
+
+        self.reserve_a = reserve_a;
+        self.reserve_b = reserve_b;
+        self.total_liquidity = total_liquidity;
+        self.set_liquidity_balance(provider, provider_balance)?;
 
         // Save pool state
         self.save()?;
@@ -151,6 +170,9 @@ impl Pool {
         if amount_a_in == 0 {
             return Err(ContractError::InvalidInput);
         }
+        if self.fee_denominator == 0 || self.fee_numerator >= self.fee_denominator {
+            return Err(ContractError::StorageError);
+        }
 
         // Calculate output amount using constant product formula (u128 to avoid overflow)
         // amount_out = (amount_in * reserve_out * (1 - fee)) / (reserve_in + amount_in * (1 - fee))
@@ -161,6 +183,9 @@ impl Pool {
         let denominator =
             ((self.reserve_a as u128) * (self.fee_denominator as u128)) + amount_a_with_fee;
 
+        if denominator == 0 {
+            return Err(ContractError::StorageError);
+        }
         let amount_b_out = (numerator / denominator) as u64;
 
         if amount_b_out < min_amount_b_out {
@@ -172,7 +197,10 @@ impl Pool {
         }
 
         // Update reserves
-        self.reserve_a += amount_a_in;
+        self.reserve_a = self
+            .reserve_a
+            .checked_add(amount_a_in)
+            .ok_or(ContractError::Overflow)?;
         self.reserve_b -= amount_b_out;
 
         // Save pool state
@@ -186,6 +214,9 @@ impl Pool {
         if amount_b_in == 0 {
             return Err(ContractError::InvalidInput);
         }
+        if self.fee_denominator == 0 || self.fee_numerator >= self.fee_denominator {
+            return Err(ContractError::StorageError);
+        }
 
         let amount_b_with_fee =
             (amount_b_in as u128) * ((self.fee_denominator - self.fee_numerator) as u128);
@@ -193,6 +224,9 @@ impl Pool {
         let denominator =
             ((self.reserve_b as u128) * (self.fee_denominator as u128)) + amount_b_with_fee;
 
+        if denominator == 0 {
+            return Err(ContractError::StorageError);
+        }
         let amount_a_out = (numerator / denominator) as u64;
 
         if amount_a_out < min_amount_a_out {
@@ -204,7 +238,10 @@ impl Pool {
         }
 
         // Update reserves
-        self.reserve_b += amount_b_in;
+        self.reserve_b = self
+            .reserve_b
+            .checked_add(amount_b_in)
+            .ok_or(ContractError::Overflow)?;
         self.reserve_a -= amount_a_out;
 
         // Save pool state
@@ -215,7 +252,12 @@ impl Pool {
 
     /// Get quote for swap A -> B
     pub fn get_amount_out(&self, amount_in: u64, reserve_in: u64, reserve_out: u64) -> u64 {
-        if amount_in == 0 || reserve_in == 0 || reserve_out == 0 {
+        if amount_in == 0
+            || reserve_in == 0
+            || reserve_out == 0
+            || self.fee_denominator == 0
+            || self.fee_numerator >= self.fee_denominator
+        {
             return 0;
         }
 
@@ -368,5 +410,34 @@ mod tests {
         assert!(result.is_ok());
         let out = result.unwrap();
         assert!(out > 0);
+    }
+
+    #[test]
+    fn liquidity_overflow_fails_before_mutating_pool_or_provider() {
+        test_mock::reset();
+        let provider = addr(3);
+        let mut pool = Pool::new(addr(1), addr(2));
+        pool.reserve_a = u64::MAX - 5;
+        pool.reserve_b = u64::MAX - 5;
+        pool.total_liquidity = u64::MAX - 5;
+
+        assert!(pool.add_liquidity(provider, 10, 10, 0).is_err());
+        assert_eq!(pool.reserve_a, u64::MAX - 5);
+        assert_eq!(pool.reserve_b, u64::MAX - 5);
+        assert_eq!(pool.total_liquidity, u64::MAX - 5);
+        assert_eq!(pool.get_liquidity_balance(provider), 0);
+    }
+
+    #[test]
+    fn swap_reserve_overflow_fails_without_mutation() {
+        test_mock::reset();
+        let mut pool = Pool::new(addr(1), addr(2));
+        pool.reserve_a = u64::MAX - 5;
+        pool.reserve_b = 1_000;
+        pool.total_liquidity = 1_000;
+
+        assert!(pool.swap_a_for_b(10, 0).is_err());
+        assert_eq!(pool.reserve_a, u64::MAX - 5);
+        assert_eq!(pool.reserve_b, 1_000);
     }
 }

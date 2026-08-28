@@ -616,9 +616,9 @@ contribution_score = (
             <!-- ========== 7. PRIVACY & SECURITY ========== -->
             <h2 id="privacy">Privacy &amp; Security</h2>
 
-            <p>Lichen's privacy architecture is centered on shielded transactions, nullifier-based double-spend
-                prevention, and transparent STARK proofs for note validity. The current implementation uses a
-                Poseidon2- and Plonky3-backed shielded flow in production deployments.</p>
+            <p>Lichen retains historical Poseidon2 commitments, nullifiers, and Merkle state. Proof scheme 0x01 is
+                disabled because its AIR did not constrain private witnesses, so the current release makes no active
+                shielded-privacy or proof-soundness claim.</p>
 
             <h3>Implementation Status (Current)</h3>
             <table class="arch-table">
@@ -632,56 +632,57 @@ contribution_score = (
                 <tbody>
                     <tr>
                         <td>Core ZK modules (<code>core/src/zk/*</code>)</td>
-                        <td>Production</td>
-                        <td>Poseidon2 commitments, byte-first note/key types, and native STARK prover/verifier plumbing
+                        <td>Disabled / compatibility only</td>
+                        <td>Historical Poseidon2 state and legacy scheme decoding remain; all proof acceptance fails closed
                         </td>
                     </tr>
                     <tr>
                         <td>Shielded pool contract (<code>contracts/shielded_pool</code>)</td>
-                        <td>Production</td>
-                        <td>Shielded state and transaction flows run with transparent STARK proof verification</td>
+                        <td>Fail-closed compatibility ABI</td>
+                        <td>Direct WASM custody and mutation calls return <code>ERR_NATIVE_ONLY</code></td>
                     </tr>
                     <tr>
                         <td>Runtime/RPC wiring</td>
-                        <td>Partial</td>
-                        <td>Explorer/Wallet-facing methods are expected, with staged backend integration in progress
+                        <td>Read-only</td>
+                        <td>Historical queries report disabled status; proof helpers and submissions return unavailable
                         </td>
                     </tr>
                     <tr>
                         <td>Deployment/boot scripts</td>
-                        <td>In progress</td>
-                        <td>First-boot and deploy manifest integration for shielded pool is being completed</td>
+                        <td>Withheld</td>
+                        <td>No activation is permitted until a sound versioned verifier and migration pass review</td>
                     </tr>
                 </tbody>
             </table>
 
-            <h3>Target ZK Architecture</h3>
+            <h3>Reactivation Requirements</h3>
             <ul>
-                <li><strong>Proving system:</strong> Transparent STARKs (Plonky3/FRI) with no trusted setup</li>
+                <li><strong>Proof scheme:</strong> A new explicit version; no automatic reuse of scheme 0x01</li>
+                <li><strong>Domain binding:</strong> Proof type, chain ID, network/genesis, and verifier version</li>
                 <li><strong>Field / hash layer:</strong> Goldilocks arithmetic plus Poseidon2 hashing</li>
-                <li><strong>Commitments:</strong> Poseidon2 hash commitments for note value hiding + binding</li>
-                <li><strong>Merkle tree:</strong> Poseidon2-based tree and inclusion paths for shielded notes</li>
-                <li><strong>Nullifiers:</strong> Deterministic nullifier derivation to prevent double spends without
-                    revealing note contents</li>
+                <li><strong>Constraints:</strong> Commitments, nullifiers, ownership, Merkle inclusion/anchor policy,
+                    recipient binding, 64-bit ranges, exact conservation, and duplicate handling</li>
+                <li><strong>Operations:</strong> Deterministic proof/instruction limits and verifier resource bounds</li>
+                <li><strong>Migration:</strong> Explicit compatibility policy for historical commitments and custody</li>
             </ul>
 
-            <h3>Shielded Transaction Flows</h3>
+            <h3>Historical Transaction Flows (Currently Rejected)</h3>
             <ul>
                 <li><strong>Shield (transparent → shielded):</strong> Creates a new note commitment from public funds
                 </li>
                 <li><strong>Unshield (shielded → transparent):</strong> Spends a note and reveals only the necessary
                     public outputs</li>
                 <li><strong>Transfer (shielded → shielded):</strong> Consumes note inputs, emits new commitments,
-                    preserves value in-circuit</li>
+                    was intended to preserve value in-circuit</li>
             </ul>
 
-            <h3>Security Properties</h3>
+            <h3>Current Security Properties</h3>
             <ul>
-                <li><strong>Zero-knowledge:</strong> Proofs validate correctness without exposing note secrets</li>
-                <li><strong>Soundness:</strong> Invalid witness data cannot satisfy circuit constraints</li>
-                <li><strong>Double-spend resistance:</strong> One-time nullifier publication prevents note replay</li>
-                <li><strong>Value conservation:</strong> Circuit constraints enforce that spent and created value
-                    balances</li>
+                <li><strong>Fail-closed:</strong> Legacy proofs are rejected before custody state changes</li>
+                <li><strong>Atomicity:</strong> Shielded custody effects require one rollback-capable state batch</li>
+                <li><strong>Exact state:</strong> Checked counters and strict commitment replay reject malformed state</li>
+                <li><strong>Privacy boundary:</strong> Validator RPC does not parse private shielded witnesses while
+                    the proof service is disabled</li>
             </ul>
 
             <h3>Explorer and Docs Separation</h3>
@@ -753,12 +754,12 @@ contribution_score = (
                     <tr>
                         <td>Plonky3 shield prove</td>
                         <td>~120 µs</td>
-                        <td>Current native shield circuit in `processor_bench`</td>
+                        <td>Legacy microbenchmark only; scheme 0x01 is not accepted</td>
                     </tr>
                     <tr>
                         <td>Plonky3 shield verify</td>
                         <td>~157 µs</td>
-                        <td>Verifier-side native STARK path</td>
+                        <td>Legacy microbenchmark only; production verifier fails closed</td>
                     </tr>
                 </tbody>
             </table>

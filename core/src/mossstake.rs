@@ -5,7 +5,7 @@ use crate::codec::{deserialize_legacy_bincode_strict, serialize_legacy_bincode};
 use crate::consensus::UNSTAKE_COOLDOWN_SLOTS;
 use crate::Pubkey;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Percentage of epoch inflation allocated to MossStake stakers (basis points).
 /// The constant name is preserved for compatibility with existing callers.
@@ -286,6 +286,22 @@ pub struct UnstakeRequest {
     pub claimable_at_unix_seconds: u64,
 }
 
+/// Exact pooled MossStake loss applied for one proof-verified validator fault.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MossStakeSlashSettlement {
+    pub requested_loss: u64,
+    pub active_backing_loss: u64,
+    pub cooling_down_loss: u64,
+}
+
+impl MossStakeSlashSettlement {
+    pub fn actual_loss(&self) -> Result<u64, String> {
+        self.active_backing_loss
+            .checked_add(self.cooling_down_loss)
+            .ok_or_else(|| "MossStake slash settlement overflow".to_string())
+    }
+}
+
 /// MossStake liquid staking pool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MossStakePool {
@@ -326,6 +342,87 @@ impl MossStakePool {
         }
     }
 
+    /// Validate aggregate backing, per-position liabilities, and request
+    /// ownership without mutating state. Activation tooling and snapshot import
+    /// use this as a fail-closed custody boundary.
+    pub fn validate_invariants(&self) -> Result<(), String> {
+        let mut position_share_total = 0u64;
+        let mut position_value_total = 0u64;
+        for (owner, position) in &self.positions {
+            if position.owner != *owner {
+                return Err(format!(
+                    "MossStake position key {} does not match embedded owner {}",
+                    owner, position.owner
+                ));
+            }
+            if position.st_licn_amount == 0 {
+                return Err(format!("MossStake position {owner} has zero stLICN"));
+            }
+            position_share_total = position_share_total
+                .checked_add(position.st_licn_amount)
+                .ok_or_else(|| "MossStake position share total overflow".to_string())?;
+            let position_value = position
+                .licn_deposited
+                .checked_add(position.rewards_earned)
+                .ok_or_else(|| format!("MossStake position value overflow for {owner}"))?;
+            position_value_total = position_value_total
+                .checked_add(position_value)
+                .ok_or_else(|| "MossStake position value total overflow".to_string())?;
+        }
+
+        if position_share_total != self.st_licn_token.total_supply {
+            return Err(format!(
+                "MossStake share mismatch: positions={}, total_supply={}",
+                position_share_total, self.st_licn_token.total_supply
+            ));
+        }
+        if position_value_total != self.st_licn_token.total_licn_staked {
+            return Err(format!(
+                "MossStake backing mismatch: positions={}, backing={}",
+                position_value_total, self.st_licn_token.total_licn_staked
+            ));
+        }
+
+        let expected_rate = self.st_licn_token.calculate_exchange_rate_fp();
+        if self.st_licn_token.exchange_rate_fp != expected_rate {
+            return Err(format!(
+                "MossStake exchange-rate mismatch: stored={}, expected={}",
+                self.st_licn_token.exchange_rate_fp, expected_rate
+            ));
+        }
+
+        for (owner, requests) in &self.unstake_requests {
+            if requests.is_empty() {
+                return Err(format!("MossStake request bucket {owner} is empty"));
+            }
+            for request in requests {
+                if request.owner != *owner {
+                    return Err(format!(
+                        "MossStake request key {} does not match embedded owner {}",
+                        owner, request.owner
+                    ));
+                }
+                if request.st_licn_amount == 0 || request.licn_to_receive == 0 {
+                    return Err(format!("MossStake request for {owner} has zero value"));
+                }
+                if request.claimable_at < request.requested_at {
+                    return Err(format!(
+                        "MossStake request for {owner} has a slot deadline before its request"
+                    ));
+                }
+                if request.claimable_at_unix_seconds > 0
+                    && request.claimable_at_unix_seconds < request.requested_at_unix_seconds
+                {
+                    return Err(format!(
+                        "MossStake request for {owner} has a timestamp deadline before its request"
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Current redeemable value for a position.
     ///
     /// Rewards are distributed into each position according to its tier-weighted
@@ -355,7 +452,8 @@ impl MossStakePool {
         if st_licn_amount == position.st_licn_amount {
             let licn_to_receive = position
                 .licn_deposited
-                .saturating_add(position.rewards_earned);
+                .checked_add(position.rewards_earned)
+                .ok_or_else(|| "MossStake position value overflow".to_string())?;
             return Ok((
                 position.licn_deposited,
                 position.rewards_earned,
@@ -370,7 +468,9 @@ impl MossStakePool {
         Ok((
             principal_out,
             rewards_out,
-            principal_out.saturating_add(rewards_out),
+            principal_out
+                .checked_add(rewards_out)
+                .ok_or_else(|| "MossStake unstake value overflow".to_string())?,
         ))
     }
 
@@ -541,34 +641,72 @@ impl MossStakePool {
             return Err("Cannot stake 0 LICN".to_string());
         }
 
-        // Calculate stLICN to mint
-        let st_licn_to_mint = self.st_licn_token.licn_to_st_licn(licn_amount);
-
-        // Update pool
-        self.st_licn_token.total_supply += st_licn_to_mint;
-        self.st_licn_token.total_licn_staked += licn_amount;
-        self.st_licn_token.exchange_rate_fp = self.st_licn_token.calculate_exchange_rate_fp();
-
-        // Calculate lock expiry
-        let lock_until = if tier.lock_duration_slots() > 0 {
-            current_slot + tier.lock_duration_slots()
-        } else {
-            0
-        };
-
-        // Update user position
-        if let Some(position) = self.positions.get_mut(&user) {
-            // AUDIT-FIX D-4: Reject tier changes on existing positions to prevent
-            // silently locking all previous deposits under a longer lock period.
-            // Users must withdraw and re-stake to change tiers.
+        // Validate the existing position before changing aggregate supply or
+        // backing.  Callers must be able to rely on Err leaving the pool
+        // unchanged, even outside the transaction processor's batch overlay.
+        if let Some(position) = self.positions.get(&user) {
             if tier != position.lock_tier {
                 return Err(format!(
                     "Cannot change lock tier on existing position (current: {:?}, requested: {:?}). Withdraw first.",
                     position.lock_tier, tier
                 ));
             }
-            position.st_licn_amount += st_licn_to_mint;
-            position.licn_deposited += licn_amount;
+        }
+
+        // Calculate stLICN to mint
+        let st_licn_to_mint = self.st_licn_token.licn_to_st_licn(licn_amount);
+        if st_licn_to_mint == 0 {
+            return Err(
+                "Deposit is too small to mint one stLICN spore at the current exchange rate"
+                    .to_string(),
+            );
+        }
+
+        let new_total_supply = self
+            .st_licn_token
+            .total_supply
+            .checked_add(st_licn_to_mint)
+            .ok_or_else(|| "stLICN total supply overflow".to_string())?;
+        let new_total_licn_staked = self
+            .st_licn_token
+            .total_licn_staked
+            .checked_add(licn_amount)
+            .ok_or_else(|| "MossStake backing overflow".to_string())?;
+
+        // Calculate lock expiry
+        let lock_until = if tier.lock_duration_slots() > 0 {
+            current_slot
+                .checked_add(tier.lock_duration_slots())
+                .ok_or_else(|| "MossStake lock deadline overflow".to_string())?
+        } else {
+            0
+        };
+
+        let existing_update = self.positions.get(&user).map(|position| {
+            Ok::<_, String>((
+                position
+                    .st_licn_amount
+                    .checked_add(st_licn_to_mint)
+                    .ok_or_else(|| "MossStake position share overflow".to_string())?,
+                position
+                    .licn_deposited
+                    .checked_add(licn_amount)
+                    .ok_or_else(|| "MossStake position principal overflow".to_string())?,
+            ))
+        });
+        let existing_update = existing_update.transpose()?;
+
+        // Apply only after every fallible calculation succeeds.
+        self.st_licn_token.total_supply = new_total_supply;
+        self.st_licn_token.total_licn_staked = new_total_licn_staked;
+        self.st_licn_token.exchange_rate_fp = self.st_licn_token.calculate_exchange_rate_fp();
+
+        // Update user position
+        if let Some(position) = self.positions.get_mut(&user) {
+            let (new_st_licn_amount, new_licn_deposited) = existing_update
+                .ok_or_else(|| "MossStake existing-position preflight missing".to_string())?;
+            position.st_licn_amount = new_st_licn_amount;
+            position.licn_deposited = new_licn_deposited;
             // Extend lock to the later of current lock or new deposit lock
             // This prevents the exploit of depositing large amounts right before unlock
             if lock_until > position.lock_until {
@@ -608,32 +746,72 @@ impl MossStakePool {
             return Err("Cannot stake 0 LICN".to_string());
         }
 
-        let st_licn_to_mint = self.st_licn_token.licn_to_st_licn(licn_amount);
-
-        self.st_licn_token.total_supply += st_licn_to_mint;
-        self.st_licn_token.total_licn_staked += licn_amount;
-        self.st_licn_token.exchange_rate_fp = self.st_licn_token.calculate_exchange_rate_fp();
-
-        let lock_until = if tier.lock_duration_slots() > 0 {
-            current_slot + tier.lock_duration_slots()
-        } else {
-            0
-        };
-        let lock_until_unix_seconds = if tier.lock_duration_seconds() > 0 {
-            current_unix_seconds.saturating_add(tier.lock_duration_seconds())
-        } else {
-            0
-        };
-
-        if let Some(position) = self.positions.get_mut(&user) {
+        if let Some(position) = self.positions.get(&user) {
             if tier != position.lock_tier {
                 return Err(format!(
                     "Cannot change lock tier on existing position (current: {:?}, requested: {:?}). Withdraw first.",
                     position.lock_tier, tier
                 ));
             }
-            position.st_licn_amount += st_licn_to_mint;
-            position.licn_deposited += licn_amount;
+        }
+
+        let st_licn_to_mint = self.st_licn_token.licn_to_st_licn(licn_amount);
+        if st_licn_to_mint == 0 {
+            return Err(
+                "Deposit is too small to mint one stLICN spore at the current exchange rate"
+                    .to_string(),
+            );
+        }
+
+        let new_total_supply = self
+            .st_licn_token
+            .total_supply
+            .checked_add(st_licn_to_mint)
+            .ok_or_else(|| "stLICN total supply overflow".to_string())?;
+        let new_total_licn_staked = self
+            .st_licn_token
+            .total_licn_staked
+            .checked_add(licn_amount)
+            .ok_or_else(|| "MossStake backing overflow".to_string())?;
+
+        let lock_until = if tier.lock_duration_slots() > 0 {
+            current_slot
+                .checked_add(tier.lock_duration_slots())
+                .ok_or_else(|| "MossStake lock deadline overflow".to_string())?
+        } else {
+            0
+        };
+        let lock_until_unix_seconds = if tier.lock_duration_seconds() > 0 {
+            current_unix_seconds
+                .checked_add(tier.lock_duration_seconds())
+                .ok_or_else(|| "MossStake wall-clock lock deadline overflow".to_string())?
+        } else {
+            0
+        };
+
+        let existing_update = self.positions.get(&user).map(|position| {
+            Ok::<_, String>((
+                position
+                    .st_licn_amount
+                    .checked_add(st_licn_to_mint)
+                    .ok_or_else(|| "MossStake position share overflow".to_string())?,
+                position
+                    .licn_deposited
+                    .checked_add(licn_amount)
+                    .ok_or_else(|| "MossStake position principal overflow".to_string())?,
+            ))
+        });
+        let existing_update = existing_update.transpose()?;
+
+        self.st_licn_token.total_supply = new_total_supply;
+        self.st_licn_token.total_licn_staked = new_total_licn_staked;
+        self.st_licn_token.exchange_rate_fp = self.st_licn_token.calculate_exchange_rate_fp();
+
+        if let Some(position) = self.positions.get_mut(&user) {
+            let (new_st_licn_amount, new_licn_deposited) = existing_update
+                .ok_or_else(|| "MossStake existing-position preflight missing".to_string())?;
+            position.st_licn_amount = new_st_licn_amount;
+            position.licn_deposited = new_licn_deposited;
             if lock_until > position.lock_until {
                 position.lock_until = lock_until;
             }
@@ -667,6 +845,14 @@ impl MossStakePool {
         st_licn_amount: u64,
         current_slot: u64,
     ) -> Result<UnstakeRequest, String> {
+        if st_licn_amount == 0 {
+            return Err("Cannot unstake 0 stLICN".to_string());
+        }
+
+        let claimable_at = current_slot
+            .checked_add(UNSTAKE_COOLDOWN_SLOTS)
+            .ok_or_else(|| "MossStake cooldown deadline overflow".to_string())?;
+
         // Check user has enough stLICN
         let position = self
             .positions
@@ -695,30 +881,37 @@ impl MossStakePool {
         let (principal_out, rewards_out, licn_to_receive) =
             Self::split_position_value_for_unstake(position, st_licn_amount)?;
 
+        let new_total_supply = self
+            .st_licn_token
+            .total_supply
+            .checked_sub(st_licn_amount)
+            .ok_or_else(|| "stLICN total supply underflow".to_string())?;
+        let new_total_licn_staked = self
+            .st_licn_token
+            .total_licn_staked
+            .checked_sub(licn_to_receive)
+            .ok_or_else(|| "MossStake backing underflow".to_string())?;
+
         // Burn stLICN from user
         position.st_licn_amount -= st_licn_amount;
         position.licn_deposited = position.licn_deposited.saturating_sub(principal_out);
         position.rewards_earned = position.rewards_earned.saturating_sub(rewards_out);
 
         // Update pool (stLICN burned, but LICN still locked for 7 days)
-        self.st_licn_token.total_supply -= st_licn_amount;
+        self.st_licn_token.total_supply = new_total_supply;
         // M10 fix: decrement total_licn_staked at request time to prevent
         // exchange rate inflation during cooldown period
-        self.st_licn_token.total_licn_staked = self
-            .st_licn_token
-            .total_licn_staked
-            .saturating_sub(licn_to_receive);
+        self.st_licn_token.total_licn_staked = new_total_licn_staked;
         self.st_licn_token.exchange_rate_fp = self.st_licn_token.calculate_exchange_rate_fp();
 
         // Create unstake request
         // AUDIT-FIX CP-4: Use constant from consensus module instead of hardcoded magic number
-        let cooldown_slots = UNSTAKE_COOLDOWN_SLOTS;
         let request = UnstakeRequest {
             owner: user,
             st_licn_amount,
             licn_to_receive,
             requested_at: current_slot,
-            claimable_at: current_slot + cooldown_slots,
+            claimable_at,
             requested_at_unix_seconds: 0,
             claimable_at_unix_seconds: 0,
         };
@@ -748,6 +941,17 @@ impl MossStakePool {
         current_slot: u64,
         current_unix_seconds: u64,
     ) -> Result<UnstakeRequest, String> {
+        if st_licn_amount == 0 {
+            return Err("Cannot unstake 0 stLICN".to_string());
+        }
+
+        let claimable_at = current_slot
+            .checked_add(UNSTAKE_COOLDOWN_SLOTS)
+            .ok_or_else(|| "MossStake cooldown deadline overflow".to_string())?;
+        let claimable_at_unix_seconds = current_unix_seconds
+            .checked_add(MOSSSTAKE_UNSTAKE_COOLDOWN_SECONDS)
+            .ok_or_else(|| "MossStake wall-clock cooldown deadline overflow".to_string())?;
+
         let position = self
             .positions
             .get_mut(&user)
@@ -785,27 +989,33 @@ impl MossStakePool {
         let (principal_out, rewards_out, licn_to_receive) =
             Self::split_position_value_for_unstake(position, st_licn_amount)?;
 
+        let new_total_supply = self
+            .st_licn_token
+            .total_supply
+            .checked_sub(st_licn_amount)
+            .ok_or_else(|| "stLICN total supply underflow".to_string())?;
+        let new_total_licn_staked = self
+            .st_licn_token
+            .total_licn_staked
+            .checked_sub(licn_to_receive)
+            .ok_or_else(|| "MossStake backing underflow".to_string())?;
+
         position.st_licn_amount -= st_licn_amount;
         position.licn_deposited = position.licn_deposited.saturating_sub(principal_out);
         position.rewards_earned = position.rewards_earned.saturating_sub(rewards_out);
 
-        self.st_licn_token.total_supply -= st_licn_amount;
-        self.st_licn_token.total_licn_staked = self
-            .st_licn_token
-            .total_licn_staked
-            .saturating_sub(licn_to_receive);
+        self.st_licn_token.total_supply = new_total_supply;
+        self.st_licn_token.total_licn_staked = new_total_licn_staked;
         self.st_licn_token.exchange_rate_fp = self.st_licn_token.calculate_exchange_rate_fp();
 
-        let cooldown_slots = UNSTAKE_COOLDOWN_SLOTS;
         let request = UnstakeRequest {
             owner: user,
             st_licn_amount,
             licn_to_receive,
             requested_at: current_slot,
-            claimable_at: current_slot + cooldown_slots,
+            claimable_at,
             requested_at_unix_seconds: current_unix_seconds,
-            claimable_at_unix_seconds: current_unix_seconds
-                .saturating_add(MOSSSTAKE_UNSTAKE_COOLDOWN_SECONDS),
+            claimable_at_unix_seconds,
         };
 
         self.unstake_requests
@@ -1059,41 +1269,280 @@ impl MossStakePool {
 
     /// Distribute rewards to all stakers (auto-compound)
     /// Uses tier-weighted distribution: locked stakers get boosted rewards.
-    pub fn distribute_rewards(&mut self, total_rewards: u64) {
-        if self.st_licn_token.total_supply == 0 {
-            return;
+    pub fn distribute_rewards(&mut self, total_rewards: u64) -> Result<(), String> {
+        self.distribute_rewards_with_policy(total_rewards, true)
+    }
+
+    /// Staking V2 reward distribution. Lock duration does not change consensus
+    /// security weight, so every stLICN share receives the same backing growth.
+    pub fn distribute_rewards_v2(&mut self, total_rewards: u64) -> Result<(), String> {
+        self.validate_invariants()?;
+        self.distribute_rewards_with_policy(total_rewards, false)?;
+        self.validate_invariants()
+    }
+
+    /// Socialize one proof-verified validator loss across the MossStake value
+    /// that remains exposed: active backing plus exits requested after the
+    /// frozen offense epoch began. The split and every owner/request remainder
+    /// are deterministic, and the original pool is unchanged on failure.
+    pub fn apply_staking_v2_slash(
+        &mut self,
+        requested_loss: u64,
+        offense_epoch_start_slot: u64,
+    ) -> Result<MossStakeSlashSettlement, String> {
+        self.validate_invariants()?;
+        if requested_loss == 0 {
+            return Ok(MossStakeSlashSettlement {
+                requested_loss,
+                active_backing_loss: 0,
+                cooling_down_loss: 0,
+            });
         }
 
-        // Add rewards to pool (increases exchange rate)
-        self.st_licn_token.total_licn_staked += total_rewards;
-        self.st_licn_token.exchange_rate_fp = self.st_licn_token.calculate_exchange_rate_fp();
+        let eligible_requests = self
+            .unstake_requests
+            .iter()
+            .flat_map(|(owner, requests)| {
+                requests
+                    .iter()
+                    .enumerate()
+                    .filter(move |(_, request)| request.requested_at >= offense_epoch_start_slot)
+                    .map(move |(index, request)| (*owner, index, request.licn_to_receive))
+            })
+            .collect::<Vec<_>>();
+        let cooling_down_available =
+            eligible_requests
+                .iter()
+                .try_fold(0u64, |total, (_, _, amount)| {
+                    total
+                        .checked_add(*amount)
+                        .ok_or_else(|| "MossStake slashable exit total overflow".to_string())
+                })?;
+        let active_available = self.st_licn_token.total_licn_staked;
+        let total_available = active_available
+            .checked_add(cooling_down_available)
+            .ok_or_else(|| "MossStake slashable value overflow".to_string())?;
+        let actual_loss = requested_loss.min(total_available);
+        if actual_loss == 0 {
+            return Ok(MossStakeSlashSettlement {
+                requested_loss,
+                active_backing_loss: 0,
+                cooling_down_loss: 0,
+            });
+        }
 
-        // Calculate total weighted stLICN across all positions
-        let total_weighted = self.total_weighted_st_licn();
+        let cooling_down_loss = if cooling_down_available == 0 {
+            0
+        } else {
+            u64::try_from(
+                (actual_loss as u128)
+                    .checked_mul(cooling_down_available as u128)
+                    .ok_or_else(|| "MossStake cooling-down slash overflow".to_string())?
+                    / total_available as u128,
+            )
+            .map_err(|_| "MossStake cooling-down slash exceeds u64".to_string())?
+        };
+        let active_backing_loss = actual_loss
+            .checked_sub(cooling_down_loss)
+            .ok_or_else(|| "MossStake slash class split underflow".to_string())?;
+        if active_backing_loss > active_available || cooling_down_loss > cooling_down_available {
+            return Err("MossStake slash class split exceeds available value".to_string());
+        }
+
+        let mut updated = self.clone();
+        if active_backing_loss > 0 {
+            let mut positive_positions = Vec::new();
+            for (owner, position) in &self.positions {
+                let value = position
+                    .licn_deposited
+                    .checked_add(position.rewards_earned)
+                    .ok_or_else(|| format!("MossStake position value overflow for {owner}"))?;
+                if value > 0 {
+                    positive_positions.push((*owner, value));
+                }
+            }
+            if positive_positions.is_empty() || active_available == 0 {
+                return Err("MossStake active slash has no backing positions".to_string());
+            }
+            let mut distributed = 0u64;
+            for (index, (owner, value)) in positive_positions.iter().enumerate() {
+                let loss = if index + 1 == positive_positions.len() {
+                    active_backing_loss
+                        .checked_sub(distributed)
+                        .ok_or_else(|| "MossStake active slash remainder underflow".to_string())?
+                } else {
+                    u64::try_from(
+                        (active_backing_loss as u128)
+                            .checked_mul(*value as u128)
+                            .ok_or_else(|| "MossStake position slash overflow".to_string())?
+                            / active_available as u128,
+                    )
+                    .map_err(|_| "MossStake position slash exceeds u64".to_string())?
+                };
+                if loss > *value {
+                    return Err(format!(
+                        "MossStake slash exceeds active position value for {owner}"
+                    ));
+                }
+                distributed = distributed
+                    .checked_add(loss)
+                    .ok_or_else(|| "MossStake active slash total overflow".to_string())?;
+                let position = updated.positions.get_mut(owner).ok_or_else(|| {
+                    format!("MossStake position {owner} disappeared during slash")
+                })?;
+                let reward_loss = loss.min(position.rewards_earned);
+                position.rewards_earned = position
+                    .rewards_earned
+                    .checked_sub(reward_loss)
+                    .ok_or_else(|| "MossStake reward slash underflow".to_string())?;
+                let principal_loss = loss
+                    .checked_sub(reward_loss)
+                    .ok_or_else(|| "MossStake principal slash split underflow".to_string())?;
+                position.licn_deposited = position
+                    .licn_deposited
+                    .checked_sub(principal_loss)
+                    .ok_or_else(|| "MossStake principal slash underflow".to_string())?;
+            }
+            if distributed != active_backing_loss {
+                return Err("MossStake active slash conservation failure".to_string());
+            }
+            updated.st_licn_token.total_licn_staked = updated
+                .st_licn_token
+                .total_licn_staked
+                .checked_sub(active_backing_loss)
+                .ok_or_else(|| "MossStake backing slash underflow".to_string())?;
+        }
+
+        if cooling_down_loss > 0 {
+            let mut requests = eligible_requests;
+            requests.sort_by_key(|(owner, index, _)| (owner.0, *index));
+            let mut distributed = 0u64;
+            for (position, (owner, request_index, value)) in requests.iter().enumerate() {
+                let loss = if position + 1 == requests.len() {
+                    cooling_down_loss.checked_sub(distributed).ok_or_else(|| {
+                        "MossStake cooling-down slash remainder underflow".to_string()
+                    })?
+                } else {
+                    u64::try_from(
+                        (cooling_down_loss as u128)
+                            .checked_mul(*value as u128)
+                            .ok_or_else(|| "MossStake exit slash overflow".to_string())?
+                            / cooling_down_available as u128,
+                    )
+                    .map_err(|_| "MossStake exit slash exceeds u64".to_string())?
+                };
+                if loss > *value {
+                    return Err(format!(
+                        "MossStake slash exceeds cooling-down request for {owner}"
+                    ));
+                }
+                distributed = distributed
+                    .checked_add(loss)
+                    .ok_or_else(|| "MossStake cooling-down slash total overflow".to_string())?;
+                let request = updated
+                    .unstake_requests
+                    .get_mut(owner)
+                    .and_then(|owner_requests| owner_requests.get_mut(*request_index))
+                    .ok_or_else(|| "MossStake exit disappeared during slash".to_string())?;
+                request.licn_to_receive = request
+                    .licn_to_receive
+                    .checked_sub(loss)
+                    .ok_or_else(|| "MossStake exit slash underflow".to_string())?;
+            }
+            if distributed != cooling_down_loss {
+                return Err("MossStake cooling-down slash conservation failure".to_string());
+            }
+            for requests in updated.unstake_requests.values_mut() {
+                requests.retain(|request| request.licn_to_receive > 0);
+            }
+            updated
+                .unstake_requests
+                .retain(|_, requests| !requests.is_empty());
+        }
+
+        updated.st_licn_token.exchange_rate_fp = updated.st_licn_token.calculate_exchange_rate_fp();
+        updated.validate_invariants()?;
+        *self = updated;
+        Ok(MossStakeSlashSettlement {
+            requested_loss,
+            active_backing_loss,
+            cooling_down_loss,
+        })
+    }
+
+    fn distribute_rewards_with_policy(
+        &mut self,
+        total_rewards: u64,
+        tier_weighted: bool,
+    ) -> Result<(), String> {
+        if total_rewards == 0 || self.st_licn_token.total_supply == 0 {
+            return Ok(());
+        }
+
+        let total_weighted = if tier_weighted {
+            self.total_weighted_st_licn()
+        } else {
+            self.st_licn_token.total_supply as u128
+        };
 
         if total_weighted == 0 {
-            return;
+            return Err("stLICN supply exists without weighted positions".to_string());
         }
 
-        // Distribute rewards proportionally to weighted stake
-        // AUDIT-FIX CP-5: Track distributed sum and assign remainder dust to last position
+        let new_total_licn_staked = self
+            .st_licn_token
+            .total_licn_staked
+            .checked_add(total_rewards)
+            .ok_or_else(|| "MossStake backing overflow during reward distribution".to_string())?;
+
+        // Precompute every position update before mutating pool state. The final
+        // position receives deterministic remainder dust, so all rewards are
+        // represented in both position liabilities and aggregate backing.
         let mut distributed: u64 = 0;
         let position_count = self.positions.len();
-        let mut idx = 0;
-        for position in self.positions.values_mut() {
-            idx += 1;
-            let weighted = (position.st_licn_amount as u128
-                * position.lock_tier.reward_multiplier_bp() as u128)
-                / 10_000;
-            let reward_share = if idx == position_count {
+        let mut updates = Vec::with_capacity(position_count);
+        for (idx, (owner, position)) in self.positions.iter().enumerate() {
+            let weighted = if tier_weighted {
+                (position.st_licn_amount as u128
+                    * position.lock_tier.reward_multiplier_bp() as u128)
+                    / 10_000
+            } else {
+                position.st_licn_amount as u128
+            };
+            let reward_share = if idx + 1 == position_count {
                 // Last position gets remainder to avoid dust loss
-                total_rewards.saturating_sub(distributed)
+                total_rewards
+                    .checked_sub(distributed)
+                    .ok_or_else(|| "MossStake reward remainder underflow".to_string())?
             } else {
                 ((weighted * total_rewards as u128) / total_weighted) as u64
             };
-            distributed += reward_share;
-            position.rewards_earned += reward_share;
+            distributed = distributed
+                .checked_add(reward_share)
+                .ok_or_else(|| "MossStake distributed reward overflow".to_string())?;
+            let new_rewards_earned = position
+                .rewards_earned
+                .checked_add(reward_share)
+                .ok_or_else(|| format!("MossStake position reward overflow for {owner}"))?;
+            updates.push((*owner, new_rewards_earned));
         }
+        if distributed != total_rewards {
+            return Err(format!(
+                "MossStake reward conservation failure: distributed {}, expected {}",
+                distributed, total_rewards
+            ));
+        }
+
+        self.st_licn_token.total_licn_staked = new_total_licn_staked;
+        for (owner, new_rewards_earned) in updates {
+            let position = self
+                .positions
+                .get_mut(&owner)
+                .ok_or_else(|| format!("MossStake position {owner} disappeared during apply"))?;
+            position.rewards_earned = new_rewards_earned;
+        }
+        self.st_licn_token.exchange_rate_fp = self.st_licn_token.calculate_exchange_rate_fp();
+        Ok(())
     }
 
     /// Get user's position with current value
@@ -1107,6 +1556,19 @@ impl MossStakePool {
     /// Get pending unstake requests for user
     pub fn get_unstake_requests(&self, user: &Pubkey) -> Vec<UnstakeRequest> {
         self.unstake_requests.get(user).cloned().unwrap_or_default()
+    }
+
+    /// Total LICN already removed from active stLICN backing but still owed to
+    /// cooldown-complete or pending unstake claims.
+    pub fn pending_unstake_liability_total(&self) -> Result<u64, String> {
+        self.unstake_requests
+            .values()
+            .flat_map(|requests| requests.iter())
+            .try_fold(0u64, |total, request| {
+                total
+                    .checked_add(request.licn_to_receive)
+                    .ok_or_else(|| "MossStake pending-unstake liability overflow".to_string())
+            })
     }
 
     pub fn canonical_snapshot_bytes(&self) -> Result<Vec<u8>, String> {
@@ -1148,24 +1610,52 @@ impl MossStakePool {
             ));
         }
 
-        Ok(Self {
+        let mut position_owners = HashSet::with_capacity(snapshot.positions.len());
+        for (owner, position) in &snapshot.positions {
+            if !position_owners.insert(*owner) {
+                return Err(format!("duplicate MossStake position owner {owner}"));
+            }
+            if position.owner != *owner {
+                return Err(format!(
+                    "MossStake position key {} does not match embedded owner {}",
+                    owner, position.owner
+                ));
+            }
+        }
+        let mut request_owners = HashSet::with_capacity(snapshot.unstake_requests.len());
+        for (owner, _) in &snapshot.unstake_requests {
+            if !request_owners.insert(*owner) {
+                return Err(format!("duplicate MossStake request owner {owner}"));
+            }
+        }
+
+        let pool = Self {
             st_licn_token: snapshot.st_licn_token,
             positions: snapshot.positions.into_iter().collect(),
             unstake_requests: snapshot.unstake_requests.into_iter().collect(),
             total_validators: snapshot.total_validators,
             average_apy_bp: snapshot.average_apy_bp,
-        })
+        };
+        pool.validate_invariants()?;
+        Ok(pool)
     }
 
     /// Calculate current APY in basis points (10000 = 100.00%)
     pub fn calculate_apy_bp(&self, blocks_per_day: u64, block_reward: u64) -> u64 {
+        let daily_rewards = (blocks_per_day as u128).saturating_mul(block_reward as u128);
+        self.calculate_apy_bp_from_annual_rewards(daily_rewards.saturating_mul(365))
+    }
+
+    /// Calculate projected pool APY from an already-derived annual reward
+    /// budget. This lets RPC projections mirror epoch settlement exactly rather
+    /// than approximating it from a rounded per-slot reward.
+    pub fn calculate_apy_bp_from_annual_rewards(&self, annual_rewards: u128) -> u64 {
         if self.st_licn_token.total_licn_staked == 0 {
             return 0;
         }
-        let daily_rewards = blocks_per_day as u128 * block_reward as u128;
-        let annual_rewards = daily_rewards * 365;
-        // APY in basis points: (annual / staked) * 10000
-        ((annual_rewards * 10_000) / self.st_licn_token.total_licn_staked as u128) as u64
+        let apy_bp =
+            annual_rewards.saturating_mul(10_000) / self.st_licn_token.total_licn_staked as u128;
+        u64::try_from(apy_bp).unwrap_or(u64::MAX)
     }
 
     /// Estimate tier APY against the current weighted pool composition.
@@ -1179,15 +1669,26 @@ impl MossStakePool {
         block_reward: u64,
         tier: LockTier,
     ) -> u64 {
+        let daily_rewards = (blocks_per_day as u128).saturating_mul(block_reward as u128);
+        self.calculate_tier_apy_bp_from_annual_rewards(daily_rewards.saturating_mul(365), tier)
+    }
+
+    /// Calculate projected tier APY from an annual pool reward budget.
+    pub fn calculate_tier_apy_bp_from_annual_rewards(
+        &self,
+        annual_rewards: u128,
+        tier: LockTier,
+    ) -> u64 {
         let total_weighted = self.total_weighted_st_licn();
         if total_weighted == 0 || self.st_licn_token.exchange_rate_fp == 0 {
             return 0;
         }
 
-        let daily_rewards = blocks_per_day as u128 * block_reward as u128;
-        let annual_rewards = daily_rewards * 365;
-        ((annual_rewards * tier.reward_multiplier_bp() as u128 * RATE_PRECISION)
-            / (total_weighted * self.st_licn_token.exchange_rate_fp as u128)) as u64
+        let apy_bp = annual_rewards
+            .saturating_mul(tier.reward_multiplier_bp() as u128)
+            .saturating_mul(RATE_PRECISION)
+            / total_weighted.saturating_mul(self.st_licn_token.exchange_rate_fp as u128);
+        u64::try_from(apy_bp).unwrap_or(u64::MAX)
     }
 
     /// Calculate APY as f64 percentage (for display/API only — NOT for consensus)
@@ -1329,6 +1830,135 @@ mod tests {
     }
 
     #[test]
+    fn staking_v2_slash_conserves_active_and_cooling_down_pool_losses() {
+        let alice = Pubkey::new([0x71; 32]);
+        let bob = Pubkey::new([0x72; 32]);
+        let carol = Pubkey::new([0x73; 32]);
+        let mut pool = MossStakePool::new();
+        pool.stake(alice, 1_000, 0).unwrap();
+        pool.stake(bob, 1_000, 0).unwrap();
+        pool.request_unstake(bob, 1_000, 10).unwrap();
+        pool.stake(carol, 1_000, 20).unwrap();
+        assert_eq!(pool.st_licn_token.total_licn_staked, 2_000);
+        assert_eq!(pool.pending_unstake_liability_total().unwrap(), 1_000);
+
+        let settlement = pool.apply_staking_v2_slash(900, 0).unwrap();
+        assert_eq!(settlement.requested_loss, 900);
+        assert_eq!(settlement.active_backing_loss, 600);
+        assert_eq!(settlement.cooling_down_loss, 300);
+        assert_eq!(settlement.actual_loss().unwrap(), 900);
+        assert_eq!(pool.st_licn_token.total_licn_staked, 1_400);
+        assert_eq!(pool.pending_unstake_liability_total().unwrap(), 700);
+        assert_eq!(pool.get_position(&alice).unwrap().1, 700);
+        assert_eq!(pool.get_position(&carol).unwrap().1, 700);
+        assert_eq!(pool.get_unstake_requests(&bob)[0].licn_to_receive, 700);
+        pool.validate_invariants().unwrap();
+    }
+
+    #[test]
+    fn staking_v2_slash_excludes_exits_requested_before_exposure_epoch() {
+        let alice = Pubkey::new([0x74; 32]);
+        let bob = Pubkey::new([0x75; 32]);
+        let mut pool = MossStakePool::new();
+        pool.stake(alice, 1_000, 0).unwrap();
+        pool.stake(bob, 1_000, 0).unwrap();
+        pool.request_unstake(bob, 1_000, 5).unwrap();
+
+        let settlement = pool.apply_staking_v2_slash(400, 10).unwrap();
+        assert_eq!(settlement.active_backing_loss, 400);
+        assert_eq!(settlement.cooling_down_loss, 0);
+        assert_eq!(pool.get_position(&alice).unwrap().1, 600);
+        assert_eq!(pool.get_unstake_requests(&bob)[0].licn_to_receive, 1_000);
+        pool.validate_invariants().unwrap();
+    }
+
+    #[test]
+    fn canonical_snapshot_rejects_duplicate_position_owners() {
+        let owner = Pubkey::new([6u8; 32]);
+        let position = StakingPosition {
+            owner,
+            st_licn_amount: 1,
+            licn_deposited: 1,
+            deposited_at: 0,
+            deposited_at_unix_seconds: 0,
+            rewards_earned: 0,
+            lock_tier: LockTier::Flexible,
+            lock_until: 0,
+            lock_until_unix_seconds: 0,
+        };
+        let snapshot = MossStakePoolSnapshotV1 {
+            version: 1,
+            st_licn_token: StLicnToken {
+                total_supply: 2,
+                total_licn_staked: 2,
+                exchange_rate_fp: RATE_PRECISION as u64,
+            },
+            positions: vec![(owner, position.clone()), (owner, position)],
+            unstake_requests: vec![],
+            total_validators: 0,
+            average_apy_bp: 0,
+        };
+        let bytes = serialize_legacy_bincode(&snapshot, "duplicate MossStake fixture").unwrap();
+
+        let error = MossStakePool::from_canonical_snapshot_bytes(&bytes).unwrap_err();
+        assert!(error.contains("duplicate MossStake position owner"));
+    }
+
+    #[test]
+    fn invariant_validation_detects_backing_mismatch() {
+        let owner = Pubkey::new([5u8; 32]);
+        let mut pool = MossStakePool::new();
+        pool.stake(owner, 1_000, 0).unwrap();
+        assert!(pool.validate_invariants().is_ok());
+
+        pool.st_licn_token.total_licn_staked += 1;
+        let error = pool.validate_invariants().unwrap_err();
+        assert!(error.contains("backing mismatch"));
+    }
+
+    #[test]
+    fn deposit_that_would_mint_zero_shares_is_atomic() {
+        let user = Pubkey::new([7u8; 32]);
+        let mut pool = MossStakePool::new();
+        pool.st_licn_token.total_supply = 1;
+        pool.st_licn_token.total_licn_staked = u64::MAX;
+        pool.st_licn_token.exchange_rate_fp = u64::MAX;
+        let before = pool.canonical_snapshot_bytes().unwrap();
+
+        let error = pool.stake(user, 1, 0).unwrap_err();
+
+        assert!(error.contains("too small to mint"));
+        assert_eq!(pool.canonical_snapshot_bytes().unwrap(), before);
+    }
+
+    #[test]
+    fn zero_unstake_is_rejected_without_mutation() {
+        let user = Pubkey::new([8u8; 32]);
+        let mut pool = MossStakePool::new();
+        pool.stake(user, 1_000, 0).unwrap();
+        let before = pool.canonical_snapshot_bytes().unwrap();
+
+        let error = pool.request_unstake(user, 0, 0).unwrap_err();
+
+        assert!(error.contains("Cannot unstake 0"));
+        assert_eq!(pool.canonical_snapshot_bytes().unwrap(), before);
+    }
+
+    #[test]
+    fn reward_overflow_is_rejected_without_mutation() {
+        let user = Pubkey::new([9u8; 32]);
+        let mut pool = MossStakePool::new();
+        pool.stake(user, 1_000, 0).unwrap();
+        pool.st_licn_token.total_licn_staked = u64::MAX;
+        let before = pool.canonical_snapshot_bytes().unwrap();
+
+        let error = pool.distribute_rewards(1).unwrap_err();
+
+        assert!(error.contains("backing overflow"));
+        assert_eq!(pool.canonical_snapshot_bytes().unwrap(), before);
+    }
+
+    #[test]
     fn test_liquid_staking_flow() {
         let mut pool = MossStakePool::new();
         let user = Pubkey::from_base58("6YkFWKH9HQZFVEy4QPw82xRx5qHRk84vU1H2Hk7JLj1H").unwrap();
@@ -1338,7 +1968,7 @@ mod tests {
         assert_eq!(st_licn_amount_out, 1000); // 1:1 initially
 
         // Simulate rewards
-        pool.distribute_rewards(100); // 10% rewards
+        pool.distribute_rewards(100).unwrap(); // 10% rewards
 
         // Exchange rate should increase (> 1.0x, i.e., > RATE_PRECISION)
         assert!(pool.st_licn_token.calculate_exchange_rate_fp() > RATE_PRECISION as u64);
@@ -1414,7 +2044,7 @@ mod tests {
         pool.stake(pk_c, 100, 0).unwrap();
 
         // Distribute 10 spores that don't divide evenly by 3
-        pool.distribute_rewards(10);
+        pool.distribute_rewards(10).unwrap();
 
         let a_rewards = pool.get_position(&pk_a).unwrap().0.rewards_earned;
         let b_rewards = pool.get_position(&pk_b).unwrap().0.rewards_earned;
@@ -1430,7 +2060,7 @@ mod tests {
         pool2.stake(pk_c, 100, 0).unwrap(); // insert order swapped
         pool2.stake(pk_a, 100, 0).unwrap();
         pool2.stake(pk_b, 100, 0).unwrap();
-        pool2.distribute_rewards(10);
+        pool2.distribute_rewards(10).unwrap();
 
         assert_eq!(
             pool2.get_position(&pk_a).unwrap().0.rewards_earned,
@@ -1465,7 +2095,7 @@ mod tests {
         pool.stake_with_tier(bob, 1_000, 0, LockTier::Lock30)
             .unwrap();
 
-        pool.distribute_rewards(260);
+        pool.distribute_rewards(260).unwrap();
 
         let (_, alice_value) = pool.get_position(&alice).unwrap();
         let (_, bob_value) = pool.get_position(&bob).unwrap();
@@ -1555,7 +2185,7 @@ mod tests {
         let bob = Pubkey::from_base58("BwVDmnwtfVBiRYB4iWxWrb5M9fAfQD9hbMmnQMw3MRvV").unwrap();
 
         pool.stake(alice, 1_000, 0).unwrap();
-        pool.distribute_rewards(100);
+        pool.distribute_rewards(100).unwrap();
         pool.transfer(alice, bob, 400, 10).unwrap();
 
         let (alice_pos, alice_value) = pool.get_position(&alice).unwrap();
@@ -1587,13 +2217,38 @@ mod tests {
     }
 
     #[test]
+    fn test_rejected_tier_change_preserves_entire_pool() {
+        let user = Pubkey::from_base58("11111111111111111111111111111112").unwrap();
+
+        let mut slot_only = MossStakePool::new();
+        slot_only.stake(user, 1_000, 10).unwrap();
+        let before = slot_only.canonical_snapshot_bytes().unwrap();
+        let error = slot_only
+            .stake_with_tier(user, 500, 20, LockTier::Lock30)
+            .unwrap_err();
+        assert!(error.contains("Cannot change lock tier"));
+        assert_eq!(slot_only.canonical_snapshot_bytes().unwrap(), before);
+
+        let mut legacy = MossStakePool::new();
+        legacy
+            .stake_with_tier_at_time(user, 1_000, 10, 1_700_000_000, LockTier::Flexible)
+            .unwrap();
+        let before = legacy.canonical_snapshot_bytes().unwrap();
+        let error = legacy
+            .stake_with_tier_at_time(user, 500, 20, 1_700_000_010, LockTier::Lock30)
+            .unwrap_err();
+        assert!(error.contains("Cannot change lock tier"));
+        assert_eq!(legacy.canonical_snapshot_bytes().unwrap(), before);
+    }
+
+    #[test]
     fn test_transfer_to_locked_position_does_not_mutate_sender() {
         let mut pool = MossStakePool::new();
         let alice = Pubkey::from_base58("11111111111111111111111111111112").unwrap();
         let bob = Pubkey::from_base58("6YkFWKH9HQZFVEy4QPw82xRx5qHRk84vU1H2Hk7JLj1H").unwrap();
 
         pool.stake(alice, 1_000, 0).unwrap();
-        pool.distribute_rewards(100);
+        pool.distribute_rewards(100).unwrap();
         pool.stake_with_tier(bob, 1_000, 0, LockTier::Lock30)
             .unwrap();
 

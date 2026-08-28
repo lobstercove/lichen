@@ -2113,14 +2113,22 @@
 
             <div class="method-card" id="getMarketListings">
                 <h3 class="method-name">getMarketListings</h3>
-                <p class="method-desc">Returns active marketplace listings with price, seller, and collection info.</p>
+                <p class="method-desc">Returns canonical active LichenMarket storage rows, not historical listing
+                    events. Each row includes the raw payment token and price, immutable fee/royalty terms,
+                    listing slot, and <code>settlement_ready</code>; legacy rows remain visible but cannot be bought
+                    until their V3 migration is complete.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <p>Array containing one options object — <code>[{ collection?, limit?, price_min?, price_max?, seller?, sort_by? }]</code>.</p>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Object — <code>{ collection, count, listings, filters }</code>.</p>
+                    <p>Object — <code>{ collection, count, listings, filters }</code>. Listing rows include
+                        <code>collection</code>, <code>nft_contract</code>, <code>token_id</code>,
+                        <code>payment_token</code>, <code>price</code>, <code>price_raw_exact</code>,
+                        <code>seller</code>, <code>royalty_recipient</code>, <code>royalty_bps</code>,
+                        <code>marketplace_fee_bps</code>, <code>slot</code>, <code>active</code>,
+                        <code>settlement_ready</code>, and <code>migration_required</code>.</p>
                 </div>
             </div>
 
@@ -2488,8 +2496,10 @@
 
                 <h3>Fee / Network / Validator</h3>
                 <ul>
-                    <li><code>getOraclePrices</code> — returns a top-level object
-                        <code>{ source, LICN, wSOL, wETH, wBNB, wNEO, wGAS, wBTC, lUSD }</code>.</li>
+                    <li><code>getOraclePrices</code> — returns nullable fresh consensus prices plus
+                        <code>operational</code>, <code>consensusManaged</code>, <code>paused</code>,
+                        <code>requiredFeeds</code>, and <code>freshFeeds</code>. Missing, malformed, future, or stale
+                        quotes are never represented as live zero/reference prices.</li>
                     <li><code>getClusterInfo</code></li>
                 </ul>
 
@@ -2538,12 +2548,42 @@
                         <code>getDexRewardsStats</code>, <code>getDexRouterStats</code>,
                         <code>getDexAnalyticsStats</code>, <code>getDexGovernanceStats</code>
                     </li>
+                    <li><code>getDexMarginStats</code> exposes exact collateral escrow, open interest, insurance and
+                        bad debt separately, plus Funding V2/Cross V2 activation, migration counts, finalized flags,
+                        pause, and migration-lock state. REST clients use <code>/api/v1/margin/info</code>,
+                        <code>/api/v1/margin/positions/:id</code>, and bounded portfolio state at
+                        <code>/api/v1/margin/cross-account/:trader</code>.</li>
                     <li><code>getThallLendStats</code>, <code>getSporePayStats</code>,
+                        <code>getSporePumpStats</code>,
                         <code>getSporeVaultStats</code>, <code>getBountyBoardStats</code>,
                         <code>getComputeMarketStats</code>, <code>getMossStorageStats</code>,
                         <code>getLichenMarketStats</code>, <code>getLichenAuctionStats</code>,
                         <code>getLichenPunksStats</code>
                     </li>
+                    <li><code>getSporePayStats</code> reads the canonical <code>sp_*</code> contract keys and returns
+                        stream count, lifetime created/withdrawn volume, cancel count, exact escrow liability,
+                        deferred unpaid liability, pause state, Accounting V3 version, migration lock, expected stream
+                        frontier, and migration cursor.</li>
+                    <li><code>getSporePumpStats</code> returns exact decimal-string companions for every potentially
+                        JavaScript-unsafe counter and liability, including curve reserve, creator liability,
+                        graduation revenue, platform fees, Accounting V3 version/lock/cursor, pause state, and the
+                        configured creator royalty. The matching REST surface is
+                        <code>/api/v1/launchpad/stats</code>; exact execution quotes are
+                        <code>/api/v1/launchpad/tokens/:id/quote?amount_raw=...</code> and
+                        <code>/api/v1/launchpad/tokens/:id/sell-quote?amount_raw=...</code>. Quote routes fail closed
+                        while Accounting V3 is unavailable or the token is frozen, and buys also fail while the
+                        launchpad is paused.</li>
+                    <li><code>getComputeMarketStats</code> returns the exact payment token, fee treasury, LichenID
+                        dependency and gate health, Accounting V3 version/lock/frontier, escrow, unpaid-provider and
+                        platform-fee liabilities, real contract custody, solvency, agent controls, and both explicit
+                        and effective pause state. A malformed dependency or accounting row is reported as unhealthy
+                        and keeps the market effectively paused.</li>
+                    <li><code>getBountyBoardStats</code> returns exact bounty counters, canonical payment token,
+                        fee and LichenID configuration health, Accounting V2 version/lock/frontier, active escrow,
+                        realized platform fees, total liability, real contract custody, solvency, and both explicit
+                        and effective pause state. Every potentially JavaScript-unsafe counter, volume, liability,
+                        and custody value has a decimal-string exact companion. Malformed fixed-width state is
+                        returned as unavailable and the board is reported effectively paused.</li>
                     <li><code>getLusdStats</code>, <code>getWethStats</code>,
                         <code>getWsolStats</code>, <code>getWbnbStats</code>, <code>getWneoStats</code>,
                         <code>getWgasStats</code>, <code>getWbtcStats</code>,
@@ -2577,12 +2617,13 @@
                     <li><code>isNullifierSpent</code> — check if a nullifier has been spent</li>
                     <li><code>getShieldedCommitments</code> — list commitments in the tree, including encrypted
                         wallet note payloads when present</li>
-                    <li><code>computeShieldCommitment</code> — compute commitment hash for shield operation</li>
-                    <li><code>computeShieldNullifier</code> — compute the native Poseidon2 nullifier from a note serial
-                        and spending key</li>
-                    <li><code>generateShieldProof</code> — generate ZK proof for shield (deposit)</li>
-                    <li><code>generateUnshieldProof</code> — generate ZK proof for unshield (withdraw)</li>
-                    <li><code>generateTransferProof</code> — generate ZK proof for private transfer</li>
+                    <li><code>computeShieldCommitment</code> — disabled; returns <code>-32090</code> before parsing a
+                        private blinding</li>
+                    <li><code>computeShieldNullifier</code> — disabled; returns <code>-32090</code> before parsing a
+                        spending key</li>
+                    <li><code>generateShieldProof</code> — disabled; returns <code>-32090</code></li>
+                    <li><code>generateUnshieldProof</code> — disabled; returns <code>-32090</code></li>
+                    <li><code>generateTransferProof</code> — disabled; returns <code>-32090</code></li>
                 </ul>
 
                 <h3>Contract Execution</h3>

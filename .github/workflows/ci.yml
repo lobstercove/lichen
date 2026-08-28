@@ -234,6 +234,10 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Contract ABI and WASM dispatch parity
+        run: |
+          node scripts/qa/test_contract_abi_dispatch_parity.js
+          node scripts/qa/sync_bountyboard_playground.js
 
   fmt:
     name: Format

@@ -77,6 +77,7 @@ const MARGIN_ADDRESS_KEY: &str = "dex_margin_addr";
 const REWARDS_ADDRESS_KEY: &str = "dex_rewards_addr";
 // F18.7: Daily volume reset tracking (slot-based day boundary)
 const SLOTS_PER_DAY: u64 = 216_000; // 24h * 3600s / 0.4s
+const MAX_ORACLE_BAND_AGE_SLOTS: u64 = 750;
 
 // Order sides
 const SIDE_BUY: u8 = 0;
@@ -1743,16 +1744,20 @@ pub fn place_order(
 
     // ── Oracle Price Band Protection ──
     // MUST run BEFORE escrow to avoid locking tokens on out-of-band orders.
-    // The validator writes dex_band_{pair_id} (16 bytes: ref_price + slot)
-    // for oracle-priced pairs. If present and fresh (<300 slots), enforce:
+    // The validator writes dex_band_{pair_id} (16 bytes: ref_price + source slot)
+    // for oracle-priced pairs. If present and fresh, enforce:
     //   Market orders: reject if worst-price bound is >10% from oracle
     //   Limit orders:  reject if limit price is >50% from oracle
-    // Native-only pairs (no band record) → unrestricted.
-    // Return code 10 = price outside oracle band.
+    // Native-only pairs (no band record) remain unrestricted. A present but
+    // malformed/future/stale oracle band fails closed.
+    // Return code 10 = price outside oracle band; 11 = oracle band unavailable.
     {
         let band_key_str = band_key(pair_id);
         if let Some(band_data) = storage_get(&band_key_str) {
-            if band_data.len() >= 16 {
+            if band_data.len() < 16 {
+                reentrancy_exit();
+                return 11;
+            }
                 let ref_price = u64::from_le_bytes([
                     band_data[0],
                     band_data[1],
@@ -1774,39 +1779,36 @@ pub fn place_order(
                     band_data[15],
                 ]);
 
-                // Only enforce if band data is fresh (within 300 slots ≈ 5 min)
-                if ref_price > 0 && current_slot.saturating_sub(band_slot) < 300 {
-                    let check_price = if base_order_type == ORDER_MARKET {
-                        // Market order with worst-price bound
-                        if price > 0 {
-                            price
-                        } else {
-                            0
-                        }
-                    } else {
-                        price
-                    };
-
-                    if check_price > 0 {
-                        // Percentage thresholds (basis points): market=1000 (10%), limit=5000 (50%)
-                        let band_bps: u64 = if base_order_type == ORDER_MARKET {
-                            1000
-                        } else {
-                            5000
-                        };
-
-                        // Calculate allowed range: ref_price * (1 ± band_bps/10000) — use u128 to avoid overflow
-                        let band = (ref_price as u128 * band_bps as u128 / 10000) as u64;
-                        let lower = ref_price.saturating_sub(band);
-                        let upper = ref_price.saturating_add(band);
-
-                        if check_price < lower || check_price > upper {
-                            reentrancy_exit();
-                            return 10; // price outside oracle band
-                        }
-                    }
-                }
+            if ref_price == 0
+                || band_slot > current_slot
+                || current_slot - band_slot > MAX_ORACLE_BAND_AGE_SLOTS
+            {
+                reentrancy_exit();
+                return 11;
             }
+
+            let check_price = price;
+            if check_price == 0 {
+                reentrancy_exit();
+                return 10;
+            }
+
+            // Percentage thresholds (basis points): market=1000 (10%), limit=5000 (50%)
+            let band_bps: u64 = if base_order_type == ORDER_MARKET {
+                1000
+            } else {
+                5000
+            };
+
+            // Calculate allowed range: ref_price * (1 ± band_bps/10000) — use u128 to avoid overflow
+            let band = (ref_price as u128 * band_bps as u128 / 10000) as u64;
+            let lower = ref_price.saturating_sub(band);
+            let upper = ref_price.saturating_add(band);
+
+            if check_price < lower || check_price > upper {
+                reentrancy_exit();
+                return 10; // price outside oracle band
+                }
         }
     }
 
@@ -1877,6 +1879,21 @@ pub fn place_order(
         return 4;
     }
 
+    let new_order_id = match load_u64(ORDER_COUNT_KEY).checked_add(1) {
+        Some(id) => id,
+        None => {
+            reentrancy_exit();
+            return 13;
+        }
+    };
+    let new_user_count = match user_count.checked_add(1) {
+        Some(count) => count,
+        None => {
+            reentrancy_exit();
+            return 13;
+        }
+    };
+
     // ── Token escrow: lock trader's tokens into DEX contract ──
     // For SELL orders: escrow quantity of base tokens
     // For BUY orders: escrow notional + max taker fee of quote tokens
@@ -1884,10 +1901,9 @@ pub fn place_order(
     // Return code 11 = escrow transfer failed (insufficient balance or allowance)
     let escrow_amount;
     {
-        let pair_data_ref = storage_get(&pk).unwrap();
-        let base_token = decode_pair_base_token(&pair_data_ref);
-        let quote_token = decode_pair_quote_token(&pair_data_ref);
-        let taker_fee_bps = decode_pair_taker_fee(&pair_data_ref);
+        let base_token = decode_pair_base_token(&pair_data);
+        let quote_token = decode_pair_quote_token(&pair_data);
+        let taker_fee_bps = decode_pair_taker_fee(&pair_data);
 
         if side == SIDE_SELL {
             escrow_amount = quantity;
@@ -1907,9 +1923,6 @@ pub fn place_order(
     }
 
     // Create order
-    let order_count = load_u64(ORDER_COUNT_KEY);
-    let new_order_id = order_count + 1;
-
     // Stop-limit orders with a trigger_price go dormant until triggered
     let initial_status = if base_order_type == ORDER_STOP_LIMIT && trigger_price > 0 {
         STATUS_DORMANT
@@ -1936,7 +1949,6 @@ pub fn place_order(
     save_u64(ORDER_COUNT_KEY, new_order_id);
 
     // Track user orders
-    let new_user_count = user_count + 1;
     save_u64(&user_order_count_key(&t), new_user_count);
     save_u64(&user_order_key(&t, new_user_count), new_order_id);
 
@@ -1954,7 +1966,13 @@ pub fn place_order(
         add_to_book(pair_id, side, price, new_order_id);
     } else if remaining > 0 && base_order_type == ORDER_MARKET {
         // Market order: cancel unfilled remainder and refund unused escrow
-        let mut od = storage_get(&order_key(new_order_id)).unwrap();
+        let mut od = match storage_get(&order_key(new_order_id)) {
+            Some(order) if order.len() >= ORDER_SIZE => order,
+            _ => {
+                reentrancy_exit();
+                return 13;
+            }
+        };
         let filled = quantity - remaining;
         update_order_filled(&mut od, filled);
         update_order_status(
@@ -1969,11 +1987,10 @@ pub fn place_order(
         // Refund unused escrow
         let escrow_remaining = decode_order_escrow_locked(&od);
         if escrow_remaining > 0 {
-            let pair_data_ref = storage_get(&pk).unwrap();
             let refund_token = if side == SIDE_SELL {
-                decode_pair_base_token(&pair_data_ref)
+                decode_pair_base_token(&pair_data)
             } else {
-                decode_pair_quote_token(&pair_data_ref)
+                decode_pair_quote_token(&pair_data)
             };
             release_tokens(&refund_token, &t, escrow_remaining);
             update_order_escrow(&mut od, 0);
@@ -2163,19 +2180,20 @@ fn match_order(
     }
 
     // Update taker order state
-    if remaining
-        < decode_order_quantity(&storage_get(&order_key(taker_order_id)).unwrap_or_default())
+    if let Some(mut od) = storage_get(&order_key(taker_order_id))
+        .filter(|order| order.len() >= ORDER_SIZE)
     {
-        let mut od = storage_get(&order_key(taker_order_id)).unwrap();
         let orig_qty = decode_order_quantity(&od);
-        let filled = orig_qty - remaining;
-        update_order_filled(&mut od, filled);
-        if remaining == 0 {
-            update_order_status(&mut od, STATUS_FILLED);
-        } else {
-            update_order_status(&mut od, STATUS_PARTIAL);
+        if remaining < orig_qty {
+            let filled = orig_qty - remaining;
+            update_order_filled(&mut od, filled);
+            if remaining == 0 {
+                update_order_status(&mut od, STATUS_FILLED);
+            } else {
+                update_order_status(&mut od, STATUS_PARTIAL);
+            }
+            storage_set(&order_key(taker_order_id), &od);
         }
-        storage_set(&order_key(taker_order_id), &od);
     }
 
     remaining
@@ -4135,6 +4153,65 @@ mod tests {
             0
         );
         assert_eq!(load_u64(ORDER_COUNT_KEY), 1);
+    }
+
+    #[test]
+    fn test_oracle_priced_pair_fails_closed_on_unusable_band() {
+        let (_admin, pair_id) = setup_with_pair();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+
+        let mut band = Vec::new();
+        band.extend_from_slice(&1_000_000_000u64.to_le_bytes());
+        band.extend_from_slice(&100u64.to_le_bytes());
+        storage_set(&band_key(pair_id), &band);
+
+        test_mock::set_slot(100 + MAX_ORACLE_BAND_AGE_SLOTS + 1);
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0,
+                0,
+            ),
+            11
+        );
+
+        test_mock::set_slot(99);
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0,
+                0,
+            ),
+            11
+        );
+
+        storage_set(&band_key(pair_id), &1_000_000_000u64.to_le_bytes());
+        test_mock::set_slot(100);
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0,
+                0,
+            ),
+            11
+        );
+        assert_eq!(load_u64(ORDER_COUNT_KEY), 0);
     }
 
     #[test]

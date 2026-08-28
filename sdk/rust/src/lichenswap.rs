@@ -166,7 +166,7 @@ fn encode_amount_args(amount: u64) -> Vec<u8> {
 fn ensure_readonly_success(
     result: &ReadonlyContractResult,
     function_name: &str,
-    allowed_codes: &[u32],
+    allowed_codes: &[i64],
 ) -> Result<()> {
     let code = result.return_code.unwrap_or(0);
     if !allowed_codes.contains(&code) {
@@ -626,7 +626,7 @@ impl LichenSwapClient {
 mod tests {
     use super::*;
 
-    fn readonly_result(return_code: u32, bytes: Vec<u8>) -> ReadonlyContractResult {
+    fn readonly_result(return_code: i64, bytes: Vec<u8>) -> ReadonlyContractResult {
         ReadonlyContractResult {
             success: true,
             return_data: Some(base64::Engine::encode(

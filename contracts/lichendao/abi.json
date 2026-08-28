@@ -129,7 +129,7 @@
           "type": "u8"
         },
         {
-          "name": "_voting_power",
+          "name": "voting_amount",
           "type": "u64"
         }
       ],
@@ -536,6 +536,7 @@
     },
     {
       "name": "set_lichenid_address",
+      "opcode": 29,
       "params": [
         {
           "name": "caller_ptr",
@@ -601,7 +602,111 @@
       "result_semantics": {
         "kind": "return_code",
         "success_codes": [
+          1
+        ]
+      }
+    },
+    {
+      "name": "vote_v2",
+      "opcode": 26,
+      "params": [
+        {
+          "name": "voter_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        },
+        {
+          "name": "support",
+          "type": "u8"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          1
+        ]
+      }
+    },
+    {
+      "name": "claim_vote_escrow",
+      "opcode": 27,
+      "params": [
+        {
+          "name": "voter_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          1
+        ]
+      }
+    },
+    {
+      "name": "set_proposal_type_config",
+      "opcode": 28,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "proposal_type",
+          "type": "u8"
+        },
+        {
+          "name": "voting_period",
+          "type": "u64"
+        },
+        {
+          "name": "approval",
+          "type": "u64"
+        },
+        {
+          "name": "quorum",
+          "type": "u64"
+        },
+        {
+          "name": "execution_delay",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
           0
+        ]
+      }
+    },
+    {
+      "name": "migrate_treasury_to_self",
+      "opcode": 30,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "expected_legacy_treasury_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          1
         ]
       }
     }

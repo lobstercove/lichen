@@ -67,7 +67,7 @@
 | CLI account history | `lichen account history <address> --limit <n>` calls `getTransactionsByAddress`. | `cli/src/cli_args.rs`, `cli/src/account_support.rs`, `cli/src/client_transaction_query_support.rs` |
 | Custody service | Custody is a separate REST service with `/health`, `/status`, `/deposits`, `/withdrawals`, reserves, webhooks, and event streams. This is bridge/wrapped-asset infrastructure, not required for native LICN exchange deposits. | `custody/src/bootstrap_support/router.rs`, `docs/guides/CUSTODY_PLAN.md` |
 | DEX surface | DEX REST is read-heavy and exposes pairs, orderbooks, routes, pools, margin, rewards, governance, stats, and oracle prices under API routes. Writes are rejected or routed through signed transactions, not raw REST mutations. | `rpc/src/dex.rs`, `contracts/dex_core/src/lib.rs`, `contracts/dex_amm/src/lib.rs` |
-| Oracle surface | Oracle contract has owner/feeder controls, price submission, aggregation, pause/resume, and stats. Runtime also has native consensus oracle paths elsewhere; exchange docs must avoid overstating contract oracle as the only authority. | `contracts/lichenoracle/src/lib.rs`, `core/src/processor/governance_oracle.rs`, `rpc/src/dex.rs` |
+| Oracle surface | The native validator oracle finalizes canonical fixed8 prices with strict active-stake quorum and a 750-slot freshness bound. LichenOracle mirrors finalized quotes for contract compatibility; legacy owner/feeder price mutation is genesis-only and disabled in consensus-managed mode. RPC health fails closed on missing, malformed, future, stale, paused, or unmanaged feeds. | `contracts/lichenoracle/src/lib.rs`, `core/src/processor/governance_oracle.rs`, `rpc/src/dex.rs` |
 
 ## Version Drift
 

@@ -11,6 +11,79 @@ type ShieldDepositPayload = (ProofBytes, Option<EncryptedNotePayload>);
 type ShieldedTransferOutputPayloads = Option<[EncryptedNotePayload; 2]>;
 type ShieldedTransferPayload = (ProofBytes, ShieldedTransferOutputPayloads);
 
+#[cfg(feature = "zk")]
+fn validate_shielded_scalar(label: &str, value: &[u8; 32]) -> Result<(), String> {
+    if *value == [0u8; 32] {
+        return Err(format!("{} must not be zero", label));
+    }
+    if !crate::zk::merkle::is_canonical_scalar_bytes(value) {
+        return Err(format!(
+            "{} has a non-canonical encoding: {}",
+            label,
+            hex::encode(value)
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "zk")]
+fn validate_commitment_append(
+    action: &str,
+    existing: &[[u8; 32]],
+    current_count: u64,
+    additions: &[[u8; 32]],
+) -> Result<u64, String> {
+    let existing_count = u64::try_from(existing.len())
+        .map_err(|_| format!("{}: commitment count exceeds platform limits", action))?;
+    if existing_count != current_count {
+        return Err(format!(
+            "{}: commitment state is incomplete (pool count {}, loaded {})",
+            action, current_count, existing_count
+        ));
+    }
+
+    let addition_count = u64::try_from(additions.len()).map_err(|_| {
+        format!(
+            "{}: commitment append count exceeds platform limits",
+            action
+        )
+    })?;
+    let next_count = current_count
+        .checked_add(addition_count)
+        .ok_or_else(|| format!("{}: commitment counter overflow", action))?;
+    if next_count > crate::zk::TREE_CAPACITY {
+        return Err(format!(
+            "{}: commitment tree capacity {} exceeded",
+            action,
+            crate::zk::TREE_CAPACITY
+        ));
+    }
+
+    let mut seen = std::collections::HashSet::with_capacity(existing.len() + additions.len());
+    for commitment in existing {
+        validate_shielded_scalar("Stored shielded commitment", commitment)?;
+        if !seen.insert(*commitment) {
+            return Err(format!(
+                "{}: duplicate stored commitment {}",
+                action,
+                hex::encode(commitment)
+            ));
+        }
+    }
+    for commitment in additions {
+        validate_shielded_scalar("Shielded output commitment", commitment)?;
+        if !seen.insert(*commitment) {
+            return Err(format!(
+                "{}: duplicate commitment {}",
+                action,
+                hex::encode(commitment)
+            ));
+        }
+    }
+
+    Ok(next_count)
+}
+
 fn parse_shielded_note_envelope(
     data: &[u8],
     envelope_offset: usize,
@@ -209,7 +282,8 @@ impl TxProcessor {
     ///   [9..41]   = commitment (32 bytes, Poseidon hash of value||blinding)
     ///   [41..]    = Plonky3 STARK proof bytes
     /// ```
-    /// Public inputs (derived from data): canonical Goldilocks words for
+    /// Scheme 0x01 is currently rejected by the verifier. Its historical
+    /// public inputs (derived from data) are canonical Goldilocks words for
     /// [amount, commitment]
     /// accounts[0] = sender (debited)
     #[cfg(feature = "zk")]
@@ -242,6 +316,7 @@ impl TxProcessor {
 
         let mut commitment = [0u8; 32];
         commitment.copy_from_slice(&ix.data[9..41]);
+        validate_shielded_scalar("Shield: commitment", &commitment)?;
 
         self.ensure_protocol_module_not_paused(ProtocolModuleId::Shielded, "Shield")?;
 
@@ -286,58 +361,45 @@ impl TxProcessor {
             }
         }
 
-        sender_acct.spendable = sender_acct.spendable.saturating_sub(amount);
-        sender_acct.spores = sender_acct
-            .spendable
-            .saturating_add(sender_acct.staked)
-            .saturating_add(sender_acct.locked);
+        sender_acct
+            .deduct_spendable(amount)
+            .map_err(|e| format!("Shield: sender debit failed: {}", e))?;
         self.b_put_account(sender, &sender_acct)?;
 
         {
             let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(batch) = guard.as_mut() {
-                let mut pool = batch.get_shielded_pool_state()?;
-                let index = pool.commitment_count;
-                batch.insert_shielded_commitment(index, &commitment)?;
-                if let Some(payload) = note_payload.as_deref() {
-                    batch.insert_shielded_note_payload(index, payload)?;
-                }
-                pool.commitment_count += 1;
-                pool.shield_count = pool.shield_count.saturating_add(1);
-                pool.total_shielded = pool
-                    .total_shielded
-                    .checked_add(amount)
-                    .ok_or_else(|| "Shield: pool balance overflow".to_string())?;
-                let leaves = batch.get_all_shielded_commitments(pool.commitment_count)?;
-                let mut tree = crate::zk::MerkleTree::new();
-                for leaf in &leaves {
-                    tree.insert(*leaf);
-                }
-                pool.merkle_root = tree.root();
-                batch.put_shielded_pool_state(&pool)?;
-            } else {
-                let mut pool = self.state.get_shielded_pool_state()?;
-                let index = pool.commitment_count;
-                self.state.insert_shielded_commitment(index, &commitment)?;
-                if let Some(payload) = note_payload.as_deref() {
-                    self.state.insert_shielded_note_payload(index, payload)?;
-                }
-                pool.commitment_count += 1;
-                pool.shield_count = pool.shield_count.saturating_add(1);
-                pool.total_shielded = pool
-                    .total_shielded
-                    .checked_add(amount)
-                    .ok_or_else(|| "Shield: pool balance overflow".to_string())?;
-                let leaves = self
-                    .state
-                    .get_all_shielded_commitments(pool.commitment_count)?;
-                let mut tree = crate::zk::MerkleTree::new();
-                for leaf in &leaves {
-                    tree.insert(*leaf);
-                }
-                pool.merkle_root = tree.root();
-                self.state.put_shielded_pool_state(&pool)?;
+            let batch = guard
+                .as_mut()
+                .ok_or_else(|| "Shield: atomic state batch is required".to_string())?;
+            let mut pool = batch.get_shielded_pool_state()?;
+            let index = pool.commitment_count;
+            let leaves = batch.get_all_shielded_commitments(index)?;
+            let next_count = validate_commitment_append("Shield", &leaves, index, &[commitment])?;
+            let next_shield_count = pool
+                .shield_count
+                .checked_add(1)
+                .ok_or_else(|| "Shield: operation counter overflow".to_string())?;
+            let next_total = pool
+                .total_shielded
+                .checked_add(amount)
+                .ok_or_else(|| "Shield: pool balance overflow".to_string())?;
+            let mut tree = crate::zk::MerkleTree::new();
+            for leaf in &leaves {
+                tree.try_insert(*leaf)
+                    .map_err(|error| format!("Shield: {}", error))?;
             }
+            tree.try_insert(commitment)
+                .map_err(|error| format!("Shield: {}", error))?;
+
+            batch.insert_shielded_commitment(index, &commitment)?;
+            if let Some(payload) = note_payload.as_deref() {
+                batch.insert_shielded_note_payload(index, payload)?;
+            }
+            pool.commitment_count = next_count;
+            pool.shield_count = next_shield_count;
+            pool.total_shielded = next_total;
+            pool.merkle_root = tree.root();
+            batch.put_shielded_pool_state(&pool)?;
         }
 
         Ok(())
@@ -345,12 +407,10 @@ impl TxProcessor {
 
     /// System instruction type 24: Unshield withdraw (shielded → transparent).
     ///
-    /// Verifies a ZK proof that the caller owns a shielded note, marks the
-    /// note's nullifier as spent, credits the recipient, and decrements the
-    /// pool's `total_shielded` balance.
+    /// Historical unshield state transition. Scheme 0x01 is rejected because
+    /// it does not prove note ownership; no mutation is currently reachable.
     #[cfg(feature = "zk")]
     pub(super) fn system_unshield_withdraw(&self, ix: &Instruction) -> Result<(), String> {
-        use crate::zk::merkle::is_canonical_scalar_bytes;
         use crate::zk::{
             recipient_hash, recipient_preimage_from_bytes, ProofType, UnshieldAirPublicValues,
             ZkProof,
@@ -382,16 +442,13 @@ impl TxProcessor {
 
         let mut nullifier = [0u8; 32];
         nullifier.copy_from_slice(&ix.data[9..41]);
-
-        if !is_canonical_scalar_bytes(&nullifier) {
-            return Err(format!(
-                "Unshield: non-canonical nullifier encoding: {}",
-                hex::encode(nullifier)
-            ));
-        }
+        validate_shielded_scalar("Unshield: nullifier", &nullifier)?;
 
         let mut merkle_root = [0u8; 32];
         merkle_root.copy_from_slice(&ix.data[41..73]);
+        validate_shielded_scalar("Unshield: merkle root", &merkle_root)?;
+
+        self.ensure_protocol_module_not_paused(ProtocolModuleId::Shielded, "Unshield")?;
 
         let mut recipient_bytes = [0u8; 32];
         recipient_bytes.copy_from_slice(&ix.data[73..105]);
@@ -473,36 +530,35 @@ impl TxProcessor {
             }
         }
 
-        recipient_acct.spendable = recipient_acct.spendable.saturating_add(amount);
-        recipient_acct.spores = recipient_acct
-            .spendable
-            .saturating_add(recipient_acct.staked)
-            .saturating_add(recipient_acct.locked);
+        recipient_acct
+            .add_spendable(amount)
+            .map_err(|e| format!("Unshield: recipient credit failed: {}", e))?;
         self.b_put_account(recipient_pubkey, &recipient_acct)?;
 
         {
             let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(batch) = guard.as_mut() {
-                batch.mark_nullifier_spent(&nullifier)?;
-                let mut pool = batch.get_shielded_pool_state()?;
-                pool.unshield_count = pool.unshield_count.saturating_add(1);
-                pool.nullifier_count = pool.nullifier_count.saturating_add(1);
-                pool.total_shielded = pool
-                    .total_shielded
-                    .checked_sub(amount)
-                    .ok_or_else(|| "Unshield: shielded pool underflow".to_string())?;
-                batch.put_shielded_pool_state(&pool)?;
-            } else {
-                self.state.mark_nullifier_spent(&nullifier)?;
-                let mut pool = self.state.get_shielded_pool_state()?;
-                pool.unshield_count = pool.unshield_count.saturating_add(1);
-                pool.nullifier_count = pool.nullifier_count.saturating_add(1);
-                pool.total_shielded = pool
-                    .total_shielded
-                    .checked_sub(amount)
-                    .ok_or_else(|| "Unshield: shielded pool underflow".to_string())?;
-                self.state.put_shielded_pool_state(&pool)?;
-            }
+            let batch = guard
+                .as_mut()
+                .ok_or_else(|| "Unshield: atomic state batch is required".to_string())?;
+            let mut pool = batch.get_shielded_pool_state()?;
+            let next_unshield_count = pool
+                .unshield_count
+                .checked_add(1)
+                .ok_or_else(|| "Unshield: operation counter overflow".to_string())?;
+            let next_nullifier_count = pool
+                .nullifier_count
+                .checked_add(1)
+                .ok_or_else(|| "Unshield: nullifier counter overflow".to_string())?;
+            let next_total = pool
+                .total_shielded
+                .checked_sub(amount)
+                .ok_or_else(|| "Unshield: shielded pool underflow".to_string())?;
+
+            batch.mark_nullifier_spent(&nullifier)?;
+            pool.unshield_count = next_unshield_count;
+            pool.nullifier_count = next_nullifier_count;
+            pool.total_shielded = next_total;
+            batch.put_shielded_pool_state(&pool)?;
         }
 
         Ok(())
@@ -510,11 +566,10 @@ impl TxProcessor {
 
     /// System instruction type 25: Shielded transfer (shielded → shielded).
     ///
-    /// 2-in-2-out private transfer. Spends two existing notes and creates two
-    /// new commitments with zero-knowledge proof of value conservation.
+    /// Historical 2-in-2-out transfer state transition. Scheme 0x01 is rejected
+    /// because it does not constrain ownership or value conservation.
     #[cfg(feature = "zk")]
     pub(super) fn system_shielded_transfer(&self, ix: &Instruction) -> Result<(), String> {
-        use crate::zk::merkle::is_canonical_scalar_bytes;
         use crate::zk::{ProofType, TransferAirPublicValues, ZkProof};
 
         let required_len = 162;
@@ -536,23 +591,23 @@ impl TxProcessor {
         nullifier_b.copy_from_slice(&ix.data[33..65]);
 
         for (label, nul) in [("A", &nullifier_a), ("B", &nullifier_b)] {
-            if !is_canonical_scalar_bytes(nul) {
-                return Err(format!(
-                    "ShieldedTransfer: non-canonical nullifier {} encoding: {}",
-                    label,
-                    hex::encode(nul)
-                ));
-            }
+            validate_shielded_scalar(&format!("ShieldedTransfer: nullifier {}", label), nul)?;
         }
 
         let mut commitment_c = [0u8; 32];
         commitment_c.copy_from_slice(&ix.data[65..97]);
+        validate_shielded_scalar("ShieldedTransfer: commitment C", &commitment_c)?;
 
         let mut commitment_d = [0u8; 32];
         commitment_d.copy_from_slice(&ix.data[97..129]);
+        validate_shielded_scalar("ShieldedTransfer: commitment D", &commitment_d)?;
+        if commitment_c == commitment_d {
+            return Err("ShieldedTransfer: duplicate output commitments".to_string());
+        }
 
         let mut merkle_root = [0u8; 32];
         merkle_root.copy_from_slice(&ix.data[129..161]);
+        validate_shielded_scalar("ShieldedTransfer: merkle root", &merkle_root)?;
 
         let (proof_bytes, output_note_payloads) =
             parse_shielded_transfer_payload(&ix.data, &commitment_c, &commitment_d)?;
@@ -622,58 +677,54 @@ impl TxProcessor {
 
         {
             let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(batch) = guard.as_mut() {
-                batch.mark_nullifier_spent(&nullifier_a)?;
-                batch.mark_nullifier_spent(&nullifier_b)?;
-                let mut pool = batch.get_shielded_pool_state()?;
-                pool.transfer_count = pool.transfer_count.saturating_add(1);
-                pool.nullifier_count = pool.nullifier_count.saturating_add(2);
-                let idx0 = pool.commitment_count;
-                batch.insert_shielded_commitment(idx0, &commitment_c)?;
-                if let Some(payloads) = &output_note_payloads {
-                    batch.insert_shielded_note_payload(idx0, &payloads[0])?;
-                }
-                batch.insert_shielded_commitment(idx0 + 1, &commitment_d)?;
-                if let Some(payloads) = &output_note_payloads {
-                    batch.insert_shielded_note_payload(idx0 + 1, &payloads[1])?;
-                }
-                pool.commitment_count += 2;
-                let leaves = batch.get_all_shielded_commitments(pool.commitment_count)?;
-                let mut tree = crate::zk::MerkleTree::new();
-                for leaf in &leaves {
-                    tree.insert(*leaf);
-                }
-                pool.merkle_root = tree.root();
-                batch.put_shielded_pool_state(&pool)?;
-            } else {
-                self.state.mark_nullifier_spent(&nullifier_a)?;
-                self.state.mark_nullifier_spent(&nullifier_b)?;
-                let mut pool = self.state.get_shielded_pool_state()?;
-                pool.transfer_count = pool.transfer_count.saturating_add(1);
-                pool.nullifier_count = pool.nullifier_count.saturating_add(2);
-                let idx0 = pool.commitment_count;
-                self.state.insert_shielded_commitment(idx0, &commitment_c)?;
-                if let Some(payloads) = &output_note_payloads {
-                    self.state
-                        .insert_shielded_note_payload(idx0, &payloads[0])?;
-                }
-                self.state
-                    .insert_shielded_commitment(idx0 + 1, &commitment_d)?;
-                if let Some(payloads) = &output_note_payloads {
-                    self.state
-                        .insert_shielded_note_payload(idx0 + 1, &payloads[1])?;
-                }
-                pool.commitment_count += 2;
-                let leaves = self
-                    .state
-                    .get_all_shielded_commitments(pool.commitment_count)?;
-                let mut tree = crate::zk::MerkleTree::new();
-                for leaf in &leaves {
-                    tree.insert(*leaf);
-                }
-                pool.merkle_root = tree.root();
-                self.state.put_shielded_pool_state(&pool)?;
+            let batch = guard
+                .as_mut()
+                .ok_or_else(|| "ShieldedTransfer: atomic state batch is required".to_string())?;
+            let mut pool = batch.get_shielded_pool_state()?;
+            let next_transfer_count = pool
+                .transfer_count
+                .checked_add(1)
+                .ok_or_else(|| "ShieldedTransfer: operation counter overflow".to_string())?;
+            let next_nullifier_count = pool
+                .nullifier_count
+                .checked_add(2)
+                .ok_or_else(|| "ShieldedTransfer: nullifier counter overflow".to_string())?;
+            let idx0 = pool.commitment_count;
+            let leaves = batch.get_all_shielded_commitments(idx0)?;
+            let next_commitment_count = validate_commitment_append(
+                "ShieldedTransfer",
+                &leaves,
+                idx0,
+                &[commitment_c, commitment_d],
+            )?;
+            let idx1 = idx0
+                .checked_add(1)
+                .ok_or_else(|| "ShieldedTransfer: commitment index overflow".to_string())?;
+            let mut tree = crate::zk::MerkleTree::new();
+            for leaf in &leaves {
+                tree.try_insert(*leaf)
+                    .map_err(|error| format!("ShieldedTransfer: {}", error))?;
             }
+            tree.try_insert(commitment_c)
+                .map_err(|error| format!("ShieldedTransfer: {}", error))?;
+            tree.try_insert(commitment_d)
+                .map_err(|error| format!("ShieldedTransfer: {}", error))?;
+
+            batch.mark_nullifier_spent(&nullifier_a)?;
+            batch.mark_nullifier_spent(&nullifier_b)?;
+            batch.insert_shielded_commitment(idx0, &commitment_c)?;
+            if let Some(payloads) = &output_note_payloads {
+                batch.insert_shielded_note_payload(idx0, &payloads[0])?;
+            }
+            batch.insert_shielded_commitment(idx1, &commitment_d)?;
+            if let Some(payloads) = &output_note_payloads {
+                batch.insert_shielded_note_payload(idx1, &payloads[1])?;
+            }
+            pool.transfer_count = next_transfer_count;
+            pool.nullifier_count = next_nullifier_count;
+            pool.commitment_count = next_commitment_count;
+            pool.merkle_root = tree.root();
+            batch.put_shielded_pool_state(&pool)?;
         }
 
         Ok(())

@@ -853,7 +853,7 @@ test('CC-9 popup shield panel uses only canonical getShieldedPoolState', () => {
   assert.ok(!popupSrc.includes("rpc.call('getShieldedPoolStats'"), 'popup shield panel must not call removed getShieldedPoolStats');
 });
 
-test('CC-9b extension shield panel uses signed native shielded submission', () => {
+test('CC-9b extension shield panel retains builders behind a fail-closed scheme gate', () => {
   assert.ok(!popupSrc.includes("rpc.call('getShieldedNotes'"), 'popup must not call unsupported getShieldedNotes RPC');
   assert.ok(!fullSrc.includes("rpcClient.call('getShieldedNotes'"), 'full page must not call unsupported getShieldedNotes RPC');
   assert.ok(!fullSrc.includes("rpc().call('sendShieldedTransaction'"), 'full page must not call unsupported sendShieldedTransaction RPC');
@@ -862,17 +862,20 @@ test('CC-9b extension shield panel uses signed native shielded submission', () =
   assert.ok(fullSrc.includes('submitExtensionPrivateTransfer'), 'full page should submit private transfers through the signed native transaction path');
   assert.ok(fullSrc.includes('buildExtTransferInstructionData'), 'extension private transfers should include encrypted output note payloads in instruction data');
   assert.ok(fullSrc.includes('isOwnExtensionViewingKey'), 'extension private transfers should block sending to the same shielded viewing key');
+  assert.ok(fullSrc.includes('const EXT_SHIELDED_OPERATIONS_AVAILABLE = false;'), 'extension shielded operations must remain disabled');
+  assert.ok(fullSrc.includes('if (!EXT_SHIELDED_OPERATIONS_AVAILABLE) throw new Error(EXT_SHIELDED_DISABLED_MESSAGE);'), 'extension submitters must fail before parsing inputs or generating secrets');
 });
 
 test('CC-9c extension shield deposits persist encrypted note payloads on-chain', () => {
   assert.ok(fullSrc.includes('SHIELDED_NOTE_PAYLOAD_MAGIC_EXT'), 'extension shield data should include the encrypted-note envelope magic');
   assert.ok(fullSrc.includes('encrypted_note: encryptedNote'), 'extension shield deposits should include encrypted_note payload');
   assert.ok(fullSrc.includes('ephemeral_pk: ephemeralPk'), 'extension shield deposits should include ephemeral public key payload');
-  assert.ok(fullSrc.includes('syncExtensionShieldedNotesFromChain'), 'extension full page should rescan chain payloads to restore notes');
+  assert.ok(fullSrc.includes('syncExtensionShieldedNotesFromChain'), 'extension full page should retain historical note sync scaffolding');
   assert.ok(fullSrc.includes('entry?.encrypted_note || entry?.encryptedNote'), 'extension note recovery should accept snake_case and camelCase note payload fields');
   assert.ok(!fullSrc.includes('if (Array.isArray(payload))'), 'extension shielded notes should not accept unencrypted local note arrays');
   assert.ok(!popupSrc.includes('if (Array.isArray(payload))'), 'popup shielded notes should not accept unencrypted local note arrays');
-  assert.ok(fullSrc.includes("client.call('computeShieldNullifier'"), 'extension should use the core/RPC native nullifier helper');
+  assert.ok(fullSrc.includes("client.call('computeShieldNullifier'"), 'extension should retain the legacy helper for compatibility cleanup');
+  assert.ok(fullSrc.includes('if (!EXT_SHIELDED_OPERATIONS_AVAILABLE) return null;'), 'extension must stop before sending private witness material to validator RPC');
   assert.ok(fullSrc.includes("client.call('isNullifierSpent'"), 'extension should mark recovered notes spent from canonical nullifier state');
 });
 

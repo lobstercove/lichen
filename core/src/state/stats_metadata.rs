@@ -1779,7 +1779,7 @@ impl StateStore {
                 break;
             }
             if let Ok(att) = serde_json::from_slice::<crate::processor::OracleAttestation>(&value) {
-                if current_slot.saturating_sub(att.slot) <= staleness_window {
+                if att.slot <= current_slot && current_slot - att.slot <= staleness_window {
                     results.push(att);
                 }
             }

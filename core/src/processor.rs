@@ -249,9 +249,9 @@ pub const NONCE_ACCOUNT_MARKER: u8 = 0xDA;
 // scheduling group, preventing lost-update races in parallel execution.
 // Values are chosen to never collide with real versioned Lichen addresses.
 
-/// Virtual key: any TX that reads/writes the stake pool (opcodes 9, 10, 11, 26, 27, 31, 38).
+/// Virtual key: any TX that reads/writes the stake pool (opcodes 9, 10, 11, 26, 27, 31, 38, 39).
 pub const CONFLICT_KEY_STAKE_POOL: Pubkey = Pubkey([0xFE; 32]);
-/// Virtual key: any TX that reads/writes the MossStake pool (opcodes 13, 14, 15, 16).
+/// Virtual key: any TX that reads/writes the MossStake pool (opcodes 13, 14, 15, 16, 27).
 pub const CONFLICT_KEY_MOSSSTAKE_POOL: Pubkey = Pubkey([0xFD; 32]);
 /// Virtual key: any TX that allocates/reads governed proposal IDs (opcode 21).
 pub const CONFLICT_KEY_GOVERNED_PROPOSALS: Pubkey = Pubkey([0xFC; 32]);
@@ -322,8 +322,15 @@ pub const CU_DEREGISTER_VALIDATOR: u64 = 500;
 pub const ORACLE_ASSET_MIN_LEN: usize = 1;
 /// Maximum asset name length for oracle attestations.
 pub const ORACLE_ASSET_MAX_LEN: usize = 16;
-/// Oracle attestation staleness window in slots (~1 hour at 400ms/slot).
-pub const ORACLE_STALENESS_SLOTS: u64 = 9_000;
+/// Canonical precision for every native consensus-oracle quote.
+///
+/// A single precision is consensus-critical: comparing raw integers with mixed
+/// decimal scales can turn a valid median into an arbitrary price.
+pub const ORACLE_PRICE_DECIMALS: u8 = 8;
+/// Oracle attestation staleness window in slots (~5 minutes at 400ms/slot).
+/// Validators refresh unchanged prices at least once per minute, leaving a
+/// bounded operational margin while failing closed quickly enough for DeFi.
+pub const ORACLE_STALENESS_SLOTS: u64 = 750;
 
 /// Look up the compute-unit cost for a system program instruction by its type byte.
 pub fn compute_units_for_system_ix(instruction_type: u8) -> u64 {
@@ -354,6 +361,8 @@ pub fn compute_units_for_system_ix(instruction_type: u8) -> u64 {
         32 | 33 => CU_GOVERNED_PROPOSAL,
         34..=37 => CU_GOVERNANCE_ACTION,
         38 => CU_REGISTER_VALIDATOR,
+        39 => CU_STAKE,
+        40 => CU_TRANSFER_NFT,
         _ => 100,
     }
 }
@@ -389,6 +398,37 @@ pub struct OracleConsensusPrice {
     pub decimals: u8,
     pub slot: u64,
     pub attestation_count: u32,
+}
+
+/// Return true only for a strict greater-than-two-thirds active-stake quorum.
+/// Exactly two thirds is not a BFT supermajority.
+pub fn oracle_stake_quorum_reached(attested_stake: u128, total_active_stake: u128) -> bool {
+    total_active_stake > 0
+        && attested_stake
+            .checked_mul(3)
+            .is_some_and(|weighted| weighted > total_active_stake.saturating_mul(2))
+}
+
+/// Discard stale validator-weight snapshots and non-canonical decimal scales,
+/// then reweight every attestation from the current active stake pool.
+pub fn current_active_oracle_attestations(
+    pool: &crate::consensus::StakePool,
+    attestations: Vec<OracleAttestation>,
+) -> Vec<OracleAttestation> {
+    attestations
+        .into_iter()
+        .filter_map(|mut attestation| {
+            if attestation.decimals != ORACLE_PRICE_DECIMALS {
+                return None;
+            }
+            let current = pool.get_stake(&attestation.validator)?;
+            if !current.is_active || !current.meets_minimum() {
+                return None;
+            }
+            attestation.stake = current.total_stake();
+            Some(attestation)
+        })
+        .collect()
 }
 
 /// Compute the stake-weighted median price from a set of attestations.
@@ -3590,7 +3630,7 @@ mod tests {
     fn test_mint_nft_success() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
         let collection = Pubkey([62u8; 32]);
-        let token_addr = Pubkey([63u8; 32]);
+        let token_addr = crate::nft::derive_nft_token_address(&collection, 1);
 
         // Create collection first
         let r = create_test_collection(
@@ -3642,8 +3682,8 @@ mod tests {
     fn test_mint_nft_duplicate_token_id_rejected() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
         let collection = Pubkey([64u8; 32]);
-        let token1 = Pubkey([65u8; 32]);
-        let token2 = Pubkey([66u8; 32]);
+        let token1 = crate::nft::derive_nft_token_address(&collection, 1);
+        let token2 = token1;
 
         // Create collection + mint token_id=1
         create_test_collection(
@@ -3671,11 +3711,20 @@ mod tests {
         let r1 = processor.process_transaction(&tx1, &Pubkey([42u8; 32]));
         assert!(r1.success, "First mint should succeed");
 
-        // Mint with same token_id=1 but different token address
+        // Mint with the same canonical token account and token ID but a
+        // different payload so replay protection does not mask uniqueness.
+        let duplicate_data = crate::nft::MintNftData {
+            token_id: 1,
+            metadata_uri: "https://example.com/duplicate.json".to_string(),
+        };
+        let mut duplicate_instruction_data = vec![7u8];
+        duplicate_instruction_data.extend_from_slice(
+            &crate::codec::serialize_legacy_bincode(&duplicate_data, "duplicate NFT mint").unwrap(),
+        );
         let ix2 = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, collection, token2, alice],
-            data,
+            data: duplicate_instruction_data,
         };
         let tx2 = make_signed_tx(&alice_kp, ix2, genesis_hash);
         let r2 = processor.process_transaction(&tx2, &Pubkey([42u8; 32]));
@@ -3688,7 +3737,7 @@ mod tests {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
         let bob = Pubkey([67u8; 32]);
         let collection = Pubkey([68u8; 32]);
-        let token_addr = Pubkey([69u8; 32]);
+        let token_addr = crate::nft::derive_nft_token_address(&collection, 1);
 
         // Create collection + mint
         create_test_collection(
@@ -3739,7 +3788,7 @@ mod tests {
     fn test_transfer_nft_unauthorized_rejected() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
         let collection = Pubkey([70u8; 32]);
-        let token_addr = Pubkey([71u8; 32]);
+        let token_addr = crate::nft::derive_nft_token_address(&collection, 1);
         let bob = Pubkey([72u8; 32]);
         let eve_kp = Keypair::generate();
         let eve = eve_kp.pubkey();
@@ -3785,6 +3834,350 @@ mod tests {
             "Expected 'Unauthorized', got: {:?}",
             result.error
         );
+    }
+
+    #[test]
+    fn test_native_nft_approval_authorizes_once_and_clears_on_transfer() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let approved_kp = Keypair::generate();
+        let approved = approved_kp.pubkey();
+        let recipient = Pubkey([0x75; 32]);
+        let second_recipient = Pubkey([0x76; 32]);
+        let collection = Pubkey([0x73; 32]);
+        let token = crate::nft::derive_nft_token_address(&collection, 1);
+        let validator = Pubkey([42u8; 32]);
+        state
+            .put_account(&approved, &Account::new(100, approved))
+            .unwrap();
+
+        assert!(
+            create_test_collection(
+                &processor,
+                &state,
+                &alice_kp,
+                alice,
+                collection,
+                genesis_hash,
+            )
+            .success
+        );
+        let mint_data = crate::nft::MintNftData {
+            token_id: 1,
+            metadata_uri: "ipfs://approval-test".to_string(),
+        };
+        let mut data = vec![7u8];
+        data.extend_from_slice(
+            &crate::codec::serialize_legacy_bincode(&mint_data, "test NFT mint").unwrap(),
+        );
+        let mint = make_signed_tx(
+            &alice_kp,
+            Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![alice, collection, token, alice],
+                data,
+            },
+            genesis_hash,
+        );
+        assert!(processor.process_transaction(&mint, &validator).success);
+
+        let mut approval_data = vec![40u8, 1];
+        approval_data.extend_from_slice(&approved.0);
+        let approve = make_signed_tx(
+            &alice_kp,
+            Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![alice, token],
+                data: approval_data,
+            },
+            genesis_hash,
+        );
+        assert!(processor.process_transaction(&approve, &validator).success);
+        let approved_state =
+            crate::nft::decode_token_state(&state.get_account(&token).unwrap().unwrap().data)
+                .unwrap();
+        assert_eq!(approved_state.approved, Some(approved));
+
+        let transfer = make_signed_tx(
+            &approved_kp,
+            Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![approved, token, recipient],
+                data: vec![8u8],
+            },
+            genesis_hash,
+        );
+        assert!(processor.process_transaction(&transfer, &validator).success);
+        let transferred =
+            crate::nft::decode_token_state(&state.get_account(&token).unwrap().unwrap().data)
+                .unwrap();
+        assert_eq!(transferred.owner, recipient);
+        assert_eq!(transferred.approved, None);
+
+        let stale_replay = make_signed_tx(
+            &approved_kp,
+            Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![approved, token, second_recipient],
+                data: vec![8u8],
+            },
+            genesis_hash,
+        );
+        let result = processor.process_transaction(&stale_replay, &validator);
+        assert!(!result.success);
+        assert!(result.error.unwrap_or_default().contains("Unauthorized"));
+        let final_state =
+            crate::nft::decode_token_state(&state.get_account(&token).unwrap().unwrap().data)
+                .unwrap();
+        assert_eq!(final_state.owner, recipient);
+    }
+
+    fn native_nft_settlement_contract_code(
+        collection: Pubkey,
+        from: Pubkey,
+        to: Pubkey,
+        token_id: u64,
+    ) -> Vec<u8> {
+        let mut args = Vec::with_capacity(104);
+        args.extend_from_slice(&collection.0);
+        args.extend_from_slice(&from.0);
+        args.extend_from_slice(&to.0);
+        args.extend_from_slice(&token_id.to_le_bytes());
+        wat::parse_str(format!(
+            r#"(module
+                (import "env" "cross_contract_call"
+                    (func $cross_contract_call
+                        (param i32 i32 i32 i32 i32 i64 i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                (data (i32.const 64) "nft_transfer_from")
+                (data (i32.const 128) "{args}")
+                (func (export "settle") (result i32)
+                    (if (result i32)
+                        (i32.eq
+                            (call $cross_contract_call
+                                (i32.const 0)
+                                (i32.const 64)
+                                (i32.const 17)
+                                (i32.const 128)
+                                (i32.const 104)
+                                (i64.const 0)
+                                (i32.const 256)
+                                (i32.const 1))
+                            (i32.const 1))
+                        (then (i32.const 0))
+                        (else (i32.const 7))))
+            )"#,
+            args = wat_bytes(&args),
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn test_contract_settles_approved_native_nft_and_updates_owner_index_atomically() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let buyer = Pubkey([0x79; 32]);
+        let collection = Pubkey([0x77; 32]);
+        let token_id = 11;
+        let token = crate::nft::derive_nft_token_address(&collection, token_id);
+        let validator = Pubkey([42u8; 32]);
+
+        assert!(
+            create_test_collection(
+                &processor,
+                &state,
+                &alice_kp,
+                alice,
+                collection,
+                genesis_hash,
+            )
+            .success
+        );
+        let mint_data = crate::nft::MintNftData {
+            token_id,
+            metadata_uri: "ipfs://native-market-settlement".to_string(),
+        };
+        let mut mint_bytes = vec![7u8];
+        mint_bytes.extend_from_slice(
+            &crate::codec::serialize_legacy_bincode(&mint_data, "test NFT mint").unwrap(),
+        );
+        let mint = make_signed_tx(
+            &alice_kp,
+            Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![alice, collection, token, alice],
+                data: mint_bytes,
+            },
+            genesis_hash,
+        );
+        assert!(processor.process_transaction(&mint, &validator).success);
+
+        let code = native_nft_settlement_contract_code(collection, alice, buyer, token_id);
+        let market = install_test_contract_account(&state, alice, code);
+        let mut approval_data = vec![40u8, 1];
+        approval_data.extend_from_slice(&market.0);
+        let approve = make_signed_tx(
+            &alice_kp,
+            Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![alice, token],
+                data: approval_data,
+            },
+            genesis_hash,
+        );
+        assert!(processor.process_transaction(&approve, &validator).success);
+
+        let call = Instruction {
+            program_id: CONTRACT_PROGRAM_ID,
+            accounts: vec![alice, market],
+            data: crate::ContractInstruction::Call {
+                function: "settle".to_string(),
+                args: Vec::new(),
+                value: 0,
+            }
+            .serialize()
+            .unwrap(),
+        };
+        let tx = make_signed_tx(&alice_kp, call, genesis_hash);
+        let simulation = processor.simulate_transaction(&tx);
+        assert!(simulation.success, "{:?}", simulation.error);
+        let before_simulation =
+            crate::nft::decode_token_state(&state.get_account(&token).unwrap().unwrap().data)
+                .unwrap();
+        assert_eq!(before_simulation.owner, alice);
+
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(result.success, "{:?}", result.error);
+        let settled =
+            crate::nft::decode_token_state(&state.get_account(&token).unwrap().unwrap().data)
+                .unwrap();
+        assert_eq!(settled.owner, buyer);
+        assert_eq!(settled.approved, None);
+        assert!(!state
+            .get_nft_tokens_by_owner(&alice, 10)
+            .unwrap()
+            .contains(&token));
+        assert!(state
+            .get_nft_tokens_by_owner(&buyer, 10)
+            .unwrap()
+            .contains(&token));
+    }
+
+    #[test]
+    fn test_contract_can_release_native_nft_it_owns_without_second_approval() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let buyer = Pubkey([0x7A; 32]);
+        let collection = Pubkey([0x78; 32]);
+        let token_id = 12;
+        let token = crate::nft::derive_nft_token_address(&collection, token_id);
+        let validator = Pubkey([42u8; 32]);
+
+        assert!(
+            create_test_collection(
+                &processor,
+                &state,
+                &alice_kp,
+                alice,
+                collection,
+                genesis_hash,
+            )
+            .success
+        );
+        let mint_data = crate::nft::MintNftData {
+            token_id,
+            metadata_uri: "ipfs://native-auction-escrow".to_string(),
+        };
+        let mut mint_bytes = vec![7u8];
+        mint_bytes.extend_from_slice(
+            &crate::codec::serialize_legacy_bincode(&mint_data, "test NFT mint").unwrap(),
+        );
+        let mint = make_signed_tx(
+            &alice_kp,
+            Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![alice, collection, token, alice],
+                data: mint_bytes,
+            },
+            genesis_hash,
+        );
+        assert!(processor.process_transaction(&mint, &validator).success);
+
+        let placeholder = native_nft_settlement_contract_code(collection, alice, buyer, token_id);
+        let auction = install_test_contract_account(&state, alice, placeholder);
+        let replace_code = |from: Pubkey, to: Pubkey| {
+            let mut account = state.get_account(&auction).unwrap().unwrap();
+            let mut contract: crate::ContractAccount =
+                serde_json::from_slice(&account.data).unwrap();
+            contract.code = native_nft_settlement_contract_code(collection, from, to, token_id);
+            account.data = serde_json::to_vec(&contract).unwrap();
+            state.put_account(&auction, &account).unwrap();
+        };
+
+        replace_code(alice, auction);
+        let mut approval_data = vec![40u8, 1];
+        approval_data.extend_from_slice(&auction.0);
+        let approve = make_signed_tx(
+            &alice_kp,
+            Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![alice, token],
+                data: approval_data,
+            },
+            genesis_hash,
+        );
+        assert!(processor.process_transaction(&approve, &validator).success);
+
+        let escrow = make_signed_tx(
+            &alice_kp,
+            Instruction {
+                program_id: CONTRACT_PROGRAM_ID,
+                accounts: vec![alice, auction],
+                data: crate::ContractInstruction::Call {
+                    function: "settle".to_string(),
+                    args: vec![1],
+                    value: 0,
+                }
+                .serialize()
+                .unwrap(),
+            },
+            genesis_hash,
+        );
+        assert!(processor.process_transaction(&escrow, &validator).success);
+        let escrowed =
+            crate::nft::decode_token_state(&state.get_account(&token).unwrap().unwrap().data)
+                .unwrap();
+        assert_eq!(escrowed.owner, auction);
+        assert_eq!(escrowed.approved, None);
+
+        replace_code(auction, buyer);
+        let release = make_signed_tx(
+            &alice_kp,
+            Instruction {
+                program_id: CONTRACT_PROGRAM_ID,
+                accounts: vec![alice, auction],
+                data: crate::ContractInstruction::Call {
+                    function: "settle".to_string(),
+                    args: vec![2],
+                    value: 0,
+                }
+                .serialize()
+                .unwrap(),
+            },
+            genesis_hash,
+        );
+        let released = processor.process_transaction(&release, &validator);
+        assert!(released.success, "{:?}", released.error);
+        let final_state =
+            crate::nft::decode_token_state(&state.get_account(&token).unwrap().unwrap().data)
+                .unwrap();
+        assert_eq!(final_state.owner, buyer);
+        assert_eq!(final_state.approved, None);
+        assert!(!state
+            .get_nft_tokens_by_owner(&auction, 10)
+            .unwrap()
+            .contains(&token));
+        assert!(state
+            .get_nft_tokens_by_owner(&buyer, 10)
+            .unwrap()
+            .contains(&token));
     }
 
     // ====================================================================
@@ -4452,6 +4845,127 @@ mod tests {
             stake_info.amount >= amount,
             "Stake pool should reflect the staked amount"
         );
+    }
+
+    #[test]
+    fn staking_v2_records_owned_delegation_and_rejects_cross_validator_unstake() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator_a = Pubkey([42u8; 32]);
+        let validator_b = Pubkey([43u8; 32]);
+        setup_validator_in_pool(&state, validator_a);
+        setup_validator_in_pool(&state, validator_b);
+        let mut pool = state.get_stake_pool().unwrap();
+        pool.initialize_staking_v2(0, &[validator_a, validator_b])
+            .unwrap();
+        state.put_stake_pool(&pool).unwrap();
+        state
+            .put_metadata(
+                crate::consensus::STAKING_V2_ACTIVATION_SLOT_METADATA_KEY,
+                &0u64.to_le_bytes(),
+            )
+            .unwrap();
+        state
+            .put_account(&alice, &Account::new(10_000, alice))
+            .unwrap();
+
+        let amount = Account::licn_to_spores(1_000);
+        let stake_tx = make_stake_tx(&alice_kp, alice, validator_a, amount, genesis_hash);
+        let result = processor.process_transaction(&stake_tx, &validator_a);
+        assert!(result.success, "V2 delegation failed: {:?}", result.error);
+
+        let pool = state.get_stake_pool().unwrap();
+        assert_eq!(
+            pool.get_stake(&validator_a).unwrap().amount,
+            crate::consensus::MIN_VALIDATOR_STAKE,
+            "delegator funds must not become validator principal"
+        );
+        assert_eq!(
+            pool.get_delegator_stakes(&alice),
+            vec![(validator_a, amount)]
+        );
+
+        let wrong_unstake =
+            make_request_unstake_tx(&alice_kp, alice, validator_b, amount, genesis_hash);
+        let wrong_result = processor.process_transaction(&wrong_unstake, &validator_a);
+        assert!(!wrong_result.success);
+        assert!(wrong_result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Insufficient delegation"));
+        let account_after_wrong = state.get_account(&alice).unwrap().unwrap();
+        assert_eq!(account_after_wrong.staked, amount);
+        assert_eq!(account_after_wrong.locked, 0);
+
+        let correct_unstake =
+            make_request_unstake_tx(&alice_kp, alice, validator_a, amount, genesis_hash);
+        let correct_result = processor.process_transaction(&correct_unstake, &validator_a);
+        assert!(
+            correct_result.success,
+            "owned undelegation failed: {:?}",
+            correct_result.error
+        );
+        let account = state.get_account(&alice).unwrap().unwrap();
+        assert_eq!(account.staked, 0);
+        assert_eq!(account.locked, amount);
+        assert!(state
+            .get_stake_pool()
+            .unwrap()
+            .get_delegator_stakes(&alice)
+            .is_empty());
+    }
+
+    #[test]
+    fn staking_v2_validator_commission_is_authenticated_bounded_and_delayed() {
+        let (processor, state, validator_kp, validator, _treasury, genesis_hash) = setup();
+        setup_validator_in_pool(&state, validator);
+        let mut pool = state.get_stake_pool().unwrap();
+        pool.initialize_staking_v2(0, &[validator]).unwrap();
+        state.put_stake_pool(&pool).unwrap();
+        state
+            .put_metadata(
+                crate::consensus::STAKING_V2_ACTIVATION_SLOT_METADATA_KEY,
+                &0u64.to_le_bytes(),
+            )
+            .unwrap();
+
+        let commission_ix = |commission_bps: u64| Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![validator],
+            data: [vec![39u8], commission_bps.to_le_bytes().to_vec()].concat(),
+        };
+        let attacker = Keypair::generate();
+        let unauthorized = make_signed_tx(&attacker, commission_ix(600), genesis_hash);
+        let unauthorized_result = processor.process_transaction(&unauthorized, &validator);
+        assert!(!unauthorized_result.success);
+
+        let excessive_step = make_signed_tx(&validator_kp, commission_ix(700), genesis_hash);
+        let excessive_result = processor.process_transaction(&excessive_step, &validator);
+        assert!(!excessive_result.success);
+        assert!(excessive_result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("at most"));
+
+        let valid = make_signed_tx(&validator_kp, commission_ix(600), genesis_hash);
+        let valid_result = processor.process_transaction(&valid, &validator);
+        assert!(
+            valid_result.success,
+            "commission tx: {:?}",
+            valid_result.error
+        );
+        let schedule = state
+            .get_stake_pool()
+            .unwrap()
+            .staking_v2_state()
+            .unwrap()
+            .commissions
+            .get(&validator)
+            .unwrap()
+            .clone();
+        assert_eq!(schedule.current_bps, 500);
+        assert_eq!(schedule.pending.unwrap().commission_bps, 600);
     }
 
     #[test]
@@ -6661,12 +7175,12 @@ mod tests {
 
     #[cfg(feature = "zk")]
     #[test]
-    fn test_shield_rejects_invalid_proof_bytes() {
+    fn test_shield_disabled_scheme_precedes_invalid_proof_deserialization() {
         let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
 
         let mut data = vec![23u8];
         data.extend_from_slice(&100u64.to_le_bytes());
-        data.extend_from_slice(&[0xAA; 32]); // bogus commitment
+        data.extend_from_slice(&crate::zk::random_scalar_bytes());
         data.extend_from_slice(&[0xFF; 7]); // invalid proof bytes
 
         let ix = Instruction {
@@ -6681,16 +7195,20 @@ mod tests {
         let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
         assert!(!result.success, "Invalid proof bytes should fail");
         assert!(
-            result.error.as_ref().unwrap().contains("proof"),
-            "Expected proof-related error, got: {:?}",
+            result
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("proof scheme plonky3-fri-poseidon2 is disabled"),
+            "Expected disabled-scheme error, got: {:?}",
             result.error
         );
     }
 
     #[cfg(feature = "zk")]
     #[test]
-    fn test_shield_accepts_native_proof_without_verifier_keys() {
-        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+    fn test_shield_rejects_scheme_0x01_native_proof() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
         use crate::zk::{
             circuits::shield::ShieldCircuit, commitment_hash, random_scalar_bytes, Prover,
         };
@@ -6715,13 +7233,26 @@ mod tests {
         let mut tx = Transaction::new(msg);
         tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
 
+        let before_pool = state.get_shielded_pool_state().unwrap();
+        let before_balance = state.get_balance(&alice).unwrap();
         let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
-        assert!(result.success, "native STARK verifier should not need VKs");
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("proof scheme plonky3-fri-poseidon2 is disabled"));
+        assert_shielded_pool_unchanged(&state, &before_pool);
+        assert_eq!(state.get_shielded_commitment(0).unwrap(), None);
+        assert_eq!(
+            before_balance - state.get_balance(&alice).unwrap(),
+            result.fee_paid
+        );
     }
 
     #[cfg(feature = "zk")]
     #[test]
-    fn test_shield_full_e2e_with_processor() {
+    fn test_shield_with_note_payload_fails_closed_without_custody_mutation() {
         use crate::zk::{
             circuits::shield::ShieldCircuit, commitment_hash, random_scalar_bytes, Prover,
         };
@@ -6766,42 +7297,23 @@ mod tests {
         let mut tx = Transaction::new(msg);
         tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
 
-        // 4. Process transaction
+        // 4. Scheme 0x01 must fail before any custody or note mutation.
         let alice_balance_before = state.get_balance(&alice).unwrap();
+        let before_pool = state.get_shielded_pool_state().unwrap();
         let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
-        assert!(result.success, "Shield should succeed: {:?}", result.error);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("proof scheme plonky3-fri-poseidon2 is disabled"));
 
-        // 5. Verify state changes
+        // 5. Only the normal transaction fee may persist.
         let alice_balance_after = state.get_balance(&alice).unwrap();
-        // Alice should have less balance (amount + fee deducted)
-        assert!(
-            alice_balance_after < alice_balance_before,
-            "Alice balance should decrease after shield"
-        );
-        assert_eq!(
-            alice_balance_before - alice_balance_after - result.fee_paid,
-            amount,
-            "Balance decrease minus fee should equal shielded amount"
-        );
-
-        // Pool state should be updated
-        let pool = state.get_shielded_pool_state().unwrap();
-        assert_eq!(pool.commitment_count, 1);
-        assert_eq!(pool.total_shielded, amount);
-
-        // Commitment should be stored
-        let stored_commitment = state.get_shielded_commitment(0).unwrap();
-        assert_eq!(stored_commitment, Some(commitment));
-        let stored_note_payload = state.get_shielded_note_payload(0).unwrap();
-        assert_eq!(
-            stored_note_payload.as_deref(),
-            Some(note_payload.as_slice())
-        );
-
-        // Merkle root should be updated to reflect the single leaf
-        let mut expected_tree = crate::zk::MerkleTree::new();
-        expected_tree.insert(commitment);
-        assert_eq!(pool.merkle_root, expected_tree.root());
+        assert_eq!(alice_balance_before - alice_balance_after, result.fee_paid);
+        assert_shielded_pool_unchanged(&state, &before_pool);
+        assert_eq!(state.get_shielded_commitment(0).unwrap(), None);
+        assert_eq!(state.get_shielded_note_payload(0).unwrap(), None);
     }
 
     /// Renamed setup helper for shielded tests to avoid name collision
@@ -6917,7 +7429,7 @@ mod tests {
             RestrictionMode::OutgoingOnly,
         );
 
-        let commitment = [0xA7; 32];
+        let commitment = crate::zk::random_scalar_bytes();
         let tx = make_invalid_shield_tx(&alice_kp, alice, 100, commitment, genesis_hash);
         let result = processor.process_transaction(&tx, &validator);
         assert!(!result.success);
@@ -6951,7 +7463,7 @@ mod tests {
             RestrictionMode::FrozenAmount { amount: spendable },
         );
 
-        let commitment = [0xA8; 32];
+        let commitment = crate::zk::random_scalar_bytes();
         let tx = make_invalid_shield_tx(&alice_kp, alice, 100, commitment, genesis_hash);
         let result = processor.process_transaction(&tx, &validator);
         assert!(!result.success);
@@ -6981,7 +7493,7 @@ mod tests {
             RestrictionMode::ProtocolPaused,
         );
 
-        let commitment = [0xA9; 32];
+        let commitment = crate::zk::random_scalar_bytes();
         let tx = make_invalid_shield_tx(&alice_kp, alice, 100, commitment, genesis_hash);
         let result = processor.process_transaction(&tx, &validator);
         assert!(!result.success);
@@ -6993,6 +7505,45 @@ mod tests {
 
         assert_shielded_pool_unchanged(&state, &before_pool);
         assert_eq!(state.get_shielded_commitment(0).unwrap(), None);
+        let after_balance = state.get_balance(&alice).unwrap();
+        assert_eq!(before_balance - after_balance, result.fee_paid);
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_unshield_protocol_pause_rejects_exit_without_nullifier_mutation() {
+        use crate::zk::random_scalar_bytes;
+
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup_();
+        let validator = Pubkey([42u8; 32]);
+        let before_pool = state.get_shielded_pool_state().unwrap();
+        let before_balance = state.get_balance(&alice).unwrap();
+        let nullifier = random_scalar_bytes();
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::ProtocolModule(ProtocolModuleId::Shielded),
+            RestrictionMode::ProtocolPaused,
+        );
+
+        let tx = make_invalid_unshield_tx(
+            &alice_kp,
+            alice,
+            100,
+            nullifier,
+            before_pool.merkle_root,
+            genesis_hash,
+        );
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Unshield blocked by active Shielded protocol pause"));
+
+        assert!(!state.is_nullifier_spent(&nullifier).unwrap());
+        assert_shielded_pool_unchanged(&state, &before_pool);
         let after_balance = state.get_balance(&alice).unwrap();
         assert_eq!(before_balance - after_balance, result.fee_paid);
     }
@@ -7014,8 +7565,14 @@ mod tests {
             RestrictionMode::IncomingOnly,
         );
 
-        let tx =
-            make_invalid_unshield_tx(&alice_kp, alice, 100, nullifier, [0xEE; 32], genesis_hash);
+        let tx = make_invalid_unshield_tx(
+            &alice_kp,
+            alice,
+            100,
+            nullifier,
+            before_pool.merkle_root,
+            genesis_hash,
+        );
         let result = processor.process_transaction(&tx, &validator);
         assert!(!result.success);
         assert!(result
@@ -7050,8 +7607,14 @@ mod tests {
             RestrictionMode::IncomingOnly,
         );
 
-        let tx =
-            make_invalid_unshield_tx(&alice_kp, alice, 100, nullifier, [0xEF; 32], genesis_hash);
+        let tx = make_invalid_unshield_tx(
+            &alice_kp,
+            alice,
+            100,
+            nullifier,
+            before_pool.merkle_root,
+            genesis_hash,
+        );
         let result = processor.process_transaction(&tx, &validator);
         assert!(!result.success);
         assert!(result
@@ -7125,13 +7688,15 @@ mod tests {
 
     #[cfg(feature = "zk")]
     #[test]
-    fn test_shield_batch_updates_merkle_root_with_prior_batch_commitments() {
+    fn test_batched_scheme_0x01_shields_fail_without_pool_mutation() {
         use crate::zk::{
             circuits::shield::ShieldCircuit, commitment_hash, random_scalar_bytes, Prover,
         };
 
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup_();
         let validator = Pubkey([42u8; 32]);
+        let before_pool = state.get_shielded_pool_state().unwrap();
+        let before_balance = state.get_balance(&alice).unwrap();
 
         let amount_a = 100u64;
         let blinding_a = random_scalar_bytes();
@@ -7186,18 +7751,19 @@ mod tests {
         tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
 
         let result = processor.process_transaction(&tx, &validator);
-        assert!(
-            result.success,
-            "batched shield deposits should succeed: {:?}",
-            result.error
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("proof scheme plonky3-fri-poseidon2 is disabled"));
+        assert_shielded_pool_unchanged(&state, &before_pool);
+        assert_eq!(state.get_shielded_commitment(0).unwrap(), None);
+        assert_eq!(state.get_shielded_commitment(1).unwrap(), None);
+        assert_eq!(
+            before_balance - state.get_balance(&alice).unwrap(),
+            result.fee_paid
         );
-
-        let pool = state.get_shielded_pool_state().unwrap();
-        assert_eq!(pool.commitment_count, 2);
-        let mut tree = crate::zk::MerkleTree::new();
-        tree.insert(commitment_a);
-        tree.insert(commitment_b);
-        assert_eq!(pool.merkle_root, tree.root());
     }
 
     #[cfg(feature = "zk")]
@@ -7210,7 +7776,7 @@ mod tests {
         // Build valid-length unshield payload but with recipient input bound to a different account.
         let amount = 100u64;
         let nullifier = [0x11u8; 32];
-        let merkle_root = [0u8; 32];
+        let merkle_root = crate::zk::MerkleTree::empty_root();
 
         // Deliberately mismatch by hashing a different pubkey than `alice`.
         let other_pubkey = Pubkey([0x22u8; 32]);
@@ -8613,6 +9179,7 @@ mod tests {
         assert_eq!(compute_units_for_system_ix(9), CU_STAKE);
         assert_eq!(compute_units_for_system_ix(10), CU_UNSTAKE);
         assert_eq!(compute_units_for_system_ix(11), CU_CLAIM_UNSTAKE);
+        assert_eq!(compute_units_for_system_ix(39), CU_STAKE);
     }
 
     #[test]
@@ -8811,14 +9378,17 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
         setup_active_validator(&state, &alice, MIN_VALIDATOR_STAKE);
 
-        let ix = make_oracle_attestation_ix(alice, "LICN", 100, 19);
+        let ix = make_oracle_attestation_ix(alice, "LICN", 100, 7);
         let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
         let mut tx = Transaction::new(msg);
         tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
         let r = processor.process_transaction(&tx, &validator);
         assert!(!r.success);
         assert!(
-            r.error.as_ref().unwrap().contains("decimals must be"),
+            r.error
+                .as_ref()
+                .unwrap()
+                .contains("decimals must equal canonical scale 8"),
             "unexpected: {:?}",
             r.error
         );
@@ -9176,6 +9746,58 @@ mod tests {
     fn test_stake_weighted_median_empty() {
         let atts: Vec<OracleAttestation> = vec![];
         assert_eq!(compute_stake_weighted_median(&atts), 0);
+    }
+
+    #[test]
+    fn test_oracle_quorum_requires_strictly_more_than_two_thirds() {
+        let one_third = MIN_VALIDATOR_STAKE as u128;
+        assert!(!oracle_stake_quorum_reached(one_third * 2, one_third * 3));
+        assert!(oracle_stake_quorum_reached(
+            one_third * 2 + 1,
+            one_third * 3
+        ));
+        assert!(!oracle_stake_quorum_reached(0, 0));
+    }
+
+    #[test]
+    fn test_oracle_attestations_use_current_active_stake_and_canonical_decimals() {
+        let validator_a = Pubkey([1u8; 32]);
+        let validator_b = Pubkey([2u8; 32]);
+        let unknown = Pubkey([3u8; 32]);
+        let mut pool = crate::consensus::StakePool::new();
+        pool.stake(validator_a, MIN_VALIDATOR_STAKE, 0).unwrap();
+        pool.stake(validator_b, MIN_VALIDATOR_STAKE, 0).unwrap();
+
+        let filtered = current_active_oracle_attestations(
+            &pool,
+            vec![
+                OracleAttestation {
+                    validator: validator_a,
+                    price: 100,
+                    decimals: ORACLE_PRICE_DECIMALS,
+                    stake: u64::MAX,
+                    slot: 1,
+                },
+                OracleAttestation {
+                    validator: validator_b,
+                    price: 100,
+                    decimals: ORACLE_PRICE_DECIMALS - 1,
+                    stake: u64::MAX,
+                    slot: 1,
+                },
+                OracleAttestation {
+                    validator: unknown,
+                    price: 100,
+                    decimals: ORACLE_PRICE_DECIMALS,
+                    stake: u64::MAX,
+                    slot: 1,
+                },
+            ],
+        );
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].validator, validator_a);
+        assert_eq!(filtered[0].stake, MIN_VALIDATOR_STAKE);
     }
 
     // ────────────────────────────────────────────────────────────────────────

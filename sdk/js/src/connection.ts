@@ -102,6 +102,82 @@ export interface Validator {
   vesting_status?: string;
   earned_amount?: number;
   graduation_slot?: number | null;
+  commission_rate?: number;
+  pending_commission_rate?: number | null;
+  pending_commission_activation_epoch?: number | null;
+  staking_v2_active?: boolean;
+  staking_v2_epoch_active?: boolean;
+  self_bond?: number;
+  delegated_stake?: number;
+  effective_stake?: number;
+  epoch_consensus_power?: number;
+  network_saturation_cap_bps?: number;
+  effective_stake_limit?: number;
+  saturation_usage_bps?: number;
+  delegation_capacity_remaining?: number;
+}
+
+export interface LichenMarketStats {
+  listing_count: number;
+  listing_count_exact: string;
+  sale_count: number;
+  sale_count_exact: string;
+  native_sale_volume: number;
+  native_sale_volume_raw_exact: string;
+  legacy_mixed_sale_volume: number;
+  legacy_mixed_sale_volume_raw_exact: string;
+  metrics_version: number;
+  migration_locked: boolean;
+  migration_expected_token_rows: number;
+  migration_migrated_token_rows: number;
+  accounting_ready: boolean;
+  paused: boolean;
+}
+
+export interface LichenMarketTokenStats {
+  payment_token: string;
+  sale_count: number;
+  sale_count_exact: string;
+  sale_volume: number;
+  sale_volume_raw_exact: string;
+  realized_fees: number;
+  realized_fees_raw_exact: string;
+  withdrawable_fees: number;
+  withdrawable_fees_raw_exact: string;
+}
+
+export interface StakingDelegation {
+  validator: string;
+  amount: number;
+}
+
+export interface PendingUnstake {
+  validator: string;
+  amount: number;
+  unlock_slot: number;
+  remaining_slots: number;
+}
+
+export interface StakingStatus {
+  is_validator: boolean;
+  total_staked: number;
+  owned_stake_total: number;
+  self_bond: number;
+  incoming_delegated_stake: number;
+  effective_validator_stake: number;
+  direct_delegated_stake: number;
+  direct_delegations: StakingDelegation[];
+  moss_st_licn: number;
+  moss_value_licn: number;
+  pending_unstake_total: number;
+  pending_unstakes: PendingUnstake[];
+  status: string;
+  staking_v2_active: boolean;
+  effective_bonded_stake: number;
+  target_bonded_stake: number;
+  bonded_ratio_bps: number;
+  target_bonded_ratio_bps: number;
+  active_epoch_security_budget: number;
 }
 
 /**
@@ -578,7 +654,7 @@ export class Connection {
   /**
    * Get staking status
    */
-  async getStakingStatus(pubkey: PublicKey): Promise<any> {
+  async getStakingStatus(pubkey: PublicKey): Promise<StakingStatus> {
     return this.rpc('getStakingStatus', [pubkey.toBase58()]);
   }
 
@@ -896,6 +972,30 @@ export class Connection {
    */
   async getSporePayStats(): Promise<any> {
     return this.rpc('getSporePayStats');
+  }
+
+  /**
+   * Get exact SporePump launchpad accounting statistics.
+   */
+  async getSporePumpStats(): Promise<any> {
+    return this.rpc('getSporePumpStats');
+  }
+
+  /**
+   * Get exact LichenMarket aggregate accounting and migration readiness.
+   */
+  async getLichenMarketStats(): Promise<LichenMarketStats> {
+    return this.rpc('getLichenMarketStats');
+  }
+
+  /**
+   * Get exact lifetime and withdrawable accounting for one marketplace token.
+   */
+  async getLichenMarketTokenStats(
+    paymentToken: PublicKey | string,
+  ): Promise<LichenMarketTokenStats> {
+    const token = typeof paymentToken === 'string' ? paymentToken : paymentToken.toBase58();
+    return this.rpc('getLichenMarketTokenStats', [token]);
   }
 
   /**

@@ -576,6 +576,7 @@
     {
       "name": "update_mark_price_from_oracle",
       "opcode": 30,
+      "description": "Permissionless crank for the governance-bound pair market. Direct markets use assets such as wSOL; LICN-quoted markets use wSOL/LICN. The contract rejects a caller-supplied market that differs from pair configuration and preserves the oldest source quote slot.",
       "params": [
         {
           "name": "caller",
@@ -724,6 +725,226 @@
           0
         ]
       }
+    },
+    {
+      "name": "set_oracle_market",
+      "opcode": 36,
+      "description": "Admin/governance binding between a margin pair and its canonical oracle basis, for example wSOL or wSOL/LICN.",
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "pair_id",
+          "type": "u64"
+        },
+        {
+          "name": "market",
+          "type": "bytes"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "activate_funding_v2",
+      "opcode": 37,
+      "description": "One-time governance activation for bounded, pool-backed lazy funding settlement.",
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "settle_position_funding",
+      "opcode": 38,
+      "description": "Permissionless O(1) settlement of one position. Success return_data is collected, credited, remaining debt, and remaining user claim as four u64 LE values.",
+      "params": [
+        {
+          "name": "position_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "claim_funding",
+      "opcode": 39,
+      "description": "Withdraw the pool-backed portion of the caller's settled funding claim; unfunded claims remain recorded.",
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_funding_state",
+      "opcode": 40,
+      "description": "Returns enabled, user claim, funding-pool assets, total claims, and cumulative payer-debt write-offs as five u64 LE values.",
+      "params": [
+        {
+          "name": "user",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_value"
+      }
+    },
+    {
+      "name": "migrate_funding_v2_position",
+      "opcode": 41,
+      "description": "During the governance-locked migration phase, permissionlessly and idempotently register one legacy open position in its pair's V2 long/short size ledger. Governance exclusively controls final activation.",
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "position_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "finalize_funding_v2_migration",
+      "opcode": 42,
+      "description": "Seal the operator-verified legacy open-position count before one-time funding V2 activation.",
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "expected_open_positions",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_bad_debt",
+      "opcode": 43,
+      "description": "Returns cumulative realized loss that exceeded collectible position collateral. This deficit is not counted as insurance assets.",
+      "params": [],
+      "result_semantics": {
+        "kind": "return_value"
+      }
+    },
+    {
+      "name": "migrate_cross_v2_position",
+      "opcode": 44,
+      "description": "During the governance-locked migration phase, permissionlessly and idempotently migrate one legacy open cross position from per-position margin into its bounded shared lUSD account without changing total escrow. Governance exclusively controls final activation.",
+      "params": [
+        { "name": "caller", "type": "Pubkey" },
+        { "name": "position_id", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "finalize_cross_v2_migration",
+      "opcode": 45,
+      "description": "Seal the exact operator-verified count of legacy open cross positions before activation.",
+      "params": [
+        { "name": "caller", "type": "Pubkey" },
+        { "name": "expected_open_cross", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "activate_cross_v2",
+      "opcode": 46,
+      "description": "One-time governance activation of bounded shared-collateral cross margin after funding V2 and any required migration.",
+      "params": [{ "name": "caller", "type": "Pubkey" }],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "deposit_cross_collateral",
+      "opcode": 47,
+      "description": "Deposit approved lUSD into the caller's shared cross account after settling active-position funding.",
+      "params": [
+        { "name": "caller", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "withdraw_cross_collateral",
+      "opcode": 48,
+      "description": "Withdraw real shared collateral only when fresh portfolio equity remains above the weighted initial-margin requirement.",
+      "params": [
+        { "name": "caller", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "get_cross_account",
+      "opcode": 49,
+      "description": "Returns nine u64 LE values: shared balance, active positions, equity, notional, weighted initial requirement, weighted maintenance requirement, outstanding funding debt, negative-equity deficit, and status (0 valid).",
+      "params": [{ "name": "user", "type": "Pubkey" }],
+      "result_semantics": { "kind": "return_value" }
+    },
+    {
+      "name": "finalize_and_activate_margin_v2",
+      "opcode": 50,
+      "description": "Atomically seal exact Funding V2 and Cross V2 migration counts and activate both engines at one paused governance boundary. Existing networks cannot use the separate activation paths.",
+      "params": [
+        { "name": "caller", "type": "Pubkey" },
+        { "name": "expected_open_positions", "type": "u64" },
+        { "name": "expected_open_cross", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "begin_margin_v2_migration",
+      "opcode": 51,
+      "description": "Governance-only protocol boundary that pauses margin and freezes every user position mutation before a legacy migration manifest is captured. The lock remains through post-activation verification.",
+      "params": [{ "name": "caller", "type": "Pubkey" }],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "complete_margin_v2_migration",
+      "opcode": 52,
+      "description": "After post-activation parity verification, atomically clear the migration lock and reopen margin trading. Governance only; both V2 engines and both finalized manifests are required.",
+      "params": [{ "name": "caller", "type": "Pubkey" }],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
     }
   ]
 }

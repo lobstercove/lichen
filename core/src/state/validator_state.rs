@@ -1,5 +1,4 @@
 use super::*;
-use crate::codec::{deserialize_legacy_bincode, serialize_legacy_bincode};
 
 impl StateStore {
     /// Store validator info
@@ -274,7 +273,7 @@ impl StateStore {
             .ok_or_else(|| "Stake pool CF not found".to_string())?;
 
         match self.db.get_cf(&cf, b"pool") {
-            Ok(Some(data)) => deserialize_legacy_bincode(&data, "stake pool"),
+            Ok(Some(data)) => crate::consensus::StakePool::from_storage_bytes(&data),
             Ok(None) => Ok(crate::consensus::StakePool::new()),
             Err(e) => Err(format!("Database error: {}", e)),
         }
@@ -288,7 +287,7 @@ impl StateStore {
             .cf_handle(CF_STAKE_POOL)
             .ok_or_else(|| "Stake pool CF not found".to_string())?;
 
-        let data = serialize_legacy_bincode(pool, "stake pool")?;
+        let data = pool.storage_bytes()?;
 
         let mut batch = rocksdb::WriteBatch::default();
         batch.put_cf(&cf, b"pool", data);

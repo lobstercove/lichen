@@ -10,16 +10,18 @@ pub(super) async fn handle_stake_add(
     client: &RpcClient,
     keypair_mgr: &KeypairManager,
     amount: u64,
+    validator: Option<String>,
     keypair: Option<PathBuf>,
 ) -> Result<()> {
-    show_stake_add(client, keypair_mgr, amount, keypair).await
+    show_stake_add(client, keypair_mgr, amount, validator, keypair).await
 }
 
 pub(super) async fn handle_stake_remove(
     client: &RpcClient,
     keypair_mgr: &KeypairManager,
     amount: u64,
+    validator: Option<String>,
     keypair: Option<PathBuf>,
 ) -> Result<()> {
-    show_stake_remove(client, keypair_mgr, amount, keypair).await
+    show_stake_remove(client, keypair_mgr, amount, validator, keypair).await
 }

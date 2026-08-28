@@ -1789,14 +1789,14 @@ nssm remove LichenValidator confirm</code></pre>
             <!-- ========== 7d. Shielded Runtime ========== -->
             <h2 id="shielded-runtime">Shielded Runtime</h2>
 
-            <p>The live shielded verifier consumes native Plonky3 proof envelopes directly. Validators do not load
-                proving-key or verification-key bundles at startup, and no shared <code>zk/</code> cache is required
-                for shielded verification.
+            <p>The current shielded verifier rejects every legacy scheme 0x01 proof because that scheme did not
+                constrain private witnesses. Validators do not provide an active shielded proof service.
             </p>
 
-            <p>Operationally, this means a validator installation only needs the standard binaries, contract artifacts,
-                and state/log directories. The shielded pool RPC surface now reports the active scheme via
-                <code>zkScheme</code> / <code>zk_scheme</code> instead of publishing verification-key hashes.
+            <p>The shielded pool RPC surface retains <code>zkScheme</code> / <code>zk_scheme</code> as historical format
+                metadata and also reports <code>proofAcceptanceEnabled: false</code>,
+                <code>operationsAvailable: false</code>, and <code>disabled_insecure_verifier</code>. Operators must
+                not interpret the scheme identifier as activation.
             </p>
 
             <!-- ========== 8. TROUBLESHOOTING ========== -->

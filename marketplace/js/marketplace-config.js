@@ -14,6 +14,7 @@
     window.lichenMarketConfig = {
         rpcUrl: config.rpc,
         wsUrl: config.ws,
+        mossGatewayUrl: config.moss,
         network: currentNetwork,
         networks: LICHEN_CONFIG.networks,
         slotDurationMs: config.slotDurationMs || 400,
@@ -29,6 +30,14 @@
 
     window.getMarketRpcUrl = function () {
         return window.lichenMarketConfig.rpcUrl;
+    };
+
+    window.resolveMossUri = function (uri) {
+        var value = String(uri || '').trim();
+        if (value.indexOf('moss://') !== 0) return value;
+        var hash = value.slice('moss://'.length);
+        if (!/^[1-9A-HJ-NP-Za-km-z]{32,64}$/.test(hash)) return '';
+        return window.lichenMarketConfig.mossGatewayUrl.replace(/\/$/, '') + '/moss/' + hash;
     };
 
     window.getTrustedMarketNetwork = function () {

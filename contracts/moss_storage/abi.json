@@ -37,6 +37,7 @@
     {
       "name": "confirm_storage",
       "opcode": 1,
+      "description": "Confirms a live assignment at the provider's snapshotted price. Pricing-v2 confirmations require collateral covering capacity plus 100% of remaining reward obligations; code 9 means insufficient collateral and code 12 means this provider previously failed the same assignment.",
       "params": [
         {
           "name": "provider_ptr",
@@ -279,6 +280,7 @@
     {
       "name": "slash_provider",
       "opcode": 14,
+      "description": "Finalizes an expired unanswered challenge atomically. Pricing-v2 failures stop reward accrual at challenge issuance, terminate the assignment, reopen its replica slot, release future obligations, and distribute slashed collateral 50% to the owner, 25% to the challenger, and 25% to treasury.",
       "params": [
         {
           "name": "data_hash_ptr",
@@ -317,6 +319,321 @@
         },
         {
           "name": "token_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "claim_unpaid_payout",
+      "opcode": 17,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_unpaid_payout",
+      "opcode": 18,
+      "params": [
+        {
+          "name": "recipient_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "respond_challenge_merkle",
+      "opcode": 19,
+      "params": [
+        {
+          "name": "provider_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "data_hash_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "chunk_ptr",
+          "type": "bytes",
+          "length_field": "chunk_len"
+        },
+        {
+          "name": "chunk_len",
+          "type": "u32"
+        },
+        {
+          "name": "proof_ptr",
+          "type": "bytes",
+          "length_field": "proof_len"
+        },
+        {
+          "name": "proof_len",
+          "type": "u32"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "close_storage",
+      "opcode": 20,
+      "params": [
+        {
+          "name": "owner_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "data_hash_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "is_storage_closed",
+      "opcode": 21,
+      "params": [
+        {
+          "name": "data_hash_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_value"
+      }
+    },
+    {
+      "name": "deactivate_provider",
+      "opcode": 22,
+      "params": [
+        {
+          "name": "provider_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "withdraw_collateral",
+      "opcode": 23,
+      "params": [
+        {
+          "name": "provider_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "claim_storage_rewards_page",
+      "opcode": 24,
+      "params": [
+        {
+          "name": "provider_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "cursor",
+          "type": "u64"
+        },
+        {
+          "name": "max_entries",
+          "type": "u32"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_provider_reward_entry_count",
+      "opcode": 25,
+      "params": [
+        {
+          "name": "provider_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_value"
+      }
+    },
+    {
+      "name": "store_data_v2",
+      "opcode": 26,
+      "params": [
+        {
+          "name": "owner_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "data_hash_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "size",
+          "type": "u64"
+        },
+        {
+          "name": "replication_factor",
+          "type": "u8"
+        },
+        {
+          "name": "duration_slots",
+          "type": "u64"
+        },
+        {
+          "name": "max_price_per_byte_per_slot",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_storage_max_price",
+      "opcode": 27,
+      "params": [
+        {
+          "name": "data_hash_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_value"
+      }
+    },
+    {
+      "name": "get_confirmed_storage_price",
+      "opcode": 28,
+      "params": [
+        {
+          "name": "data_hash_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "provider_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_value"
+      }
+    },
+    {
+      "name": "get_challenge",
+      "opcode": 29,
+      "params": [
+        {
+          "name": "data_hash_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "provider_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "quote_storage_v2",
+      "opcode": 30,
+      "params": [
+        {
+          "name": "size",
+          "type": "u64"
+        },
+        {
+          "name": "replication_factor",
+          "type": "u8"
+        },
+        {
+          "name": "duration_slots",
+          "type": "u64"
+        },
+        {
+          "name": "max_price_per_byte_per_slot",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_value"
+      }
+    },
+    {
+      "name": "get_storage_pricing_v2_config",
+      "opcode": 31,
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_provider_info",
+      "opcode": 32,
+      "description": "Returns 65 bytes: capacity u64, used u64, stored_count u64, active u8, registered_slot u64, collateral u64, price u64, remaining_obligations u64, required_collateral u64; integers are little-endian.",
+      "params": [
+        {
+          "name": "provider_ptr",
           "type": "Pubkey"
         }
       ],

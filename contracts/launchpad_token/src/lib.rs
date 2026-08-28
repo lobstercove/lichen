@@ -199,6 +199,45 @@ pub extern "C" fn mint_migration_inventory(to_ptr: *const u8, amount: u64) -> u3
     }
 }
 
+/// Burn concentrated-liquidity rounding remainder before SporePump commits
+/// graduation. Only the bound SporePump program can burn its own migration
+/// inventory, and the tracked inventory is reduced exactly.
+#[no_mangle]
+pub extern "C" fn burn_migration_inventory(amount: u64) -> u32 {
+    let Some(sporepump) = read_stored_address(SPOREPUMP_KEY) else {
+        return 1;
+    };
+    if get_caller().0 != sporepump {
+        return 200;
+    }
+    let inventory = load_u64(MIGRATION_INVENTORY_KEY);
+    if amount == 0 || amount > inventory {
+        return 2;
+    }
+    let mut graduated = token();
+    match graduated.burn(Address(sporepump), amount) {
+        Ok(()) => {
+            save_u64(MIGRATION_INVENTORY_KEY, inventory - amount);
+            log_info("Unused launchpad migration inventory burned");
+            0
+        }
+        Err(error) => map_contract_error(error),
+    }
+}
+
+/// holder obligations + claimed supply + live migration inventory + total
+/// minted supply, all u64 little-endian.
+#[no_mangle]
+pub extern "C" fn get_migration_supply() -> u32 {
+    let mut result = Vec::with_capacity(32);
+    result.extend_from_slice(&u64_to_bytes(load_u64(HOLDER_OBLIGATIONS_KEY)));
+    result.extend_from_slice(&u64_to_bytes(load_u64(CLAIMED_SUPPLY_KEY)));
+    result.extend_from_slice(&u64_to_bytes(load_u64(MIGRATION_INVENTORY_KEY)));
+    result.extend_from_slice(&u64_to_bytes(token().get_total_supply()));
+    set_return_data(&result);
+    0
+}
+
 /// Claim a frozen SporePump holder balance exactly once.
 #[no_mangle]
 pub extern "C" fn claim(holder_ptr: *const u8) -> u64 {
@@ -433,6 +472,28 @@ mod tests {
         assert_eq!(mint_migration_inventory(pool_owner.as_ptr(), 1), 2);
         assert_eq!(balance_of(pool_owner.as_ptr()), 400);
         assert_eq!(total_supply(), 400);
+
+    }
+
+    #[test]
+    fn migration_inventory_remainder_burn_is_authorized_exact_and_reported() {
+        let (sporepump, _) = initialize_test_token(600, 1_000);
+        test_mock::set_caller(sporepump);
+        assert_eq!(mint_migration_inventory(sporepump.as_ptr(), 400), 0);
+
+        test_mock::set_caller(address(8));
+        assert_eq!(burn_migration_inventory(1), 200);
+        test_mock::set_caller(sporepump);
+        assert_eq!(burn_migration_inventory(401), 2);
+        assert_eq!(burn_migration_inventory(25), 0);
+        assert_eq!(balance_of(sporepump.as_ptr()), 375);
+        assert_eq!(total_supply(), 375);
+        assert_eq!(get_migration_supply(), 0);
+        let status = test_mock::get_return_data();
+        assert_eq!(bytes_to_u64(&status[0..8]), 600);
+        assert_eq!(bytes_to_u64(&status[8..16]), 0);
+        assert_eq!(bytes_to_u64(&status[16..24]), 375);
+        assert_eq!(bytes_to_u64(&status[24..32]), 375);
     }
 
     #[test]

@@ -121,5 +121,10 @@ assert.strictEqual(
     700,
     'dashboard total stake must include validator and Moss stake'
 );
+assert.strictEqual(
+    vm.runInContext('calculateDashboardTotalStakeSpores([{ stake: 300, staking_v2_active: true }, { stake: 400, staking_v2_active: true }], { total_licn_staked: 400 })', context),
+    700,
+    'dashboard total stake must not double count MossStake backing after Staking V2 activation'
+);
 
 console.log('Explorer live cadence/TPS: direct WS rendering, normalized windows, and reset gates passed');

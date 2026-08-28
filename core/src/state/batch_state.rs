@@ -655,7 +655,7 @@ impl StateBatch {
             .db
             .cf_handle(CF_STAKE_POOL)
             .ok_or_else(|| "Stake pool CF not found".to_string())?;
-        let data = serialize_legacy_bincode(pool, "stake pool")?;
+        let data = pool.storage_bytes()?;
         self.batch.put_cf(&cf, b"pool", &data);
         self.stake_pool_overlay = Some(pool.clone());
         Ok(())
@@ -670,7 +670,7 @@ impl StateBatch {
             .cf_handle(CF_STAKE_POOL)
             .ok_or_else(|| "Stake pool CF not found".to_string())?;
         match self.db.get_cf(&cf, b"pool") {
-            Ok(Some(data)) => deserialize_legacy_bincode(&data, "stake pool"),
+            Ok(Some(data)) => crate::consensus::StakePool::from_storage_bytes(&data),
             Ok(None) => Ok(crate::consensus::StakePool::new()),
             Err(e) => Err(format!("Database error: {}", e)),
         }
@@ -1792,11 +1792,24 @@ impl StateBatch {
 
     /// Collect all commitment leaves [0..count), including any uncommitted inserts.
     pub fn get_all_shielded_commitments(&self, count: u64) -> Result<Vec<[u8; 32]>, String> {
+        if count > crate::zk::TREE_CAPACITY {
+            return Err(format!(
+                "Shielded commitment count {} exceeds tree capacity {}",
+                count,
+                crate::zk::TREE_CAPACITY
+            ));
+        }
         let cf = self
             .db
             .cf_handle(CF_SHIELDED_COMMITMENTS)
             .ok_or_else(|| "Shielded commitments CF not found".to_string())?;
-        let mut out = Vec::with_capacity(count as usize);
+        let capacity = usize::try_from(count).map_err(|_| {
+            format!(
+                "Shielded commitment count {} exceeds platform limits",
+                count
+            )
+        })?;
+        let mut out = Vec::with_capacity(capacity);
 
         for i in 0..count {
             if let Some(commitment) = self.shielded_commitment_overlay.get(&i) {
@@ -1816,7 +1829,12 @@ impl StateBatch {
                         i
                     ));
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    return Err(format!(
+                        "Missing shielded commitment at index {} (expected {})",
+                        i, count
+                    ));
+                }
                 Err(e) => {
                     return Err(format!(
                         "Database error loading shielded commitment {}: {}",

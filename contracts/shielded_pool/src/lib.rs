@@ -1,1445 +1,176 @@
-//! Lichen Shielded Pool Contract
+//! Compatibility ABI for Lichen's native shielded protocol module.
 //!
-//! On-chain contract managing the shielded transaction pool.
-//! Stores the commitment Merkle tree root and spent nullifier set while
-//! trusting the native processor to verify the incoming proof envelope before
-//! applying state transitions here.
+//! The native transaction processor is the only authority for proof
+//! verification, custody, commitments, nullifiers, and Merkle state:
+//! - system opcode 23: Shield
+//! - system opcode 24: Unshield
+//! - system opcode 25: ShieldedTransfer
 //!
-//! Entry points:
-//! - shield(amount, commitment, proof) — deposit into shielded pool
-//! - unshield(nullifier, amount, recipient, proof) — withdraw from pool
-//! - transfer(nullifiers[], commitments[], proof) — private transfer
-//! - get_merkle_root() — read current root for wallet proof generation
-//! - get_pool_stats() — read pool statistics
+//! Canonical reads are served by the shielded RPC endpoints. Direct WASM
+//! mutations and reads return [`ERR_NATIVE_ONLY`] and never create parallel
+//! contract storage.
 
 #![cfg_attr(target_arch = "wasm32", no_std)]
 #![cfg_attr(target_arch = "wasm32", no_main)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
-#![allow(dead_code)]
-#![allow(unused_imports)]
 
-extern crate alloc;
+use lichen_sdk::{get_caller, log_info, set_return_data, storage_get, storage_set};
 
-use alloc::collections::BTreeSet;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+const OWNER_KEY: &[u8] = b"shielded_compat_owner";
+const EXECUTION_MODEL: &[u8] =
+    b"native-system-opcodes:23,24,25;queries:canonical-shielded-rpc;wasm-state:none";
 
-// ===== Storage Layout =====
-// merkle_root      -> [u8; 32]       Current commitment tree root
-// merkle_count     -> u64            Number of leaves inserted
-// nullifier:{hex}  -> u8             Spent nullifier set (1 = spent)
-// pool_balance     -> u64            Total shielded LICN (spores)
+/// Direct callers must use the native protocol or canonical RPC surface.
+pub const ERR_NATIVE_ONLY: u32 = 40;
 
-/// AUDIT-FIX MED-01: Hard cap on commitment count to prevent unbounded state growth.
-/// A proper incremental Merkle tree will replace this flat Vec in a future release.
-const MAX_COMMITMENTS: u64 = 100_000;
-const MAX_REQUEST_BYTES: usize = 5 * 1024 * 1024;
-const MAX_PROOF_BYTES: usize = MAX_REQUEST_BYTES;
-const MAX_ENCRYPTED_NOTE_BYTES: usize = 64 * 1024;
-const MAX_TRANSFER_NULLIFIERS: usize = 64;
-const MAX_TRANSFER_OUTPUTS: usize = 64;
-
-/// Shielded pool state (persisted in contract storage)
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ShieldedPoolState {
-    /// Current Merkle tree root of all note commitments
-    pub merkle_root: [u8; 32],
-    /// Number of commitments inserted
-    pub commitment_count: u64,
-    /// Total shielded balance in spores
-    pub pool_balance: u64,
-    /// Spent nullifier set
-    pub spent_nullifiers: BTreeSet<[u8; 32]>,
-    /// All commitments (for wallet sync)
-    pub commitments: Vec<CommitmentEntry>,
+fn read_address32(ptr: *const u8) -> Option<[u8; 32]> {
+    if ptr.is_null() {
+        return None;
+    }
+    let mut address = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(ptr, address.as_mut_ptr(), 32);
+    }
+    Some(address)
 }
 
-/// A commitment entry in the Merkle tree
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CommitmentEntry {
-    /// The commitment hash (Merkle tree leaf)
-    pub commitment: [u8; 32],
-    /// Block slot when this commitment was inserted
-    pub slot: u64,
-    /// Encrypted note data (for recipient to trial-decrypt)
-    pub encrypted_note: Vec<u8>,
-    /// Ephemeral public key for ECDH
-    pub ephemeral_pk: [u8; 32],
+/// Initialize the compatibility marker once. This creates no pool state.
+#[no_mangle]
+pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
+    if storage_get(OWNER_KEY).is_some() {
+        return 3;
+    }
+    let admin = match read_address32(admin_ptr) {
+        Some(address) => address,
+        None => return 98,
+    };
+    if get_caller().0 != admin {
+        return 1;
+    }
+    if admin.iter().all(|byte| *byte == 0) {
+        return 2;
+    }
+    storage_set(OWNER_KEY, &admin);
+    log_info("Shielded compatibility marker initialized; native module is authoritative");
+    0
 }
 
-/// Shield request: deposit transparent LICN into the shielded pool
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ShieldRequest {
-    /// Amount to shield (in spores)
-    pub amount: u64,
-    /// Pedersen commitment to the note value
-    pub commitment: [u8; 32],
-    /// ZK proof that commitment is well-formed and matches amount
-    pub proof: Vec<u8>,
-    /// Encrypted note for the recipient
-    pub encrypted_note: Vec<u8>,
-    /// Ephemeral public key
-    pub ephemeral_pk: [u8; 32],
+/// Native protocol restrictions, not this compatibility contract, control pause state.
+#[no_mangle]
+pub extern "C" fn pause() -> u32 {
+    native_only("Shielded pause is native-governance-only")
 }
 
-/// Unshield request: withdraw from shielded pool to transparent address
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct UnshieldRequest {
-    /// Nullifier proving note ownership (prevents double-spend)
-    pub nullifier: [u8; 32],
-    /// Amount to withdraw (in spores)
-    pub amount: u64,
-    /// Recipient's transparent address
-    pub recipient: [u8; 32],
-    /// Merkle root the proof was generated against
-    pub merkle_root: [u8; 32],
-    /// ZK proof of valid unshield
-    pub proof: Vec<u8>,
+/// Native protocol restrictions, not this compatibility contract, control pause state.
+#[no_mangle]
+pub extern "C" fn unpause() -> u32 {
+    native_only("Shielded unpause is native-governance-only")
 }
 
-/// Shielded transfer request: spend input notes, create output notes
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TransferRequest {
-    /// Nullifiers for spent input notes
-    pub nullifiers: Vec<[u8; 32]>,
-    /// New output commitments
-    pub output_commitments: Vec<OutputCommitment>,
-    /// Merkle root the proof was generated against
-    pub merkle_root: [u8; 32],
-    /// ZK proof of valid transfer (value conservation + ownership)
-    pub proof: Vec<u8>,
+/// Use JSON-RPC `getShieldedPoolState`.
+#[no_mangle]
+pub extern "C" fn get_pool_stats() -> u32 {
+    native_only("Use canonical RPC getShieldedPoolState")
 }
 
-/// An output commitment with encrypted note
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct OutputCommitment {
-    /// Pedersen commitment hash
-    pub commitment: [u8; 32],
-    /// Encrypted note (for recipient)
-    pub encrypted_note: Vec<u8>,
-    /// Ephemeral public key for ECDH
-    pub ephemeral_pk: [u8; 32],
+/// Use JSON-RPC `getShieldedMerkleRoot`.
+#[no_mangle]
+pub extern "C" fn get_merkle_root() -> u32 {
+    native_only("Use canonical RPC getShieldedMerkleRoot")
 }
 
-/// Pool statistics (public, readable by anyone)
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PoolStats {
-    /// Current Merkle root
-    pub merkle_root: String,
-    /// Total commitments in the tree
-    pub commitment_count: u64,
-    /// Total shielded balance in spores
-    pub pool_balance: u64,
-    /// Pool balance in LICN
-    pub pool_balance_licn: f64,
-    /// Number of spent nullifiers
-    pub nullifier_count: u64,
+/// Use JSON-RPC `isNullifierSpent`.
+#[no_mangle]
+pub extern "C" fn check_nullifier(_nullifier_ptr: *const u8) -> u32 {
+    native_only("Use canonical RPC isNullifierSpent")
 }
 
-/// Contract error types
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum ShieldedPoolError {
-    InvalidProof(String),
-    NullifierAlreadySpent(String),
-    MerkleRootMismatch,
-    InsufficientBalance,
-    InvalidCommitment,
-    InvalidRequest(String),
-    PoolOverflow,
-    /// AUDIT-FIX MED-01: Commitment vector reached its cap
-    CommitmentsFull,
+/// Use JSON-RPC `getShieldedCommitments`.
+#[no_mangle]
+pub extern "C" fn get_commitments(_from_index: u64) -> u32 {
+    native_only("Use canonical RPC getShieldedCommitments")
 }
 
-impl core::fmt::Display for ShieldedPoolError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::InvalidProof(msg) => write!(f, "invalid proof: {}", msg),
-            Self::NullifierAlreadySpent(n) => write!(f, "nullifier already spent: {}", n),
-            Self::MerkleRootMismatch => write!(f, "merkle root does not match current state"),
-            Self::InsufficientBalance => write!(f, "insufficient shielded pool balance"),
-            Self::InvalidCommitment => write!(f, "invalid commitment (zero or malformed)"),
-            Self::InvalidRequest(msg) => write!(f, "invalid request: {}", msg),
-            Self::PoolOverflow => write!(f, "pool balance overflow"),
-            Self::CommitmentsFull => write!(
-                f,
-                "commitment pool is full ({} max) — upgrade to incremental Merkle tree required",
-                MAX_COMMITMENTS
-            ),
-        }
-    }
+/// Use native system opcode 23.
+#[no_mangle]
+pub extern "C" fn shield(_args_ptr: *const u8, _args_len: u32) -> u32 {
+    native_only("Use native Shield instruction (system opcode 23)")
 }
 
-impl ShieldedPoolState {
-    /// Initialize a new empty shielded pool
-    pub fn new() -> Self {
-        Self {
-            merkle_root: empty_merkle_root(),
-            commitment_count: 0,
-            pool_balance: 0,
-            spent_nullifiers: BTreeSet::new(),
-            commitments: Vec::new(),
-        }
-    }
-
-    /// Process a shield (deposit) request
-    pub fn shield(
-        &mut self,
-        request: &ShieldRequest,
-        current_slot: u64,
-    ) -> Result<u64, ShieldedPoolError> {
-        if request.amount == 0 {
-            return Err(ShieldedPoolError::InvalidRequest(
-                "shield amount must be nonzero".to_string(),
-            ));
-        }
-        // Validate commitment is non-zero
-        if request.commitment == [0u8; 32] {
-            return Err(ShieldedPoolError::InvalidCommitment);
-        }
-        if self.has_commitment(&request.commitment) {
-            return Err(ShieldedPoolError::InvalidRequest(
-                "duplicate commitment".to_string(),
-            ));
-        }
-        self.validate_encrypted_note(&request.encrypted_note)?;
-
-        self.verify_shield_proof(&request.proof, request.amount, &request.commitment)?;
-
-        // AUDIT-FIX MED-01: Enforce commitment cap
-        if self.commitment_count >= MAX_COMMITMENTS {
-            return Err(ShieldedPoolError::CommitmentsFull);
-        }
-        let new_pool_balance = self
-            .pool_balance
-            .checked_add(request.amount)
-            .ok_or(ShieldedPoolError::PoolOverflow)?;
-
-        // Update state
-        let index = self.commitment_count;
-        self.commitments.push(CommitmentEntry {
-            commitment: request.commitment,
-            slot: current_slot,
-            encrypted_note: request.encrypted_note.clone(),
-            ephemeral_pk: request.ephemeral_pk,
-        });
-        self.commitment_count += 1;
-        self.pool_balance = new_pool_balance;
-
-        // Update Merkle root
-        self.update_merkle_root();
-
-        Ok(index)
-    }
-
-    /// Process an unshield (withdrawal) request
-    pub fn unshield(&mut self, request: &UnshieldRequest) -> Result<u64, ShieldedPoolError> {
-        if request.amount == 0 {
-            return Err(ShieldedPoolError::InvalidRequest(
-                "unshield amount must be nonzero".to_string(),
-            ));
-        }
-        if request.nullifier == [0u8; 32] {
-            return Err(ShieldedPoolError::InvalidRequest(
-                "nullifier must be nonzero".to_string(),
-            ));
-        }
-        if request.recipient == [0u8; 32] {
-            return Err(ShieldedPoolError::InvalidRequest(
-                "recipient must be nonzero".to_string(),
-            ));
-        }
-        // Check Merkle root matches (prevent stale proofs)
-        if request.merkle_root != self.merkle_root {
-            return Err(ShieldedPoolError::MerkleRootMismatch);
-        }
-
-        // Check nullifier hasn't been spent
-        if self.spent_nullifiers.contains(&request.nullifier) {
-            return Err(ShieldedPoolError::NullifierAlreadySpent(hex::encode(
-                request.nullifier,
-            )));
-        }
-
-        // Check sufficient balance
-        if request.amount > self.pool_balance {
-            return Err(ShieldedPoolError::InsufficientBalance);
-        }
-
-        self.verify_unshield_proof(
-            &request.proof,
-            &request.merkle_root,
-            &request.nullifier,
-            request.amount,
-            &request.recipient,
-        )?;
-
-        // Mark nullifier as spent (atomic with state update)
-        self.spent_nullifiers.insert(request.nullifier);
-        self.pool_balance -= request.amount;
-
-        Ok(request.amount)
-    }
-
-    /// Process a shielded transfer request
-    pub fn transfer(
-        &mut self,
-        request: &TransferRequest,
-        current_slot: u64,
-    ) -> Result<Vec<u64>, ShieldedPoolError> {
-        if request.nullifiers.is_empty() {
-            return Err(ShieldedPoolError::InvalidRequest(
-                "transfer requires at least one input nullifier".to_string(),
-            ));
-        }
-        if request.output_commitments.is_empty() {
-            return Err(ShieldedPoolError::InvalidRequest(
-                "transfer requires at least one output commitment".to_string(),
-            ));
-        }
-        if request.nullifiers.len() > MAX_TRANSFER_NULLIFIERS {
-            return Err(ShieldedPoolError::InvalidRequest(
-                "too many input nullifiers".to_string(),
-            ));
-        }
-        if request.output_commitments.len() > MAX_TRANSFER_OUTPUTS {
-            return Err(ShieldedPoolError::InvalidRequest(
-                "too many output commitments".to_string(),
-            ));
-        }
-        // Check Merkle root matches
-        if request.merkle_root != self.merkle_root {
-            return Err(ShieldedPoolError::MerkleRootMismatch);
-        }
-
-        // Check no nullifier has been spent
-        let mut seen_nullifiers = BTreeSet::new();
-        for nullifier in &request.nullifiers {
-            if *nullifier == [0u8; 32] {
-                return Err(ShieldedPoolError::InvalidRequest(
-                    "nullifier must be nonzero".to_string(),
-                ));
-            }
-            if !seen_nullifiers.insert(*nullifier) {
-                return Err(ShieldedPoolError::InvalidRequest(
-                    "duplicate input nullifier".to_string(),
-                ));
-            }
-            if self.spent_nullifiers.contains(nullifier) {
-                return Err(ShieldedPoolError::NullifierAlreadySpent(hex::encode(
-                    nullifier,
-                )));
-            }
-        }
-
-        // Validate output commitments
-        let mut seen_commitments = BTreeSet::new();
-        for output in &request.output_commitments {
-            if output.commitment == [0u8; 32] {
-                return Err(ShieldedPoolError::InvalidCommitment);
-            }
-            if !seen_commitments.insert(output.commitment)
-                || self.has_commitment(&output.commitment)
-            {
-                return Err(ShieldedPoolError::InvalidRequest(
-                    "duplicate output commitment".to_string(),
-                ));
-            }
-            self.validate_encrypted_note(&output.encrypted_note)?;
-        }
-
-        let additional_commitments = request.output_commitments.len() as u64;
-        if self.commitment_count > MAX_COMMITMENTS.saturating_sub(additional_commitments) {
-            return Err(ShieldedPoolError::CommitmentsFull);
-        }
-
-        self.verify_transfer_proof(
-            &request.proof,
-            &request.merkle_root,
-            &request.nullifiers,
-            &request
-                .output_commitments
-                .iter()
-                .map(|o| o.commitment)
-                .collect::<Vec<_>>(),
-        )?;
-
-        // Spend nullifiers
-        for nullifier in &request.nullifiers {
-            self.spent_nullifiers.insert(*nullifier);
-        }
-
-        // Insert new commitments
-        let mut indices = Vec::with_capacity(request.output_commitments.len());
-        for output in &request.output_commitments {
-            let index = self.commitment_count;
-            self.commitments.push(CommitmentEntry {
-                commitment: output.commitment,
-                slot: current_slot,
-                encrypted_note: output.encrypted_note.clone(),
-                ephemeral_pk: output.ephemeral_pk,
-            });
-            self.commitment_count += 1;
-            indices.push(index);
-        }
-        self.update_merkle_root();
-
-        Ok(indices)
-    }
-
-    /// Get pool statistics
-    pub fn stats(&self) -> PoolStats {
-        PoolStats {
-            merkle_root: hex::encode(self.merkle_root),
-            commitment_count: self.commitment_count,
-            pool_balance: self.pool_balance,
-            pool_balance_licn: self.pool_balance as f64 / 1_000_000_000.0,
-            nullifier_count: self.spent_nullifiers.len() as u64,
-        }
-    }
-
-    /// Check if a nullifier has been spent
-    pub fn is_nullifier_spent(&self, nullifier: &[u8; 32]) -> bool {
-        self.spent_nullifiers.contains(nullifier)
-    }
-
-    /// Get commitments from a given index (for wallet sync)
-    pub fn get_commitments_from(&self, from_index: u64) -> &[CommitmentEntry] {
-        let start = from_index as usize;
-        if start >= self.commitments.len() {
-            return &[];
-        }
-        &self.commitments[start..]
-    }
-
-    // --- Proof validation methods ---
-    //
-    // ARCHITECTURE NOTE: Full proof verification runs in the native processor
-    // layer (TxProcessor types 23/24/25) before the contract is invoked.
-    // These contract methods only ensure a proof payload was supplied and that
-    // the request still matches the current contract state.
-
-    fn ensure_proof_payload(&self, proof: &[u8]) -> Result<(), ShieldedPoolError> {
-        if proof.is_empty() {
-            return Err(ShieldedPoolError::InvalidProof(
-                "missing proof payload".to_string(),
-            ));
-        }
-        if proof.len() > MAX_PROOF_BYTES {
-            return Err(ShieldedPoolError::InvalidProof(
-                "proof payload too large".to_string(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn validate_encrypted_note(&self, encrypted_note: &[u8]) -> Result<(), ShieldedPoolError> {
-        if encrypted_note.len() > MAX_ENCRYPTED_NOTE_BYTES {
-            return Err(ShieldedPoolError::InvalidRequest(
-                "encrypted note too large".to_string(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn has_commitment(&self, commitment: &[u8; 32]) -> bool {
-        self.commitments
-            .iter()
-            .any(|entry| &entry.commitment == commitment)
-    }
-
-    fn verify_shield_proof(
-        &self,
-        proof: &[u8],
-        _amount: u64,
-        _commitment: &[u8; 32],
-    ) -> Result<(), ShieldedPoolError> {
-        self.ensure_proof_payload(proof)
-    }
-
-    fn verify_unshield_proof(
-        &self,
-        proof: &[u8],
-        merkle_root: &[u8; 32],
-        _nullifier: &[u8; 32],
-        _amount: u64,
-        _recipient: &[u8; 32],
-    ) -> Result<(), ShieldedPoolError> {
-        self.ensure_proof_payload(proof)?;
-        if merkle_root != &self.merkle_root {
-            return Err(ShieldedPoolError::MerkleRootMismatch);
-        }
-        Ok(())
-    }
-
-    fn verify_transfer_proof(
-        &self,
-        proof: &[u8],
-        merkle_root: &[u8; 32],
-        _nullifiers: &[[u8; 32]],
-        _output_commitments: &[[u8; 32]],
-    ) -> Result<(), ShieldedPoolError> {
-        self.ensure_proof_payload(proof)?;
-        if merkle_root != &self.merkle_root {
-            return Err(ShieldedPoolError::MerkleRootMismatch);
-        }
-        Ok(())
-    }
-
-    fn update_merkle_root(&mut self) {
-        self.merkle_root = compute_merkle_root(&self.commitments);
-    }
+/// Use native system opcode 24.
+#[no_mangle]
+pub extern "C" fn unshield(_args_ptr: *const u8, _args_len: u32) -> u32 {
+    native_only("Use native Unshield instruction (system opcode 24)")
 }
 
-impl Default for ShieldedPoolState {
-    fn default() -> Self {
-        Self::new()
-    }
+/// Use native system opcode 25.
+#[no_mangle]
+pub extern "C" fn transfer(_args_ptr: *const u8, _args_len: u32) -> u32 {
+    native_only("Use native ShieldedTransfer instruction (system opcode 25)")
 }
 
-/// Compute the empty Merkle tree root (deterministic constant)
-fn empty_merkle_root() -> [u8; 32] {
-    let mut hash = [0u8; 32];
-    for _ in 0..32 {
-        let mut hasher = Sha256::new();
-        hasher.update(&hash);
-        hasher.update(&hash);
-        let result = hasher.finalize();
-        hash.copy_from_slice(&result);
-    }
-    hash
+/// Return a stable machine-readable description of the authoritative path.
+#[no_mangle]
+pub extern "C" fn get_execution_model() -> u32 {
+    set_return_data(EXECUTION_MODEL);
+    0
 }
 
-fn hash_leaf(commitment: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update([0x00]);
-    hasher.update(commitment);
-    hasher.finalize().into()
-}
-
-fn hash_node(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update([0x01]);
-    hasher.update(left);
-    hasher.update(right);
-    hasher.finalize().into()
-}
-
-fn compute_merkle_root(entries: &[CommitmentEntry]) -> [u8; 32] {
-    if entries.is_empty() {
-        return empty_merkle_root();
-    }
-
-    let mut level: Vec<[u8; 32]> = entries.iter().map(|e| hash_leaf(&e.commitment)).collect();
-    while level.len() > 1 {
-        let mut next = Vec::with_capacity(level.len().div_ceil(2));
-        let mut i = 0usize;
-        while i < level.len() {
-            let left = level[i];
-            let right = if i + 1 < level.len() {
-                level[i + 1]
-            } else {
-                left
-            };
-            next.push(hash_node(&left, &right));
-            i += 2;
-        }
-        level = next;
-    }
-
-    level[0]
-}
-
-// ===== Contract Entry Points (WASM ABI) =====
-
-/// Contract instruction enum (dispatched by the runtime)
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum ShieldedPoolInstruction {
-    /// Initialize the pool state
-    Initialize,
-    /// Shield (deposit) LICN into the pool
-    Shield(ShieldRequest),
-    /// Unshield (withdraw) LICN from the pool
-    Unshield(UnshieldRequest),
-    /// Shielded transfer between notes
-    Transfer(TransferRequest),
-    /// Query: get current Merkle root
-    GetMerkleRoot,
-    /// Query: get pool statistics
-    GetPoolStats,
-    /// Query: check if nullifier is spent
-    CheckNullifier { nullifier: [u8; 32] },
-    /// Query: get commitments from index (for wallet sync)
-    GetCommitments { from_index: u64 },
-}
-
-// ===== WASM Entry Points =====
-//
-// These are compiled only for wasm32 and call through to the pure-Rust
-// ShieldedPoolState methods above. State is persisted as a single JSON
-// blob under the `pool_state` storage key. The native TxProcessor
-// (types 23/24/25) handles the heavy ZK proof verification and writes
-// to CF_SHIELDED_POOL; this contract provides the on-chain WASM
-// bytecode and a query interface.
-//
-// CON-12 ARCHITECTURAL NOTE: The single-JSON-blob storage model is a known
-// limitation. At scale (>10k commitments), reads/writes require deserializing
-// the entire pool. A sparse Merkle tree with per-leaf storage keys would be
-// more efficient. For the current MVP phase, the native TxProcessor already
-// handles the critical path (shielding/unshielding); this WASM contract is
-// primarily a query interface and the blob size is bounded by the native
-// rate-limiting on shield operations. Migration to per-leaf storage is
-// planned for v2.
-
-#[cfg(any(target_arch = "wasm32", test))]
-mod wasm_abi {
-    use super::*;
-    use lichen_sdk::{get_caller, get_slot, log_info, set_return_data, storage_get, storage_set};
-
-    const STATE_KEY: &[u8] = b"pool_state";
-    const OWNER_KEY: &[u8] = b"owner";
-    const PAUSED_KEY: &[u8] = b"sp_paused";
-    const REENTRANCY_KEY: &[u8] = b"sp_reentrancy";
-
-    // AUDIT-FIX CON-02: Reentrancy guard (prevents double-spend via reentrant calls)
-    fn reentrancy_enter() -> bool {
-        if storage_get(REENTRANCY_KEY)
-            .map(|v| v.first().copied() == Some(1))
-            .unwrap_or(false)
-        {
-            return false;
-        }
-        storage_set(REENTRANCY_KEY, &[1u8]);
-        true
-    }
-
-    fn reentrancy_exit() {
-        storage_set(REENTRANCY_KEY, &[0u8]);
-    }
-
-    // AUDIT-FIX CON-04: Pause mechanism
-    fn is_paused() -> bool {
-        storage_get(PAUSED_KEY)
-            .map(|v| v.first().copied() == Some(1))
-            .unwrap_or(false)
-    }
-
-    // AUDIT-FIX CON-03: Require caller to be the owner/admin
-    fn require_admin() -> bool {
-        let caller = get_caller();
-        match storage_get(OWNER_KEY) {
-            Some(owner) if owner.len() == 32 && owner[..] == caller.0[..] => true,
-            _ => {
-                log_info("ShieldedPool: unauthorized caller (not admin)");
-                false
-            }
-        }
-    }
-
-    fn read_address32(ptr: *const u8) -> Option<[u8; 32]> {
-        if ptr.is_null() {
-            return None;
-        }
-        let mut out = [0u8; 32];
-        unsafe {
-            core::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), 32);
-        }
-        Some(out)
-    }
-
-    fn read_request_bytes<'a>(ptr: *const u8, len: u32) -> Option<&'a [u8]> {
-        let len = len as usize;
-        if len == 0 || len > MAX_REQUEST_BYTES || ptr.is_null() {
-            return None;
-        }
-        Some(unsafe { core::slice::from_raw_parts(ptr, len) })
-    }
-
-    fn load_state() -> Result<ShieldedPoolState, ()> {
-        match storage_get(STATE_KEY) {
-            Some(bytes) => match serde_json::from_slice(&bytes) {
-                Ok(state) => Ok(state),
-                Err(_) => {
-                    log_info("ShieldedPool: stored state is corrupt");
-                    Err(())
-                }
-            },
-            None => Ok(ShieldedPoolState::new()),
-        }
-    }
-
-    fn save_state(state: &ShieldedPoolState) -> Result<(), ()> {
-        let bytes = serde_json::to_vec(state).map_err(|_| ())?;
-        storage_set(STATE_KEY, &bytes);
-        Ok(())
-    }
-
-    /// Initialize the shielded pool (called once at genesis).
-    /// Sets admin and creates an empty pool state.
-    #[no_mangle]
-    pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
-        // Re-initialization guard
-        if storage_get(OWNER_KEY).is_some() {
-            log_info("ShieldedPool already initialized — ignoring");
-            return 0;
-        }
-        let admin = match read_address32(admin_ptr) {
-            Some(addr) => addr,
-            None => return 98,
-        };
-        let caller = lichen_sdk::get_caller();
-        if caller.0 != admin {
-            log_info("ShieldedPool initialize rejected: caller mismatch");
-            return 1;
-        }
-        storage_set(OWNER_KEY, &admin);
-
-        if save_state(&ShieldedPoolState::new()).is_err() {
-            return 2;
-        }
-
-        log_info("ShieldedPool initialized");
-        0
-    }
-
-    /// AUDIT-FIX CON-04: Pause the pool (admin only)
-    #[no_mangle]
-    pub extern "C" fn pause() -> u32 {
-        if !require_admin() {
-            return 1;
-        }
-        storage_set(PAUSED_KEY, &[1u8]);
-        log_info("ShieldedPool PAUSED");
-        0
-    }
-
-    /// AUDIT-FIX CON-04: Unpause the pool (admin only)
-    #[no_mangle]
-    pub extern "C" fn unpause() -> u32 {
-        if !require_admin() {
-            return 1;
-        }
-        storage_set(PAUSED_KEY, &[0u8]);
-        log_info("ShieldedPool UNPAUSED");
-        0
-    }
-
-    /// Return pool statistics as JSON via set_return_data.
-    #[no_mangle]
-    pub extern "C" fn get_pool_stats() -> u32 {
-        let state = match load_state() {
-            Ok(state) => state,
-            Err(_) => return 1,
-        };
-        let stats = state.stats();
-        if let Ok(json) = serde_json::to_vec(&stats) {
-            set_return_data(&json);
-        }
-        0
-    }
-
-    /// Return the current 32-byte Merkle root.
-    #[no_mangle]
-    pub extern "C" fn get_merkle_root() -> u32 {
-        let state = match load_state() {
-            Ok(state) => state,
-            Err(_) => return 1,
-        };
-        set_return_data(&state.merkle_root);
-        0
-    }
-
-    /// Check whether a nullifier has been spent (returns [0] or [1]).
-    #[no_mangle]
-    pub extern "C" fn check_nullifier(nullifier_ptr: *const u8) -> u32 {
-        let nullifier = match read_address32(nullifier_ptr) {
-            Some(addr) => addr,
-            None => return 98,
-        };
-        let state = match load_state() {
-            Ok(state) => state,
-            Err(_) => return 1,
-        };
-        let spent = if state.is_nullifier_spent(&nullifier) {
-            1u8
-        } else {
-            0u8
-        };
-        set_return_data(&[spent]);
-        0
-    }
-
-    /// Return commitments from a given index as JSON.
-    #[no_mangle]
-    pub extern "C" fn get_commitments(from_index: u64) -> u32 {
-        let state = match load_state() {
-            Ok(state) => state,
-            Err(_) => return 1,
-        };
-        let entries = state.get_commitments_from(from_index);
-        if let Ok(json) = serde_json::to_vec(entries) {
-            set_return_data(&json);
-        }
-        0
-    }
-
-    /// Shield (deposit) LICN into the shielded pool.
-    /// args: JSON-serialized ShieldRequest.
-    #[no_mangle]
-    pub extern "C" fn shield(args_ptr: *const u8, args_len: u32) -> u32 {
-        // AUDIT-FIX CON-04: Pause check
-        if is_paused() {
-            log_info("ShieldedPool: paused");
-            return 1;
-        }
-        // AUDIT-FIX CON-02: Reentrancy guard
-        if !reentrancy_enter() {
-            log_info("ShieldedPool: reentrant call blocked");
-            return 1;
-        }
-
-        let slice = match read_request_bytes(args_ptr, args_len) {
-            Some(slice) => slice,
-            None => {
-                log_info("shield: invalid request pointer or length");
-                reentrancy_exit();
-                return 1;
-            }
-        };
-        let request: ShieldRequest = match serde_json::from_slice(slice) {
-            Ok(r) => r,
-            Err(_) => {
-                log_info("shield: invalid request");
-                reentrancy_exit();
-                return 1;
-            }
-        };
-        let slot = get_slot();
-        let mut state = match load_state() {
-            Ok(state) => state,
-            Err(_) => {
-                reentrancy_exit();
-                return 1;
-            }
-        };
-        let result = match state.shield(&request, slot) {
-            Ok(index) => {
-                if save_state(&state).is_err() {
-                    1
-                } else {
-                    set_return_data(&index.to_le_bytes());
-                    0
-                }
-            }
-            Err(e) => {
-                log_info(&format!("shield failed: {}", e));
-                1
-            }
-        };
-        reentrancy_exit();
-        result
-    }
-
-    /// Unshield (withdraw) LICN from the shielded pool.
-    /// args: JSON-serialized UnshieldRequest.
-    #[no_mangle]
-    pub extern "C" fn unshield(args_ptr: *const u8, args_len: u32) -> u32 {
-        // AUDIT-FIX CON-02: Reentrancy guard
-        if !reentrancy_enter() {
-            log_info("ShieldedPool: reentrant call blocked");
-            return 1;
-        }
-
-        let slice = match read_request_bytes(args_ptr, args_len) {
-            Some(slice) => slice,
-            None => {
-                log_info("unshield: invalid request pointer or length");
-                reentrancy_exit();
-                return 1;
-            }
-        };
-        let request: UnshieldRequest = match serde_json::from_slice(slice) {
-            Ok(r) => r,
-            Err(_) => {
-                log_info("unshield: invalid request");
-                reentrancy_exit();
-                return 1;
-            }
-        };
-        let mut state = match load_state() {
-            Ok(state) => state,
-            Err(_) => {
-                reentrancy_exit();
-                return 1;
-            }
-        };
-        let result = match state.unshield(&request) {
-            Ok(amount) => {
-                if save_state(&state).is_err() {
-                    1
-                } else {
-                    set_return_data(&amount.to_le_bytes());
-                    0
-                }
-            }
-            Err(e) => {
-                log_info(&format!("unshield failed: {}", e));
-                1
-            }
-        };
-        reentrancy_exit();
-        result
-    }
-
-    /// Shielded transfer between notes.
-    /// args: JSON-serialized TransferRequest.
-    #[no_mangle]
-    pub extern "C" fn transfer(args_ptr: *const u8, args_len: u32) -> u32 {
-        // AUDIT-FIX CON-04: Pause check
-        if is_paused() {
-            log_info("ShieldedPool: paused");
-            return 1;
-        }
-        // AUDIT-FIX CON-02: Reentrancy guard
-        if !reentrancy_enter() {
-            log_info("ShieldedPool: reentrant call blocked");
-            return 1;
-        }
-
-        let slice = match read_request_bytes(args_ptr, args_len) {
-            Some(slice) => slice,
-            None => {
-                log_info("transfer: invalid request pointer or length");
-                reentrancy_exit();
-                return 1;
-            }
-        };
-        let request: TransferRequest = match serde_json::from_slice(slice) {
-            Ok(r) => r,
-            Err(_) => {
-                log_info("transfer: invalid request");
-                reentrancy_exit();
-                return 1;
-            }
-        };
-        let slot = get_slot();
-        let mut state = match load_state() {
-            Ok(state) => state,
-            Err(_) => {
-                reentrancy_exit();
-                return 1;
-            }
-        };
-        let result = match state.transfer(&request, slot) {
-            Ok(indices) => {
-                if save_state(&state).is_err() {
-                    1
-                } else {
-                    if let Ok(json) = serde_json::to_vec(&indices) {
-                        set_return_data(&json);
-                    }
-                    0
-                }
-            }
-            Err(e) => {
-                log_info(&format!("transfer failed: {}", e));
-                1
-            }
-        };
-        reentrancy_exit();
-        result
-    }
+fn native_only(message: &str) -> u32 {
+    log_info(message);
+    ERR_NATIVE_ONLY
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn test_pool() -> ShieldedPoolState {
-        ShieldedPoolState::new()
-    }
+    use lichen_sdk::test_mock;
 
     #[test]
-    fn test_initialize() {
-        lichen_sdk::test_mock::reset();
+    fn initialize_is_authenticated_one_time_and_state_free() {
+        test_mock::reset();
         let admin = [1u8; 32];
-        lichen_sdk::test_mock::set_caller(admin);
-        assert_eq!(wasm_abi::initialize(admin.as_ptr()), 0);
-        assert_eq!(lichen_sdk::storage_get(b"owner"), Some(admin.to_vec()));
-        assert!(lichen_sdk::storage_get(b"pool_state").is_some());
+        test_mock::set_caller([9u8; 32]);
+        assert_eq!(initialize(admin.as_ptr()), 1);
+        assert!(storage_get(OWNER_KEY).is_none());
+
+        test_mock::set_caller(admin);
+        assert_eq!(initialize(admin.as_ptr()), 0);
+        assert_eq!(storage_get(OWNER_KEY), Some(admin.to_vec()));
+        assert_eq!(initialize(admin.as_ptr()), 3);
+        assert!(storage_get(b"pool_state").is_none());
     }
 
     #[test]
-    fn test_initialize_rejects_caller_mismatch() {
-        lichen_sdk::test_mock::reset();
-        let admin = [1u8; 32];
-        lichen_sdk::test_mock::set_caller([9u8; 32]);
-        assert_eq!(wasm_abi::initialize(admin.as_ptr()), 1);
-        assert_eq!(lichen_sdk::storage_get(b"owner"), None);
-        assert_eq!(lichen_sdk::storage_get(b"pool_state"), None);
+    fn initialize_rejects_null_and_zero_admin() {
+        test_mock::reset();
+        assert_eq!(initialize(core::ptr::null()), 98);
+        let zero = [0u8; 32];
+        test_mock::set_caller(zero);
+        assert_eq!(initialize(zero.as_ptr()), 2);
+        assert!(storage_get(OWNER_KEY).is_none());
     }
 
     #[test]
-    fn test_shield() {
-        let mut pool = test_pool();
-        let request = ShieldRequest {
-            amount: 1_000_000_000, // 1 LICN
-            commitment: [1u8; 32],
-            proof: vec![0u8; 7], // proof already verified by processor
-            encrypted_note: vec![0xAA, 0xBB],
-            ephemeral_pk: [2u8; 32],
-        };
-
-        let index = pool.shield(&request, 100).unwrap();
-        assert_eq!(index, 0);
-        assert_eq!(pool.pool_balance, 1_000_000_000);
-        assert_eq!(pool.commitment_count, 1);
+    fn every_direct_pool_surface_fails_closed_without_state() {
+        test_mock::reset();
+        assert_eq!(pause(), ERR_NATIVE_ONLY);
+        assert_eq!(unpause(), ERR_NATIVE_ONLY);
+        assert_eq!(get_pool_stats(), ERR_NATIVE_ONLY);
+        assert_eq!(get_merkle_root(), ERR_NATIVE_ONLY);
+        assert_eq!(check_nullifier(core::ptr::null()), ERR_NATIVE_ONLY);
+        assert_eq!(get_commitments(0), ERR_NATIVE_ONLY);
+        assert_eq!(shield(core::ptr::null(), 0), ERR_NATIVE_ONLY);
+        assert_eq!(unshield(core::ptr::null(), 0), ERR_NATIVE_ONLY);
+        assert_eq!(transfer(core::ptr::null(), 0), ERR_NATIVE_ONLY);
+        assert!(storage_get(b"pool_state").is_none());
+        assert!(storage_get(b"sp_paused").is_none());
     }
 
     #[test]
-    fn test_unshield() {
-        let mut pool = test_pool();
-        // First shield
-        let shield_req = ShieldRequest {
-            amount: 1_000_000_000,
-            commitment: [1u8; 32],
-            proof: vec![0u8; 7],
-            encrypted_note: vec![],
-            ephemeral_pk: [2u8; 32],
-        };
-        pool.shield(&shield_req, 100).unwrap();
-
-        // Then unshield
-        let unshield_req = UnshieldRequest {
-            nullifier: [3u8; 32],
-            amount: 500_000_000, // 0.5 LICN
-            recipient: [4u8; 32],
-            merkle_root: pool.merkle_root,
-            proof: vec![0u8; 7],
-        };
-        let amount = pool.unshield(&unshield_req).unwrap();
-        assert_eq!(amount, 500_000_000);
-        assert_eq!(pool.pool_balance, 500_000_000);
-    }
-
-    #[test]
-    fn test_unshield_still_works_when_paused() {
-        lichen_sdk::test_mock::reset();
-        let admin = [1u8; 32];
-        lichen_sdk::test_mock::set_caller(admin);
-        assert_eq!(wasm_abi::initialize(admin.as_ptr()), 0);
-
-        let shield_req = ShieldRequest {
-            amount: 1_000_000_000,
-            commitment: [1u8; 32],
-            proof: vec![0u8; 7],
-            encrypted_note: vec![],
-            ephemeral_pk: [2u8; 32],
-        };
-        let shield_args = serde_json::to_vec(&shield_req).unwrap();
-        assert_eq!(
-            wasm_abi::shield(shield_args.as_ptr(), shield_args.len() as u32),
-            0
-        );
-
-        assert_eq!(wasm_abi::pause(), 0);
-
-        let stored_state = lichen_sdk::storage_get(b"pool_state").unwrap();
-        let state: ShieldedPoolState = serde_json::from_slice(&stored_state).unwrap();
-        let unshield_req = UnshieldRequest {
-            nullifier: [3u8; 32],
-            amount: 500_000_000,
-            recipient: [4u8; 32],
-            merkle_root: state.merkle_root,
-            proof: vec![0u8; 7],
-        };
-        let unshield_args = serde_json::to_vec(&unshield_req).unwrap();
-        assert_eq!(
-            wasm_abi::unshield(unshield_args.as_ptr(), unshield_args.len() as u32),
-            0
-        );
-
-        let stored_state = lichen_sdk::storage_get(b"pool_state").unwrap();
-        let state: ShieldedPoolState = serde_json::from_slice(&stored_state).unwrap();
-        assert_eq!(state.pool_balance, 500_000_000);
-        assert!(state.spent_nullifiers.contains(&[3u8; 32]));
-    }
-
-    #[test]
-    fn test_double_spend_prevention() {
-        let mut pool = test_pool();
-        let shield_req = ShieldRequest {
-            amount: 1_000_000_000,
-            commitment: [1u8; 32],
-            proof: vec![0u8; 7],
-            encrypted_note: vec![],
-            ephemeral_pk: [2u8; 32],
-        };
-        pool.shield(&shield_req, 100).unwrap();
-
-        let nullifier = [3u8; 32];
-        let unshield_req = UnshieldRequest {
-            nullifier,
-            amount: 500_000_000,
-            recipient: [4u8; 32],
-            merkle_root: pool.merkle_root,
-            proof: vec![0u8; 7],
-        };
-        pool.unshield(&unshield_req).unwrap();
-
-        // Try again with same nullifier
-        let unshield_req2 = UnshieldRequest {
-            nullifier,
-            amount: 500_000_000,
-            recipient: [4u8; 32],
-            merkle_root: pool.merkle_root,
-            proof: vec![0u8; 7],
-        };
-        assert!(pool.unshield(&unshield_req2).is_err());
-    }
-
-    #[test]
-    fn test_shielded_transfer() {
-        let mut pool = test_pool();
-        // Shield first
-        let shield_req = ShieldRequest {
-            amount: 2_000_000_000,
-            commitment: [1u8; 32],
-            proof: vec![0u8; 7],
-            encrypted_note: vec![],
-            ephemeral_pk: [2u8; 32],
-        };
-        pool.shield(&shield_req, 100).unwrap();
-
-        // Transfer
-        let transfer_req = TransferRequest {
-            nullifiers: vec![[3u8; 32]],
-            output_commitments: vec![
-                OutputCommitment {
-                    commitment: [5u8; 32],
-                    encrypted_note: vec![0xCC],
-                    ephemeral_pk: [6u8; 32],
-                },
-                OutputCommitment {
-                    commitment: [7u8; 32],
-                    encrypted_note: vec![0xDD],
-                    ephemeral_pk: [8u8; 32],
-                },
-            ],
-            merkle_root: pool.merkle_root,
-            proof: vec![0u8; 7],
-        };
-
-        let indices = pool.transfer(&transfer_req, 200).unwrap();
-        assert_eq!(indices.len(), 2);
-        assert_eq!(pool.commitment_count, 3); // 1 shield + 2 transfer outputs
-    }
-
-    #[test]
-    fn test_pool_stats() {
-        let pool = test_pool();
-        let stats = pool.stats();
-        assert_eq!(stats.commitment_count, 0);
-        assert_eq!(stats.pool_balance, 0);
-        assert_eq!(stats.nullifier_count, 0);
-    }
-
-    #[test]
-    fn test_zero_commitment_rejected() {
-        let mut pool = test_pool();
-        let request = ShieldRequest {
-            amount: 1000,
-            commitment: [0u8; 32], // zero commitment
-            proof: vec![0u8; 7],
-            encrypted_note: vec![],
-            ephemeral_pk: [2u8; 32],
-        };
-        assert!(pool.shield(&request, 100).is_err());
-    }
-
-    #[test]
-    fn test_empty_proof_payload_rejected() {
-        let mut pool = test_pool();
-        let request = ShieldRequest {
-            amount: 1_000,
-            commitment: [9u8; 32],
-            proof: vec![],
-            encrypted_note: vec![],
-            ephemeral_pk: [2u8; 32],
-        };
-
-        assert!(matches!(
-            pool.shield(&request, 100),
-            Err(ShieldedPoolError::InvalidProof(_))
-        ));
-    }
-
-    #[test]
-    fn test_shield_zero_amount_rejected() {
-        let mut pool = test_pool();
-        let request = ShieldRequest {
-            amount: 0,
-            commitment: [9u8; 32],
-            proof: vec![1u8],
-            encrypted_note: vec![],
-            ephemeral_pk: [2u8; 32],
-        };
-
-        assert!(matches!(
-            pool.shield(&request, 100),
-            Err(ShieldedPoolError::InvalidRequest(_))
-        ));
-        assert_eq!(pool.commitment_count, 0);
-        assert_eq!(pool.pool_balance, 0);
-    }
-
-    #[test]
-    fn test_shield_pool_overflow_is_atomic() {
-        let mut pool = test_pool();
-        pool.pool_balance = u64::MAX;
-        let request = ShieldRequest {
-            amount: 1,
-            commitment: [9u8; 32],
-            proof: vec![1u8],
-            encrypted_note: vec![],
-            ephemeral_pk: [2u8; 32],
-        };
-
-        assert!(matches!(
-            pool.shield(&request, 100),
-            Err(ShieldedPoolError::PoolOverflow)
-        ));
-        assert_eq!(pool.commitment_count, 0);
-        assert!(pool.commitments.is_empty());
-        assert_eq!(pool.pool_balance, u64::MAX);
-    }
-
-    #[test]
-    fn test_duplicate_commitment_rejected() {
-        let mut pool = test_pool();
-        let request = ShieldRequest {
-            amount: 1_000,
-            commitment: [9u8; 32],
-            proof: vec![1u8],
-            encrypted_note: vec![],
-            ephemeral_pk: [2u8; 32],
-        };
-
-        assert_eq!(pool.shield(&request, 100).unwrap(), 0);
-        assert!(matches!(
-            pool.shield(&request, 101),
-            Err(ShieldedPoolError::InvalidRequest(_))
-        ));
-        assert_eq!(pool.commitment_count, 1);
-        assert_eq!(pool.pool_balance, 1_000);
-    }
-
-    #[test]
-    fn test_encrypted_note_size_limit() {
-        let mut pool = test_pool();
-        let request = ShieldRequest {
-            amount: 1_000,
-            commitment: [9u8; 32],
-            proof: vec![1u8],
-            encrypted_note: vec![0xAA; MAX_ENCRYPTED_NOTE_BYTES + 1],
-            ephemeral_pk: [2u8; 32],
-        };
-
-        assert!(matches!(
-            pool.shield(&request, 100),
-            Err(ShieldedPoolError::InvalidRequest(_))
-        ));
-    }
-
-    #[test]
-    fn test_unshield_zero_amount_rejected() {
-        let mut pool = test_pool();
-        let request = UnshieldRequest {
-            nullifier: [3u8; 32],
-            amount: 0,
-            recipient: [4u8; 32],
-            merkle_root: pool.merkle_root,
-            proof: vec![1u8],
-        };
-
-        assert!(matches!(
-            pool.unshield(&request),
-            Err(ShieldedPoolError::InvalidRequest(_))
-        ));
-        assert!(pool.spent_nullifiers.is_empty());
-    }
-
-    #[test]
-    fn test_transfer_duplicate_nullifiers_rejected() {
-        let mut pool = test_pool();
-        let request = TransferRequest {
-            nullifiers: vec![[3u8; 32], [3u8; 32]],
-            output_commitments: vec![OutputCommitment {
-                commitment: [5u8; 32],
-                encrypted_note: vec![],
-                ephemeral_pk: [6u8; 32],
-            }],
-            merkle_root: pool.merkle_root,
-            proof: vec![1u8],
-        };
-
-        assert!(matches!(
-            pool.transfer(&request, 100),
-            Err(ShieldedPoolError::InvalidRequest(_))
-        ));
-        assert!(pool.spent_nullifiers.is_empty());
-        assert!(pool.commitments.is_empty());
-    }
-
-    #[test]
-    fn test_transfer_duplicate_output_commitments_rejected() {
-        let mut pool = test_pool();
-        let request = TransferRequest {
-            nullifiers: vec![[3u8; 32]],
-            output_commitments: vec![
-                OutputCommitment {
-                    commitment: [5u8; 32],
-                    encrypted_note: vec![],
-                    ephemeral_pk: [6u8; 32],
-                },
-                OutputCommitment {
-                    commitment: [5u8; 32],
-                    encrypted_note: vec![],
-                    ephemeral_pk: [7u8; 32],
-                },
-            ],
-            merkle_root: pool.merkle_root,
-            proof: vec![1u8],
-        };
-
-        assert!(matches!(
-            pool.transfer(&request, 100),
-            Err(ShieldedPoolError::InvalidRequest(_))
-        ));
-        assert!(pool.spent_nullifiers.is_empty());
-        assert!(pool.commitments.is_empty());
-    }
-
-    #[test]
-    fn test_transfer_existing_output_commitment_rejected() {
-        let mut pool = test_pool();
-        let shield_req = ShieldRequest {
-            amount: 1_000,
-            commitment: [5u8; 32],
-            proof: vec![1u8],
-            encrypted_note: vec![],
-            ephemeral_pk: [2u8; 32],
-        };
-        pool.shield(&shield_req, 100).unwrap();
-
-        let request = TransferRequest {
-            nullifiers: vec![[3u8; 32]],
-            output_commitments: vec![OutputCommitment {
-                commitment: [5u8; 32],
-                encrypted_note: vec![],
-                ephemeral_pk: [6u8; 32],
-            }],
-            merkle_root: pool.merkle_root,
-            proof: vec![1u8],
-        };
-
-        assert!(matches!(
-            pool.transfer(&request, 101),
-            Err(ShieldedPoolError::InvalidRequest(_))
-        ));
-        assert!(!pool.spent_nullifiers.contains(&[3u8; 32]));
-        assert_eq!(pool.commitment_count, 1);
-    }
-
-    #[test]
-    fn test_transfer_capacity_failure_is_atomic() {
-        let mut pool = test_pool();
-        pool.commitment_count = MAX_COMMITMENTS - 1;
-        let request = TransferRequest {
-            nullifiers: vec![[3u8; 32]],
-            output_commitments: vec![
-                OutputCommitment {
-                    commitment: [5u8; 32],
-                    encrypted_note: vec![],
-                    ephemeral_pk: [6u8; 32],
-                },
-                OutputCommitment {
-                    commitment: [7u8; 32],
-                    encrypted_note: vec![],
-                    ephemeral_pk: [8u8; 32],
-                },
-            ],
-            merkle_root: pool.merkle_root,
-            proof: vec![1u8],
-        };
-
-        assert!(matches!(
-            pool.transfer(&request, 100),
-            Err(ShieldedPoolError::CommitmentsFull)
-        ));
-        assert!(!pool.spent_nullifiers.contains(&[3u8; 32]));
-        assert_eq!(pool.commitment_count, MAX_COMMITMENTS - 1);
-        assert!(pool.commitments.is_empty());
-    }
-
-    #[test]
-    fn test_initialize_null_pointer_rejected() {
-        lichen_sdk::test_mock::reset();
-        assert_eq!(wasm_abi::initialize(core::ptr::null()), 98);
-        assert_eq!(lichen_sdk::storage_get(b"owner"), None);
-    }
-
-    #[test]
-    fn test_check_nullifier_null_pointer_rejected() {
-        lichen_sdk::test_mock::reset();
-        assert_eq!(wasm_abi::check_nullifier(core::ptr::null()), 98);
-    }
-
-    #[test]
-    fn test_wasm_shield_null_args_rejected_and_guard_cleared() {
-        lichen_sdk::test_mock::reset();
-        let admin = [1u8; 32];
-        lichen_sdk::test_mock::set_caller(admin);
-        assert_eq!(wasm_abi::initialize(admin.as_ptr()), 0);
-
-        assert_eq!(wasm_abi::shield(core::ptr::null(), 1), 1);
-
-        let request = ShieldRequest {
-            amount: 1_000,
-            commitment: [9u8; 32],
-            proof: vec![1u8],
-            encrypted_note: vec![],
-            ephemeral_pk: [2u8; 32],
-        };
-        let args = serde_json::to_vec(&request).unwrap();
-        assert_eq!(wasm_abi::shield(args.as_ptr(), args.len() as u32), 0);
-    }
-
-    #[test]
-    fn test_wasm_corrupt_state_fails_closed() {
-        lichen_sdk::test_mock::reset();
-        let admin = [1u8; 32];
-        lichen_sdk::test_mock::set_caller(admin);
-        assert_eq!(wasm_abi::initialize(admin.as_ptr()), 0);
-        lichen_sdk::storage_set(b"pool_state", b"not-json");
-
-        let request = ShieldRequest {
-            amount: 1_000,
-            commitment: [9u8; 32],
-            proof: vec![1u8],
-            encrypted_note: vec![],
-            ephemeral_pk: [2u8; 32],
-        };
-        let args = serde_json::to_vec(&request).unwrap();
-
-        assert_eq!(wasm_abi::shield(args.as_ptr(), args.len() as u32), 1);
-        assert_eq!(wasm_abi::get_merkle_root(), 1);
-        assert_eq!(
-            lichen_sdk::storage_get(b"pool_state"),
-            Some(b"not-json".to_vec())
-        );
+    fn execution_model_is_discoverable() {
+        test_mock::reset();
+        assert_eq!(get_execution_model(), 0);
+        assert_eq!(test_mock::get_return_data(), EXECUTION_MODEL);
     }
 }

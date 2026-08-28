@@ -184,9 +184,14 @@ asyncio.run(main())</code></pre>
                         methods.</p>
                     <p><strong>SporePay helper:</strong> import <code>SporePayClient</code> for stream creation,
                         stream/cliff reads, withdrawable balance checks, withdrawals, cancellations, transfers, and
-                        aggregated stats. Drop to raw <code>call_contract()</code> for admin-only or newly added
+                        unpaid-payout reads/claims plus exact liability and migration stats. Drop to raw
+                        <code>call_contract()</code> for admin-only or newly added
                         contract methods that are not wrapped yet.
                     </p>
+                    <p><strong>SporePump helper:</strong> import <code>SporePumpClient</code> for exact token metadata,
+                        buy/sell quotes, protected trades, creator royalties, custody and Accounting V3 reads,
+                        resumable migration operations, two-step administration, and the governed DEX graduation
+                        lifecycle.</p>
                     <p><strong>LichenSwap helper:</strong> import <code>LichenSwapClient</code> for symbol-registry
                         resolution, pool/quote/liquidity reads, TWAP and protocol-fee reads, aggregate stats, and the
                         common create-pool, add-liquidity, and swap flows. Flash loans,
@@ -202,10 +207,14 @@ asyncio.run(main())</code></pre>
                         harvest flow. Admin-only fee, cap, risk-tier, and strategy-management paths stay on raw
                         <code>call_contract()</code>.
                     </p>
-                    <p><strong>BountyBoard helper:</strong> import <code>BountyBoardClient</code> for symbol-registry
-                        resolution, bounty reads (single + count + platform stats), aggregate stats, and the
-                        full bounty lifecycle: create, submit work, approve, and cancel. Admin-only identity-gate,
-                        token-address, fee, and pause controls stay on raw <code>call_contract()</code>.
+                    <p><strong>Compute Market helper:</strong> import <code>ComputeMarketClient</code> for complete
+                        provider/job settlement, dispute, agent-policy, exact liability, custody-solvency, and
+                        Accounting V3 migration operations. Fixed-width layouts and nonzero hashes are validated
+                        before submission.</p>
+                    <p><strong>BountyBoard helper:</strong> import <code>BountyBoardClient</code> for exact bounty,
+                        submission, terms, fee, accounting, and aggregate reads; create, submit, update, approve, and
+                        cancel flows; exact native payment value or zero attached value for token rewards; and complete identity,
+                        token, treasury, fee, pause, and Accounting V2 migration administration.
                     </p>
                 </div>
                 <div class="code-block">
@@ -213,6 +222,7 @@ asyncio.run(main())</code></pre>
                                 class="fas fa-copy"></i></button></div>
                     <pre><code>from lichen import (
     AddSkillParams,
+    ComputeMarketClient,
     Connection,
     Keypair,
     LICHEN_ID_DELEGATE_PERMISSIONS,
@@ -223,6 +233,7 @@ asyncio.run(main())</code></pre>
     SetMetadataParams,
     SetAvailabilityParams,
     SporePayClient,
+    SporePumpClient,
     SporeVaultClient,
     ThallLendClient,
 )
@@ -231,8 +242,10 @@ conn = Connection("https://testnet-api.lichen.network", ws_url="wss://testnet-ap
 lichen_id = LichenIdClient(conn)
 lichenswap = LichenSwapClient(conn)
 sporepay = SporePayClient(conn)
+sporepump = SporePumpClient(conn)
 sporevault = SporeVaultClient(conn)
 thalllend = ThallLendClient(conn)
+compute_market = ComputeMarketClient(conn)
 kp = Keypair.generate()
 delegate_kp = Keypair.generate()
 
@@ -257,8 +270,9 @@ vault_position = await sporevault.get_user_position(kp.pubkey())
 vault_summary = await sporevault.get_stats()
 lending_account = await thalllend.get_account_info(kp.pubkey())
 lending_stats = await thalllend.get_stats()
+compute_accounting = await compute_market.get_accounting_health()
 
-print(profile, delegate, pool_info, quote, swap_stats, stream, vault_stats, vault_position, vault_summary, lending_account, lending_stats)</code></pre>
+print(profile, delegate, pool_info, quote, swap_stats, stream, vault_stats, vault_position, vault_summary, lending_account, lending_stats, compute_accounting)</code></pre>
                 </div>
             </section>
 
@@ -655,20 +669,21 @@ print(entry["program"])</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">await get_sporepay_stats() -&gt; Dict[str, Any] / await get_thalllend_stats() -&gt; Dict[str, Any] / await
+                <h3 class="method-name">await get_sporepay_stats() -&gt; Dict[str, Any] / await get_sporepump_stats() -&gt; Dict[str, Any] / await get_thalllend_stats() -&gt; Dict[str, Any] / await
                     get_sporevault_stats() -&gt; Dict[str, Any] / await get_bountyboard_stats() -&gt; Dict[str, Any]
                 </h3>
-                <p class="method-desc">Fetch aggregated stats from the public SporePay, ThallLend,
+                <p class="method-desc">Fetch aggregated stats from the public SporePay, SporePump, ThallLend,
                     SporeVault, and BountyBoard RPC routes. Use <code>LichenSwapClient.get_swap_stats()</code>
                     for canonical read-only LichenSwap contract stats.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span></div>
                     <pre><code>sporepay_stats = await conn.get_sporepay_stats()
+sporepump_stats = await conn.get_sporepump_stats()
 thalllend_stats = await conn.get_thalllend_stats()
 sporevault_stats = await conn.get_sporevault_stats()
 bountyboard_stats = await conn.get_bountyboard_stats()
 
-print(sporepay_stats, thalllend_stats, sporevault_stats, bountyboard_stats)</code></pre>
+print(sporepay_stats, sporepump_stats, thalllend_stats, sporevault_stats, bountyboard_stats)</code></pre>
                 </div>
             </div>
 

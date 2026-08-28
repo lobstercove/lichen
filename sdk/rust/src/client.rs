@@ -18,7 +18,7 @@ pub struct ReadonlyContractResult {
     #[serde(rename = "returnData")]
     pub return_data: Option<String>,
     #[serde(rename = "returnCode")]
-    pub return_code: Option<u32>,
+    pub return_code: Option<i64>,
     #[serde(default)]
     pub logs: Vec<String>,
     pub error: Option<String>,
@@ -617,6 +617,11 @@ impl Client {
         self.rpc_call("getSporePayStats", json!([])).await
     }
 
+    /// Get exact SporePump launchpad accounting statistics.
+    pub async fn get_sporepump_stats(&self) -> Result<Value> {
+        self.rpc_call("getSporePumpStats", json!([])).await
+    }
+
     /// Get aggregated LichenSwap statistics.
     /// Get aggregated ThallLend lending statistics.
     pub async fn get_thalllend_stats(&self) -> Result<Value> {
@@ -948,5 +953,19 @@ mod tests {
             contract_list_params(Some(1000), Some("cursor-1")),
             json!([{ "limit": 1000, "cursor": "cursor-1" }])
         );
+    }
+
+    #[test]
+    fn readonly_contract_result_accepts_signed_error_codes() {
+        let result: ReadonlyContractResult = serde_json::from_value(json!({
+            "success": false,
+            "returnData": null,
+            "returnCode": -1,
+            "logs": [],
+            "error": "contract rejected",
+            "computeUsed": 1
+        }))
+        .expect("signed contract return code");
+        assert_eq!(result.return_code, Some(-1));
     }
 }

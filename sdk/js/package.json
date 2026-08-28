@@ -19,8 +19,11 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit && npm run test:restrictions",
+    "test": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit && npm run test:restrictions && npm run test:sporepump && npm run test:compute-market && npm run test:bountyboard",
     "test:restrictions": "npm run build && node test_restrictions_client.js",
+    "test:sporepump": "npm run build && node test_sporepump.js",
+    "test:compute-market": "npm run build && node test_compute_market.js",
+    "test:bountyboard": "npm run build && node test_bountyboard.js",
     "prepare": "npm run build"
   },
   "keywords": [

@@ -25,19 +25,19 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_contract, get_caller, get_slot, log_info, receive_token_or_native,
-    storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address, CrossCall,
+    balance_of_token_or_native, bytes_to_u64, call_contract, get_caller, get_contract_address,
+    get_slot, log_info, receive_token_or_native, storage_get, storage_set,
+    transfer_token_or_native, u64_to_bytes, Address, CrossCall,
 };
 
 // Reentrancy guard
 const CP_REENTRANCY_KEY: &[u8] = b"sp_reentrancy";
 
 fn reentrancy_enter() -> bool {
-    if storage_get(CP_REENTRANCY_KEY)
-        .map(|v| v.first().copied() == Some(1))
-        .unwrap_or(false)
-    {
-        return false;
+    match storage_get(CP_REENTRANCY_KEY) {
+        None => {}
+        Some(value) if value.as_slice() == [0] => {}
+        Some(_) => return false,
     }
     storage_set(CP_REENTRANCY_KEY, &[1u8]);
     true
@@ -80,6 +80,15 @@ const CP_TOTAL_WITHDRAWN_KEY: &[u8] = b"sp_total_withdrawn";
 const CP_CANCEL_COUNT_KEY: &[u8] = b"sp_cancel_count";
 const CP_TOKEN_ADDR_KEY: &[u8] = b"sp_token_address";
 const CP_SELF_ADDR_KEY: &[u8] = b"sp_self_address";
+const CP_TOTAL_ESCROW_LIABILITY_KEY: &[u8] = b"sp_escrow_liability";
+const CP_TOTAL_UNPAID_KEY: &[u8] = b"sp_total_unpaid";
+const CP_ACCOUNTING_VERSION_KEY: &[u8] = b"sp_account_version";
+const CP_MIGRATION_LOCK_KEY: &[u8] = b"sp_account_mig_lock";
+const CP_MIGRATION_EXPECTED_COUNT_KEY: &[u8] = b"sp_account_mig_expected";
+const CP_MIGRATION_CURSOR_KEY: &[u8] = b"sp_account_mig_cursor";
+const CP_MIGRATION_LIABILITY_KEY: &[u8] = b"sp_account_mig_liability";
+const CP_MIGRATION_UNPAID_KEY: &[u8] = b"sp_account_mig_unpaid";
+const ACCOUNTING_VERSION: u64 = 3;
 
 /// Load the configured payment token contract address.
 fn get_token_address() -> Option<Address> {
@@ -94,9 +103,12 @@ fn get_token_address() -> Option<Address> {
     })
 }
 
-/// Load the contract's own deployed address (stored during initialization).
+/// Resolve the contract's deployed address from the runtime. The immutable
+/// stored value is retained as a deployment assertion and must agree whenever
+/// it is present. Native unit tests use the stored value when the mock runtime
+/// address is zero.
 fn get_self_address() -> Option<Address> {
-    storage_get(CP_SELF_ADDR_KEY).and_then(|d| {
+    let configured = storage_get(CP_SELF_ADDR_KEY).and_then(|d| {
         if d.len() == 32 {
             let mut addr = [0u8; 32];
             addr.copy_from_slice(&d);
@@ -104,7 +116,15 @@ fn get_self_address() -> Option<Address> {
         } else {
             None
         }
-    })
+    });
+    let runtime = get_contract_address();
+    if runtime.0 == [0u8; 32] {
+        return configured;
+    }
+    match configured {
+        Some(expected) if expected != runtime => None,
+        _ => Some(runtime),
+    }
 }
 
 fn cliff_key(stream_id: u64) -> Vec<u8> {
@@ -114,9 +134,93 @@ fn cliff_key(stream_id: u64) -> Vec<u8> {
     key
 }
 
+const SENDER_INDEX_PREFIX: &[u8] = b"sp_sender_idx:";
+const RECIPIENT_INDEX_PREFIX: &[u8] = b"sp_recipient_idx:";
+const MAX_INDEX_PAGE: u64 = 64;
+
+struct IndexAppend {
+    count_key: Vec<u8>,
+    item_key: Vec<u8>,
+    next_count: u64,
+}
+
+fn address_index_count_key(prefix: &[u8], address: &[u8; 32]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(prefix.len() + 32 + 6);
+    key.extend_from_slice(prefix);
+    key.extend_from_slice(address);
+    key.extend_from_slice(b":count");
+    key
+}
+
+fn address_index_item_key(prefix: &[u8], address: &[u8; 32], index: u64) -> Vec<u8> {
+    let mut key = Vec::with_capacity(prefix.len() + 32 + 1 + 20);
+    key.extend_from_slice(prefix);
+    key.extend_from_slice(address);
+    key.push(b':');
+    key.extend_from_slice(&u64_to_decimal(index));
+    key
+}
+
+fn prepare_index_append(prefix: &[u8], address: &[u8; 32]) -> Option<IndexAppend> {
+    let count_key = address_index_count_key(prefix, address);
+    let count = checked_stored_u64(&count_key)?;
+    Some(IndexAppend {
+        item_key: address_index_item_key(prefix, address, count),
+        count_key,
+        next_count: count.checked_add(1)?,
+    })
+}
+
+fn apply_index_append(append: &IndexAppend, stream_id: u64) {
+    storage_set(&append.item_key, &u64_to_bytes(stream_id));
+    storage_set(&append.count_key, &u64_to_bytes(append.next_count));
+}
+
+fn get_address_stream_ids(
+    prefix: &[u8],
+    address_ptr: *const u8,
+    cursor: u64,
+    limit: u64,
+) -> u32 {
+    let address = match read_address32(address_ptr) {
+        Some(value) => value,
+        None => return 40,
+    };
+    if limit == 0 || limit > MAX_INDEX_PAGE {
+        return 3;
+    }
+    let count_key = address_index_count_key(prefix, &address);
+    let count = match checked_stored_u64(&count_key) {
+        Some(value) => value,
+        None => return 4,
+    };
+    if cursor > count {
+        return 2;
+    }
+    let end = core::cmp::min(count, match cursor.checked_add(limit) {
+        Some(value) => value,
+        None => count,
+    });
+    let returned = end - cursor;
+    let mut result = Vec::with_capacity(24 + returned as usize * 8);
+    result.extend_from_slice(&u64_to_bytes(count));
+    result.extend_from_slice(&u64_to_bytes(end));
+    result.extend_from_slice(&u64_to_bytes(returned));
+    for index in cursor..end {
+        let key = address_index_item_key(prefix, &address, index);
+        let stream_id = match checked_stored_u64(&key) {
+            Some(value) => value,
+            None => return 4,
+        };
+        result.extend_from_slice(&u64_to_bytes(stream_id));
+    }
+    lichen_sdk::set_return_data(&result);
+    0
+}
+
 fn is_paused() -> bool {
     storage_get(PAUSE_KEY)
-        .map(|v| v.first().copied() == Some(1))
+        .map(|v| v.as_slice() == [1])
         .unwrap_or(false)
 }
 
@@ -161,9 +265,36 @@ fn stored_u64(key: &[u8]) -> u64 {
         .unwrap_or(0)
 }
 
-fn increment_counter_saturating(key: &[u8]) {
-    let current = stored_u64(key);
-    storage_set(key, &u64_to_bytes(current.saturating_add(1)));
+fn checked_stored_u64(key: &[u8]) -> Option<u64> {
+    match storage_get(key) {
+        None => Some(0),
+        Some(data) if data.len() == 8 => Some(bytes_to_u64(&data)),
+        Some(_) => None,
+    }
+}
+
+fn checked_add_stored(key: &[u8], amount: u64) -> Option<u64> {
+    checked_stored_u64(key)?.checked_add(amount)
+}
+
+fn accounting_version() -> u64 {
+    stored_u64(CP_ACCOUNTING_VERSION_KEY)
+}
+
+fn migration_locked() -> bool {
+    storage_get(CP_MIGRATION_LOCK_KEY)
+        .map(|value| value.as_slice() == [1])
+        .unwrap_or(false)
+}
+
+fn accounting_operational() -> bool {
+    accounting_version() == ACCOUNTING_VERSION && !migration_locked()
+}
+
+fn migrated_unpaid_recipient_key(recipient: &[u8; 32]) -> Vec<u8> {
+    let mut key = b"sp_account_mig_recipient:".to_vec();
+    key.extend_from_slice(recipient);
+    key
 }
 
 fn remove_storage_key(key: &[u8]) -> bool {
@@ -199,13 +330,10 @@ fn unpaid_payout_key(token: Address, recipient: Address) -> Vec<u8> {
     key
 }
 
-fn record_unpaid_payout(token: Address, recipient: Address, amount: u64) {
-    if amount == 0 {
-        return;
-    }
+fn next_unpaid_payout(token: Address, recipient: Address, amount: u64) -> Option<(Vec<u8>, u64)> {
     let key = unpaid_payout_key(token, recipient);
-    let current = stored_u64(&key);
-    storage_set(&key, &u64_to_bytes(current.saturating_add(amount)));
+    let current = checked_stored_u64(&key)?;
+    Some((key, current.checked_add(amount)?))
 }
 
 fn transfer_from_escrow(token: Address, self_addr: Address, to: Address, amount: u64) -> bool {
@@ -225,7 +353,7 @@ fn receive_into_escrow(token: Address, from: Address, self_addr: Address, amount
 }
 
 fn next_stream_id() -> Option<(u64, u64)> {
-    let stream_id = stored_u64(b"stream_count");
+    let stream_id = checked_stored_u64(b"stream_count")?;
     stream_id.checked_add(1).map(|next| (stream_id, next))
 }
 
@@ -244,51 +372,79 @@ fn next_stream_id() -> Option<(u64, u64)> {
 
 const STREAM_SIZE: usize = 105;
 
-fn encode_stream(
-    sender: &[u8; 32],
-    recipient: &[u8; 32],
+#[derive(Clone, Copy)]
+struct StreamRecord {
+    sender: [u8; 32],
+    recipient: [u8; 32],
     total_amount: u64,
     withdrawn: u64,
     start_slot: u64,
     end_slot: u64,
     cancelled: bool,
     created_slot: u64,
-) -> Vec<u8> {
-    let mut data = Vec::with_capacity(STREAM_SIZE);
-    data.extend_from_slice(sender);
-    data.extend_from_slice(recipient);
-    data.extend_from_slice(&u64_to_bytes(total_amount));
-    data.extend_from_slice(&u64_to_bytes(withdrawn));
-    data.extend_from_slice(&u64_to_bytes(start_slot));
-    data.extend_from_slice(&u64_to_bytes(end_slot));
-    data.push(if cancelled { 1 } else { 0 });
-    data.extend_from_slice(&u64_to_bytes(created_slot));
-    data
+}
+
+impl StreamRecord {
+    fn decode(data: &[u8]) -> Option<Self> {
+        if data.len() < STREAM_SIZE {
+            return None;
+        }
+        let mut sender = [0u8; 32];
+        sender.copy_from_slice(&data[0..32]);
+        let mut recipient = [0u8; 32];
+        recipient.copy_from_slice(&data[32..64]);
+        Some(Self {
+            sender,
+            recipient,
+            total_amount: bytes_to_u64(&data[64..72]),
+            withdrawn: bytes_to_u64(&data[72..80]),
+            start_slot: bytes_to_u64(&data[80..88]),
+            end_slot: bytes_to_u64(&data[88..96]),
+            cancelled: data[96] == 1,
+            created_slot: bytes_to_u64(&data[97..105]),
+        })
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(STREAM_SIZE);
+        data.extend_from_slice(&self.sender);
+        data.extend_from_slice(&self.recipient);
+        data.extend_from_slice(&u64_to_bytes(self.total_amount));
+        data.extend_from_slice(&u64_to_bytes(self.withdrawn));
+        data.extend_from_slice(&u64_to_bytes(self.start_slot));
+        data.extend_from_slice(&u64_to_bytes(self.end_slot));
+        data.push(u8::from(self.cancelled));
+        data.extend_from_slice(&u64_to_bytes(self.created_slot));
+        data
+    }
+
+    fn outstanding(&self) -> Option<u64> {
+        self.total_amount.checked_sub(self.withdrawn)
+    }
 }
 
 /// Calculate the currently withdrawable amount for a stream.
 /// v2: cliff_slot support — nothing withdrawable until cliff passes.
-fn calculate_withdrawable(
+fn calculate_vested(
     total_amount: u64,
-    withdrawn: u64,
     start_slot: u64,
     end_slot: u64,
     current_slot: u64,
-    cancelled: bool,
     cliff_slot: u64,
 ) -> u64 {
-    if cancelled || current_slot < start_slot {
+    if current_slot < start_slot {
         return 0;
     }
 
-    // v2: cliff check — if cliff is set and not yet passed, nothing withdrawable
+    // A cliff is a true vesting boundary: cancelling before it does not create
+    // a payout that the recipient could not have withdrawn.
     if cliff_slot > 0 && current_slot < cliff_slot {
         return 0;
     }
 
     let duration = end_slot.saturating_sub(start_slot);
     if duration == 0 {
-        return total_amount.saturating_sub(withdrawn);
+        return total_amount;
     }
 
     let elapsed = if current_slot >= end_slot {
@@ -298,10 +454,23 @@ fn calculate_withdrawable(
     };
 
     // streamed = total_amount * elapsed / duration
-    let streamed = (total_amount as u128).saturating_mul(elapsed as u128) / (duration as u128);
-    let streamed = streamed as u64;
+    ((total_amount as u128) * (elapsed as u128) / (duration as u128)) as u64
+}
 
-    streamed.saturating_sub(withdrawn)
+fn calculate_withdrawable(
+    total_amount: u64,
+    withdrawn: u64,
+    start_slot: u64,
+    end_slot: u64,
+    current_slot: u64,
+    cancelled: bool,
+    cliff_slot: u64,
+) -> u64 {
+    if cancelled {
+        return 0;
+    }
+    calculate_vested(total_amount, start_slot, end_slot, current_slot, cliff_slot)
+        .saturating_sub(withdrawn)
 }
 
 // ============================================================================
@@ -340,6 +509,10 @@ pub extern "C" fn create_stream(
 ) -> u32 {
     if !reentrancy_enter() {
         return 20;
+    }
+    if !accounting_operational() {
+        reentrancy_exit();
+        return 95;
     }
     log_info("Creating payment stream...");
 
@@ -388,6 +561,11 @@ pub extern "C" fn create_stream(
         reentrancy_exit();
         return 3;
     }
+    if sender == [0u8; 32] || recipient == [0u8; 32] {
+        log_info("Sender and recipient must be nonzero addresses");
+        reentrancy_exit();
+        return 4;
+    }
 
     // LichenID identity gate — both sender and recipient must have identity
     if !check_identity_gate(&sender) {
@@ -407,6 +585,34 @@ pub extern "C" fn create_stream(
             log_info("Stream count overflow");
             reentrancy_exit();
             return 34;
+        }
+    };
+    let next_total_streamed = match checked_add_stored(CP_TOTAL_STREAMED_KEY, total_amount) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
+    };
+    let next_liability = match checked_add_stored(CP_TOTAL_ESCROW_LIABILITY_KEY, total_amount) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
+    };
+    let sender_index = match prepare_index_append(SENDER_INDEX_PREFIX, &sender) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
+    };
+    let recipient_index = match prepare_index_append(RECIPIENT_INDEX_PREFIX, &recipient) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
         }
     };
 
@@ -435,34 +641,28 @@ pub extern "C" fn create_stream(
     }
     // ── END ESCROW ──────────────────────────────────────────────────────
 
-    let mut sender_arr = [0u8; 32];
-    sender_arr.copy_from_slice(&sender);
-    let mut recipient_arr = [0u8; 32];
-    recipient_arr.copy_from_slice(&recipient);
-
     storage_set(b"stream_count", &u64_to_bytes(next_stream_id));
 
     let current_slot = get_slot();
-    let data = encode_stream(
-        &sender_arr,
-        &recipient_arr,
+    let data = StreamRecord {
+        sender,
+        recipient,
         total_amount,
-        0, // nothing withdrawn yet
+        withdrawn: 0,
         start_slot,
         end_slot,
-        false,
-        current_slot,
-    );
+        cancelled: false,
+        created_slot: current_slot,
+    }
+    .encode();
 
     let sk = stream_key(stream_id);
     storage_set(&sk, &data);
+    apply_index_append(&sender_index, stream_id);
+    apply_index_append(&recipient_index, stream_id);
 
-    // Track total streamed volume
-    let total = stored_u64(CP_TOTAL_STREAMED_KEY);
-    storage_set(
-        CP_TOTAL_STREAMED_KEY,
-        &u64_to_bytes(total.saturating_add(total_amount)),
-    );
+    storage_set(CP_TOTAL_STREAMED_KEY, &u64_to_bytes(next_total_streamed));
+    storage_set(CP_TOTAL_ESCROW_LIABILITY_KEY, &u64_to_bytes(next_liability));
 
     lichen_sdk::set_return_data(&u64_to_bytes(stream_id));
     log_info("Payment stream created");
@@ -499,6 +699,10 @@ pub extern "C" fn create_stream(
 pub extern "C" fn withdraw_from_stream(caller_ptr: *const u8, stream_id: u64, amount: u64) -> u32 {
     if !reentrancy_enter() {
         return 20;
+    }
+    if !accounting_operational() {
+        reentrancy_exit();
+        return 95;
     }
     log_info("Withdrawing from stream...");
 
@@ -574,7 +778,6 @@ pub extern "C" fn withdraw_from_stream(caller_ptr: *const u8, stream_id: u64, am
         return 6;
     }
 
-    // Update withdrawn counter in storage first (checks-effects-interactions)
     let new_withdrawn = match withdrawn.checked_add(amount) {
         Some(next) if next <= total_amount => next,
         _ => {
@@ -583,16 +786,39 @@ pub extern "C" fn withdraw_from_stream(caller_ptr: *const u8, stream_id: u64, am
             return 7;
         }
     };
-    stream_data[72..80].copy_from_slice(&u64_to_bytes(new_withdrawn));
-    storage_set(&sk, &stream_data);
+    let total_withdrawn_before = match checked_stored_u64(CP_TOTAL_WITHDRAWN_KEY) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
+    };
+    let total_withdrawn_after = match total_withdrawn_before.checked_add(amount) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
+    };
+    let liability_before = match checked_stored_u64(CP_TOTAL_ESCROW_LIABILITY_KEY) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
+    };
+    let liability_after = match liability_before.checked_sub(amount) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
+    };
 
     // ── DISBURSE: Transfer tokens from contract to recipient ────────────
     let token_addr = match get_token_address() {
         Some(addr) => addr,
         None => {
-            // Revert withdrawn counter
-            stream_data[72..80].copy_from_slice(&u64_to_bytes(withdrawn));
-            storage_set(&sk, &stream_data);
             log_info("Token address not configured");
             reentrancy_exit();
             return 30;
@@ -601,8 +827,6 @@ pub extern "C" fn withdraw_from_stream(caller_ptr: *const u8, stream_id: u64, am
     let self_addr = match get_self_address() {
         Some(addr) => addr,
         None => {
-            stream_data[72..80].copy_from_slice(&u64_to_bytes(withdrawn));
-            storage_set(&sk, &stream_data);
             log_info("Contract self-address not configured");
             reentrancy_exit();
             return 31;
@@ -612,10 +836,28 @@ pub extern "C" fn withdraw_from_stream(caller_ptr: *const u8, stream_id: u64, am
     let mut recipient_addr = [0u8; 32];
     recipient_addr.copy_from_slice(&stream_data[32..64]);
 
+    // Checks-effects-interactions. The explicit restoration below keeps native
+    // tests and non-atomic hosts safe; the Lichen runtime also reverts nested
+    // call state atomically when the outer execution fails.
+    stream_data[72..80].copy_from_slice(&u64_to_bytes(new_withdrawn));
+    storage_set(&sk, &stream_data);
+    storage_set(CP_TOTAL_WITHDRAWN_KEY, &u64_to_bytes(total_withdrawn_after));
+    storage_set(
+        CP_TOTAL_ESCROW_LIABILITY_KEY,
+        &u64_to_bytes(liability_after),
+    );
+
     if !transfer_from_escrow(token_addr, self_addr, Address(recipient_addr), amount) {
-        // Revert withdrawn counter on transfer failure
         stream_data[72..80].copy_from_slice(&u64_to_bytes(withdrawn));
         storage_set(&sk, &stream_data);
+        storage_set(
+            CP_TOTAL_WITHDRAWN_KEY,
+            &u64_to_bytes(total_withdrawn_before),
+        );
+        storage_set(
+            CP_TOTAL_ESCROW_LIABILITY_KEY,
+            &u64_to_bytes(liability_before),
+        );
         log_info("Token transfer to recipient failed");
         reentrancy_exit();
         return 32;
@@ -624,13 +866,6 @@ pub extern "C" fn withdraw_from_stream(caller_ptr: *const u8, stream_id: u64, am
 
     lichen_sdk::set_return_data(&u64_to_bytes(amount));
     log_info("Withdrawal successful");
-
-    // Track total withdrawn
-    let total_w = stored_u64(CP_TOTAL_WITHDRAWN_KEY);
-    storage_set(
-        CP_TOTAL_WITHDRAWN_KEY,
-        &u64_to_bytes(total_w.saturating_add(amount)),
-    );
 
     reentrancy_exit();
     0
@@ -664,6 +899,10 @@ pub extern "C" fn cancel_stream(caller_ptr: *const u8, stream_id: u64) -> u32 {
     if !reentrancy_enter() {
         return 20;
     }
+    if !accounting_operational() {
+        reentrancy_exit();
+        return 95;
+    }
     log_info("Cancelling payment stream...");
 
     let caller = match read_address32(caller_ptr) {
@@ -682,7 +921,7 @@ pub extern "C" fn cancel_stream(caller_ptr: *const u8, stream_id: u64) -> u32 {
     }
 
     let sk = stream_key(stream_id);
-    let mut stream_data = match storage_get(&sk) {
+    let stream_data = match storage_get(&sk) {
         Some(data) => data,
         None => {
             log_info("Stream not found");
@@ -691,120 +930,161 @@ pub extern "C" fn cancel_stream(caller_ptr: *const u8, stream_id: u64) -> u32 {
         }
     };
 
-    if stream_data.len() < STREAM_SIZE {
-        reentrancy_exit();
-        return 2;
-    }
+    let mut stream = match StreamRecord::decode(&stream_data) {
+        Some(stream) => stream,
+        None => {
+            reentrancy_exit();
+            return 2;
+        }
+    };
 
     // Verify caller is sender
-    if stream_data[0..32] != caller[..] {
+    if stream.sender != caller {
         log_info("Only sender can cancel");
         reentrancy_exit();
         return 3;
     }
 
-    if stream_data[96] == 1 {
+    if stream.cancelled {
         log_info("Stream already cancelled");
         reentrancy_exit();
         return 4;
     }
 
-    let total_amount = bytes_to_u64(&stream_data[64..72]);
-    let withdrawn = bytes_to_u64(&stream_data[72..80]);
-    let start_slot = bytes_to_u64(&stream_data[80..88]);
-    let end_slot = bytes_to_u64(&stream_data[88..96]);
     let current_slot = get_slot();
-
-    // Calculate how much has been streamed (not yet withdrawn) + already withdrawn
-    let duration = end_slot.saturating_sub(start_slot);
-    let elapsed = if current_slot >= end_slot {
-        duration
-    } else if current_slot < start_slot {
-        0
-    } else {
-        current_slot.saturating_sub(start_slot)
+    let cliff = get_cliff(stream_id);
+    let vested = calculate_vested(
+        stream.total_amount,
+        stream.start_slot,
+        stream.end_slot,
+        current_slot,
+        cliff,
+    );
+    let refund = match stream.total_amount.checked_sub(vested) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
     };
-
-    let streamed = if duration > 0 {
-        ((total_amount as u128).saturating_mul(elapsed as u128) / (duration as u128)) as u64
-    } else {
-        total_amount
+    let recipient_due = match vested.checked_sub(stream.withdrawn) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
     };
-
-    let refund = total_amount.saturating_sub(streamed);
+    let outstanding = match stream.outstanding() {
+        Some(value) if refund.checked_add(recipient_due) == Some(value) => value,
+        _ => {
+            reentrancy_exit();
+            return 35;
+        }
+    };
+    let cancel_count_after = match checked_add_stored(CP_CANCEL_COUNT_KEY, 1) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
+    };
+    let liability_before = match checked_stored_u64(CP_TOTAL_ESCROW_LIABILITY_KEY) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
+    };
+    if liability_before < outstanding {
+        reentrancy_exit();
+        return 35;
+    }
 
     // ── ESCROW SETTLEMENT: Transfer refund to sender, streamed to recipient ─
     let token_addr = match get_token_address() {
         Some(addr) => addr,
         None => {
-            // Pre-escrow stream (legacy) — mark cancelled without transfers
-            log_info("Token address not configured — cancelling without transfers (legacy stream)");
-            stream_data[96] = 1;
-            storage_set(&sk, &stream_data);
-            lichen_sdk::set_return_data(&u64_to_bytes(refund));
-            increment_counter_saturating(CP_CANCEL_COUNT_KEY);
+            log_info("Token address not configured — cancellation fails closed");
             reentrancy_exit();
-            return 0;
+            return 30;
         }
     };
     let self_addr = match get_self_address() {
         Some(addr) => addr,
         None => {
-            log_info("Contract self-address not configured — cancelling without transfers (legacy stream)");
-            stream_data[96] = 1;
-            storage_set(&sk, &stream_data);
-            lichen_sdk::set_return_data(&u64_to_bytes(refund));
-            increment_counter_saturating(CP_CANCEL_COUNT_KEY);
+            log_info("Contract self-address assertion missing or mismatched");
             reentrancy_exit();
-            return 0;
+            return 31;
+        }
+    };
+
+    let unpaid_before = match checked_stored_u64(CP_TOTAL_UNPAID_KEY) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
+    };
+    let (unpaid_key, recipient_unpaid_after) =
+        match next_unpaid_payout(token_addr, Address(stream.recipient), recipient_due) {
+            Some(value) => value,
+            None => {
+                reentrancy_exit();
+                return 35;
+            }
+        };
+    let total_unpaid_after = match unpaid_before.checked_add(recipient_due) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
         }
     };
 
     // Refund unstreamed amount to sender
-    let mut refund_paid = false;
-    if refund > 0 {
-        let mut sender_addr = [0u8; 32];
-        sender_addr.copy_from_slice(&stream_data[0..32]);
-        if !transfer_from_escrow(token_addr, self_addr, Address(sender_addr), refund) {
-            log_info("Refund to sender failed");
-            reentrancy_exit();
-            return 32;
-        }
-        refund_paid = true;
+    if refund > 0 && !transfer_from_escrow(token_addr, self_addr, Address(stream.sender), refund) {
+        log_info("Refund to sender failed");
+        reentrancy_exit();
+        return 32;
     }
 
     // Transfer already-streamed (minus withdrawn) to recipient
-    let recipient_due = streamed.saturating_sub(withdrawn);
-    if recipient_due > 0 {
-        let mut recipient_addr = [0u8; 32];
-        recipient_addr.copy_from_slice(&stream_data[32..64]);
-        if !transfer_from_escrow(
-            token_addr,
-            self_addr,
-            Address(recipient_addr),
-            recipient_due,
-        ) {
-            if refund_paid {
-                record_unpaid_payout(token_addr, Address(recipient_addr), recipient_due);
-            } else {
-                log_info("Transfer to recipient failed");
-                reentrancy_exit();
-                return 33;
-            }
-            log_info("Transfer to recipient failed");
-        }
-    }
+    let recipient_paid = transfer_from_escrow(
+        token_addr,
+        self_addr,
+        Address(stream.recipient),
+        recipient_due,
+    );
     // ── END ESCROW SETTLEMENT ───────────────────────────────────────────
 
-    // Mark as cancelled
-    stream_data[96] = 1;
-    storage_set(&sk, &stream_data);
+    let paid_out = if recipient_paid {
+        outstanding
+    } else {
+        if recipient_due > 0 {
+            storage_set(&unpaid_key, &u64_to_bytes(recipient_unpaid_after));
+            storage_set(CP_TOTAL_UNPAID_KEY, &u64_to_bytes(total_unpaid_after));
+            log_info("Recipient payout deferred for explicit recovery");
+        }
+        refund
+    };
+    let liability_after = match liability_before.checked_sub(paid_out) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
+    };
+
+    stream.cancelled = true;
+    storage_set(&sk, &stream.encode());
+    storage_set(CP_CANCEL_COUNT_KEY, &u64_to_bytes(cancel_count_after));
+    storage_set(
+        CP_TOTAL_ESCROW_LIABILITY_KEY,
+        &u64_to_bytes(liability_after),
+    );
 
     lichen_sdk::set_return_data(&u64_to_bytes(refund));
     log_info("Stream cancelled");
-
-    // Track cancel count
-    increment_counter_saturating(CP_CANCEL_COUNT_KEY);
 
     reentrancy_exit();
     0
@@ -824,6 +1104,10 @@ pub extern "C" fn cancel_stream(caller_ptr: *const u8, stream_id: u64) -> u32 {
 pub extern "C" fn claim_unpaid_payout(caller_ptr: *const u8) -> u32 {
     if !reentrancy_enter() {
         return 20;
+    }
+    if !accounting_operational() {
+        reentrancy_exit();
+        return 95;
     }
 
     let caller = match read_address32(caller_ptr) {
@@ -858,22 +1142,64 @@ pub extern "C" fn claim_unpaid_payout(caller_ptr: *const u8) -> u32 {
     let recipient = Address(caller);
     let key = unpaid_payout_key(token_addr, recipient);
     let unpaid_before = storage_get(&key);
-    let amount = unpaid_before
-        .as_ref()
-        .map(|d| if d.len() >= 8 { bytes_to_u64(d) } else { 0 })
-        .unwrap_or(0);
+    let amount = match unpaid_before.as_ref() {
+        Some(data) if data.len() == 8 => bytes_to_u64(data),
+        Some(_) => {
+            reentrancy_exit();
+            return 35;
+        }
+        None => 0,
+    };
     if amount == 0 {
         reentrancy_exit();
         return 2;
     }
+    let liability_before = match checked_stored_u64(CP_TOTAL_ESCROW_LIABILITY_KEY) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
+    };
+    let liability_after = match liability_before.checked_sub(amount) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
+    };
+    let total_unpaid_before = match checked_stored_u64(CP_TOTAL_UNPAID_KEY) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
+    };
+    let total_unpaid_after = match total_unpaid_before.checked_sub(amount) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
+    };
 
     if !remove_storage_key(&key) {
         reentrancy_exit();
         return 34;
     }
+    storage_set(
+        CP_TOTAL_ESCROW_LIABILITY_KEY,
+        &u64_to_bytes(liability_after),
+    );
+    storage_set(CP_TOTAL_UNPAID_KEY, &u64_to_bytes(total_unpaid_after));
 
     if !transfer_from_escrow(token_addr, self_addr, recipient, amount) {
         restore_storage_value(&key, &unpaid_before);
+        storage_set(
+            CP_TOTAL_ESCROW_LIABILITY_KEY,
+            &u64_to_bytes(liability_before),
+        );
+        storage_set(CP_TOTAL_UNPAID_KEY, &u64_to_bytes(total_unpaid_before));
         reentrancy_exit();
         return 32;
     }
@@ -996,6 +1322,10 @@ pub extern "C" fn create_stream_with_cliff(
     if !reentrancy_enter() {
         return 20;
     }
+    if !accounting_operational() {
+        reentrancy_exit();
+        return 95;
+    }
 
     if is_paused() {
         reentrancy_exit();
@@ -1028,6 +1358,10 @@ pub extern "C" fn create_stream_with_cliff(
         reentrancy_exit();
         return 1;
     }
+    if sender == recipient || sender == [0u8; 32] || recipient == [0u8; 32] {
+        reentrancy_exit();
+        return 4;
+    }
     if cliff_slot < start_slot {
         reentrancy_exit();
         return 2;
@@ -1053,6 +1387,34 @@ pub extern "C" fn create_stream_with_cliff(
             log_info("Stream count overflow");
             reentrancy_exit();
             return 34;
+        }
+    };
+    let next_total_streamed = match checked_add_stored(CP_TOTAL_STREAMED_KEY, total_amount) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
+    };
+    let next_liability = match checked_add_stored(CP_TOTAL_ESCROW_LIABILITY_KEY, total_amount) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
+    };
+    let sender_index = match prepare_index_append(SENDER_INDEX_PREFIX, &sender) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
+    };
+    let recipient_index = match prepare_index_append(RECIPIENT_INDEX_PREFIX, &recipient) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
         }
     };
 
@@ -1083,31 +1445,30 @@ pub extern "C" fn create_stream_with_cliff(
 
     storage_set(b"stream_count", &u64_to_bytes(next_stream_id));
 
-    // Build stream data
     let current_slot = get_slot();
-    let mut stream = alloc::vec![0u8; STREAM_SIZE];
-    stream[0..32].copy_from_slice(&sender);
-    stream[32..64].copy_from_slice(&recipient);
-    stream[64..72].copy_from_slice(&u64_to_bytes(total_amount));
-    // withdrawn = 0
-    stream[80..88].copy_from_slice(&u64_to_bytes(start_slot));
-    stream[88..96].copy_from_slice(&u64_to_bytes(end_slot));
-    // cancelled = 0
-    stream[97..105].copy_from_slice(&u64_to_bytes(current_slot));
+    let stream = StreamRecord {
+        sender,
+        recipient,
+        total_amount,
+        withdrawn: 0,
+        start_slot,
+        end_slot,
+        cancelled: false,
+        created_slot: current_slot,
+    }
+    .encode();
 
     let sk = stream_key(stream_id);
     storage_set(&sk, &stream);
+    apply_index_append(&sender_index, stream_id);
+    apply_index_append(&recipient_index, stream_id);
 
     // Store cliff
     let ck = cliff_key(stream_id);
     storage_set(&ck, &u64_to_bytes(cliff_slot));
 
-    // Track total streamed volume
-    let total = stored_u64(CP_TOTAL_STREAMED_KEY);
-    storage_set(
-        CP_TOTAL_STREAMED_KEY,
-        &u64_to_bytes(total.saturating_add(total_amount)),
-    );
+    storage_set(CP_TOTAL_STREAMED_KEY, &u64_to_bytes(next_total_streamed));
+    storage_set(CP_TOTAL_ESCROW_LIABILITY_KEY, &u64_to_bytes(next_liability));
 
     lichen_sdk::set_return_data(&u64_to_bytes(stream_id));
     log_info("Stream created with cliff");
@@ -1126,7 +1487,11 @@ pub extern "C" fn transfer_stream(
     stream_id: u64,
 ) -> u32 {
     if !reentrancy_enter() {
-        return 0;
+        return 20;
+    }
+    if !accounting_operational() || is_paused() {
+        reentrancy_exit();
+        return 20;
     }
 
     let caller = match read_address32(caller_ptr) {
@@ -1150,7 +1515,10 @@ pub extern "C" fn transfer_stream(
         reentrancy_exit();
         return 200;
     }
-
+    if new_recipient == [0u8; 32] || new_recipient == caller {
+        reentrancy_exit();
+        return 5;
+    }
     let sk = stream_key(stream_id);
     let mut stream_data = match storage_get(&sk) {
         Some(data) => data,
@@ -1183,10 +1551,22 @@ pub extern "C" fn transfer_stream(
         reentrancy_exit();
         return 4;
     }
+    if !check_identity_gate(&new_recipient) {
+        reentrancy_exit();
+        return 11;
+    }
+    let recipient_index = match prepare_index_append(RECIPIENT_INDEX_PREFIX, &new_recipient) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 35;
+        }
+    };
 
     // Update recipient
     stream_data[32..64].copy_from_slice(&new_recipient);
     storage_set(&sk, &stream_data);
+    apply_index_append(&recipient_index, stream_id);
 
     log_info("Stream transferred to new recipient");
     reentrancy_exit();
@@ -1207,11 +1587,20 @@ pub extern "C" fn initialize_cp_admin(admin_ptr: *const u8) -> u32 {
     if real_caller.0 != admin {
         return 200;
     }
+    if admin == [0u8; 32] {
+        return 2;
+    }
 
     if storage_get(ADMIN_KEY).is_some() {
         return 1;
     }
     storage_set(ADMIN_KEY, &admin);
+    storage_set(IDENTITY_ADMIN_KEY, &admin);
+    if checked_stored_u64(b"stream_count") == Some(0) {
+        storage_set(CP_ACCOUNTING_VERSION_KEY, &u64_to_bytes(ACCOUNTING_VERSION));
+        storage_set(CP_TOTAL_ESCROW_LIABILITY_KEY, &u64_to_bytes(0));
+        storage_set(CP_TOTAL_UNPAID_KEY, &u64_to_bytes(0));
+    }
     log_info("SporePay admin initialized");
     0
 }
@@ -1278,6 +1667,11 @@ pub extern "C" fn set_self_address(caller_ptr: *const u8, self_addr_ptr: *const 
         return 2;
     }
 
+    let runtime = get_contract_address();
+    if runtime.0 != [0u8; 32] && runtime.0 != self_addr {
+        return 4;
+    }
+
     if load_configured_address(CP_SELF_ADDR_KEY).is_some() {
         return 3;
     }
@@ -1331,6 +1725,9 @@ pub extern "C" fn unpause(caller_ptr: *const u8) -> u32 {
     if !is_cp_admin(&caller) {
         return 1;
     }
+    if !accounting_operational() {
+        return 95;
+    }
     if !is_paused() {
         return 2;
     }
@@ -1372,8 +1769,9 @@ const LICHENID_MIN_REP_KEY: &[u8] = b"lichenid_min_rep";
 /// Storage key for LichenID contract address (32 bytes)
 const LICHENID_ADDR_KEY: &[u8] = b"lichenid_address";
 
-/// Set the admin for identity/reputation configuration.
-/// Only callable once (first caller becomes admin).
+/// Set the admin for identity/reputation configuration on a legacy deployment
+/// where initialize_cp_admin predates the unified authority initialization.
+/// Only the existing protocol admin may fill the value, and only once.
 #[no_mangle]
 pub extern "C" fn set_identity_admin(admin_ptr: *const u8) -> u32 {
     let admin = match read_address32(admin_ptr) {
@@ -1385,6 +1783,10 @@ pub extern "C" fn set_identity_admin(admin_ptr: *const u8) -> u32 {
     let real_caller = get_caller();
     if real_caller.0 != admin {
         return 200;
+    }
+
+    if !is_cp_admin(&admin) || admin == [0u8; 32] {
+        return 2;
     }
 
     if storage_get(IDENTITY_ADMIN_KEY).is_some() {
@@ -1459,6 +1861,9 @@ pub extern "C" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) 
     if caller[..] != admin[..] {
         return 2;
     }
+    if min_reputation > 0 && load_configured_address(LICHENID_ADDR_KEY).is_none() {
+        return 3;
+    }
 
     storage_set(LICHENID_MIN_REP_KEY, &u64_to_bytes(min_reputation));
     log_info("Identity gate configured");
@@ -1478,7 +1883,7 @@ fn check_identity_gate(caller: &[u8]) -> bool {
 
     let lichenid_addr = match storage_get(LICHENID_ADDR_KEY) {
         Some(data) if data.len() >= 32 => data,
-        _ => return true,
+        _ => return false,
     };
 
     let mut addr = [0u8; 32];
@@ -1489,12 +1894,224 @@ fn check_identity_gate(caller: &[u8]) -> bool {
     let call = CrossCall::new(target, "get_reputation", args);
 
     match call_contract(call) {
-        Ok(result) if result.len() >= 8 => {
+        Ok(result) if result.len() == 8 => {
             let reputation = bytes_to_u64(&result);
             reputation >= min_rep
         }
         _ => false,
     }
+}
+
+// ============================================================================
+// ACCOUNTING V3 MIGRATION
+// ============================================================================
+
+/// Freeze a legacy deployment and start exact escrow-liability reconstruction.
+/// The expected count must equal the immutable contiguous stream ID frontier.
+/// Returns 0 success/idempotent resume, 1 already active, 2 count mismatch,
+/// 3 conflicting migration, 40 pointer error, 200 caller spoofing.
+#[no_mangle]
+pub extern "C" fn begin_accounting_v3_migration(
+    caller_ptr: *const u8,
+    expected_stream_count: u64,
+) -> u32 {
+    let caller = match read_address32(caller_ptr) {
+        Some(value) => value,
+        None => return 40,
+    };
+    if get_caller().0 != caller {
+        return 200;
+    }
+    if !is_cp_admin(&caller) {
+        return 4;
+    }
+    if accounting_version() == ACCOUNTING_VERSION {
+        return 1;
+    }
+    if checked_stored_u64(b"stream_count") != Some(expected_stream_count) {
+        return 2;
+    }
+    if migration_locked() {
+        return if checked_stored_u64(CP_MIGRATION_EXPECTED_COUNT_KEY)
+            == Some(expected_stream_count)
+        {
+            0
+        } else {
+            3
+        };
+    }
+
+    storage_set(PAUSE_KEY, &[1]);
+    storage_set(CP_MIGRATION_LOCK_KEY, &[1]);
+    storage_set(
+        CP_MIGRATION_EXPECTED_COUNT_KEY,
+        &u64_to_bytes(expected_stream_count),
+    );
+    storage_set(CP_MIGRATION_CURSOR_KEY, &u64_to_bytes(0));
+    storage_set(CP_MIGRATION_LIABILITY_KEY, &u64_to_bytes(0));
+    storage_set(CP_MIGRATION_UNPAID_KEY, &u64_to_bytes(0));
+    0
+}
+
+/// Migrate exactly the next contiguous stream. This operation is permissionless,
+/// deterministic, idempotent at the transaction layer, and resumable by cursor.
+/// Canceled-stream unpaid balances are counted once per recipient.
+#[no_mangle]
+pub extern "C" fn migrate_accounting_v3_stream(stream_id: u64) -> u32 {
+    if !migration_locked() || accounting_version() == ACCOUNTING_VERSION {
+        return 1;
+    }
+    let cursor = match checked_stored_u64(CP_MIGRATION_CURSOR_KEY) {
+        Some(value) => value,
+        None => return 7,
+    };
+    let expected = match checked_stored_u64(CP_MIGRATION_EXPECTED_COUNT_KEY) {
+        Some(value) => value,
+        None => return 7,
+    };
+    if stream_id != cursor || stream_id >= expected {
+        return 2;
+    }
+    let stream = match storage_get(&stream_key(stream_id))
+        .as_deref()
+        .and_then(StreamRecord::decode)
+    {
+        Some(value) => value,
+        None => return 3,
+    };
+    let outstanding = match stream.outstanding() {
+        Some(value) => value,
+        None => return 4,
+    };
+    let sender_index = match prepare_index_append(SENDER_INDEX_PREFIX, &stream.sender) {
+        Some(value) => value,
+        None => return 7,
+    };
+    let recipient_index = match prepare_index_append(RECIPIENT_INDEX_PREFIX, &stream.recipient) {
+        Some(value) => value,
+        None => return 7,
+    };
+
+    let mut liability = match checked_stored_u64(CP_MIGRATION_LIABILITY_KEY) {
+        Some(value) => value,
+        None => return 7,
+    };
+    let mut unpaid = match checked_stored_u64(CP_MIGRATION_UNPAID_KEY) {
+        Some(value) => value,
+        None => return 7,
+    };
+    if stream.cancelled {
+        let marker = migrated_unpaid_recipient_key(&stream.recipient);
+        let marker_value = storage_get(&marker);
+        if marker_value.is_none() {
+            let token = match get_token_address() {
+                Some(value) => value,
+                None => return 5,
+            };
+            let recipient_unpaid = match checked_stored_u64(&unpaid_payout_key(
+                token,
+                Address(stream.recipient),
+            )) {
+                Some(value) => value,
+                None => return 7,
+            };
+            liability = match liability.checked_add(recipient_unpaid) {
+                Some(value) => value,
+                None => return 6,
+            };
+            unpaid = match unpaid.checked_add(recipient_unpaid) {
+                Some(value) => value,
+                None => return 6,
+            };
+            storage_set(&marker, &[1]);
+        } else if marker_value.as_deref() != Some(&[1]) {
+            return 7;
+        }
+    } else {
+        liability = match liability.checked_add(outstanding) {
+            Some(value) => value,
+            None => return 6,
+        };
+    }
+
+    let next_cursor = match cursor.checked_add(1) {
+        Some(value) => value,
+        None => return 6,
+    };
+    storage_set(CP_MIGRATION_LIABILITY_KEY, &u64_to_bytes(liability));
+    storage_set(CP_MIGRATION_UNPAID_KEY, &u64_to_bytes(unpaid));
+    apply_index_append(&sender_index, stream_id);
+    apply_index_append(&recipient_index, stream_id);
+    storage_set(CP_MIGRATION_CURSOR_KEY, &u64_to_bytes(next_cursor));
+    0
+}
+
+/// Finalize accounting only after every stream has been reconstructed, the
+/// operator's independently generated totals match, and contract custody covers
+/// every active/deferred obligation. The protocol remains paused for a separate
+/// post-migration verification and explicit unpause.
+#[no_mangle]
+pub extern "C" fn complete_accounting_v3_migration(
+    caller_ptr: *const u8,
+    expected_liability: u64,
+    expected_unpaid: u64,
+) -> u32 {
+    let caller = match read_address32(caller_ptr) {
+        Some(value) => value,
+        None => return 40,
+    };
+    if get_caller().0 != caller {
+        return 200;
+    }
+    if !is_cp_admin(&caller) {
+        return 4;
+    }
+    if !migration_locked() || accounting_version() == ACCOUNTING_VERSION {
+        return 1;
+    }
+    let expected_count = match checked_stored_u64(CP_MIGRATION_EXPECTED_COUNT_KEY) {
+        Some(value) => value,
+        None => return 10,
+    };
+    if checked_stored_u64(CP_MIGRATION_CURSOR_KEY) != Some(expected_count)
+        || checked_stored_u64(b"stream_count") != Some(expected_count)
+    {
+        return 2;
+    }
+    let liability = match checked_stored_u64(CP_MIGRATION_LIABILITY_KEY) {
+        Some(value) => value,
+        None => return 10,
+    };
+    let unpaid = match checked_stored_u64(CP_MIGRATION_UNPAID_KEY) {
+        Some(value) => value,
+        None => return 10,
+    };
+    if liability != expected_liability || unpaid != expected_unpaid {
+        return 3;
+    }
+    let token = match get_token_address() {
+        Some(value) => value,
+        None => return 5,
+    };
+    let self_addr = match get_self_address() {
+        Some(value) => value,
+        None => return 6,
+    };
+    let custody = match balance_of_token_or_native(token, self_addr) {
+        Ok(value) => value,
+        Err(_) => return 7,
+    };
+    if custody < liability {
+        return 8;
+    }
+    if !remove_storage_key(CP_MIGRATION_LOCK_KEY) {
+        return 9;
+    }
+
+    storage_set(CP_TOTAL_ESCROW_LIABILITY_KEY, &u64_to_bytes(liability));
+    storage_set(CP_TOTAL_UNPAID_KEY, &u64_to_bytes(unpaid));
+    storage_set(CP_ACCOUNTING_VERSION_KEY, &u64_to_bytes(ACCOUNTING_VERSION));
+    0
 }
 
 // ============================================================================
@@ -1509,10 +2126,34 @@ pub extern "C" fn get_stream_count() -> u64 {
         .unwrap_or(0)
 }
 
-/// Get platform stats [stream_count(8), total_streamed(8), total_withdrawn(8), cancel_count(8)]
+/// Return bounded sender-associated stream IDs.
+/// Payload: total_count(8) + next_cursor(8) + returned_count(8) + IDs.
+#[no_mangle]
+pub extern "C" fn get_sender_stream_ids(
+    sender_ptr: *const u8,
+    cursor: u64,
+    limit: u64,
+) -> u32 {
+    get_address_stream_ids(SENDER_INDEX_PREFIX, sender_ptr, cursor, limit)
+}
+
+/// Return bounded recipient activity stream IDs. A transferred stream remains
+/// in prior recipients' activity history and is appended to the new recipient.
+#[no_mangle]
+pub extern "C" fn get_recipient_stream_ids(
+    recipient_ptr: *const u8,
+    cursor: u64,
+    limit: u64,
+) -> u32 {
+    get_address_stream_ids(RECIPIENT_INDEX_PREFIX, recipient_ptr, cursor, limit)
+}
+
+/// Get platform stats: stream count, lifetime created/withdrawn volume, cancel
+/// count, exact escrow liability, deferred payout liability, accounting version,
+/// and migration lock (eight little-endian u64 values).
 #[no_mangle]
 pub extern "C" fn get_platform_stats() -> u32 {
-    let mut buf = Vec::with_capacity(32);
+    let mut buf = Vec::with_capacity(64);
     buf.extend_from_slice(&u64_to_bytes(
         storage_get(b"stream_count")
             .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
@@ -1533,6 +2174,10 @@ pub extern "C" fn get_platform_stats() -> u32 {
             .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
             .unwrap_or(0),
     ));
+    buf.extend_from_slice(&u64_to_bytes(stored_u64(CP_TOTAL_ESCROW_LIABILITY_KEY)));
+    buf.extend_from_slice(&u64_to_bytes(stored_u64(CP_TOTAL_UNPAID_KEY)));
+    buf.extend_from_slice(&u64_to_bytes(accounting_version()));
+    buf.extend_from_slice(&u64_to_bytes(u64::from(migration_locked())));
     lichen_sdk::set_return_data(&buf);
     0
 }
@@ -1545,6 +2190,9 @@ mod tests {
 
     fn setup() {
         test_mock::reset();
+        storage_set(CP_ACCOUNTING_VERSION_KEY, &u64_to_bytes(ACCOUNTING_VERSION));
+        storage_set(CP_TOTAL_ESCROW_LIABILITY_KEY, &u64_to_bytes(0));
+        storage_set(CP_TOTAL_UNPAID_KEY, &u64_to_bytes(0));
     }
 
     /// Configure escrow addresses in storage so stream creation succeeds.
@@ -1713,7 +2361,7 @@ mod tests {
 
         let admin = [5u8; 32];
         test_mock::set_caller(admin);
-        assert_eq!(set_identity_admin(admin.as_ptr()), 0);
+        assert_eq!(initialize_cp_admin(admin.as_ptr()), 0);
         let lichenid_addr = [0x42u8; 32];
         assert_eq!(
             set_lichenid_address(admin.as_ptr(), lichenid_addr.as_ptr()),
@@ -1747,7 +2395,12 @@ mod tests {
 
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
-        assert_eq!(set_identity_admin(admin.as_ptr()), 0);
+        assert_eq!(initialize_cp_admin(admin.as_ptr()), 0);
+        let lichenid_addr = [0x42u8; 32];
+        assert_eq!(
+            set_lichenid_address(admin.as_ptr(), lichenid_addr.as_ptr()),
+            0
+        );
 
         let other = [9u8; 32];
         test_mock::set_caller(other);
@@ -2220,7 +2873,7 @@ mod tests {
         let other = [11u8; 32];
         let lichenid = [0x42u8; 32];
         test_mock::set_caller(admin);
-        assert_eq!(set_identity_admin(admin.as_ptr()), 0);
+        assert_eq!(initialize_cp_admin(admin.as_ptr()), 0);
 
         test_mock::set_caller(other);
         assert_eq!(set_lichenid_address(other.as_ptr(), lichenid.as_ptr()), 2);
@@ -2239,7 +2892,7 @@ mod tests {
         let first = [0x42u8; 32];
         let second = [0x43u8; 32];
         test_mock::set_caller(admin);
-        assert_eq!(set_identity_admin(admin.as_ptr()), 0);
+        assert_eq!(initialize_cp_admin(admin.as_ptr()), 0);
 
         assert_eq!(set_lichenid_address(admin.as_ptr(), [0u8; 32].as_ptr()), 3);
         assert_eq!(set_lichenid_address(admin.as_ptr(), first.as_ptr()), 0);
@@ -2250,26 +2903,36 @@ mod tests {
     }
 
     #[test]
-    fn test_cancel_legacy_stream_without_escrow() {
-        // Streams created before escrow was configured can still be cancelled
+    fn test_cancel_without_escrow_configuration_fails_closed() {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         // Manually create a stream record in storage without escrow
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
-        let data = encode_stream(&sender, &recipient, 1_000_000, 0, 100, 1100, false, 100);
+        let data = StreamRecord {
+            sender,
+            recipient,
+            total_amount: 1_000_000,
+            withdrawn: 0,
+            start_slot: 100,
+            end_slot: 1100,
+            cancelled: false,
+            created_slot: 100,
+        }
+        .encode();
         let sk = stream_key(0);
         storage_set(&sk, &data);
         storage_set(b"stream_count", &u64_to_bytes(1));
+        storage_set(CP_TOTAL_ESCROW_LIABILITY_KEY, &u64_to_bytes(1_000_000));
 
-        // Cancel without token/self configured — should still mark cancelled (legacy path)
         test_mock::set_caller(sender);
         let result = cancel_stream(sender.as_ptr(), 0);
-        assert_eq!(result, 0);
+        assert_eq!(result, 30);
 
         let stream = test_mock::get_storage(&sk).unwrap();
-        assert_eq!(stream[96], 1); // marked cancelled
+        assert_eq!(stream[96], 0);
+        assert_eq!(stored_u64(CP_TOTAL_ESCROW_LIABILITY_KEY), 1_000_000);
     }
 
     #[test]
@@ -2399,11 +3062,15 @@ mod tests {
         let result = get_platform_stats();
         assert_eq!(result, 0);
         let ret = test_mock::get_return_data();
-        assert_eq!(ret.len(), 32);
+        assert_eq!(ret.len(), 64);
         assert_eq!(bytes_to_u64(&ret[0..8]), 2); // stream_count = 2
         assert_eq!(bytes_to_u64(&ret[8..16]), 1_500_000); // total_streamed = 1.5M
         assert_eq!(bytes_to_u64(&ret[16..24]), 100_000); // total_withdrawn = 100k
         assert_eq!(bytes_to_u64(&ret[24..32]), 1); // cancel_count = 1
+        assert_eq!(bytes_to_u64(&ret[32..40]), 900_000); // active escrow liability
+        assert_eq!(bytes_to_u64(&ret[40..48]), 0); // no deferred payout
+        assert_eq!(bytes_to_u64(&ret[48..56]), ACCOUNTING_VERSION);
+        assert_eq!(bytes_to_u64(&ret[56..64]), 0); // migration unlocked
     }
 
     #[test]
@@ -2632,6 +3299,8 @@ mod tests {
         let recipient = [2u8; 32];
         let key = unpaid_key(&token, &recipient);
         storage_set(&key, &u64_to_bytes(250_000));
+        storage_set(CP_TOTAL_UNPAID_KEY, &u64_to_bytes(250_000));
+        storage_set(CP_TOTAL_ESCROW_LIABILITY_KEY, &u64_to_bytes(250_000));
 
         test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
         test_mock::set_caller(recipient);
@@ -2651,6 +3320,8 @@ mod tests {
         let attacker = [9u8; 32];
         let key = unpaid_key(&token, &recipient);
         storage_set(&key, &u64_to_bytes(250_000));
+        storage_set(CP_TOTAL_UNPAID_KEY, &u64_to_bytes(250_000));
+        storage_set(CP_TOTAL_ESCROW_LIABILITY_KEY, &u64_to_bytes(250_000));
 
         test_mock::set_caller(attacker);
         assert_eq!(claim_unpaid_payout(recipient.as_ptr()), 200);
@@ -2668,11 +3339,13 @@ mod tests {
         let token = [0xAAu8; 32];
         let recipient = [2u8; 32];
         let key = unpaid_key(&token, &recipient);
-        storage_set(&key, &u64_to_bytes(250_000));
 
         test_mock::set_caller(admin);
         assert_eq!(initialize_cp_admin(admin.as_ptr()), 0);
         assert_eq!(pause(admin.as_ptr()), 0);
+        storage_set(&key, &u64_to_bytes(250_000));
+        storage_set(CP_TOTAL_UNPAID_KEY, &u64_to_bytes(250_000));
+        storage_set(CP_TOTAL_ESCROW_LIABILITY_KEY, &u64_to_bytes(250_000));
 
         test_mock::set_caller(recipient);
         assert_eq!(claim_unpaid_payout(recipient.as_ptr()), 0);
@@ -2706,7 +3379,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cancel_recipient_failure_without_prior_refund_preserves_stream() {
+    fn test_cancel_recipient_failure_without_refund_records_unpaid() {
         setup();
         configure_escrow();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
@@ -2721,14 +3394,18 @@ mod tests {
 
         test_mock::SLOT.with(|s| *s.borrow_mut() = 1200);
         test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
-        assert_eq!(cancel_stream(sender.as_ptr(), 0), 33);
+        assert_eq!(cancel_stream(sender.as_ptr(), 0), 0);
 
         let stream = test_mock::get_storage(&stream_key(0)).unwrap();
-        assert_eq!(stream[96], 0);
+        assert_eq!(stream[96], 1);
+        let token = [0xAAu8; 32];
+        assert_eq!(stored_u64(&unpaid_key(&token, &recipient)), 1_000_000);
+        assert_eq!(stored_u64(CP_TOTAL_UNPAID_KEY), 1_000_000);
+        assert_eq!(stored_u64(CP_TOTAL_ESCROW_LIABILITY_KEY), 1_000_000);
     }
 
     #[test]
-    fn test_cancel_count_saturates() {
+    fn test_cancel_count_overflow_fails_before_settlement() {
         setup();
         configure_escrow();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
@@ -2742,8 +3419,291 @@ mod tests {
             0
         );
 
-        assert_eq!(cancel_stream(sender.as_ptr(), 0), 0);
+        assert_eq!(cancel_stream(sender.as_ptr(), 0), 35);
         let count = test_mock::get_storage(CP_CANCEL_COUNT_KEY).unwrap();
         assert_eq!(bytes_to_u64(&count), u64::MAX);
+        let stream = test_mock::get_storage(&stream_key(0)).unwrap();
+        assert_eq!(stream[96], 0);
+    }
+
+    #[test]
+    fn test_accounting_liability_tracks_full_lifecycle() {
+        setup();
+        configure_escrow();
+        test_mock::set_slot(100);
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+
+        test_mock::set_caller(sender);
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100),
+            0
+        );
+        assert_eq!(stored_u64(CP_TOTAL_ESCROW_LIABILITY_KEY), 1_000_000);
+
+        test_mock::set_slot(600);
+        test_mock::set_caller(recipient);
+        assert_eq!(withdraw_from_stream(recipient.as_ptr(), 0, 200_000), 0);
+        assert_eq!(stored_u64(CP_TOTAL_ESCROW_LIABILITY_KEY), 800_000);
+
+        test_mock::set_caller(sender);
+        assert_eq!(cancel_stream(sender.as_ptr(), 0), 0);
+        assert_eq!(stored_u64(CP_TOTAL_ESCROW_LIABILITY_KEY), 0);
+        assert_eq!(stored_u64(CP_TOTAL_UNPAID_KEY), 0);
+    }
+
+    #[test]
+    fn test_cliff_cancel_before_boundary_refunds_everything() {
+        setup();
+        configure_escrow();
+        test_mock::set_slot(100);
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        test_mock::set_caller(sender);
+        assert_eq!(
+            create_stream_with_cliff(
+                sender.as_ptr(),
+                recipient.as_ptr(),
+                1_000_000,
+                100,
+                1100,
+                500,
+            ),
+            0
+        );
+
+        test_mock::set_slot(400);
+        assert_eq!(cancel_stream(sender.as_ptr(), 0), 0);
+        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 1_000_000);
+        assert_eq!(stored_u64(CP_TOTAL_ESCROW_LIABILITY_KEY), 0);
+        assert_eq!(stored_u64(CP_TOTAL_UNPAID_KEY), 0);
+        assert_eq!(test_mock::get_last_cross_call().unwrap().1, "transfer");
+    }
+
+    #[test]
+    fn test_enabled_identity_gate_fails_closed_without_lichenid() {
+        setup();
+        storage_set(LICHENID_MIN_REP_KEY, &u64_to_bytes(1));
+        assert!(!check_identity_gate(&[7u8; 32]));
+
+        let admin = [5u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(initialize_cp_admin(admin.as_ptr()), 0);
+        assert_eq!(set_identity_gate(admin.as_ptr(), 1), 3);
+    }
+
+    #[test]
+    fn test_transfer_respects_pause_identity_and_reentrancy() {
+        setup();
+        configure_escrow();
+        test_mock::set_slot(100);
+        let admin = [9u8; 32];
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        let replacement = [3u8; 32];
+        test_mock::set_caller(sender);
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 1000, 100, 1100),
+            0
+        );
+
+        test_mock::set_caller(admin);
+        assert_eq!(initialize_cp_admin(admin.as_ptr()), 0);
+        let lichenid = [0x42u8; 32];
+        assert_eq!(set_lichenid_address(admin.as_ptr(), lichenid.as_ptr()), 0);
+        assert_eq!(set_identity_gate(admin.as_ptr(), 1), 0);
+
+        test_mock::set_caller(recipient);
+        assert_eq!(
+            transfer_stream(recipient.as_ptr(), replacement.as_ptr(), 0),
+            11
+        );
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_identity_gate(admin.as_ptr(), 0), 0);
+        assert_eq!(pause(admin.as_ptr()), 0);
+        test_mock::set_caller(recipient);
+        assert_eq!(
+            transfer_stream(recipient.as_ptr(), replacement.as_ptr(), 0),
+            20
+        );
+
+        storage_set(PAUSE_KEY, &[0]);
+        storage_set(CP_REENTRANCY_KEY, &[1]);
+        assert_eq!(
+            transfer_stream(recipient.as_ptr(), replacement.as_ptr(), 0),
+            20
+        );
+    }
+
+    #[test]
+    fn test_accounting_v3_migration_is_exact_resumable_and_solvency_gated() {
+        setup();
+        configure_escrow();
+        let admin = [9u8; 32];
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(initialize_cp_admin(admin.as_ptr()), 0);
+
+        remove_storage_key(CP_ACCOUNTING_VERSION_KEY);
+        storage_set(b"stream_count", &u64_to_bytes(3));
+        storage_set(
+            &stream_key(0),
+            &StreamRecord {
+                sender,
+                recipient,
+                total_amount: 1000,
+                withdrawn: 250,
+                start_slot: 1,
+                end_slot: 100,
+                cancelled: false,
+                created_slot: 1,
+            }
+            .encode(),
+        );
+        for stream_id in 1..=2 {
+            storage_set(
+                &stream_key(stream_id),
+                &StreamRecord {
+                    sender,
+                    recipient,
+                    total_amount: 500,
+                    withdrawn: 0,
+                    start_slot: 1,
+                    end_slot: 100,
+                    cancelled: true,
+                    created_slot: 1,
+                }
+                .encode(),
+            );
+        }
+        let token = Address([0xAAu8; 32]);
+        storage_set(
+            &unpaid_payout_key(token, Address(recipient)),
+            &u64_to_bytes(100),
+        );
+
+        assert_eq!(begin_accounting_v3_migration(admin.as_ptr(), 3), 0);
+        assert_eq!(begin_accounting_v3_migration(admin.as_ptr(), 3), 0);
+        assert_eq!(migrate_accounting_v3_stream(1), 2);
+        assert_eq!(migrate_accounting_v3_stream(0), 0);
+        assert_eq!(migrate_accounting_v3_stream(1), 0);
+        assert_eq!(migrate_accounting_v3_stream(2), 0);
+        assert_eq!(stored_u64(CP_MIGRATION_LIABILITY_KEY), 850);
+        assert_eq!(stored_u64(CP_MIGRATION_UNPAID_KEY), 100);
+        assert_eq!(
+            stored_u64(&address_index_count_key(SENDER_INDEX_PREFIX, &sender)),
+            3
+        );
+        assert_eq!(
+            stored_u64(&address_index_count_key(
+                RECIPIENT_INDEX_PREFIX,
+                &recipient,
+            )),
+            3
+        );
+
+        test_mock::set_cross_call_response(Some(849u64.to_le_bytes().to_vec()));
+        assert_eq!(
+            complete_accounting_v3_migration(admin.as_ptr(), 850, 100),
+            8
+        );
+        assert!(migration_locked());
+
+        test_mock::set_cross_call_response(Some(850u64.to_le_bytes().to_vec()));
+        assert_eq!(
+            complete_accounting_v3_migration(admin.as_ptr(), 850, 100),
+            0
+        );
+        assert_eq!(accounting_version(), ACCOUNTING_VERSION);
+        assert!(!migration_locked());
+        assert_eq!(stored_u64(CP_TOTAL_ESCROW_LIABILITY_KEY), 850);
+        assert_eq!(stored_u64(CP_TOTAL_UNPAID_KEY), 100);
+        assert!(is_paused());
+        assert_eq!(unpause(admin.as_ptr()), 0);
+    }
+
+    #[test]
+    fn test_legacy_accounting_blocks_value_mutations_until_migrated() {
+        setup();
+        configure_escrow();
+        remove_storage_key(CP_ACCOUNTING_VERSION_KEY);
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        test_mock::set_caller(sender);
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 1000, 1, 100),
+            95
+        );
+        assert!(test_mock::get_last_cross_call().is_none());
+    }
+
+    #[test]
+    fn test_account_stream_indexes_are_bounded_and_paginated() {
+        setup();
+        configure_escrow();
+        test_mock::set_slot(100);
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        test_mock::set_caller(sender);
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 1000, 100, 1100),
+            0
+        );
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 2000, 100, 1100),
+            0
+        );
+
+        assert_eq!(get_sender_stream_ids(sender.as_ptr(), 0, 1), 0);
+        let first = test_mock::get_return_data();
+        assert_eq!(bytes_to_u64(&first[0..8]), 2);
+        assert_eq!(bytes_to_u64(&first[8..16]), 1);
+        assert_eq!(bytes_to_u64(&first[16..24]), 1);
+        assert_eq!(bytes_to_u64(&first[24..32]), 0);
+
+        assert_eq!(get_sender_stream_ids(sender.as_ptr(), 1, 64), 0);
+        let second = test_mock::get_return_data();
+        assert_eq!(bytes_to_u64(&second[0..8]), 2);
+        assert_eq!(bytes_to_u64(&second[8..16]), 2);
+        assert_eq!(bytes_to_u64(&second[16..24]), 1);
+        assert_eq!(bytes_to_u64(&second[24..32]), 1);
+
+        assert_eq!(get_recipient_stream_ids(recipient.as_ptr(), 0, 64), 0);
+        assert_eq!(bytes_to_u64(&test_mock::get_return_data()[0..8]), 2);
+        assert_eq!(get_sender_stream_ids(sender.as_ptr(), 3, 1), 2);
+        assert_eq!(get_sender_stream_ids(sender.as_ptr(), 0, 0), 3);
+        assert_eq!(get_sender_stream_ids(sender.as_ptr(), 0, 65), 3);
+    }
+
+    #[test]
+    fn test_transfer_appends_new_recipient_activity_index() {
+        setup();
+        configure_escrow();
+        test_mock::set_slot(100);
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        let replacement = [3u8; 32];
+        test_mock::set_caller(sender);
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 1000, 100, 1100),
+            0
+        );
+        test_mock::set_caller(recipient);
+        assert_eq!(
+            transfer_stream(recipient.as_ptr(), replacement.as_ptr(), 0),
+            0
+        );
+
+        assert_eq!(get_recipient_stream_ids(recipient.as_ptr(), 0, 64), 0);
+        assert_eq!(bytes_to_u64(&test_mock::get_return_data()[0..8]), 1);
+        assert_eq!(
+            get_recipient_stream_ids(replacement.as_ptr(), 0, 64),
+            0
+        );
+        let replacement_page = test_mock::get_return_data();
+        assert_eq!(bytes_to_u64(&replacement_page[0..8]), 1);
+        assert_eq!(bytes_to_u64(&replacement_page[24..32]), 0);
     }
 }

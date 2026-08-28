@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 
 use lichen_sdk::{
     balance_of_token_or_native, bytes_to_u64, call_contract, get_caller, get_contract_address,
-    get_timestamp, log_info, receive_token_or_native, storage_get, storage_set,
+    get_timestamp, get_value, log_info, receive_token_or_native, storage_get, storage_set,
     transfer_token_or_native, u64_to_bytes, Address, CrossCall,
 };
 
@@ -138,6 +138,17 @@ fn write_bytes(ptr: *mut u8, bytes: &[u8]) -> bool {
     true
 }
 
+fn write_u64_index(ptr: *mut u8, index: usize, value: u64) -> bool {
+    if ptr.is_null() {
+        return false;
+    }
+    let bytes = u64_to_bytes(value);
+    unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr.add(index.saturating_mul(8)), 8);
+    }
+    true
+}
+
 fn treasury_action_payload(token: &[u8; 32], recipient: &[u8; 32], amount: u64) -> Vec<u8> {
     let mut action = Vec::with_capacity(b"treasury_transfer".len() + 1 + 32 + 32 + 8);
     action.extend_from_slice(b"treasury_transfer");
@@ -164,6 +175,126 @@ fn stake_refund_due_key(proposal_id: u64) -> Vec<u8> {
     let mut key = Vec::from(&b"stake_refund_due_"[..]);
     key.extend_from_slice(&u64_to_bytes(proposal_id));
     key
+}
+
+const GOVERNANCE_V2: u8 = 2;
+const PROPOSAL_CONFIG_V2_SIZE: usize = 32;
+
+fn proposal_governance_version_key(proposal_id: u64) -> Vec<u8> {
+    let mut key = Vec::from(&b"proposal_governance_version_"[..]);
+    key.extend_from_slice(&u64_to_bytes(proposal_id));
+    key
+}
+
+fn proposal_config_v2_key(proposal_id: u64) -> Vec<u8> {
+    let mut key = Vec::from(&b"proposal_config_v2_"[..]);
+    key.extend_from_slice(&u64_to_bytes(proposal_id));
+    key
+}
+
+const TREASURY_SELF_CUSTODY_MIGRATED_KEY: &[u8] = b"treasury_self_custody_migrated";
+
+fn proposal_is_governance_v2(proposal_id: u64) -> bool {
+    storage_get(&proposal_governance_version_key(proposal_id))
+        .is_some_and(|value| value.first().copied() == Some(GOVERNANCE_V2))
+}
+
+fn proposal_type_key(prefix: &[u8], proposal_type: u8) -> Vec<u8> {
+    let mut key = Vec::with_capacity(prefix.len() + 1);
+    key.extend_from_slice(prefix);
+    key.push(proposal_type);
+    key
+}
+
+fn configured_proposal_value(prefix: &[u8], proposal_type: u8, default: u64) -> u64 {
+    storage_get(&proposal_type_key(prefix, proposal_type))
+        .filter(|value| value.len() >= 8)
+        .map(|value| bytes_to_u64(&value))
+        .unwrap_or(default)
+}
+
+fn proposal_type_config(proposal_type: u8) -> (u64, u64, u64, u64) {
+    let (period, approval, quorum, delay) = match proposal_type {
+        PROPOSAL_TYPE_FAST_TRACK => (
+            FAST_TRACK_VOTING_PERIOD,
+            FAST_TRACK_APPROVAL,
+            FAST_TRACK_QUORUM,
+            FAST_TRACK_EXECUTION_DELAY,
+        ),
+        PROPOSAL_TYPE_CONSTITUTIONAL => (
+            CONSTITUTIONAL_VOTING_PERIOD,
+            CONSTITUTIONAL_APPROVAL,
+            CONSTITUTIONAL_QUORUM,
+            CONSTITUTIONAL_EXECUTION_DELAY,
+        ),
+        _ => (
+            STANDARD_VOTING_PERIOD,
+            STANDARD_APPROVAL,
+            STANDARD_QUORUM,
+            STANDARD_EXECUTION_DELAY,
+        ),
+    };
+    (
+        configured_proposal_value(b"proposal_voting_period_", proposal_type, period),
+        configured_proposal_value(b"proposal_approval_", proposal_type, approval),
+        configured_proposal_value(b"proposal_quorum_", proposal_type, quorum),
+        configured_proposal_value(b"proposal_execution_delay_", proposal_type, delay),
+    )
+}
+
+fn governance_total_supply_snapshot() -> Option<u64> {
+    let token_data = storage_get(b"governance_token")?;
+    if token_data.len() != 32 {
+        return None;
+    }
+    let mut token = [0u8; 32];
+    token.copy_from_slice(&token_data);
+    let result = call_contract(CrossCall::new(Address(token), "total_supply", Vec::new()));
+    if let Ok(bytes) = result {
+        if bytes.len() >= 8 {
+            let supply = bytes_to_u64(&bytes);
+            if supply > 0 {
+                return Some(supply);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    {
+        storage_get(b"total_supply")
+            .filter(|value| value.len() >= 8)
+            .map(|value| bytes_to_u64(&value))
+            .filter(|supply| *supply > 0)
+    }
+    #[cfg(not(test))]
+    None
+}
+
+fn encode_proposal_config_v2(
+    total_supply: u64,
+    approval: u64,
+    quorum: u64,
+    execution_delay: u64,
+) -> [u8; PROPOSAL_CONFIG_V2_SIZE] {
+    let mut config = [0u8; PROPOSAL_CONFIG_V2_SIZE];
+    config[0..8].copy_from_slice(&u64_to_bytes(total_supply));
+    config[8..16].copy_from_slice(&u64_to_bytes(approval));
+    config[16..24].copy_from_slice(&u64_to_bytes(quorum));
+    config[24..32].copy_from_slice(&u64_to_bytes(execution_delay));
+    config
+}
+
+fn decode_proposal_config_v2(proposal_id: u64) -> Option<(u64, u64, u64, u64)> {
+    let config = storage_get(&proposal_config_v2_key(proposal_id))?;
+    if config.len() < PROPOSAL_CONFIG_V2_SIZE {
+        return None;
+    }
+    Some((
+        bytes_to_u64(&config[0..8]),
+        bytes_to_u64(&config[8..16]),
+        bytes_to_u64(&config[16..24]),
+        bytes_to_u64(&config[24..32]),
+    ))
 }
 
 /// Veto threshold: 20% of total voting power active "NO" cancels during time-lock
@@ -336,7 +467,7 @@ fn isqrt(n: u64) -> u64 {
     }
     // Pure integer Newton's method — no float dependency
     let mut x = n;
-    let mut y = (x + 1) / 2;
+    let mut y = x.div_ceil(2);
     while y < x {
         x = y;
         y = (x + n / x) / 2;
@@ -491,7 +622,7 @@ pub extern "C" fn create_proposal_typed(
 
     // Check proposer has enough tokens for proposal stake.
     let min_threshold = storage_get(b"min_proposal_threshold")
-        .and_then(|d| Some(bytes_to_u64(&d)))
+        .map(|d| bytes_to_u64(&d))
         .unwrap_or(PROPOSAL_STAKE);
 
     log_info(&alloc::format!(
@@ -501,7 +632,7 @@ pub extern "C" fn create_proposal_typed(
 
     // Generate proposal ID
     let proposal_count = storage_get(b"proposal_count")
-        .and_then(|d| Some(bytes_to_u64(&d)))
+        .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
     let proposal_count = match proposal_count.checked_add(1) {
         Some(v) if v <= u32::MAX as u64 => v,
@@ -517,10 +648,23 @@ pub extern "C" fn create_proposal_typed(
     let action_hash = sha256(&action);
 
     let now = get_timestamp();
-    let voting_period = match proposal_type {
-        PROPOSAL_TYPE_FAST_TRACK => FAST_TRACK_VOTING_PERIOD,
-        PROPOSAL_TYPE_CONSTITUTIONAL => CONSTITUTIONAL_VOTING_PERIOD,
-        _ => STANDARD_VOTING_PERIOD,
+    let (voting_period, approval_threshold, quorum_pct, execution_delay) =
+        proposal_type_config(proposal_type);
+    if voting_period == 0
+        || approval_threshold == 0
+        || approval_threshold > 100
+        || quorum_pct > 100
+        || execution_delay == 0
+    {
+        log_info("Proposal governance configuration is invalid");
+        return 0;
+    }
+    let total_supply_snapshot = match governance_total_supply_snapshot() {
+        Some(supply) => supply,
+        None => {
+            log_info("Governance total supply snapshot is unavailable");
+            return 0;
+        }
     };
     let end_time = match now.checked_add(voting_period) {
         Some(v) => v,
@@ -538,6 +682,10 @@ pub extern "C" fn create_proposal_typed(
         let mut token_addr = [0u8; 32];
         token_addr.copy_from_slice(&governance_token_data[..32]);
         let dao_self = get_contract_address();
+        if token_addr == [0u8; 32] && get_value() != min_threshold {
+            log_info("Native proposal stake must attach the exact escrow amount");
+            return 0;
+        }
         // Transfer stake from proposer to DAO contract (escrow)
         match receive_token_or_native(
             Address(token_addr),
@@ -586,6 +734,19 @@ pub extern "C" fn create_proposal_typed(
     // Store proposal
     let key = alloc::format!("proposal_{}", proposal_count);
     storage_set(key.as_bytes(), &proposal);
+    storage_set(
+        &proposal_governance_version_key(proposal_count),
+        &[GOVERNANCE_V2],
+    );
+    storage_set(
+        &proposal_config_v2_key(proposal_count),
+        &encode_proposal_config_v2(
+            total_supply_snapshot,
+            approval_threshold,
+            quorum_pct,
+            execution_delay,
+        ),
+    );
     storage_set(b"proposal_count", &u64_to_bytes(proposal_count));
 
     let type_name = match proposal_type {
@@ -607,16 +768,116 @@ pub extern "C" fn create_proposal_typed(
     proposal_count as u32
 }
 
+fn vote_record_key(proposal_id: u64, voter: &[u8; 32]) -> Vec<u8> {
+    let voter_hex: alloc::string::String =
+        voter.iter().map(|byte| alloc::format!("{:02x}", byte)).collect();
+    alloc::format!("vote_{}_{}", proposal_id, voter_hex).into_bytes()
+}
+
+fn cast_escrowed_vote_inner(
+    voter: [u8; 32],
+    proposal_id: u64,
+    support: u8,
+    amount: u64,
+) -> u32 {
+    if is_dao_paused() || get_caller().0 != voter || support > 1 || amount == 0 {
+        return 0;
+    }
+    if !proposal_is_governance_v2(proposal_id)
+        || decode_proposal_config_v2(proposal_id).is_none()
+    {
+        return 0;
+    }
+
+    let proposal_key = alloc::format!("proposal_{}", proposal_id);
+    let mut proposal = match storage_get(proposal_key.as_bytes()) {
+        Some(data) if data.len() >= PROPOSAL_SIZE_LEGACY => data,
+        _ => return 0,
+    };
+    if proposal[192] != 0 || proposal[193] != 0 || get_timestamp() > bytes_to_u64(&proposal[168..176]) {
+        return 0;
+    }
+
+    let vote_key = vote_record_key(proposal_id, &voter);
+    if storage_get(&vote_key).is_some() {
+        return 0;
+    }
+
+    let vote_offset = if support == 1 { 176usize } else { 184usize };
+    let next_total = match bytes_to_u64(&proposal[vote_offset..vote_offset + 8]).checked_add(amount)
+    {
+        Some(total) => total,
+        None => return 0,
+    };
+
+    let token_data = match storage_get(b"governance_token") {
+        Some(data) if data.len() == 32 => data,
+        _ => return 0,
+    };
+    let mut token = [0u8; 32];
+    token.copy_from_slice(&token_data);
+    if token == [0u8; 32] && get_value() != amount {
+        log_info("Native governance vote must attach the exact escrow amount");
+        return 0;
+    }
+    if !receive_token_or_native(
+        Address(token),
+        Address(voter),
+        get_contract_address(),
+        amount,
+    )
+    .unwrap_or(false)
+    {
+        return 0;
+    }
+
+    let mut vote_data = Vec::with_capacity(42);
+    vote_data.extend_from_slice(&voter);
+    vote_data.push(support);
+    vote_data.extend_from_slice(&u64_to_bytes(amount));
+    vote_data.push(0); // escrow not claimed
+    proposal[vote_offset..vote_offset + 8].copy_from_slice(&u64_to_bytes(next_total));
+    storage_set(&vote_key, &vote_data);
+    storage_set(proposal_key.as_bytes(), &proposal);
+    1
+}
+
+fn cast_escrowed_vote(voter: [u8; 32], proposal_id: u64, support: u8, amount: u64) -> u32 {
+    if !reentrancy_enter() {
+        return 0;
+    }
+    let result = cast_escrowed_vote_inner(voter, proposal_id, support, amount);
+    reentrancy_exit();
+    result
+}
+
+/// Governance V2 vote. `amount` is escrowed until the proposal and time-lock
+/// finish, making voting power non-transferable and replay-safe.
+#[no_mangle]
+pub extern "C" fn vote_v2(
+    voter_ptr: *const u8,
+    proposal_id: u64,
+    support: u8,
+    amount: u64,
+) -> u32 {
+    let voter = match read_address32(voter_ptr) {
+        Some(voter) => voter,
+        None => return 0,
+    };
+    cast_escrowed_vote(voter, proposal_id, support, amount)
+}
+
 #[no_mangle]
 pub extern "C" fn vote(
     voter_ptr: *const u8,
     proposal_id: u64,
     support: u8,        // 1 = for, 0 = against
-    _voting_power: u64, // IGNORED — balance is looked up on-chain
+    voting_amount: u64,
 ) -> u32 {
-    // Default reputation of 100 for backward compat
-    // AUDIT-FIX P10-SC-05: Default reputation=0 (on-chain lookup used instead)
-    vote_with_reputation(voter_ptr, proposal_id, support, 0, 0)
+    if proposal_is_governance_v2(proposal_id) {
+        return vote_v2(voter_ptr, proposal_id, support, voting_amount);
+    }
+    vote_with_reputation(voter_ptr, proposal_id, support, voting_amount, 0)
 }
 
 /// Vote with quadratic voting power per whitepaper:
@@ -632,6 +893,9 @@ pub extern "C" fn vote_with_reputation(
     _token_balance: u64, // IGNORED — looked up on-chain
     _reputation: u64,
 ) -> u32 {
+    if proposal_is_governance_v2(proposal_id) {
+        return vote_v2(voter_ptr, proposal_id, support, _token_balance);
+    }
     log_info(" Casting vote (quadratic)...");
 
     // AUDIT-FIX P2: Enforce pause
@@ -790,8 +1054,19 @@ pub extern "C" fn execute_proposal(
     action_len: u32,
 ) -> u32 {
     log_info("Executing proposal...");
-    if read_address32(executor_ptr).is_none() {
-        log_info("execute_proposal rejected: null executor_ptr");
+    let executor = match read_address32(executor_ptr) {
+        Some(executor) => executor,
+        None => {
+            log_info("execute_proposal rejected: null executor_ptr");
+            return 0;
+        }
+    };
+    if get_caller().0 != executor {
+        log_info("execute_proposal rejected: caller mismatch");
+        return 0;
+    }
+    if is_dao_paused() {
+        log_info("DAO is paused");
         return 0;
     }
     if action_len as usize > MAX_PROPOSAL_ACTION_BYTES {
@@ -846,19 +1121,23 @@ pub extern "C" fn execute_proposal(
     } else {
         PROPOSAL_TYPE_STANDARD
     };
-    let (approval_threshold, quorum_pct, execution_delay) = match proposal_type {
-        PROPOSAL_TYPE_FAST_TRACK => (
-            FAST_TRACK_APPROVAL,
-            FAST_TRACK_QUORUM,
-            FAST_TRACK_EXECUTION_DELAY,
-        ),
-        PROPOSAL_TYPE_CONSTITUTIONAL => (
-            CONSTITUTIONAL_APPROVAL,
-            CONSTITUTIONAL_QUORUM,
-            CONSTITUTIONAL_EXECUTION_DELAY,
-        ),
-        _ => (STANDARD_APPROVAL, STANDARD_QUORUM, STANDARD_EXECUTION_DELAY),
+    let config_v2 = if proposal_is_governance_v2(proposal_id) {
+        match decode_proposal_config_v2(proposal_id) {
+            Some(config) => Some(config),
+            None => {
+                log_info("Governance V2 proposal configuration is missing");
+                return 0;
+            }
+        }
+    } else {
+        None
     };
+    let (approval_threshold, quorum_pct, execution_delay) = config_v2
+        .map(|(_, approval, quorum, delay)| (approval, quorum, delay))
+        .unwrap_or_else(|| {
+            let (_, approval, quorum, delay) = proposal_type_config(proposal_type);
+            (approval, quorum, delay)
+        });
 
     // Check execution delay (time-lock)
     let execution_time = match end_time.checked_add(execution_delay) {
@@ -876,11 +1155,15 @@ pub extern "C" fn execute_proposal(
     // Check veto: if 20% of total voting power voted NO during time-lock, cancel
     if proposal.len() > 203 {
         let veto_votes = bytes_to_u64(&proposal[196..204]);
-        let total_supply = storage_get(b"total_supply")
-            .map(|d| bytes_to_u64(&d))
+        let total_supply = config_v2
+            .map(|(supply, _, _, _)| supply)
+            .or_else(|| storage_get(b"total_supply").map(|data| bytes_to_u64(&data)))
             .unwrap_or(500_000_000_000_000_000);
-        // Veto threshold: 20% of sqrt(total_supply) * 3.0 (max governance power)
-        let max_governance_power = isqrt(total_supply).saturating_mul(3);
+        let max_governance_power = if config_v2.is_some() {
+            total_supply
+        } else {
+            isqrt(total_supply).saturating_mul(3)
+        };
         let veto_threshold = max_governance_power.saturating_mul(VETO_THRESHOLD_PERCENT) / 100;
         if veto_votes >= veto_threshold {
             log_info("Proposal VETOED! 20%+ of voting power vetoed during time-lock");
@@ -903,11 +1186,16 @@ pub extern "C" fn execute_proposal(
 
     // Quorum check (if required)
     if quorum_pct > 0 {
-        let total_supply = storage_get(b"total_supply")
-            .map(|d| bytes_to_u64(&d))
+        let total_supply = config_v2
+            .map(|(supply, _, _, _)| supply)
+            .or_else(|| storage_get(b"total_supply").map(|data| bytes_to_u64(&data)))
             .unwrap_or(500_000_000_000_000_000);
-        // Quorum based on sqrt(total_supply) to match quadratic voting
-        let quorum = isqrt(total_supply).saturating_mul(quorum_pct) / 100;
+        let quorum_base = if config_v2.is_some() {
+            total_supply
+        } else {
+            isqrt(total_supply)
+        };
+        let quorum = quorum_base.saturating_mul(quorum_pct) / 100;
 
         if total_votes < quorum {
             log_info("Quorum not met");
@@ -959,17 +1247,23 @@ pub extern "C" fn execute_proposal(
         h
     };
 
+    let computed_hash = sha256(&action_data);
+    if computed_hash != stored_action_hash {
+        log_info("Action data does not match stored action hash — aborting execution");
+        return 0;
+    }
+
+    let mut target_addr = [0u8; 32];
+    target_addr.copy_from_slice(&proposal[96..128]);
+    if action_data.is_empty() && target_addr.iter().any(|byte| *byte != 0) {
+        log_info("Signaling proposals must use the zero target");
+        return 0;
+    }
+
+    let mut treasury_action_executed = false;
     if !action_data.is_empty() {
-        let computed_hash = sha256(&action_data);
-        if computed_hash != stored_action_hash {
-            log_info("Action data does not match stored action hash — aborting execution");
-            return 0;
-        }
 
         // Extract target_contract address (bytes 96-127)
-        let mut target_addr = [0u8; 32];
-        target_addr.copy_from_slice(&proposal[96..128]);
-
         // Action data format: method_name (null-terminated) + args
         // Find method name end (first null byte or end of data)
         let method_end = action_data
@@ -983,22 +1277,52 @@ pub extern "C" fn execute_proposal(
             Vec::new()
         };
 
-        let target = Address::new(target_addr);
-        let call = CrossCall::new(target, method_name, args);
-
-        match call_contract(call) {
-            Ok(result) => {
-                log_info(&alloc::format!(
-                    "   Action dispatched to target contract, result: {} bytes",
-                    result.len()
-                ));
-            }
-            Err(_) => {
-                log_info("   Action dispatch to target contract failed — retryable");
-                // AUDIT-FIX P10-SC-03: Don't mark as executed on failure — allow retry
-                proposal[192] = 3; // 3 = approved-but-failed (retryable)
-                storage_set(key.as_bytes(), &proposal);
+        let dao_self = get_contract_address();
+        if target_addr == dao_self.0 && method_name == "treasury_transfer" {
+            if args.len() != 72 {
+                log_info("Treasury action has an invalid argument layout");
                 return 0;
+            }
+            let mut token = [0u8; 32];
+            token.copy_from_slice(&args[0..32]);
+            let mut recipient = [0u8; 32];
+            recipient.copy_from_slice(&args[32..64]);
+            let amount = bytes_to_u64(&args[64..72]);
+
+            // treasury_transfer consumes status 1 and advances it to status 2.
+            // Publish the approved state before the internal call; failures are
+            // explicitly restored to retryable status below.
+            proposal[192] = 1;
+            storage_set(key.as_bytes(), &proposal);
+            if treasury_transfer(proposal_id, token.as_ptr(), recipient.as_ptr(), amount) != 1 {
+                proposal[192] = 3;
+                storage_set(key.as_bytes(), &proposal);
+                log_info("   Treasury action failed — retryable");
+                return 0;
+            }
+            proposal = match storage_get(key.as_bytes()) {
+                Some(data) if data.len() >= PROPOSAL_SIZE_LEGACY => data,
+                _ => return 0,
+            };
+            treasury_action_executed = true;
+        } else {
+            let target = Address::new(target_addr);
+            let call = CrossCall::new(target, method_name, args);
+
+            match call_contract(call) {
+                Ok(result) => {
+                    log_info(&alloc::format!(
+                        "   Action dispatched to target contract, result: {} bytes",
+                        result.len()
+                    ));
+                }
+                Err(_) => {
+                    log_info("   Action dispatch to target contract failed — retryable");
+                    // AUDIT-FIX P10-SC-03: Don't mark as executed on failure — allow retry
+                    proposal[192] = 3; // 3 = approved-but-failed (retryable)
+                    storage_set(key.as_bytes(), &proposal);
+                    return 0;
+                }
             }
         }
     } else {
@@ -1006,8 +1330,10 @@ pub extern "C" fn execute_proposal(
     }
 
     // Mark as executed
-    proposal[192] = 1;
-    storage_set(key.as_bytes(), &proposal);
+    if !treasury_action_executed {
+        proposal[192] = 1;
+        storage_set(key.as_bytes(), &proposal);
+    }
 
     // AUDIT-FIX P10-SC-01: Refund escrowed stake to proposer on successful execution
     let stake_amount = proposal_stake_amount(&proposal);
@@ -1036,6 +1362,53 @@ pub extern "C" fn execute_proposal(
     }
 
     log_info("Proposal executed!");
+    1
+}
+
+fn veto_with_escrowed_vote(voter: [u8; 32], proposal_id: u64) -> u32 {
+    let (_, _, _, execution_delay) = match decode_proposal_config_v2(proposal_id) {
+        Some(config) => config,
+        None => return 0,
+    };
+    let proposal_key = alloc::format!("proposal_{}", proposal_id);
+    let mut proposal = match storage_get(proposal_key.as_bytes()) {
+        Some(data) if data.len() >= PROPOSAL_SIZE_LEGACY => data,
+        _ => return 0,
+    };
+    if proposal[192] == 1 || proposal[192] == 2 || proposal[193] == 1 {
+        return 0;
+    }
+    let end_time = bytes_to_u64(&proposal[168..176]);
+    let veto_deadline = match end_time.checked_add(execution_delay) {
+        Some(deadline) => deadline,
+        None => return 0,
+    };
+    let now = get_timestamp();
+    if now <= end_time || now > veto_deadline {
+        return 0;
+    }
+
+    let vote = match storage_get(&vote_record_key(proposal_id, &voter)) {
+        Some(vote) if vote.len() >= 42 && vote[41] == 0 => vote,
+        _ => return 0,
+    };
+    let veto_power = bytes_to_u64(&vote[33..41]);
+    if veto_power == 0 {
+        return 0;
+    }
+    let voter_hex: alloc::string::String =
+        voter.iter().map(|byte| alloc::format!("{:02x}", byte)).collect();
+    let veto_key = alloc::format!("veto_{}_{}", proposal_id, voter_hex);
+    if storage_get(veto_key.as_bytes()).is_some() {
+        return 0;
+    }
+    let new_veto = match bytes_to_u64(&proposal[196..204]).checked_add(veto_power) {
+        Some(total) => total,
+        None => return 0,
+    };
+    storage_set(veto_key.as_bytes(), &u64_to_bytes(veto_power));
+    proposal[196..204].copy_from_slice(&u64_to_bytes(new_veto));
+    storage_set(proposal_key.as_bytes(), &proposal);
     1
 }
 
@@ -1071,6 +1444,9 @@ pub extern "C" fn veto_proposal(
     if real_caller.0 != voter {
         log_info("Veto rejected: caller mismatch");
         return 0;
+    }
+    if proposal_is_governance_v2(proposal_id) {
+        return veto_with_escrowed_vote(voter, proposal_id);
     }
 
     // AUDIT-FIX 1.9: Query actual on-chain token balance instead of trusting caller
@@ -1299,6 +1675,88 @@ pub extern "C" fn claim_proposal_stake_refund(proposer_ptr: *const u8, proposal_
     }
 }
 
+/// Release Governance V2 voting escrow after the proposal time-lock, or
+/// immediately after cancellation. State is restored exactly if payout fails.
+#[no_mangle]
+pub extern "C" fn claim_vote_escrow(voter_ptr: *const u8, proposal_id: u64) -> u32 {
+    if !reentrancy_enter() {
+        return 0;
+    }
+    let voter = match read_address32(voter_ptr) {
+        Some(voter) if get_caller().0 == voter => voter,
+        _ => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
+    let (_, _, _, execution_delay) = match decode_proposal_config_v2(proposal_id) {
+        Some(config) => config,
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
+    let proposal = match storage_get(alloc::format!("proposal_{}", proposal_id).as_bytes()) {
+        Some(proposal) if proposal.len() >= PROPOSAL_SIZE_LEGACY => proposal,
+        _ => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
+    let unlock_time = match bytes_to_u64(&proposal[168..176]).checked_add(execution_delay) {
+        Some(unlock_time) => unlock_time,
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
+    if proposal[193] == 0 && get_timestamp() <= unlock_time {
+        reentrancy_exit();
+        return 0;
+    }
+
+    let vote_key = vote_record_key(proposal_id, &voter);
+    let mut vote = match storage_get(&vote_key) {
+        Some(vote) if vote.len() >= 42 && vote[41] == 0 => vote,
+        _ => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
+    let amount = bytes_to_u64(&vote[33..41]);
+    if amount == 0 {
+        reentrancy_exit();
+        return 0;
+    }
+    let token_data = match storage_get(b"governance_token") {
+        Some(data) if data.len() == 32 => data,
+        _ => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
+    let mut token = [0u8; 32];
+    token.copy_from_slice(&token_data);
+
+    vote[41] = 1;
+    storage_set(&vote_key, &vote);
+    if !transfer_token_or_native(
+        Address(token),
+        get_contract_address(),
+        Address(voter),
+        amount,
+    )
+    .unwrap_or(false)
+    {
+        vote[41] = 0;
+        storage_set(&vote_key, &vote);
+        reentrancy_exit();
+        return 0;
+    }
+    reentrancy_exit();
+    1
+}
+
 // ============================================================================
 // TREASURY MANAGEMENT
 // ============================================================================
@@ -1377,11 +1835,18 @@ pub extern "C" fn treasury_transfer(
         reentrancy_exit();
         return 0;
     }
+    if treasury.as_slice() != dao_self.0 {
+        log_info("Treasury transfer rejected: DAO treasury is not self-custodied");
+        reentrancy_exit();
+        return 0;
+    }
 
     // Execute transfer
+    let mut treasury_address = [0u8; 32];
+    treasury_address.copy_from_slice(&treasury);
     match transfer_token_or_native(
         Address(token),
-        Address(treasury.as_slice().try_into().unwrap()),
+        Address(treasury_address),
         Address(recipient),
         amount,
     ) {
@@ -1403,7 +1868,7 @@ pub extern "C" fn treasury_transfer(
 
 #[no_mangle]
 pub extern "C" fn get_treasury_balance(token_ptr: *const u8, result_ptr: *mut u8) -> u32 {
-    let _token = match read_address32(token_ptr) {
+    let token = match read_address32(token_ptr) {
         Some(v) => v,
         None => return 0,
     };
@@ -1411,25 +1876,63 @@ pub extern "C" fn get_treasury_balance(token_ptr: *const u8, result_ptr: *mut u8
         return 0;
     }
 
-    // Query treasury balance from stored state
-    // In production, use cross-contract call: call_token_balance(token, treasury)
-    let _treasury = storage_get(b"treasury").unwrap_or_default();
-    let balance_key = alloc::format!(
-        "treasury_balance_{}",
-        _token
-            .iter()
-            .map(|b| alloc::format!("{:02x}", b))
-            .collect::<alloc::string::String>()
-    );
-    let balance = storage_get(balance_key.as_bytes())
-        .map(|d| bytes_to_u64(&d))
-        .unwrap_or(0);
+    let treasury = match storage_get(b"treasury") {
+        Some(value) if value.len() == 32 => {
+            let mut address = [0u8; 32];
+            address.copy_from_slice(&value);
+            address
+        }
+        _ => return 0,
+    };
+    let balance = match balance_of_token_or_native(Address(token), Address(treasury)) {
+        Ok(balance) => balance,
+        Err(_) => return 0,
+    };
 
     write_bytes(result_ptr, &u64_to_bytes(balance));
 
     log_info("Treasury balance:");
     log_info(&alloc::format!("   Balance: {}", balance));
 
+    1
+}
+
+/// One-time legacy migration after the governed community wallet has moved the
+/// approved DAO allocation into this contract. Fresh genesis deployments are
+/// already self-custodied and need no migration.
+#[no_mangle]
+pub extern "C" fn migrate_treasury_to_self(
+    caller_ptr: *const u8,
+    expected_legacy_treasury_ptr: *const u8,
+) -> u32 {
+    let caller = match read_address32(caller_ptr) {
+        Some(caller) => caller,
+        None => return 0,
+    };
+    let expected_legacy = match read_address32(expected_legacy_treasury_ptr) {
+        Some(treasury) => treasury,
+        None => return 0,
+    };
+    if get_caller().0 != caller || !is_dao_paused() {
+        return 0;
+    }
+    let owner = match storage_get(b"dao_owner") {
+        Some(owner) if owner.len() == 32 => owner,
+        _ => return 0,
+    };
+    if owner.as_slice() != caller || storage_get(TREASURY_SELF_CUSTODY_MIGRATED_KEY).is_some() {
+        return 0;
+    }
+    let current = match storage_get(b"treasury") {
+        Some(treasury) if treasury.len() == 32 => treasury,
+        _ => return 0,
+    };
+    let dao_self = get_contract_address();
+    if current.as_slice() != expected_legacy || expected_legacy == dao_self.0 {
+        return 0;
+    }
+    storage_set(b"treasury", &dao_self.0);
+    storage_set(TREASURY_SELF_CUSTODY_MIGRATED_KEY, &[1]);
     1
 }
 
@@ -1462,19 +1965,21 @@ pub extern "C" fn get_dao_stats(result_ptr: *mut u8) -> u32 {
         return 0;
     }
     let proposal_count = storage_get(b"proposal_count")
-        .and_then(|d| Some(bytes_to_u64(&d)))
+        .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
 
     let min_threshold = storage_get(b"min_proposal_threshold")
-        .and_then(|d| Some(bytes_to_u64(&d)))
+        .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
+    let (_, standard_approval, standard_quorum, _) =
+        proposal_type_config(PROPOSAL_TYPE_STANDARD);
 
     // Stats: proposal_count (8) + min_threshold (8) + quorum_pct (8) + approval_pct (8)
     let mut out = [0u8; 32];
     out[0..8].copy_from_slice(&u64_to_bytes(proposal_count));
     out[8..16].copy_from_slice(&u64_to_bytes(min_threshold));
-    out[16..24].copy_from_slice(&u64_to_bytes(STANDARD_QUORUM));
-    out[24..32].copy_from_slice(&u64_to_bytes(STANDARD_APPROVAL));
+    out[16..24].copy_from_slice(&u64_to_bytes(standard_quorum));
+    out[24..32].copy_from_slice(&u64_to_bytes(standard_approval));
     write_bytes(result_ptr, &out);
 
     log_info("DAO Statistics:");
@@ -1482,11 +1987,11 @@ pub extern "C" fn get_dao_stats(result_ptr: *mut u8) -> u32 {
     log_info(&alloc::format!("   Min threshold: {}", min_threshold));
     log_info(&alloc::format!(
         "   Quorum (standard): {}%",
-        STANDARD_QUORUM
+        standard_quorum
     ));
     log_info(&alloc::format!(
         "   Approval (standard): {}%",
-        STANDARD_APPROVAL
+        standard_approval
     ));
 
     1
@@ -1498,7 +2003,7 @@ pub extern "C" fn get_active_proposals(result_ptr: *mut u8, max_results: u32) ->
         return 0;
     }
     let proposal_count = storage_get(b"proposal_count")
-        .and_then(|d| Some(bytes_to_u64(&d)))
+        .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
 
     let now = get_timestamp();
@@ -1518,13 +2023,8 @@ pub extern "C" fn get_active_proposals(result_ptr: *mut u8, max_results: u32) ->
 
                 // Check if active (not ended, not executed, not cancelled)
                 if now <= end_time && executed == 0 && cancelled == 0 {
-                    unsafe {
-                        let offset = (active_count as usize) * 8;
-                        core::ptr::copy_nonoverlapping(
-                            u64_to_bytes(id).as_ptr(),
-                            result_ptr.add(offset),
-                            8,
-                        );
+                    if !write_u64_index(result_ptr, active_count as usize, id) {
+                        return 0;
                     }
                     active_count += 1;
                 }
@@ -1626,16 +2126,14 @@ pub extern "C" fn set_quorum(caller_ptr: *const u8, quorum: u64) -> u32 {
         Some(v) => v,
         None => return 1,
     };
-    // AUDIT-FIX P2: Verify caller is the actual transaction signer
-    let real_caller = get_caller();
-    if real_caller.0 != caller {
+    let dao_self = get_contract_address();
+    if get_caller() != dao_self || caller != dao_self.0 || quorum > 100 {
         return 1;
     }
-    let owner = storage_get(b"dao_owner").unwrap_or_default();
-    if caller[..] != owner[..] {
-        return 1;
-    }
-    storage_set(b"custom_quorum", &u64_to_bytes(quorum));
+    storage_set(
+        &proposal_type_key(b"proposal_quorum_", PROPOSAL_TYPE_STANDARD),
+        &u64_to_bytes(quorum),
+    );
     log_info(&alloc::format!("Quorum set to {}%", quorum));
     0
 }
@@ -1647,16 +2145,17 @@ pub extern "C" fn set_voting_period(caller_ptr: *const u8, period: u64) -> u32 {
         Some(v) => v,
         None => return 1,
     };
-    // AUDIT-FIX P2: Verify caller is the actual transaction signer
-    let real_caller = get_caller();
-    if real_caller.0 != caller {
+    let dao_self = get_contract_address();
+    if get_caller() != dao_self
+        || caller != dao_self.0
+        || !(3_600..=7_776_000).contains(&period)
+    {
         return 1;
     }
-    let owner = storage_get(b"dao_owner").unwrap_or_default();
-    if caller[..] != owner[..] {
-        return 1;
-    }
-    storage_set(b"custom_voting_period", &u64_to_bytes(period));
+    storage_set(
+        &proposal_type_key(b"proposal_voting_period_", PROPOSAL_TYPE_STANDARD),
+        &u64_to_bytes(period),
+    );
     log_info(&alloc::format!("Voting period set to {} slots", period));
     0
 }
@@ -1668,17 +2167,65 @@ pub extern "C" fn set_timelock_delay(caller_ptr: *const u8, delay: u64) -> u32 {
         Some(v) => v,
         None => return 1,
     };
-    // AUDIT-FIX P2: Verify caller is the actual transaction signer
-    let real_caller = get_caller();
-    if real_caller.0 != caller {
+    let dao_self = get_contract_address();
+    if get_caller() != dao_self
+        || caller != dao_self.0
+        || !(3_600..=2_592_000).contains(&delay)
+    {
         return 1;
     }
-    let owner = storage_get(b"dao_owner").unwrap_or_default();
-    if caller[..] != owner[..] {
-        return 1;
-    }
-    storage_set(b"timelock_delay", &u64_to_bytes(delay));
+    storage_set(
+        &proposal_type_key(b"proposal_execution_delay_", PROPOSAL_TYPE_STANDARD),
+        &u64_to_bytes(delay),
+    );
     log_info(&alloc::format!("Timelock delay set to {} slots", delay));
+    0
+}
+
+/// Update one proposal tier for future proposals. Existing proposals retain
+/// their immutable configuration snapshot. This function is callable only by
+/// an approved DAO action targeting the DAO contract itself.
+#[no_mangle]
+pub extern "C" fn set_proposal_type_config(
+    caller_ptr: *const u8,
+    proposal_type: u8,
+    voting_period: u64,
+    approval: u64,
+    quorum: u64,
+    execution_delay: u64,
+) -> u32 {
+    let caller = match read_address32(caller_ptr) {
+        Some(caller) => caller,
+        None => return 1,
+    };
+    let dao_self = get_contract_address();
+    if get_caller() != dao_self
+        || caller != dao_self.0
+        || proposal_type > PROPOSAL_TYPE_CONSTITUTIONAL
+        || !(3_600..=7_776_000).contains(&voting_period)
+        || approval == 0
+        || approval > 100
+        || quorum > 100
+        || !(3_600..=2_592_000).contains(&execution_delay)
+    {
+        return 1;
+    }
+    storage_set(
+        &proposal_type_key(b"proposal_voting_period_", proposal_type),
+        &u64_to_bytes(voting_period),
+    );
+    storage_set(
+        &proposal_type_key(b"proposal_approval_", proposal_type),
+        &u64_to_bytes(approval),
+    );
+    storage_set(
+        &proposal_type_key(b"proposal_quorum_", proposal_type),
+        &u64_to_bytes(quorum),
+    );
+    storage_set(
+        &proposal_type_key(b"proposal_execution_delay_", proposal_type),
+        &u64_to_bytes(execution_delay),
+    );
     0
 }
 
@@ -1767,6 +2314,17 @@ mod tests {
         test_mock::reset();
         // Enable cross-call mock token transfers for proposal escrow/refunds.
         test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
+    }
+
+    fn make_fast_proposal_executable(proposal_id: u64) {
+        let key = alloc::format!("proposal_{}", proposal_id);
+        let mut proposal = test_mock::get_storage(key.as_bytes()).unwrap();
+        proposal[176..184].copy_from_slice(&u64_to_bytes(100));
+        proposal[184..192].copy_from_slice(&u64_to_bytes(0));
+        proposal[195] = PROPOSAL_TYPE_FAST_TRACK;
+        let end_time = bytes_to_u64(&proposal[168..176]);
+        storage_set(key.as_bytes(), &proposal);
+        test_mock::set_timestamp(end_time + FAST_TRACK_EXECUTION_DELAY + 1);
     }
 
     #[test]
@@ -2166,7 +2724,7 @@ mod tests {
         let dao = [7u8; 32];
         test_mock::set_contract_address(dao);
         let gov_token = [1u8; 32];
-        let treasury = [2u8; 32];
+        let treasury = dao;
         initialize_dao(gov_token.as_ptr(), treasury.as_ptr(), 1000);
         test_mock::set_timestamp(10000);
 
@@ -2202,7 +2760,7 @@ mod tests {
         let dao = [7u8; 32];
         test_mock::set_contract_address(dao);
         let gov_token = [1u8; 32];
-        let treasury = [2u8; 32];
+        let treasury = dao;
         initialize_dao(gov_token.as_ptr(), treasury.as_ptr(), 1000);
         test_mock::set_timestamp(10000);
 
@@ -2237,6 +2795,236 @@ mod tests {
         let last_call = test_mock::get_last_cross_call().unwrap();
         assert_eq!(last_call.0, token);
         assert_eq!(last_call.1, "transfer");
+    }
+
+    #[test]
+    fn test_execute_rejects_empty_action_bypass() {
+        setup();
+        let gov_token = [0u8; 32];
+        let treasury = [2u8; 32];
+        initialize_dao(gov_token.as_ptr(), treasury.as_ptr(), 1000);
+        test_mock::set_timestamp(10_000);
+        test_mock::set_value(1000);
+
+        let proposer = [3u8; 32];
+        let target = [4u8; 32];
+        let action = b"upgrade\0exact-args";
+        test_mock::set_caller(proposer);
+        assert_eq!(
+            create_proposal_typed(
+                proposer.as_ptr(),
+                b"Upgrade".as_ptr(),
+                7,
+                b"Must execute exact bytes".as_ptr(),
+                24,
+                target.as_ptr(),
+                action.as_ptr(),
+                action.len() as u32,
+                PROPOSAL_TYPE_FAST_TRACK,
+            ),
+            1
+        );
+        make_fast_proposal_executable(1);
+
+        let executor = [8u8; 32];
+        test_mock::set_caller(executor);
+        assert_eq!(execute_proposal(executor.as_ptr(), 1, core::ptr::null(), 0), 0);
+        let proposal = test_mock::get_storage(b"proposal_1").unwrap();
+        assert_eq!(proposal[192], 0, "action bypass must not mutate status");
+    }
+
+    #[test]
+    fn test_execute_treasury_action_is_atomic_and_single_use() {
+        setup();
+        let dao = [7u8; 32];
+        test_mock::set_contract_address(dao);
+        let gov_token = [0u8; 32];
+        initialize_dao(gov_token.as_ptr(), dao.as_ptr(), 1000);
+        test_mock::set_timestamp(10_000);
+        test_mock::set_value(1000);
+
+        let proposer = [3u8; 32];
+        let token = [9u8; 32];
+        let recipient = [8u8; 32];
+        let action = treasury_action_payload(&token, &recipient, 55);
+        test_mock::set_caller(proposer);
+        assert_eq!(
+            create_proposal_typed(
+                proposer.as_ptr(),
+                b"Treasury".as_ptr(),
+                8,
+                b"Exact transfer".as_ptr(),
+                14,
+                dao.as_ptr(),
+                action.as_ptr(),
+                action.len() as u32,
+                PROPOSAL_TYPE_FAST_TRACK,
+            ),
+            1
+        );
+        make_fast_proposal_executable(1);
+
+        let executor = [6u8; 32];
+        test_mock::set_caller(executor);
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
+        assert_eq!(
+            execute_proposal(executor.as_ptr(), 1, action.as_ptr(), action.len() as u32),
+            1
+        );
+        let proposal = test_mock::get_storage(b"proposal_1").unwrap();
+        assert_eq!(proposal[192], 2);
+        assert_eq!(
+            execute_proposal(executor.as_ptr(), 1, action.as_ptr(), action.len() as u32),
+            0
+        );
+    }
+
+    #[test]
+    fn test_get_treasury_balance_queries_real_custody_account() {
+        setup();
+        let dao = [7u8; 32];
+        test_mock::set_contract_address(dao);
+        let native = [0u8; 32];
+        initialize_dao(native.as_ptr(), dao.as_ptr(), 1000);
+        test_mock::set_cross_call_response(Some(55u64.to_le_bytes().to_vec()));
+
+        let mut result = [0u8; 8];
+        assert_eq!(get_treasury_balance(native.as_ptr(), result.as_mut_ptr()), 1);
+        assert_eq!(bytes_to_u64(&result), 55);
+        let (target, method, args, _) = test_mock::get_last_cross_call().unwrap();
+        assert_eq!(target, [0u8; 32]);
+        assert_eq!(method, "balance_of");
+        assert_eq!(args, dao);
+    }
+
+    #[test]
+    fn test_treasury_self_custody_migration_is_paused_exact_and_one_time() {
+        setup();
+        let dao = [7u8; 32];
+        let legacy = [2u8; 32];
+        let owner = [0u8; 32];
+        test_mock::set_contract_address(dao);
+        initialize_dao([0u8; 32].as_ptr(), legacy.as_ptr(), 1000);
+
+        test_mock::set_caller(owner);
+        assert_eq!(
+            migrate_treasury_to_self(owner.as_ptr(), legacy.as_ptr()),
+            0,
+            "migration requires an explicit pause"
+        );
+        assert_eq!(dao_pause(owner.as_ptr()), 0);
+        let wrong = [3u8; 32];
+        assert_eq!(migrate_treasury_to_self(owner.as_ptr(), wrong.as_ptr()), 0);
+        assert_eq!(migrate_treasury_to_self(owner.as_ptr(), legacy.as_ptr()), 1);
+        assert_eq!(test_mock::get_storage(b"treasury"), Some(dao.to_vec()));
+        assert_eq!(migrate_treasury_to_self(owner.as_ptr(), legacy.as_ptr()), 0);
+    }
+
+    #[test]
+    fn test_governance_v2_vote_escrow_is_exact_and_retry_safe() {
+        setup();
+        let dao = [7u8; 32];
+        test_mock::set_contract_address(dao);
+        let native = [0u8; 32];
+        initialize_dao(native.as_ptr(), dao.as_ptr(), 1000);
+        test_mock::set_timestamp(10_000);
+        test_mock::set_value(1000);
+
+        let proposer = [3u8; 32];
+        test_mock::set_caller(proposer);
+        assert_eq!(
+            create_proposal_typed(
+                proposer.as_ptr(),
+                b"Escrow".as_ptr(),
+                6,
+                b"Locked voting power".as_ptr(),
+                19,
+                [0u8; 32].as_ptr(),
+                core::ptr::null(),
+                0,
+                PROPOSAL_TYPE_FAST_TRACK,
+            ),
+            1
+        );
+
+        let voter = [5u8; 32];
+        test_mock::set_caller(voter);
+        test_mock::set_value(249);
+        assert_eq!(vote_v2(voter.as_ptr(), 1, 1, 250), 0);
+        assert_eq!(get_vote(1, voter.as_ptr()), 0);
+
+        test_mock::set_value(250);
+        assert_eq!(vote_v2(voter.as_ptr(), 1, 1, 250), 1);
+        let vote = test_mock::get_storage(&vote_record_key(1, &voter)).unwrap();
+        assert_eq!(bytes_to_u64(&vote[33..41]), 250);
+        assert_eq!(vote[41], 0);
+        assert_eq!(claim_vote_escrow(voter.as_ptr(), 1), 0);
+
+        let proposal = test_mock::get_storage(b"proposal_1").unwrap();
+        let (_, _, _, delay) = decode_proposal_config_v2(1).unwrap();
+        test_mock::set_timestamp(bytes_to_u64(&proposal[168..176]) + delay + 1);
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
+        assert_eq!(claim_vote_escrow(voter.as_ptr(), 1), 1);
+        assert_eq!(claim_vote_escrow(voter.as_ptr(), 1), 0);
+    }
+
+    #[test]
+    fn test_proposal_config_is_governance_owned_and_snapshotted() {
+        setup();
+        let dao = [7u8; 32];
+        test_mock::set_contract_address(dao);
+        let token = [1u8; 32];
+        initialize_dao(token.as_ptr(), dao.as_ptr(), 1000);
+
+        let owner = [0u8; 32];
+        test_mock::set_caller(owner);
+        assert_eq!(
+            set_proposal_type_config(
+                owner.as_ptr(),
+                PROPOSAL_TYPE_STANDARD,
+                7200,
+                55,
+                12,
+                3600,
+            ),
+            1
+        );
+
+        test_mock::set_caller(dao);
+        assert_eq!(
+            set_proposal_type_config(
+                dao.as_ptr(),
+                PROPOSAL_TYPE_STANDARD,
+                7200,
+                55,
+                12,
+                3600,
+            ),
+            0
+        );
+        test_mock::set_timestamp(10_000);
+        let proposer = [3u8; 32];
+        test_mock::set_caller(proposer);
+        assert_eq!(
+            create_proposal(
+                proposer.as_ptr(),
+                b"Config".as_ptr(),
+                6,
+                b"Snapshot".as_ptr(),
+                8,
+                [0u8; 32].as_ptr(),
+                core::ptr::null(),
+                0,
+            ),
+            1
+        );
+        let snapshot = decode_proposal_config_v2(1).unwrap();
+        assert_eq!((snapshot.1, snapshot.2, snapshot.3), (55, 12, 3600));
+
+        test_mock::set_caller(dao);
+        assert_eq!(set_quorum(dao.as_ptr(), 20), 0);
+        assert_eq!(decode_proposal_config_v2(1).unwrap(), snapshot);
+        assert_eq!(proposal_type_config(PROPOSAL_TYPE_STANDARD).2, 20);
     }
 
     // AUDIT-FIX P2: Security regression test

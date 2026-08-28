@@ -3,6 +3,7 @@
 
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 extern crate alloc;
 
@@ -12,6 +13,10 @@ use lichen_sdk::{
 
 const MP_TRANSFER_COUNT_KEY: &[u8] = b"mp_transfer_count";
 const MP_BURN_COUNT_KEY: &[u8] = b"mp_burn_count";
+const MP_ADMIN_KEY: &[u8] = b"mp_admin";
+const MP_PENDING_ADMIN_KEY: &[u8] = b"mp_pending_admin";
+const MP_MINT_AUTHORITY_KEY: &[u8] = b"mp_mint_authority";
+const MP_ROYALTY_RECIPIENT_KEY: &[u8] = b"mp_royalty_recipient";
 const MAX_METADATA_LEN: usize = 512;
 const MAX_BASE_URI_LEN: usize = 256;
 
@@ -40,15 +45,20 @@ fn read_bytes(ptr: *const u8, len: u32, max_len: usize) -> Option<alloc::vec::Ve
     Some(bytes)
 }
 
-fn stored_u64(key: &[u8]) -> u64 {
-    storage_get(key)
-        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-        .unwrap_or(0)
+fn load_u64_or_zero(key: &[u8]) -> Option<u64> {
+    match storage_get(key) {
+        Some(data) if data.len() == 8 => Some(bytes_to_u64(&data)),
+        Some(_) => None,
+        None => Some(0),
+    }
 }
 
-fn increment_counter_saturating(key: &[u8]) {
-    let current = stored_u64(key);
-    storage_set(key, &u64_to_bytes(current.saturating_add(1)));
+fn stored_u64(key: &[u8]) -> u64 {
+    load_u64_or_zero(key).unwrap_or(0)
+}
+
+fn next_counter(key: &[u8]) -> Option<u64> {
+    load_u64_or_zero(key)?.checked_add(1)
 }
 
 fn metadata_key(token_id: u64) -> alloc::vec::Vec<u8> {
@@ -58,9 +68,10 @@ fn metadata_key(token_id: u64) -> alloc::vec::Vec<u8> {
 }
 
 fn is_initialized() -> bool {
-    storage_get(b"minter")
-        .map(|d| d.len() == 32)
-        .unwrap_or(false)
+    get_minter().0 != [0u8; 32]
+        && load_u64_or_zero(b"total_minted").is_some()
+        && storage_get(b"collection_name").as_deref() == Some(b"LichenPunks")
+        && storage_get(b"collection_symbol").as_deref() == Some(b"MPNK")
 }
 
 /// Read the minter address from persistent storage (written by NFT::initialize).
@@ -84,34 +95,99 @@ fn make_nft() -> NFT {
 
 /// Check if LichenPunks is paused
 fn is_mp_paused() -> bool {
-    storage_get(b"mp_paused")
-        .map(|d| d.first().copied() == Some(1))
-        .unwrap_or(false)
+    pause_state().unwrap_or(true)
+}
+
+fn pause_state() -> Option<bool> {
+    match storage_get(b"mp_paused") {
+        None => Some(false),
+        Some(data) if data.as_slice() == [0u8] => Some(false),
+        Some(data) if data.as_slice() == [1u8] => Some(true),
+        Some(_) => None,
+    }
 }
 
 fn init_minter_matches_signer(minter: &[u8; 32]) -> bool {
-    let caller = lichen_sdk::get_caller();
-    if caller.0 == *minter {
-        return true;
-    }
+    lichen_sdk::get_caller().0 == *minter
+}
 
-    #[cfg(test)]
-    {
-        return caller.0 == [0u8; 32];
+fn configured_address_or_minter(key: &[u8]) -> Option<Address> {
+    match storage_get(key) {
+        Some(data) if data.len() == 32 && data.as_slice() != [0u8; 32] => {
+            let mut address = [0u8; 32];
+            address.copy_from_slice(&data);
+            Some(Address(address))
+        }
+        Some(_) => None,
+        None => {
+            let minter = get_minter();
+            (minter.0 != [0u8; 32]).then_some(minter)
+        }
     }
+}
 
-    #[cfg(not(test))]
-    {
-        false
+fn admin() -> Option<Address> {
+    configured_address_or_minter(MP_ADMIN_KEY)
+}
+
+fn mint_authority() -> Option<Address> {
+    configured_address_or_minter(MP_MINT_AUTHORITY_KEY)
+}
+
+fn royalty_recipient() -> Option<Address> {
+    configured_address_or_minter(MP_ROYALTY_RECIPIENT_KEY)
+}
+
+fn authenticated_admin(caller_ptr: *const u8) -> Option<Address> {
+    let caller = read_address(caller_ptr)?;
+    (caller == get_caller() && admin() == Some(caller)).then_some(caller)
+}
+
+fn pending_admin() -> Option<Address> {
+    match storage_get(MP_PENDING_ADMIN_KEY) {
+        Some(data) if data.len() == 32 && data.as_slice() != [0u8; 32] => {
+            let mut address = [0u8; 32];
+            address.copy_from_slice(&data);
+            Some(Address(address))
+        }
+        None => Some(Address([0u8; 32])),
+        Some(data) if data.is_empty() => Some(Address([0u8; 32])),
+        Some(_) => None,
+    }
+}
+
+fn royalty_bps() -> Option<u16> {
+    match storage_get(b"royalty_bps") {
+        Some(data) if data.len() == 8 => {
+            let bps = u16::try_from(bytes_to_u64(&data)).ok()?;
+            (bps <= 1_000).then_some(bps)
+        }
+        Some(_) => None,
+        None => Some(0),
+    }
+}
+
+fn max_supply() -> Option<u64> {
+    match storage_get(b"max_supply") {
+        Some(data) if data.len() == 8 => Some(bytes_to_u64(&data)),
+        Some(_) => None,
+        None => Some(0),
     }
 }
 
 /// Initialize the NFT collection
 #[no_mangle]
 pub extern "C" fn initialize(minter_ptr: *const u8) {
-    // AUDIT-FIX 3.18: Re-initialization guard
-    if storage_get(b"collection_name").is_some() {
+    if is_initialized() {
         log_info("LichenPunks already initialized — ignoring");
+        return;
+    }
+    if storage_get(b"minter").is_some()
+        || storage_get(b"total_minted").is_some()
+        || storage_get(b"collection_name").is_some()
+        || storage_get(b"collection_symbol").is_some()
+    {
+        log_info("LichenPunks initialization state is partial or malformed");
         return;
     }
 
@@ -128,13 +204,21 @@ pub extern "C" fn initialize(minter_ptr: *const u8) {
         return;
     }
 
-    // Store collection metadata in storage for discoverability
-    storage_set(b"collection_name", b"LichenPunks");
-    storage_set(b"collection_symbol", b"MPNK");
-
     // NFT::initialize stores the minter in storage under key "minter"
     let mut nft = make_nft();
-    nft.initialize(minter).expect("Init failed");
+    if nft.initialize(minter).is_err() {
+        log_info("LichenPunks initialization failed");
+        return;
+    }
+
+    // Store collection metadata only after the base NFT initialized.
+    storage_set(b"collection_name", b"LichenPunks");
+    storage_set(b"collection_symbol", b"MPNK");
+    storage_set(MP_ADMIN_KEY, &minter.0);
+    storage_set(MP_MINT_AUTHORITY_KEY, &minter.0);
+    storage_set(MP_ROYALTY_RECIPIENT_KEY, &minter.0);
+    storage_set(MP_PENDING_ADMIN_KEY, &[]);
+    storage_set(b"mp_paused", &[0u8]);
 
     log_info("LichenPunks NFT collection initialized");
 }
@@ -178,25 +262,29 @@ pub extern "C" fn mint(
         return 0;
     }
 
-    // Allow mint authority OR self-minting to avoid privileged-minter lockout.
-    let minter = get_minter();
-    let is_authorized = caller.0 == minter.0 || caller.0 == to.0;
-    if !is_authorized {
-        log_info("Unauthorized: only minter or self-mint is allowed");
+    if mint_authority() != Some(caller) {
+        log_info("Unauthorized: caller is not the mint authority");
         return 0;
     }
 
-    // AUDIT-FIX P2: Enforce max supply cap
-    let current_supply = total_minted();
+    let current_supply = match load_u64_or_zero(b"total_minted") {
+        Some(value) => value,
+        None => {
+            log_info("Total minted state is malformed");
+            return 0;
+        }
+    };
     if current_supply == u64::MAX {
         log_info("Total supply overflow");
         return 0;
     }
     if let Some(max_data) = storage_get(b"max_supply") {
-        let max = if max_data.len() >= 8 {
-            bytes_to_u64(&max_data)
-        } else {
-            0
+        let max = match max_data.len() {
+            8 => bytes_to_u64(&max_data),
+            _ => {
+                log_info("Maximum supply state is malformed");
+                return 0;
+            }
         };
         if max > 0 && current_supply >= max {
             log_info("Max supply reached");
@@ -263,11 +351,18 @@ pub extern "C" fn transfer(from_ptr: *const u8, to_ptr: *const u8, token_id: u64
         log_info("Recipient balance overflow");
         return 0;
     }
+    let next_transfer_count = match next_counter(MP_TRANSFER_COUNT_KEY) {
+        Some(value) => value,
+        None => {
+            log_info("Transfer counter is malformed or exhausted");
+            return 0;
+        }
+    };
 
     // Transfer
     match make_nft().transfer(from, to, token_id) {
         Ok(_) => {
-            increment_counter_saturating(MP_TRANSFER_COUNT_KEY);
+            storage_set(MP_TRANSFER_COUNT_KEY, &u64_to_bytes(next_transfer_count));
             log_info("NFT transferred successfully");
             1
         }
@@ -337,6 +432,79 @@ pub extern "C" fn approve(owner_ptr: *const u8, spender_ptr: *const u8, token_id
     }
 }
 
+/// Get the token-specific approved spender. A zero address means no approval.
+#[no_mangle]
+pub extern "C" fn get_approved(token_id: u64) -> u32 {
+    if make_nft().owner_of(token_id).is_err() {
+        return 0;
+    }
+    let approved = make_nft()
+        .get_approved(token_id)
+        .unwrap_or(Address([0u8; 32]));
+    lichen_sdk::set_return_data(&approved.0);
+    1
+}
+
+/// Approve or revoke an operator for all NFTs owned by `owner`.
+#[no_mangle]
+pub extern "C" fn set_approval_for_all(
+    owner_ptr: *const u8,
+    operator_ptr: *const u8,
+    approved: u32,
+) -> u32 {
+    if is_mp_paused() || approved > 1 {
+        return 0;
+    }
+    let owner = match read_address(owner_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
+    let operator = match read_address(operator_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
+    if get_caller() != owner {
+        log_info("Operator approval rejected: caller mismatch");
+        return 0;
+    }
+    match make_nft().set_approval_for_all(owner, operator, approved == 1) {
+        Ok(()) => 1,
+        Err(_) => 0,
+    }
+}
+
+/// Return whether `operator` can transfer every NFT owned by `owner`.
+#[no_mangle]
+pub extern "C" fn is_approved_for_all(owner_ptr: *const u8, operator_ptr: *const u8) -> u32 {
+    let owner = match read_address(owner_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
+    let operator = match read_address(operator_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
+    u32::from(make_nft().is_approved_for_all(owner, operator))
+}
+
+/// Standardized collection royalty response: recipient(32) + bps(2).
+#[no_mangle]
+pub extern "C" fn royalty_info(_token_id: u64) -> u32 {
+    let recipient = match royalty_recipient() {
+        Some(recipient) => recipient,
+        None => return 0,
+    };
+    let bps = match royalty_bps() {
+        Some(bps) => bps,
+        None => return 0,
+    };
+    let mut result = [0u8; 34];
+    result[..32].copy_from_slice(&recipient.0);
+    result[32..].copy_from_slice(&bps.to_le_bytes());
+    lichen_sdk::set_return_data(&result);
+    1
+}
+
 /// Transfer from (with approval)
 #[no_mangle]
 pub extern "C" fn transfer_from(
@@ -375,10 +543,17 @@ pub extern "C" fn transfer_from(
         log_info("Recipient balance overflow");
         return 0;
     }
+    let next_transfer_count = match next_counter(MP_TRANSFER_COUNT_KEY) {
+        Some(value) => value,
+        None => {
+            log_info("Transfer counter is malformed or exhausted");
+            return 0;
+        }
+    };
 
     match make_nft().transfer_from(caller, from, to, token_id) {
         Ok(_) => {
-            increment_counter_saturating(MP_TRANSFER_COUNT_KEY);
+            storage_set(MP_TRANSFER_COUNT_KEY, &u64_to_bytes(next_transfer_count));
             log_info("TransferFrom successful");
             1
         }
@@ -407,11 +582,18 @@ pub extern "C" fn burn(owner_ptr: *const u8, token_id: u64) -> u32 {
         log_info("Burn rejected: caller mismatch");
         return 0;
     }
+    let next_burn_count = match next_counter(MP_BURN_COUNT_KEY) {
+        Some(value) => value,
+        None => {
+            log_info("Burn counter is malformed or exhausted");
+            return 0;
+        }
+    };
 
     let mut nft = make_nft();
     match nft.burn(owner, token_id) {
         Ok(_) => {
-            increment_counter_saturating(MP_BURN_COUNT_KEY);
+            storage_set(MP_BURN_COUNT_KEY, &u64_to_bytes(next_burn_count));
             log_info("NFT burned");
             1
         }
@@ -465,6 +647,9 @@ pub extern "C" fn get_total_supply() -> u64 {
 /// Tests expect `get_punk_metadata`
 #[no_mangle]
 pub extern "C" fn get_punk_metadata(token_id: u64) -> u32 {
+    if make_nft().owner_of(token_id).is_err() {
+        return 0;
+    }
     let key = metadata_key(token_id);
     match storage_get(&key) {
         Some(data) => {
@@ -484,16 +669,7 @@ pub extern "C" fn get_punks_by_owner(owner_ptr: *const u8) -> u64 {
 /// Tests expect `set_base_uri`
 #[no_mangle]
 pub extern "C" fn set_base_uri(caller_ptr: *const u8, uri_ptr: *const u8, uri_len: u32) -> u32 {
-    let caller = match read_address(caller_ptr) {
-        Some(addr) => addr,
-        None => return 0,
-    };
-    if caller.0 != get_minter().0 {
-        return 0;
-    }
-    // AUDIT-FIX P10-SC-06: Verify actual transaction signer
-    let real_caller = get_caller();
-    if real_caller.0 != caller.0 {
+    if authenticated_admin(caller_ptr).is_none() {
         return 0;
     }
     let uri = match read_bytes(uri_ptr, uri_len, MAX_BASE_URI_LEN) {
@@ -511,19 +687,14 @@ pub extern "C" fn set_base_uri(caller_ptr: *const u8, uri_ptr: *const u8, uri_le
 /// Tests expect `set_max_supply`
 #[no_mangle]
 pub extern "C" fn set_max_supply(caller_ptr: *const u8, max_supply: u64) -> u32 {
-    let caller = match read_address(caller_ptr) {
-        Some(addr) => addr,
+    if authenticated_admin(caller_ptr).is_none() {
+        return 0;
+    }
+    let minted = match load_u64_or_zero(b"total_minted") {
+        Some(value) => value,
         None => return 0,
     };
-    if caller.0 != get_minter().0 {
-        return 0;
-    }
-    // AUDIT-FIX P10-SC-06: Verify actual transaction signer
-    let real_caller = get_caller();
-    if real_caller.0 != caller.0 {
-        return 0;
-    }
-    if max_supply > 0 && max_supply < total_minted() {
+    if max_supply > 0 && max_supply < minted {
         log_info("Max supply below current supply");
         return 0;
     }
@@ -535,16 +706,7 @@ pub extern "C" fn set_max_supply(caller_ptr: *const u8, max_supply: u64) -> u32 
 /// Tests expect `set_royalty`
 #[no_mangle]
 pub extern "C" fn set_royalty(caller_ptr: *const u8, bps: u64) -> u32 {
-    let caller = match read_address(caller_ptr) {
-        Some(addr) => addr,
-        None => return 0,
-    };
-    if caller.0 != get_minter().0 {
-        return 0;
-    }
-    // AUDIT-FIX P10-SC-06: Verify actual transaction signer
-    let real_caller = get_caller();
-    if real_caller.0 != caller.0 {
+    if authenticated_admin(caller_ptr).is_none() {
         return 0;
     }
     if bps > 1000 {
@@ -559,16 +721,7 @@ pub extern "C" fn set_royalty(caller_ptr: *const u8, bps: u64) -> u32 {
 /// Tests expect `mp_pause`
 #[no_mangle]
 pub extern "C" fn mp_pause(caller_ptr: *const u8) -> u32 {
-    let caller = match read_address(caller_ptr) {
-        Some(addr) => addr,
-        None => return 0,
-    };
-    if caller.0 != get_minter().0 {
-        return 0;
-    }
-    // AUDIT-FIX P10-SC-06: Verify actual transaction signer
-    let real_caller = get_caller();
-    if real_caller.0 != caller.0 {
+    if authenticated_admin(caller_ptr).is_none() {
         return 0;
     }
     storage_set(b"mp_paused", &[1u8]);
@@ -579,16 +732,7 @@ pub extern "C" fn mp_pause(caller_ptr: *const u8) -> u32 {
 /// Tests expect `mp_unpause`
 #[no_mangle]
 pub extern "C" fn mp_unpause(caller_ptr: *const u8) -> u32 {
-    let caller = match read_address(caller_ptr) {
-        Some(addr) => addr,
-        None => return 0,
-    };
-    if caller.0 != get_minter().0 {
-        return 0;
-    }
-    // AUDIT-FIX P10-SC-06: Verify actual transaction signer
-    let real_caller = get_caller();
-    if real_caller.0 != caller.0 {
+    if authenticated_admin(caller_ptr).is_none() {
         return 0;
     }
     storage_set(b"mp_paused", &[0u8]);
@@ -596,16 +740,132 @@ pub extern "C" fn mp_unpause(caller_ptr: *const u8) -> u32 {
     1
 }
 
+/// Start a two-step collection administrator rotation.
+#[no_mangle]
+pub extern "C" fn propose_admin(caller_ptr: *const u8, next_admin_ptr: *const u8) -> u32 {
+    let current = match authenticated_admin(caller_ptr) {
+        Some(current) => current,
+        None => return 0,
+    };
+    let next = match read_address(next_admin_ptr) {
+        Some(next) if next.0 != [0u8; 32] && next != current => next,
+        _ => return 0,
+    };
+    storage_set(MP_PENDING_ADMIN_KEY, &next.0);
+    1
+}
+
+/// Accept a pending collection administrator role with the pending key.
+#[no_mangle]
+pub extern "C" fn accept_admin(caller_ptr: *const u8) -> u32 {
+    let caller = match read_address(caller_ptr) {
+        Some(caller) if caller == get_caller() => caller,
+        _ => return 0,
+    };
+    if pending_admin() != Some(caller) {
+        return 0;
+    }
+    storage_set(MP_ADMIN_KEY, &caller.0);
+    storage_set(MP_PENDING_ADMIN_KEY, &[]);
+    1
+}
+
+/// Rotate mint authority without changing administration or royalty custody.
+#[no_mangle]
+pub extern "C" fn set_mint_authority(caller_ptr: *const u8, mint_authority_ptr: *const u8) -> u32 {
+    if authenticated_admin(caller_ptr).is_none() {
+        return 0;
+    }
+    let authority = match read_address(mint_authority_ptr) {
+        Some(authority) if authority.0 != [0u8; 32] => authority,
+        _ => return 0,
+    };
+    storage_set(MP_MINT_AUTHORITY_KEY, &authority.0);
+    1
+}
+
+/// Set canonical collection royalty recipient and bps together.
+#[no_mangle]
+pub extern "C" fn set_royalty_config(
+    caller_ptr: *const u8,
+    recipient_ptr: *const u8,
+    bps: u64,
+) -> u32 {
+    if authenticated_admin(caller_ptr).is_none() || bps > 1_000 {
+        return 0;
+    }
+    let recipient = match read_address(recipient_ptr) {
+        Some(recipient) if recipient.0 != [0u8; 32] => recipient,
+        _ => return 0,
+    };
+    storage_set(MP_ROYALTY_RECIPIENT_KEY, &recipient.0);
+    storage_set(b"royalty_bps", &u64_to_bytes(bps));
+    1
+}
+
+/// Return admin(32), pending admin(32), mint authority(32), royalty
+/// recipient(32), royalty bps(8), max supply(8), and paused(1).
+#[no_mangle]
+pub extern "C" fn get_collection_config() -> u32 {
+    let admin = match admin() {
+        Some(admin) => admin,
+        None => return 0,
+    };
+    let pending = match pending_admin() {
+        Some(pending) => pending,
+        None => return 0,
+    };
+    let mint_authority = match mint_authority() {
+        Some(authority) => authority,
+        None => return 0,
+    };
+    let royalty_recipient = match royalty_recipient() {
+        Some(recipient) => recipient,
+        None => return 0,
+    };
+    let royalty_bps = match royalty_bps() {
+        Some(bps) => bps,
+        None => return 0,
+    };
+    let max_supply = match max_supply() {
+        Some(max_supply) => max_supply,
+        None => return 0,
+    };
+    let paused = match pause_state() {
+        Some(paused) => paused,
+        None => return 0,
+    };
+    let mut result = alloc::vec::Vec::with_capacity(145);
+    result.extend_from_slice(&admin.0);
+    result.extend_from_slice(&pending.0);
+    result.extend_from_slice(&mint_authority.0);
+    result.extend_from_slice(&royalty_recipient.0);
+    result.extend_from_slice(&u64_to_bytes(u64::from(royalty_bps)));
+    result.extend_from_slice(&u64_to_bytes(max_supply));
+    result.push(u8::from(paused));
+    lichen_sdk::set_return_data(&result);
+    1
+}
+
 /// Get collection stats [total_minted(8), transfer_count(8), burn_count(8)]
 #[no_mangle]
 pub extern "C" fn get_collection_stats() -> u32 {
+    let minted = match load_u64_or_zero(b"total_minted") {
+        Some(value) => value,
+        None => return 1,
+    };
+    let transfers = match load_u64_or_zero(MP_TRANSFER_COUNT_KEY) {
+        Some(value) => value,
+        None => return 1,
+    };
+    let burns = match load_u64_or_zero(MP_BURN_COUNT_KEY) {
+        Some(value) => value,
+        None => return 1,
+    };
     let mut buf = [0u8; 24];
-    let minted = u64_to_bytes(total_minted());
-    let transfers = u64_to_bytes(stored_u64(MP_TRANSFER_COUNT_KEY));
-    let burns = u64_to_bytes(stored_u64(MP_BURN_COUNT_KEY));
-    buf[0..8].copy_from_slice(&minted);
-    buf[8..16].copy_from_slice(&transfers);
-    buf[16..24].copy_from_slice(&burns);
+    buf[0..8].copy_from_slice(&u64_to_bytes(minted));
+    buf[8..16].copy_from_slice(&u64_to_bytes(transfers));
+    buf[16..24].copy_from_slice(&u64_to_bytes(burns));
     lichen_sdk::set_return_data(&buf);
     0
 }
@@ -618,6 +878,7 @@ mod tests {
 
     fn setup() {
         test_mock::reset();
+        test_mock::set_caller([1u8; 32]);
     }
 
     fn mint_test_token(minter: &[u8; 32], owner: &[u8; 32], token_id: u64) {
@@ -1193,7 +1454,7 @@ mod tests {
     }
 
     #[test]
-    fn test_transfer_counter_saturates() {
+    fn test_transfer_counter_exhaustion_fails_before_owner_change() {
         setup();
         let minter = [1u8; 32];
         initialize(minter.as_ptr());
@@ -1203,8 +1464,12 @@ mod tests {
         storage_set(MP_TRANSFER_COUNT_KEY, &u64_to_bytes(u64::MAX));
 
         test_mock::set_caller(owner);
-        assert_eq!(transfer(owner.as_ptr(), to.as_ptr(), 1), 1);
+        assert_eq!(transfer(owner.as_ptr(), to.as_ptr(), 1), 0);
         assert_eq!(stored_u64(MP_TRANSFER_COUNT_KEY), u64::MAX);
+        assert_eq!(
+            make_nft().owner_of(1).expect("owner remains"),
+            Address(owner)
+        );
     }
 
     #[test]
@@ -1238,5 +1503,154 @@ mod tests {
             set_base_uri(minter.as_ptr(), uri.as_ptr(), uri.len() as u32),
             1
         );
+    }
+
+    #[test]
+    fn test_self_mint_does_not_bypass_collection_authority() {
+        setup();
+        let minter = [1u8; 32];
+        let attacker = [2u8; 32];
+        let metadata = b"ipfs://unauthorized";
+        initialize(minter.as_ptr());
+
+        test_mock::set_caller(attacker);
+        assert_eq!(
+            mint(
+                attacker.as_ptr(),
+                attacker.as_ptr(),
+                99,
+                metadata.as_ptr(),
+                metadata.len() as u32,
+            ),
+            0
+        );
+        assert_eq!(total_minted(), 0);
+        assert!(make_nft().owner_of(99).is_err());
+    }
+
+    #[test]
+    fn test_token_and_operator_approvals_are_queryable_and_exact() {
+        setup();
+        let minter = [1u8; 32];
+        let owner = [2u8; 32];
+        let spender = [3u8; 32];
+        let operator = [4u8; 32];
+        let recipient = [5u8; 32];
+        initialize(minter.as_ptr());
+        mint_test_token(&minter, &owner, 7);
+
+        assert_eq!(get_approved(999), 0);
+        test_mock::set_caller(owner);
+        assert_eq!(approve(owner.as_ptr(), owner.as_ptr(), 7), 0);
+        assert_eq!(approve(owner.as_ptr(), spender.as_ptr(), 7), 1);
+        assert_eq!(get_approved(7), 1);
+        assert_eq!(test_mock::get_return_data(), spender.to_vec());
+        assert_eq!(
+            set_approval_for_all(owner.as_ptr(), operator.as_ptr(), 1),
+            1
+        );
+        assert_eq!(is_approved_for_all(owner.as_ptr(), operator.as_ptr()), 1);
+
+        test_mock::set_caller(operator);
+        assert_eq!(
+            transfer_from(operator.as_ptr(), owner.as_ptr(), recipient.as_ptr(), 7),
+            1
+        );
+        assert_eq!(get_approved(7), 1);
+        assert_eq!(test_mock::get_return_data(), [0u8; 32]);
+    }
+
+    #[test]
+    fn test_two_step_admin_rotation_separates_mint_and_royalty_authorities() {
+        setup();
+        let initial = [1u8; 32];
+        let next_admin = [2u8; 32];
+        let mint_authority = [3u8; 32];
+        let royalty_recipient = [4u8; 32];
+        let owner = [5u8; 32];
+        let metadata = b"ipfs://authorized";
+        initialize(initial.as_ptr());
+
+        assert_eq!(propose_admin(initial.as_ptr(), next_admin.as_ptr()), 1);
+        test_mock::set_caller(next_admin);
+        assert_eq!(accept_admin(next_admin.as_ptr()), 1);
+        test_mock::set_caller(initial);
+        assert_eq!(
+            set_mint_authority(initial.as_ptr(), mint_authority.as_ptr()),
+            0
+        );
+
+        test_mock::set_caller(next_admin);
+        assert_eq!(
+            set_mint_authority(next_admin.as_ptr(), mint_authority.as_ptr()),
+            1
+        );
+        assert_eq!(
+            set_royalty_config(next_admin.as_ptr(), royalty_recipient.as_ptr(), 600),
+            1
+        );
+        test_mock::set_caller(mint_authority);
+        assert_eq!(
+            mint(
+                mint_authority.as_ptr(),
+                owner.as_ptr(),
+                1,
+                metadata.as_ptr(),
+                metadata.len() as u32,
+            ),
+            1
+        );
+
+        assert_eq!(royalty_info(1), 1);
+        let royalty = test_mock::get_return_data();
+        assert_eq!(&royalty[..32], &royalty_recipient);
+        assert_eq!(&royalty[32..], &600u16.to_le_bytes());
+        assert_eq!(get_collection_config(), 1);
+        let config = test_mock::get_return_data();
+        assert_eq!(config.len(), 145);
+        assert_eq!(&config[..32], &next_admin);
+        assert_eq!(&config[32..64], &[0u8; 32]);
+        assert_eq!(&config[64..96], &mint_authority);
+        assert_eq!(&config[96..128], &royalty_recipient);
+        assert_eq!(bytes_to_u64(&config[128..136]), 600);
+        assert_eq!(bytes_to_u64(&config[136..144]), 0);
+        assert_eq!(config[144], 0);
+    }
+
+    #[test]
+    fn test_malformed_state_blocks_mutation_and_stats_queries() {
+        setup();
+        let minter = [1u8; 32];
+        let owner = [2u8; 32];
+        let recipient = [3u8; 32];
+        initialize(minter.as_ptr());
+        mint_test_token(&minter, &owner, 1);
+
+        storage_set(MP_TRANSFER_COUNT_KEY, &[1u8]);
+        test_mock::set_caller(owner);
+        assert_eq!(transfer(owner.as_ptr(), recipient.as_ptr(), 1), 0);
+        assert_eq!(
+            make_nft().owner_of(1).expect("owner remains"),
+            Address(owner)
+        );
+        assert_eq!(get_collection_stats(), 1);
+
+        storage_set(MP_TRANSFER_COUNT_KEY, &u64_to_bytes(0));
+        storage_set(b"mp_paused", &[2u8]);
+        assert_eq!(transfer(owner.as_ptr(), recipient.as_ptr(), 1), 0);
+        assert_eq!(get_collection_config(), 0);
+    }
+
+    #[test]
+    fn test_burned_token_metadata_and_approval_queries_fail() {
+        setup();
+        let minter = [1u8; 32];
+        let owner = [2u8; 32];
+        initialize(minter.as_ptr());
+        mint_test_token(&minter, &owner, 1);
+        test_mock::set_caller(owner);
+        assert_eq!(burn(owner.as_ptr(), 1), 1);
+        assert_eq!(get_punk_metadata(1), 0);
+        assert_eq!(get_approved(1), 0);
     }
 }

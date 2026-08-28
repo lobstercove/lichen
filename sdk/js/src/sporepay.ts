@@ -23,11 +23,23 @@ export interface SporePayStreamInfo extends SporePayStream {
     cliffSlot: bigint;
 }
 
+export interface SporePayStreamIdPage {
+    totalCount: bigint;
+    nextCursor: bigint;
+    streamIds: bigint[];
+}
+
 export interface SporePayStats {
     streamCount: number;
     totalStreamed: number;
     totalWithdrawn: number;
     cancelCount: number;
+    escrowLiability: number;
+    unpaidLiability: number;
+    accountingVersion: number;
+    migrationLocked: boolean;
+    migrationExpectedStreams: number;
+    migrationCursor: number;
     paused: boolean;
 }
 
@@ -137,6 +149,22 @@ function encodeStreamLookupArgs(streamId: number | bigint): Uint8Array {
     return buildLayoutArgs([0x08], [u64LE(streamId, 'streamId')]);
 }
 
+function encodeAddressArgs(address: PublicKey): Uint8Array {
+    return buildLayoutArgs([0x20], [address.toBytes()]);
+}
+
+function encodeAddressPageArgs(
+    address: PublicKey,
+    cursor: number | bigint,
+    limit: number | bigint,
+): Uint8Array {
+    return buildLayoutArgs([0x20, 0x08, 0x08], [
+        address.toBytes(),
+        u64LE(cursor, 'cursor'),
+        u64LE(limit, 'limit'),
+    ]);
+}
+
 function decodeReturnData(returnData: string): Uint8Array {
     return Uint8Array.from(Buffer.from(returnData, 'base64'));
 }
@@ -182,6 +210,26 @@ function decodeStreamInfo(streamId: bigint, bytes: Uint8Array): SporePayStreamIn
     return {
         ...decodeStream(streamId, bytes),
         cliffSlot: readU64(bytes, 105),
+    };
+}
+
+function decodeStreamIdPage(bytes: Uint8Array): SporePayStreamIdPage {
+    if (bytes.length < 24) {
+        throw new Error('SporePay stream-ID page payload was shorter than expected');
+    }
+    const returned = readU64(bytes, 16);
+    if (returned > BigInt(Number.MAX_SAFE_INTEGER)
+        || bytes.length !== 24 + Number(returned) * 8) {
+        throw new Error('SporePay stream-ID page payload length was inconsistent');
+    }
+    const streamIds: bigint[] = [];
+    for (let index = 0; index < Number(returned); index += 1) {
+        streamIds.push(readU64(bytes, 24 + index * 8));
+    }
+    return {
+        totalCount: readU64(bytes, 0),
+        nextCursor: readU64(bytes, 8),
+        streamIds,
     };
 }
 
@@ -256,8 +304,58 @@ export class SporePayClient {
             totalStreamed: stats.total_streamed ?? 0,
             totalWithdrawn: stats.total_withdrawn ?? 0,
             cancelCount: stats.cancel_count ?? 0,
+            escrowLiability: stats.escrow_liability ?? 0,
+            unpaidLiability: stats.unpaid_liability ?? 0,
+            accountingVersion: stats.accounting_version ?? 0,
+            migrationLocked: Boolean(stats.migration_locked),
+            migrationExpectedStreams: stats.migration_expected_streams ?? 0,
+            migrationCursor: stats.migration_cursor ?? 0,
             paused: Boolean(stats.paused),
         };
+    }
+
+    async getUnpaidPayout(recipient: PublicKey | string): Promise<bigint> {
+        const result = await this.callReadonly(
+            'get_unpaid_payout',
+            encodeAddressArgs(normalizeAddress(recipient)),
+        );
+        ensureReturnCodeZero(result, 'get_unpaid_payout');
+        if (!result.returnData) {
+            throw new Error('SporePay get_unpaid_payout did not return a balance');
+        }
+        return readU64(decodeReturnData(result.returnData), 0);
+    }
+
+    async getSenderStreamIds(
+        sender: PublicKey | string,
+        cursor: number | bigint = 0,
+        limit: number | bigint = 64,
+    ): Promise<SporePayStreamIdPage> {
+        const result = await this.callReadonly(
+            'get_sender_stream_ids',
+            encodeAddressPageArgs(normalizeAddress(sender), cursor, limit),
+        );
+        ensureReturnCodeZero(result, 'get_sender_stream_ids');
+        if (!result.returnData) {
+            throw new Error('SporePay get_sender_stream_ids did not return a page');
+        }
+        return decodeStreamIdPage(decodeReturnData(result.returnData));
+    }
+
+    async getRecipientStreamIds(
+        recipient: PublicKey | string,
+        cursor: number | bigint = 0,
+        limit: number | bigint = 64,
+    ): Promise<SporePayStreamIdPage> {
+        const result = await this.callReadonly(
+            'get_recipient_stream_ids',
+            encodeAddressPageArgs(normalizeAddress(recipient), cursor, limit),
+        );
+        ensureReturnCodeZero(result, 'get_recipient_stream_ids');
+        if (!result.returnData) {
+            throw new Error('SporePay get_recipient_stream_ids did not return a page');
+        }
+        return decodeStreamIdPage(decodeReturnData(result.returnData));
     }
 
     async createStream(sender: Keypair, params: CreateStreamParams): Promise<string> {
@@ -288,5 +386,15 @@ export class SporePayClient {
         const programId = await this.getProgramId();
         const args = encodeTransferArgs(recipient.pubkey(), params);
         return this.connection.callContract(recipient, programId, 'transfer_stream', args);
+    }
+
+    async claimUnpaidPayout(recipient: Keypair): Promise<string> {
+        const programId = await this.getProgramId();
+        return this.connection.callContract(
+            recipient,
+            programId,
+            'claim_unpaid_payout',
+            encodeAddressArgs(recipient.pubkey()),
+        );
     }
 }

@@ -1,5 +1,5 @@
 // Privacy Layer Page - Lichen Explorer
-// Displays shielded pool statistics, ZK transaction history, and nullifier lookup
+// Displays read-only historical shielded pool statistics, transaction history, and nullifier lookup
 // Uses `rpc` instance from explorer.js
 
 // ===== State =====
@@ -87,8 +87,9 @@ async function loadPoolStats() {
             shield_count: 0,
             unshield_count: 0,
             transfer_count: 0,
-            zkScheme: 'plonky3-fri-poseidon2',
-            zk_scheme: 'plonky3-fri-poseidon2',
+            proofAcceptanceEnabled: false,
+            operationsAvailable: false,
+            status: 'disabled_insecure_verifier',
         });
     }
 }
@@ -203,9 +204,11 @@ function updatePoolStatsUI(stats) {
     // Proof runtime status
     const vkText = el('vkStatusText');
     if (!vkText) return;
-    vkText.textContent = 'Transparent STARK path';
-    vkText.style.background = 'rgba(6, 214, 160, 0.2)';
-    vkText.style.color = '#06d6a0';
+    const proofEnabled = stats.proofAcceptanceEnabled === true
+        && stats.operationsAvailable === true;
+    vkText.textContent = proofEnabled ? 'Enabled' : 'Disabled — insecure verifier';
+    vkText.style.background = proofEnabled ? 'rgba(6, 214, 160, 0.2)' : 'rgba(245, 158, 11, 0.2)';
+    vkText.style.color = proofEnabled ? '#06d6a0' : '#f59e0b';
 }
 
 function renderShieldedTxs(txs) {

@@ -541,7 +541,15 @@ pub fn decode_margin_position(data: &[u8]) -> Option<DexMarginPosition> {
     let leverage = u64::from_le_bytes(data[74..82].try_into().ok()?);
     let created_slot = u64::from_le_bytes(data[82..90].try_into().ok()?);
     let raw_pnl = u64::from_le_bytes(data[90..98].try_into().ok()?);
-    let realized_pnl = raw_pnl as i64 - PNL_BIAS as i64;
+    // Historical margin records used zero for an unrealized position even
+    // though the field is bias encoded. Preserve those records as zero PnL;
+    // decode all canonical biased values through i128 so negative PnL cannot
+    // overflow an i64 subtraction in debug or release builds.
+    let realized_pnl = if raw_pnl == 0 {
+        0
+    } else {
+        i64::try_from(raw_pnl as i128 - PNL_BIAS as i128).ok()?
+    };
     let accumulated_funding = u64::from_le_bytes(data[98..106].try_into().ok()?);
     let sl_price = if data.len() >= 114 {
         u64::from_le_bytes(data[106..114].try_into().unwrap_or([0; 8]))
@@ -770,5 +778,16 @@ mod tests {
         assert_eq!(pair.maker_fee_bps, -2);
         assert_eq!(pair.taker_fee_bps, 5);
         assert_eq!(pair.daily_volume, 123_456);
+    }
+
+    #[test]
+    fn decode_margin_position_handles_negative_and_legacy_zero_pnl() {
+        let mut data = vec![0u8; 112];
+        data[90..98].copy_from_slice(&(PNL_BIAS - 1_234).to_le_bytes());
+        assert_eq!(decode_margin_position(&data).unwrap().realized_pnl, -1_234);
+
+        // Pre-fix open positions stored zero instead of the bias value.
+        data[90..98].copy_from_slice(&0u64.to_le_bytes());
+        assert_eq!(decode_margin_position(&data).unwrap().realized_pnl, 0);
     }
 }

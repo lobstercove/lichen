@@ -6,6 +6,7 @@ members = [
     "cli",
     "p2p",
     "faucet-service",
+    "moss-provider",
     "custody",
     "genesis",
 ]

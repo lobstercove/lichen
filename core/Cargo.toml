@@ -23,6 +23,7 @@ pkcs8 = { workspace = true }
 dilithium = { workspace = true }
 ed25519-dalek = { workspace = true }
 sha2 = "0.10"
+flate2 = "1.0"
 bs58 = "0.5"
 hex = "0.4"
 sha3 = "0.10"  # For Keccak256 (EVM addresses)
@@ -49,8 +50,8 @@ zstd = "0.13"
 libc = "0.2"
 
 # ZK proof dependencies.
-# The live shielded runtime is Plonky3/FRI; arkworks remains for field and
-# constraint-system helpers used by the current circuit and witness layer.
+# Legacy shielded scheme 0x01 uses Plonky3/FRI but is disabled; arkworks remains
+# for field, compatibility, regression, and transition-analysis helpers.
 ark-ff = { version = "0.4", optional = true }
 ark-ec = { version = "0.4", optional = true }
 ark-bn254 = { version = "0.4", optional = true }

@@ -8,9 +8,15 @@
     var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl)
         || (typeof window.getMarketRpcUrl === 'function' ? window.getMarketRpcUrl() : null)
         || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function' ? LICHEN_CONFIG.rpc() : null);
-    var CONTRACT_PROGRAM_ID = null; // resolved lazily
+    var CONTRACT_PROGRAM_ID = bs58encode(new Uint8Array(32).fill(0xFF));
     var SYSTEM_PROGRAM_ID = null;   // resolved lazily
     var MOSS_STORAGE_PROGRAM_ID = null; // resolved lazily
+    var MOSS_GATEWAY_URL = (window.lichenMarketConfig && window.lichenMarketConfig.mossGatewayUrl)
+        || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.moss === 'function' ? LICHEN_CONFIG.moss() : null);
+    var MOSS_REPLICATION_FACTOR = 3;
+    var MOSS_DURATION_SLOTS = 78840000; // 365 days at the protocol's 400ms target cadence
+    var MOSS_MAX_PRICE = 10;
+    var MOSS_PRICING_SCALE = 100000000n;
     var MINTING_FEE = 0.5; // default, overridden by on-chain value at init
     var _mintingFeeLoaded = false;
     var CREATE_COLLECTION_OPCODE = 6;
@@ -152,10 +158,25 @@
         return new Uint8Array(digest);
     }
 
-    async function hashFileToBase58(file) {
-        var buffer = await file.arrayBuffer();
-        var digest = await sha256Bytes(buffer);
-        return bs58encode(digest);
+    async function mossRootBytes(blob) {
+        if (!blob || !Number.isSafeInteger(blob.size) || blob.size <= 0) {
+            throw new Error('Moss objects must contain at least one byte');
+        }
+        var chunkSize = 65536;
+        var nodes = [];
+        for (var offset = 0; offset < blob.size; offset += chunkSize) {
+            var chunk = await blob.slice(offset, Math.min(offset + chunkSize, blob.size)).arrayBuffer();
+            nodes.push(await sha256Bytes(chunk));
+        }
+        while (nodes.length > 1) {
+            var next = [];
+            for (var i = 0; i < nodes.length; i += 2) {
+                var right = nodes[i + 1] || nodes[i];
+                next.push(await sha256Bytes(concatBytes([nodes[i], right])));
+            }
+            nodes = next;
+        }
+        return nodes[0];
     }
 
     function utf8ToBase64(input) {
@@ -196,10 +217,9 @@
 
     async function resolveMarketplaceProgram() {
         if (marketplaceProgram) return marketplaceProgram;
-        var entry = await marketTrustedRpcCall('getSymbolRegistry', ['LICHENMARKET']);
+        var entry = await marketTrustedRpcCall('getSymbolRegistry', ['MARKET']);
         marketplaceProgram = entry && (entry.program || entry.program_id) ? (entry.program || entry.program_id) : null;
         if (!marketplaceProgram) throw new Error('Marketplace program not found in symbol registry');
-        CONTRACT_PROGRAM_ID = marketplaceProgram;
         return marketplaceProgram;
     }
 
@@ -222,39 +242,106 @@
         var size = BigInt(Math.max(1, Number(sizeBytes) || 1));
         var replication = BigInt(Math.max(1, Number(replicationFactor) || 1));
         var duration = BigInt(Math.max(1000, Number(durationSlots) || 1000));
-        var rewardPerSlotPerByte = 10n;
-        var baseCost = size * replication * duration * rewardPerSlotPerByte;
-        var buffered = baseCost + (baseCost / 5n);
-        if (buffered > BigInt(Number.MAX_SAFE_INTEGER)) {
+        var price = BigInt(MOSS_MAX_PRICE);
+        var perReplicaNumerator = size * duration * price;
+        var perReplica = (perReplicaNumerator + MOSS_PRICING_SCALE - 1n) / MOSS_PRICING_SCALE;
+        var exactCost = perReplica * replication;
+        if (exactCost > BigInt(Number.MAX_SAFE_INTEGER)) {
             throw new Error('Metadata storage cost exceeds wallet transaction limits');
         }
-        return Number(buffered);
+        return Number(exactCost);
     }
 
-    async function storeMetadataOnMoss(metadataObj) {
+    function mossStorageCostLicn(sizeBytes) {
+        return estimateMossStorageCost(
+            sizeBytes,
+            MOSS_REPLICATION_FACTOR,
+            MOSS_DURATION_SLOTS
+        ) / 1000000000;
+    }
+
+    function normalizeMossContentType(value) {
+        var normalized = String(value || 'application/octet-stream').trim().toLowerCase();
+        if (!normalized || normalized.length > 128 || /[\r\n]/.test(normalized)) {
+            throw new Error('Invalid Moss content type');
+        }
+        return normalized;
+    }
+
+    async function uploadObjectToMoss(blob, objectHash, contentType) {
+        if (!MOSS_GATEWAY_URL) throw new Error('Moss content gateway is not configured');
+        if (!currentWallet || !window.lichenWallet || typeof window.lichenWallet.signMessage !== 'function') {
+            throw new Error('Wallet message signing is required for Moss uploads');
+        }
+        contentType = normalizeMossContentType(contentType);
+        var message = 'lichen-moss-upload-v1\n' + objectHash + '\n' + blob.size + '\n' + contentType;
+        var signed = await window.lichenWallet.signMessage(message);
+        var pqSignature = signed && (signed.pqSignature || (signed.result && signed.result.pqSignature));
+        if (!pqSignature) throw new Error('Wallet did not return a PQ upload signature');
+
+        var form = new FormData();
+        form.append('hash', objectHash);
+        form.append('size', String(blob.size));
+        form.append('owner', currentWallet.address);
+        form.append('content_type', contentType);
+        form.append('signature', JSON.stringify(pqSignature));
+        form.append('object', blob, objectHash);
+        var response = await fetch(MOSS_GATEWAY_URL.replace(/\/$/, '') + '/v1/uploads', {
+            method: 'POST',
+            body: form,
+        });
+        var payload = await response.json().catch(function () { return {}; });
+        if (!response.ok) {
+            throw new Error(payload.error || ('Moss upload failed with HTTP ' + response.status));
+        }
+        if (!payload || payload.hash !== objectHash || Number(payload.size) !== blob.size) {
+            throw new Error('Moss gateway returned a conflicting upload receipt');
+        }
+        return payload;
+    }
+
+    async function prepareMossObject(blob, contentType) {
+        contentType = normalizeMossContentType(contentType);
+        return {
+            blob: blob,
+            contentType: contentType,
+            objectHash: bs58encode(await mossRootBytes(blob)),
+            storageValue: estimateMossStorageCost(
+                blob.size,
+                MOSS_REPLICATION_FACTOR,
+                MOSS_DURATION_SLOTS
+            ),
+        };
+    }
+
+    function buildMossStorageInstruction(mossProgram, prepared) {
+        return {
+            program_id: CONTRACT_PROGRAM_ID,
+            accounts: [currentWallet.address, mossProgram],
+            data: buildContractCallData('store_data_v2', [
+                currentWallet.address,
+                prepared.objectHash,
+                prepared.blob.size,
+                MOSS_REPLICATION_FACTOR,
+                MOSS_DURATION_SLOTS,
+                MOSS_MAX_PRICE
+            ], prepared.storageValue),
+        };
+    }
+
+    async function storePreparedObjectsOnMoss(preparedObjects) {
+        if (!Array.isArray(preparedObjects) || preparedObjects.length === 0) {
+            throw new Error('At least one Moss object is required');
+        }
         var mossProgram = await resolveMossStorageProgram();
-        var metadataJson = JSON.stringify(metadataObj);
-        var metadataBytes = new TextEncoder().encode(metadataJson);
-        var metadataHash = bs58encode(await sha256Bytes(metadataBytes));
-        var replicationFactor = 1;
-        var durationSlots = 1000;
-        var storageValue = estimateMossStorageCost(metadataBytes.length, replicationFactor, durationSlots);
-
-        var callData = buildContractCallData('store_data', [
-            currentWallet.address,
-            metadataHash,
-            metadataBytes.length,
-            replicationFactor,
-            durationSlots
-        ], storageValue);
-
-        await window.lichenWallet.sendTransaction([{
-            program_id: mossProgram,
-            accounts: [currentWallet.address],
-            data: callData,
-        }]);
-
-        return 'moss://' + metadataHash;
+        for (var i = 0; i < preparedObjects.length; i++) {
+            var prepared = preparedObjects[i];
+            await uploadObjectToMoss(prepared.blob, prepared.objectHash, prepared.contentType);
+        }
+        await window.lichenWallet.sendTransaction(preparedObjects.map(function (prepared) {
+            return buildMossStorageInstruction(mossProgram, prepared);
+        }));
+        return preparedObjects.map(function (prepared) { return 'moss://' + prepared.objectHash; });
     }
 
     async function deriveCollectionAccount(creatorAddress, name, symbol) {
@@ -415,7 +502,8 @@
         var isNewCollection = (document.getElementById('nftCollection') || {}).value === 'new';
         var collectionFee = isNewCollection ? 1.0 : 0;
         var totalMintFee = MINTING_FEE * supply;
-        var total = totalMintFee + collectionFee;
+        var estimatedStorageFee = uploadedFile ? mossStorageCostLicn(uploadedFile.size + 4096) : 0;
+        var total = totalMintFee + collectionFee + estimatedStorageFee;
         var hasBalance = currentWallet && userBalance >= total;
 
         var breakdown = document.getElementById('priceBreakdown');
@@ -426,6 +514,9 @@
             html += '<div class="detail-row"><span>Collection Deployment</span><strong>' + collectionFee.toFixed(3) + ' LICN</strong></div>';
         }
         html += '<div class="detail-row"><span>Minting Fee (' + supply + '&times;)</span><strong>' + totalMintFee.toFixed(3) + ' LICN</strong></div>';
+        if (uploadedFile) {
+            html += '<div class="detail-row"><span>Estimated Moss Storage</span><strong>' + estimatedStorageFee.toFixed(6) + ' LICN</strong></div>';
+        }
         html += '<div class="detail-row" style="border-top:1px solid var(--border-color);padding-top:8px;margin-top:8px;">' +
             '<span><strong>Total</strong></span><strong>' + total.toFixed(3) + ' LICN</strong></div>';
 
@@ -569,6 +660,8 @@
             return;
         }
         uploadedFile = file;
+        updatePriceBreakdown();
+        updateCreateBtnState();
         var reader = new FileReader();
         reader.onload = function (e) {
             uploadedDataUrl = e.target.result;
@@ -611,6 +704,8 @@
         if (uploadArea) uploadArea.style.display = '';
         if (fileInput) fileInput.value = '';
         updateLivePreviewImage(null, null);
+        updatePriceBreakdown();
+        updateCreateBtnState();
     }
 
     // ===== Properties (Traits) =====
@@ -762,15 +857,8 @@
             }
         }
 
-        // Balance check
         var isNewCol = collection === 'new';
         var collectionFee = isNewCol ? 1.0 : 0;
-        var totalCost = (MINTING_FEE * supply) + collectionFee;
-        await refreshBalance();
-        if (userBalance < totalCost) {
-            alert('Insufficient balance. Need ' + totalCost.toFixed(3) + ' LICN, you have ' + userBalance.toFixed(4) + ' LICN.');
-            return;
-        }
 
         if (!window.lichenWallet || typeof window.lichenWallet.sendTransaction !== 'function') {
             alert('Wallet signing unavailable. Reconnect wallet and try again.');
@@ -781,9 +869,61 @@
         if (createBtn) { createBtn.disabled = true; createBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating...'; }
 
         try {
-            var collectionAddress = collection;
+            var storedProperties = properties.filter(function (property) {
+                return property && String(property.trait_type || '').trim() && String(property.value || '').trim();
+            }).map(function (property) {
+                return {
+                    trait_type: String(property.trait_type).trim(),
+                    value: String(property.value).trim(),
+                };
+            });
+            if (storedProperties.length > 64) {
+                throw new Error('NFT metadata supports at most 64 populated properties');
+            }
+            storedProperties.forEach(function (property) {
+                if (property.trait_type.length > 64 || property.value.length > 256) {
+                    throw new Error('Property names are limited to 64 characters and values to 256 characters');
+                }
+            });
 
-            // Create new collection if needed
+            if (createBtn) createBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Preparing storage...';
+            var preparedMedia = await prepareMossObject(
+                uploadedFile,
+                uploadedFile.type || 'application/octet-stream'
+            );
+            var mediaUri = 'moss://' + preparedMedia.objectHash;
+            var metadata = {
+                name: name,
+                description: description,
+                image: mediaUri,
+                media_hash: preparedMedia.objectHash,
+                media_type: uploadedFile.type,
+                media_size: uploadedFile.size,
+                properties: storedProperties,
+                creator: currentWallet.address,
+                supply: supply,
+                royalty: royalty,
+            };
+            var metadataBlob = new Blob([JSON.stringify(metadata)], { type: 'application/json' });
+            var preparedMetadata = await prepareMossObject(metadataBlob, 'application/json');
+            var storageCostSpores = BigInt(preparedMedia.storageValue) + BigInt(preparedMetadata.storageValue);
+            var storageCostLicn = Number(storageCostSpores) / 1000000000;
+            var totalCost = (MINTING_FEE * supply) + collectionFee + storageCostLicn;
+
+            await refreshBalance();
+            if (userBalance < totalCost) {
+                throw new Error(
+                    'Insufficient balance. Exact mint and storage cost is ' + totalCost.toFixed(9) +
+                    ' LICN; wallet balance is ' + userBalance.toFixed(9) + ' LICN.'
+                );
+            }
+
+            if (createBtn) createBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Storing media and metadata...';
+            var mossUris = await storePreparedObjectsOnMoss([preparedMedia, preparedMetadata]);
+            mediaUri = mossUris[0];
+            var metadataUri = mossUris[1];
+
+            var collectionAddress = collection;
             if (collection === 'new') {
                 var colName = document.getElementById('newCollectionName').value.trim();
                 var colSymbolInput = document.getElementById('newCollectionSymbol');
@@ -795,24 +935,6 @@
                 showToast('Collection "' + colName + '" created!', 'success');
             }
 
-            var mediaHash = await hashFileToBase58(uploadedFile);
-
-            // Build metadata (stored via Moss hash URI)
-            var metadata = {
-                name: name,
-                description: description,
-                image: 'moss://' + mediaHash,
-                media_hash: mediaHash,
-                media_type: uploadedFile.type,
-                media_size: uploadedFile.size,
-                properties: properties.filter(function (p) { return p.trait_type && p.value; }),
-                creator: currentWallet.address,
-                supply: supply,
-                royalty: royalty,
-            };
-
-            if (createBtn) createBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Storing metadata...';
-            var metadataUri = await storeMetadataOnMoss(metadata);
             var tokenBaseId = makeTokenBaseId();
             var mintedTokenIds = [];
 
@@ -884,8 +1006,8 @@
                         }
 
                         await window.lichenWallet.sendTransaction([{
-                            program_id: mp,
-                            accounts: [currentWallet.address, collectionAddress],
+                            program_id: CONTRACT_PROGRAM_ID,
+                            accounts: [currentWallet.address, mp, collectionAddress],
                             data: listCallData,
                         }]);
                     }

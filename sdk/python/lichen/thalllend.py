@@ -124,6 +124,47 @@ def _decode_interest_rate(result: Dict[str, Any]) -> Dict[str, int]:
     }
 
 
+def _decode_rate_model(result: Dict[str, Any]) -> Dict[str, int]:
+    _ensure_return_code(result, "get_rate_model")
+    return_data = result.get("returnData")
+    if not isinstance(return_data, str):
+        raise RuntimeError("ThallLend get_rate_model did not return model data")
+    data = _decode_return_data(return_data)
+    if len(data) < 56:
+        raise RuntimeError("ThallLend get_rate_model payload was shorter than expected")
+    return {
+        "rate_scale": _decode_u64_le(data, 0),
+        "slots_per_year": _decode_u64_le(data, 8),
+        "base_rate_per_slot": _decode_u64_le(data, 16),
+        "current_rate_per_slot": _decode_u64_le(data, 24),
+        "current_annual_bps": _decode_u64_le(data, 32),
+        "utilization_kink_pct": _decode_u64_le(data, 40),
+        "max_rate_per_slot": _decode_u64_le(data, 48),
+    }
+
+
+def _decode_market_status(result: Dict[str, Any]) -> Dict[str, Any]:
+    _ensure_return_code(result, "get_market_status")
+    return_data = result.get("returnData")
+    if not isinstance(return_data, str):
+        raise RuntimeError("ThallLend get_market_status did not return status data")
+    data = _decode_return_data(return_data)
+    if len(data) < 80:
+        raise RuntimeError("ThallLend get_market_status payload was shorter than expected")
+    return {
+        "paused": _decode_u64_le(data, 0) != 0,
+        "licn_configured": _decode_u64_le(data, 8) != 0,
+        "native_licn": _decode_u64_le(data, 16) != 0,
+        "oracle_config_present": _decode_u64_le(data, 24) != 0,
+        "oracle_config_valid": _decode_u64_le(data, 32) != 0,
+        "deposit_cap": _decode_u64_le(data, 40),
+        "reserve_factor_pct": _decode_u64_le(data, 48),
+        "collateral_factor_pct": _decode_u64_le(data, 56),
+        "liquidation_threshold_pct": _decode_u64_le(data, 64),
+        "liquidation_bonus_pct": _decode_u64_le(data, 72),
+    }
+
+
 @dataclass(frozen=True)
 class LiquidateParams:
     borrower: PublicKey | str
@@ -166,6 +207,12 @@ class ThallLendClient:
     async def get_interest_rate(self) -> Dict[str, int]:
         return _decode_interest_rate(await self._call_readonly("get_interest_rate"))
 
+    async def get_rate_model(self) -> Dict[str, int]:
+        return _decode_rate_model(await self._call_readonly("get_rate_model"))
+
+    async def get_market_status(self) -> Dict[str, Any]:
+        return _decode_market_status(await self._call_readonly("get_market_status"))
+
     async def get_deposit_count(self) -> int:
         return _decode_u64_result(await self._call_readonly("get_deposit_count"), "get_deposit_count")
 
@@ -180,10 +227,19 @@ class ThallLendClient:
         return {
             "total_deposits": stats.get("total_deposits", 0),
             "total_borrows": stats.get("total_borrows", 0),
+            "available_liquidity": stats.get("available_liquidity", 0),
+            "utilization_pct": stats.get("utilization_pct", 0),
             "reserves": stats.get("reserves", 0),
             "deposit_count": stats.get("deposit_count", 0),
             "borrow_count": stats.get("borrow_count", 0),
+            "repay_count": stats.get("repay_count", 0),
             "liquidation_count": stats.get("liquidation_count", 0),
+            "deposit_cap": stats.get("deposit_cap", 0),
+            "reserve_factor_pct": stats.get("reserve_factor_pct", 0),
+            "licn_configured": bool(stats.get("licn_configured")),
+            "native_licn": bool(stats.get("native_licn")),
+            "oracle_config_present": bool(stats.get("oracle_config_present")),
+            "oracle_config_valid": bool(stats.get("oracle_config_valid")),
             "paused": bool(stats.get("paused")),
         }
 

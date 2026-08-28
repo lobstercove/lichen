@@ -1,15 +1,9 @@
-//! Client-Side Proof Generation
+//! Legacy Local Proof Generation
 //!
-//! The prover runs on the user's machine (wallet). Private data
-//! never leaves the client. The prover takes private witnesses +
-//! public inputs and produces a scheme-versioned proof envelope.
-//! The live shielded path emits native Plonky3 STARK proofs for shield,
-//! unshield, and transfer.
-//!
-//! Proving time targets:
-//! - Shield: <1 second
-//! - Unshield: <3 seconds
-//! - Transfer (2-in-2-out): <5 seconds
+//! These helpers retain scheme 0x01 generation for local regression fixtures
+//! and transition analysis. Validators reject every generated envelope because
+//! the legacy AIR does not constrain private witnesses. Wallet and RPC surfaces
+//! must not expose these helpers as an active privacy service.
 
 #[cfg(test)]
 use super::air::deserialize_stark_proof;
@@ -32,7 +26,7 @@ use ark_bn254::Fr;
 use ark_ff::PrimeField;
 use p3_uni_stark::prove as prove_stark;
 
-/// Client-side ZK prover
+/// Legacy local prover for disabled scheme 0x01 fixtures.
 pub struct Prover;
 
 impl Prover {

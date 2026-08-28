@@ -756,8 +756,14 @@ async function getLiveLicnUsdPrice(endpoint) {
     const resp = await fetch(`${apiBase}/oracle/prices`);
     if (!resp.ok) throw new Error('oracle fetch failed');
     const data = await resp.json();
-    const feeds = Array.isArray(data?.feeds) ? data.feeds : [];
-    const licnFeed = feeds.find((feed) => String(feed?.asset || '').toUpperCase() === 'LICN');
+    const feeds = Array.isArray(data?.data?.feeds)
+      ? data.data.feeds
+      : (Array.isArray(data?.feeds) ? data.feeds : []);
+    const licnFeed = feeds.find((feed) =>
+      String(feed?.asset || '').toUpperCase() === 'LICN'
+      && feed?.stale !== true
+      && (!feed?.status || feed.status === 'fresh')
+    );
     const price = Number(licnFeed?.price || 0);
     if (Number.isFinite(price) && price > 0) {
       _licnUsdPriceCache = { value: price, ts: now, source: 'oracle', fallback: false };
@@ -2396,6 +2402,9 @@ let shieldedPopupState = {
 };
 const POPUP_SHIELDED_NOTES_PAGE_SIZE = 3;
 let shieldedPopupNotesPage = 1;
+const POPUP_SHIELDED_OPERATIONS_AVAILABLE = false;
+const POPUP_SHIELDED_DISABLED_MESSAGE =
+  'Shielded operations are temporarily unavailable because proof scheme 0x01 is disabled pending a constrained verifier.';
 
 function popupShieldedNoteIndex(note) {
   const raw = Number(note?.index);
@@ -2562,7 +2571,7 @@ async function initializeShieldedPopupForActiveWallet() {
     }
     await initShieldedPopup(shieldSeed);
     await loadPopupShieldedNotes(wallet);
-    setStatus('Shielded privacy ready');
+    setStatus('Shielded key storage loaded (operations are read-only)');
     return true;
   } catch (error) {
     setStatus('Shielded initialization failed');
@@ -2652,13 +2661,18 @@ async function loadShieldPanel() {
           <div class="popup-shield-empty">
             <i class="fas fa-shield-alt"></i>
             <p>No shielded notes yet</p>
-            <p style="font-size:0.72rem;color:var(--text-muted);">Shield LICN to create your first private note</p>
+            <p style="font-size:0.72rem;color:var(--text-muted);">Historical notes remain visible; new operations are unavailable.</p>
           </div>`;
     bindPopupPager(notesRoot, totalPages);
   }
 }
 
 function openExtShieldModal(type) {
+  if (!POPUP_SHIELDED_OPERATIONS_AVAILABLE) {
+    setStatus(POPUP_SHIELDED_DISABLED_MESSAGE);
+    return;
+  }
+
   const hash = type === 'transfer' ? '#shield-transfer' : '#shield';
   openPopupFullPage(hash);
 }
@@ -3084,6 +3098,13 @@ function wireEvents() {
   });
 
   // Shield tab buttons
+  for (const id of ['extShieldBtn', 'extUnshieldBtn', 'extPrivateTransferBtn']) {
+    const button = document.getElementById(id);
+    if (button && !POPUP_SHIELDED_OPERATIONS_AVAILABLE) {
+      button.disabled = true;
+      button.title = POPUP_SHIELDED_DISABLED_MESSAGE;
+    }
+  }
   document.getElementById('extShieldBtn')?.addEventListener('click', () => openExtShieldModal('shield'));
   document.getElementById('extUnshieldBtn')?.addEventListener('click', () => openExtShieldModal('unshield'));
   document.getElementById('extPrivateTransferBtn')?.addEventListener('click', () => openExtShieldModal('transfer'));

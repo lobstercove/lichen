@@ -179,9 +179,14 @@ async fn main() -> Result&lt;()&gt; {
                         methods.</p>
                     <p><strong>SporePay helper:</strong> use <code>SporePayClient</code> for stream creation,
                         stream/cliff reads, withdrawable balance checks, withdrawals, cancellations, transfers, and
-                        aggregated stats. Use raw <code>call_contract()</code> only for admin-only or newly added
+                        unpaid-payout reads/claims plus exact liability and migration stats. Use raw
+                        <code>call_contract()</code> only for admin-only or newly added
                         contract methods that are not wrapped yet.
                     </p>
+                    <p><strong>SporePump helper:</strong> use <code>SporePumpClient</code> for exact token metadata,
+                        buy/sell quotes, protected trades, creator royalties, custody and Accounting V3 reads,
+                        resumable migration operations, two-step administration, and the governed DEX graduation
+                        lifecycle.</p>
                     <p><strong>LichenSwap helper:</strong> use <code>LichenSwapClient</code> for symbol-registry
                         resolution, pool/quote/liquidity reads, TWAP and protocol-fee reads, aggregate stats, and the
                         common create-pool, add-liquidity, and swap flows. Flash loans,
@@ -197,19 +202,23 @@ async fn main() -> Result&lt;()&gt; {
                         harvest flow. Admin-only fee, cap, risk-tier, and strategy-management paths stay on raw
                         <code>call_contract()</code>.
                     </p>
-                    <p><strong>BountyBoard helper:</strong> use <code>BountyBoardClient</code> for symbol-registry
-                        resolution, bounty reads (single + count + platform stats), aggregate stats, and the
-                        full bounty lifecycle: create, submit work, approve, and cancel. Admin-only identity-gate,
-                        token-address, fee, and pause controls stay on raw <code>call_contract()</code>.
+                    <p><strong>Compute Market helper:</strong> use <code>ComputeMarketClient</code> for complete
+                        provider/job settlement, dispute, agent-policy, exact liability, custody-solvency, and
+                        Accounting V3 migration operations. Fixed-width layouts and nonzero hashes are validated
+                        before submission.</p>
+                    <p><strong>BountyBoard helper:</strong> use <code>BountyBoardClient</code> for exact bounty,
+                        submission, terms, fee, accounting, and aggregate reads; create, submit, update, approve, and
+                        cancel flows; exact native payment value or zero attached value for token rewards; and complete identity,
+                        token, treasury, fee, pause, and Accounting V2 migration administration.
                     </p>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
                     <pre><code>use lichen_client_sdk::{
-    AddSkillParams, Client, Keypair, LichenIdAvailability, LichenIdClient, LichenSwapClient,
-    RegisterIdentityParams, Result, SetAvailabilityParams, SetDelegateParams,
-    SetMetadataParams, SporePayClient, SporeVaultClient, ThallLendClient,
+    AddSkillParams, Client, ComputeMarketClient, Keypair, LichenIdAvailability, LichenIdClient,
+    LichenSwapClient, RegisterIdentityParams, Result, SetAvailabilityParams, SetDelegateParams,
+    SetMetadataParams, SporePayClient, SporePumpClient, SporeVaultClient, ThallLendClient,
     LICHENID_DELEGATE_PERM_PROFILE,
 };
 
@@ -219,8 +228,10 @@ async fn main() -> Result&lt;()&gt; {
     let lichen_id = LichenIdClient::new(client.clone());
     let lichenswap = LichenSwapClient::new(client.clone());
     let spore_pay = SporePayClient::new(client.clone());
+    let spore_pump = SporePumpClient::new(client.clone());
     let spore_vault = SporeVaultClient::new(client.clone());
     let thalllend = ThallLendClient::new(client.clone());
+    let compute_market = ComputeMarketClient::new(client.clone());
     let keypair = Keypair::new();
     let delegate = Keypair::new();
 
@@ -259,7 +270,8 @@ async fn main() -> Result&lt;()&gt; {
     let vault_summary = spore_vault.get_stats().await?;
     let lending_account = thalllend.get_account_info(&keypair.pubkey()).await?;
     let lending_stats = thalllend.get_stats().await?;
-    println!("{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}", profile, delegation, pool, quote, swap_stats, stream, vault_stats, vault_position, vault_summary, lending_account, lending_stats);
+    let compute_accounting = compute_market.get_accounting_health().await?;
+    println!("{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}", profile, delegation, pool, quote, swap_stats, stream, vault_stats, vault_position, vault_summary, lending_account, lending_stats, compute_accounting);
     Ok(())
 }</code></pre>
                 </div>
@@ -693,20 +705,21 @@ println!("{}", entry["program"]);</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async get_sporepay_stats(&amp;self) -&gt; Result&lt;Value&gt; / async get_thalllend_stats(&amp;self)
+                <h3 class="method-name">async get_sporepay_stats(&amp;self) -&gt; Result&lt;Value&gt; / async get_sporepump_stats(&amp;self) -&gt; Result&lt;Value&gt; / async get_thalllend_stats(&amp;self)
                     -&gt; Result&lt;Value&gt; / async get_sporevault_stats(&amp;self) -&gt; Result&lt;Value&gt; / async
                     get_bountyboard_stats(&amp;self) -&gt; Result&lt;Value&gt;</h3>
-                <p class="method-desc">Fetch aggregated stats from the public SporePay, ThallLend,
+                <p class="method-desc">Fetch aggregated stats from the public SporePay, SporePump, ThallLend,
                     SporeVault, and BountyBoard RPC routes. Use <code>LichenSwapClient::get_swap_stats()</code>
                     for canonical read-only LichenSwap contract stats.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span></div>
                     <pre><code>let sporepay_stats = client.get_sporepay_stats().await?;
+let sporepump_stats = client.get_sporepump_stats().await?;
 let thalllend_stats = client.get_thalllend_stats().await?;
 let sporevault_stats = client.get_sporevault_stats().await?;
 let bountyboard_stats = client.get_bountyboard_stats().await?;
 
-println!("{:?} {:?} {:?} {:?}", sporepay_stats, thalllend_stats, sporevault_stats, bountyboard_stats);</code></pre>
+println!("{:?} {:?} {:?} {:?} {:?}", sporepay_stats, sporepump_stats, thalllend_stats, sporevault_stats, bountyboard_stats);</code></pre>
                 </div>
             </div>
 

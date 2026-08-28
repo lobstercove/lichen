@@ -1,16 +1,30 @@
 # Archive V2 Activation, Cadence Recovery, And Validator Liveness Plan
 
 **Date:** 2026-08-18
-**Last updated:** 2026-08-26
-**Status:** Authoritative execution plan. Signed v0.5.262 at
-`3a06fe00eb3c78a6f921da08d159e88730655d8a` is installed and running on all
-four validators from the release-workflow artifact; installed/running hashes,
-keys, signers, WALs, and signed v0.5.260 rollback artifacts have been verified.
-The coordinated deployment and the live one-validator outage/moving-network
-rejoin gate passed with all four validators voting and authoring afterward.
-The subsequent live cadence gate failed: the fleet advanced only a few hundred
-slots during its 15-minute 1,200-slot deadline and repeatedly entered later BFT
-rounds despite three connected peers and `NRestarts=0` on every host.
+**Last updated:** 2026-08-28
+**Status:** Authoritative execution plan. Signed v0.5.263 is installed and
+running on all four validators from the release-workflow artifact. The running
+validator SHA-256 is
+`1d8f5277b47cdc0e5741ab096a9c76b2b9999ee045cebad1ea61591782301946` and
+the archive utility SHA-256 is
+`6ded1252d95464d2fb74468afdf01c9ecbdfa796de9f263dd1f06cd0ea038a85`.
+After the 2026-08-27 own-state recovery and coordinated restart, all four nodes
+reported four validators, resumed local commits, and agreed at fixed slot
+12,247,517 on block hash
+`237872100f2ade9ca332213308454e18251fbc096b101c5a192f08bc2173bb44`.
+Keys, signers, environments, and stopped WAL evidence were preserved.
+
+The v0.5.264 candidate is now locally qualified through the complete clean-build
+four-validator release gate. It is not committed, merged, tagged, signed,
+hosted-qualified, or deployed yet. The exact local gate predeclared four
+independently owned genesis voters, observed every validator as a proposer, and
+passed fresh join, real quorum loss with a 96-transaction backlog, a 140-slot
+live gap, own-state and coordinated restarts, Archive V2 runtime/corruption/
+source-outage paths, strict volume, launchpad, and terminal slot-7,000 parity.
+All four nodes matched public-history root
+`05c85c39e4e5ec572e813574df4ceda1166006b60f40d9a73a4dd39655db9e64`
+and state root
+`8a5a5c79fa2420debcadce20abe72dc58e78be4dbc93d2f4bca12dd1fa5d117b`.
 
 The 2026-08-26 live audit identified a direct Archive V2-era request-path
 regression. Public `getHealth` and `getMetrics` synchronously called
@@ -22,21 +36,26 @@ timeouts. An uncached EU probe took 224.761 ms while the immediate cached probe
 took 0.634 ms; the uncached call accumulated about 4.44 CPU-seconds of full I/O
 stall across the host during that interval. The correction makes public status
 cache-only and permits metadata sampling only inside the bounded cold-
-maintenance blocking pool. The v0.5.263 candidate has passed the complete local
-quality, security, supply-chain, contract, frontend, release-build, and clean
-four-validator gates. It is not yet committed, tagged, signed, or deployed;
-hosted release gates and live cadence acceptance still must pass before it can
-become the final release.
+maintenance blocking pool. That correction shipped as signed v0.5.263. The
+larger v0.5.264 candidate has passed local quality, security, supply-chain,
+contract, frontend, release-build, and clean four-validator gates. Hosted
+release gates and live cadence acceptance still must pass before v0.5.264 can
+become the next signed release.
 
-Authenticated Archive V2 HTTPS gateways are healthy on all four hosts, but
-validator roles remain disabled and `archive_v2.enabled=false`. The current
-dual-R2 catalog has 317 segments through slot 11,588,999 and therefore needs a
-new immutable stopped-source tail through the activation boundary. US has
-about 26 GiB free; EU and IN have about 5-6 GiB and SEA about 15 GiB, so the
-low-space hosts require one-at-a-time, source-backed capacity bootstrap before
-role admission. Legacy cold/FUSE data remains live and must not be removed
-until its exact V2 replacement and each host's rejoin are proven. Deletion of
-R2 objects is not authorized.
+Archive V2 roles remain disabled. At the last preserved 2026-08-27 live
+observation, the dual-R2 catalog had 372 segments through slot 12,138,999 and
+catalog root
+`2897d764b12a74b025dad19c21a16dab9d2dc09073a64a2d46dbc829f78a21d4`,
+with byte-identical primary/replica catalogs. US had about 25.5 GiB free, SEA
+about 10.1 GiB, India about 6.0 GiB, and EU about 5.8 GiB. Signed v0.5.263
+`role-preflight` proves the required hot/catalog/source semantics when legacy
+cold is attached, but fails runtime capacity on the low-space hosts. Without
+legacy cold, both EU and US fail earlier because bounded hot state no longer
+contains canonical slot 0. This is a circular Archive V2 bootstrap defect, not
+authorization to weaken reserves or delete history. Legacy cold/FUSE data
+remains live until the source-backed one-host-at-a-time process below passes.
+Deletion of R2 objects is not authorized.
+
 **Scope:** `lichen-testnet-1`, the Archive V2 production topology, current
 four-validator cadence, and a future deterministic offline-validator design
 
@@ -55,15 +74,16 @@ ad-hoc production change.
 
 ## 1. Executive Decision
 
-The fleet is safe and live on signed v0.5.262, but it is not yet production-
-complete because the strict cadence gate failed and Archive V2 roles and
-legacy retirement remain open.
+The fleet is safe and live on signed v0.5.263, but it is not mainnet-ready:
+Archive V2 roles and legacy retirement remain open, current storage is not
+approved for indefinite archive growth, and v0.5.264 still requires hosted,
+signed-artifact, coordinated-deployment, and live acceptance gates.
 
 ### 1.1 Current decision
 
 - Preserve the completed cache-only archive-status correction and its proof
   that neither `getHealth` nor `getMetrics` performs RocksDB/FUSE metadata I/O.
-- Preserve the all-green mandatory clean four-validator v0.5.263 evidence, then
+- Preserve the all-green mandatory clean four-validator v0.5.264 evidence, then
   create a new immutable signed release only if hosted quality, security,
   outage, rejoin, and Archive V2 gates independently pass.
 - Coordinated-deploy that one release, then extend the dual-R2 catalog from one
@@ -908,6 +928,50 @@ The later dedicated archive plane in Section 3.2 replaces this exception. It
 does not block honest Archive V2 role activation on the current testnet once
 the catalog, capacity, source, and rollback gates are proven.
 
+### 3.5.1 Low-space role-marker bootstrap boundary
+
+The 2026-08-27 stopped-node proof found a circular dependency in v0.5.263:
+
+1. a bounded hot store may no longer contain slot 0;
+2. runtime role activation can recover the genesis MossStake replay mode from
+   a checksummed `role-config-v1.bin` marker;
+3. startup nevertheless deferred Archive V2 whenever hot slot 0 was absent,
+   without consulting that marker;
+4. the marker was created only by successful runtime activation; and
+5. low-space nodes could not reach runtime activation because the adaptive
+   reserve correctly returned `StopValidator` while legacy cold still occupied
+   the disk.
+
+v0.5.264 resolves this without changing consensus, Archive V2 object format,
+catalog format, or capacity policy:
+
+- the role marker codec and create-new durable writer are shared by the
+  validator and signed `lichen-archive-v2` utility;
+- `role-bootstrap` opens hot state and legacy cold read-only, proves exact
+  catalog/genesis identity, canonical slot 0, genesis replay mode, hot-window
+  completeness, catalog coverage and tip parity, WAL/identity/recovery
+  presence, role admission, and complete matching source inventories;
+- the command requires explicit stopped-validator and low-space-retirement
+  acknowledgements, supports a no-write dry run, refuses to overwrite a role
+  marker, and still requires the network's absolute mutable-storage floor;
+- a non-Normal capacity result may authorize only the marker needed for bounded
+  offline retirement. It is reported as `runtime_admitted=false` and does not
+  authorize startup;
+- startup may bypass fresh-sync deferral only when a regular, checksummed marker
+  matches the exact catalog identity, chain ID, role, retention, and cache
+  policy requested on the command line. Missing markers still defer; corrupt,
+  mismatched, symlinked, or unsupported markers fail closed; and
+- `scripts/archive-v2-low-space-role-bootstrap.sh` pins the signed utility hash,
+  requires the validator service to be stopped, compares dry-run and publish
+  evidence, and performs no validator start or legacy deletion.
+
+The marker is a prerequisite, not a retirement receipt. Each subsequent
+retirement unit still requires its signed source-backed retirement manifest,
+bounded tombstone/reclaim pass, physical-space proof, post-unit archive parity,
+and own-state validator rejoin. Runtime activation remains prohibited until
+ordinary `role-preflight` reports `admitted=true` with capacity action
+`Normal`.
+
 ### 3.6 Filesystem and capacity isolation
 
 Approved capacity is computed as:
@@ -955,7 +1019,7 @@ Current execution order is fixed:
 2. Preserve the completed cache-only archive-status implementation and its
    all-green local tests; public health and metrics requests cannot trigger a
    RocksDB/FUSE storage refresh.
-3. Commit the clean v0.5.263 candidate, pass every hosted hard release gate,
+3. Commit the clean v0.5.264 candidate, pass every hosted hard release gate,
    create and verify the immutable signed release, and perform one coordinated
    four-host stop/install/start. Prove convergence, artifact parity, preserved
    keys/WALs, bounded proposals, and the moving-network outage/rejoin

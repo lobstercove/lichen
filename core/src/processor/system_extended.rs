@@ -5,6 +5,78 @@ use crate::restrictions::{
 };
 
 impl TxProcessor {
+    fn staking_v2_activation_slot(&self) -> Result<Option<u64>, String> {
+        let Some(encoded) = self
+            .state
+            .get_metadata(crate::consensus::STAKING_V2_ACTIVATION_SLOT_METADATA_KEY)?
+        else {
+            return Ok(None);
+        };
+        let bytes: [u8; 8] = encoded.try_into().map_err(|value: Vec<u8>| {
+            format!(
+                "invalid {} metadata length: expected 8 bytes, found {}",
+                crate::consensus::STAKING_V2_ACTIVATION_SLOT_METADATA_KEY,
+                value.len()
+            )
+        })?;
+        let activation_slot = u64::from_le_bytes(bytes);
+        if activation_slot > 0 && !crate::consensus::is_epoch_boundary(activation_slot) {
+            return Err(format!(
+                "{}={} is not an epoch boundary",
+                crate::consensus::STAKING_V2_ACTIVATION_SLOT_METADATA_KEY,
+                activation_slot
+            ));
+        }
+        Ok(Some(activation_slot))
+    }
+
+    pub(super) fn staking_v2_active(&self) -> Result<bool, String> {
+        let Some(activation_slot) = self.staking_v2_activation_slot()? else {
+            return Ok(false);
+        };
+        let execution_slot = self
+            .b_get_last_slot()?
+            .checked_add(1)
+            .ok_or_else(|| "Cannot execute Staking V2 transaction after u64::MAX".to_string())?;
+        Ok(execution_slot >= activation_slot)
+    }
+
+    pub(super) fn staking_v2_execution_slot(&self) -> Result<u64, String> {
+        self.b_get_last_slot()?
+            .checked_add(1)
+            .ok_or_else(|| "Cannot execute Staking V2 transaction after u64::MAX".to_string())
+    }
+
+    fn rebalance_mossstake_backing_if_v2(
+        &self,
+        mossstake_pool: &crate::mossstake::MossStakePool,
+        execution_slot: u64,
+    ) -> Result<Option<crate::consensus::StakePool>, String> {
+        let Some(activation_slot) = self.staking_v2_activation_slot()? else {
+            return Ok(None);
+        };
+        if execution_slot < activation_slot {
+            return Ok(None);
+        }
+
+        let mut stake_pool = self.b_get_stake_pool()?;
+        let Some(v2_state) = stake_pool.staking_v2_state() else {
+            if execution_slot == activation_slot {
+                // The activation block transaction batch executes before the
+                // deterministic post-block migration initializes V2.
+                return Ok(None);
+            }
+            return Err("Staking V2 is active but committed epoch state is missing".to_string());
+        };
+        let active_validators: Vec<_> = v2_state.validators.keys().copied().collect();
+        stake_pool.rebalance_mossstake_allocations(
+            mossstake_pool.st_licn_token.total_licn_staked,
+            &active_validators,
+            execution_slot,
+        )?;
+        Ok(Some(stake_pool))
+    }
+
     /// System program: Create NFT collection
     pub(super) fn system_create_collection(&self, ix: &Instruction) -> Result<(), String> {
         if ix.accounts.len() < 2 {
@@ -13,6 +85,9 @@ impl TxProcessor {
 
         let creator = ix.accounts[0];
         let collection_account = ix.accounts[1];
+        if creator == Pubkey([0u8; 32]) || collection_account == Pubkey([0u8; 32]) {
+            return Err("Collection creator and account cannot be zero".to_string());
+        }
 
         if self.b_get_account(&collection_account)?.is_some() {
             return Err("Collection account already exists".to_string());
@@ -57,6 +132,13 @@ impl TxProcessor {
         let collection_account = ix.accounts[1];
         let token_account = ix.accounts[2];
         let owner = ix.accounts[3];
+        if minter == Pubkey([0u8; 32])
+            || collection_account == Pubkey([0u8; 32])
+            || token_account == Pubkey([0u8; 32])
+            || owner == Pubkey([0u8; 32])
+        {
+            return Err("NFT mint accounts cannot be zero".to_string());
+        }
 
         if self.b_get_account(&token_account)?.is_some() {
             return Err("Token account already exists".to_string());
@@ -67,9 +149,20 @@ impl TxProcessor {
         }
 
         let mint_data = decode_mint_nft_data(&ix.data[1..])?;
+        let expected_token =
+            crate::nft::derive_nft_token_address(&collection_account, mint_data.token_id);
+        if token_account != expected_token {
+            return Err(format!(
+                "NFT token account does not match canonical derivation: expected {}",
+                expected_token.to_base58()
+            ));
+        }
         let collection = self
             .b_get_account(&collection_account)?
             .ok_or_else(|| "Collection not found".to_string())?;
+        if collection.owner != SYSTEM_PROGRAM_ID {
+            return Err("NFT collection account is not system-owned".to_string());
+        }
         let mut collection_state = decode_collection_state(&collection.data)?;
 
         if collection_state.max_supply > 0 && collection_state.minted >= collection_state.max_supply
@@ -88,10 +181,7 @@ impl TxProcessor {
 
         // T2.11 fix: Enforce token_id uniqueness within the collection
         // AUDIT-FIX 1.15: Use batch-aware check to prevent TOCTOU race in same block
-        if self
-            .b_nft_token_id_exists(&collection_account, mint_data.token_id)
-            .unwrap_or(false)
-        {
+        if self.b_nft_token_id_exists(&collection_account, mint_data.token_id)? {
             return Err(format!(
                 "Token ID {} already exists in collection {}",
                 mint_data.token_id,
@@ -105,12 +195,16 @@ impl TxProcessor {
             token_id: mint_data.token_id,
             owner,
             metadata_uri: mint_data.metadata_uri,
+            approved: None,
         };
 
         let mut token_account_data = Account::new(0, SYSTEM_PROGRAM_ID);
         token_account_data.data = encode_token_state(&token_state)?;
 
-        collection_state.minted = collection_state.minted.saturating_add(1);
+        collection_state.minted = collection_state
+            .minted
+            .checked_add(1)
+            .ok_or_else(|| "NFT collection minted count overflow".to_string())?;
         let mut updated_collection = collection;
         updated_collection.data = encode_collection_state(&collection_state)?;
 
@@ -130,20 +224,36 @@ impl TxProcessor {
             return Err("Transfer NFT requires owner, token, and recipient accounts".to_string());
         }
 
-        let owner = ix.accounts[0];
+        let authority = ix.accounts[0];
         let token_account = ix.accounts[1];
         let recipient = ix.accounts[2];
+        if authority == Pubkey([0u8; 32])
+            || token_account == Pubkey([0u8; 32])
+            || recipient == Pubkey([0u8; 32])
+        {
+            return Err("NFT transfer accounts cannot be zero".to_string());
+        }
 
         let token = self
             .b_get_account(&token_account)?
             .ok_or_else(|| "Token account not found".to_string())?;
         let mut token_state = decode_token_state(&token.data)?;
+        if token.owner != SYSTEM_PROGRAM_ID {
+            return Err("NFT token account is not system-owned".to_string());
+        }
+        if crate::nft::derive_nft_token_address(&token_state.collection, token_state.token_id)
+            != token_account
+        {
+            return Err("NFT token account does not match canonical derivation".to_string());
+        }
 
-        if token_state.owner != owner {
+        let owner = token_state.owner;
+        if authority != owner && token_state.approved != Some(authority) {
             return Err("Unauthorized NFT transfer".to_string());
         }
 
         token_state.owner = recipient;
+        token_state.approved = None;
 
         let mut updated_token = token;
         updated_token.data = encode_token_state(&token_state)?;
@@ -152,6 +262,53 @@ impl TxProcessor {
         self.b_index_nft_transfer(&token_state.collection, &token_account, &owner, &recipient)?;
 
         Ok(())
+    }
+
+    /// System program: Set or revoke one token-specific NFT approval.
+    /// Data is exactly [40, 0] for revoke or [40, 1, approved_pubkey(32)].
+    pub(super) fn system_set_nft_approval(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.len() < 2 {
+            return Err("NFT approval requires owner and token accounts".to_string());
+        }
+        let owner = ix.accounts[0];
+        let token_account = ix.accounts[1];
+        if owner == Pubkey([0u8; 32]) || token_account == Pubkey([0u8; 32]) {
+            return Err("NFT approval accounts cannot be zero".to_string());
+        }
+
+        let approved = match ix.data.as_slice() {
+            [40, 0] => None,
+            data if data.len() == 34 && data[0] == 40 && data[1] == 1 => {
+                let mut bytes = [0u8; 32];
+                bytes.copy_from_slice(&data[2..34]);
+                let approved = Pubkey(bytes);
+                if approved == Pubkey([0u8; 32]) || approved == owner {
+                    return Err("NFT approval target is invalid".to_string());
+                }
+                Some(approved)
+            }
+            _ => return Err("Malformed NFT approval instruction".to_string()),
+        };
+
+        let token = self
+            .b_get_account(&token_account)?
+            .ok_or_else(|| "Token account not found".to_string())?;
+        if token.owner != SYSTEM_PROGRAM_ID {
+            return Err("NFT token account is not system-owned".to_string());
+        }
+        let mut token_state = decode_token_state(&token.data)?;
+        if token_state.owner != owner {
+            return Err("Only the current NFT owner can set approval".to_string());
+        }
+        if crate::nft::derive_nft_token_address(&token_state.collection, token_state.token_id)
+            != token_account
+        {
+            return Err("NFT token account does not match canonical derivation".to_string());
+        }
+        token_state.approved = approved;
+        let mut updated_token = token;
+        updated_token.data = encode_token_state(&token_state)?;
+        self.b_put_account(&token_account, &updated_token)
     }
 
     /// System program: Stake LICN
@@ -195,11 +352,20 @@ impl TxProcessor {
             ));
         }
 
+        let staking_v2_active = self.staking_v2_active()?;
+        if staking_v2_active {
+            if staker == validator {
+                pool.add_validator_stake(&validator, amount)?;
+            } else {
+                pool.delegate(staker, &validator, amount)?;
+            }
+            pool.checkpoint_staking_v2_validator(&validator, self.staking_v2_execution_slot()?)?;
+        } else {
+            pool.stake(validator, amount, current_slot)?;
+        }
         account.stake(amount)?;
-        self.b_put_account(&staker, &account)?;
-
-        pool.stake(validator, amount, current_slot)?;
         self.b_put_stake_pool(&pool)?;
+        self.b_put_account(&staker, &account)?;
 
         Ok(())
     }
@@ -241,7 +407,20 @@ impl TxProcessor {
         )?;
 
         let mut pool = self.b_get_stake_pool()?;
-        pool.request_unstake(&validator, amount, current_slot, staker)?;
+        let staking_v2_active = self.staking_v2_active()?;
+        let unstake_slot = if staking_v2_active {
+            self.staking_v2_execution_slot()?
+        } else {
+            current_slot
+        };
+        if staking_v2_active && staker != validator {
+            pool.request_delegation_unstake(staker, &validator, amount, unstake_slot)?;
+        } else {
+            pool.request_unstake(&validator, amount, unstake_slot, staker)?;
+        }
+        if staking_v2_active {
+            pool.checkpoint_staking_v2_validator(&validator, unstake_slot)?;
+        }
         self.b_put_stake_pool(&pool)?;
 
         account.unstake(amount)?;
@@ -331,6 +510,8 @@ impl TxProcessor {
         account.deduct_spendable(amount)?;
 
         let mut pool = self.b_get_mossstake_pool()?;
+        let staking_v2_active = self.staking_v2_active()?;
+        let execution_slot = self.staking_v2_execution_slot()?;
         if self.uses_legacy_wall_clock_mossstake() {
             let (current_slot, current_unix_seconds) = self.b_get_last_block_timestamp()?;
             pool.backfill_wall_clock_times(|slot| self.block_timestamp_for_slot(slot));
@@ -342,8 +523,15 @@ impl TxProcessor {
                 tier,
             )?;
         } else {
-            let current_slot = self.b_get_last_slot().unwrap_or(0);
+            let current_slot = if staking_v2_active {
+                execution_slot
+            } else {
+                self.b_get_last_slot().unwrap_or(0)
+            };
             let _st_licn = pool.stake_with_tier(depositor, amount, current_slot, tier)?;
+        }
+        if let Some(stake_pool) = self.rebalance_mossstake_backing_if_v2(&pool, execution_slot)? {
+            self.b_put_stake_pool(&stake_pool)?;
         }
         self.b_put_mossstake_pool(&pool)?;
         self.b_put_account(&depositor, &account)?;
@@ -379,6 +567,8 @@ impl TxProcessor {
         )?;
 
         let mut pool = self.b_get_mossstake_pool()?;
+        let staking_v2_active = self.staking_v2_active()?;
+        let execution_slot = self.staking_v2_execution_slot()?;
         if self.uses_legacy_wall_clock_mossstake() {
             let (current_slot, current_unix_seconds) = self.b_get_last_block_timestamp()?;
             pool.backfill_wall_clock_times(|slot| self.block_timestamp_for_slot(slot));
@@ -389,8 +579,15 @@ impl TxProcessor {
                 current_unix_seconds,
             )?;
         } else {
-            let current_slot = self.b_get_last_slot().unwrap_or(0);
+            let current_slot = if staking_v2_active {
+                execution_slot
+            } else {
+                self.b_get_last_slot().unwrap_or(0)
+            };
             let _request = pool.request_unstake(user, st_licn_amount, current_slot)?;
+        }
+        if let Some(stake_pool) = self.rebalance_mossstake_backing_if_v2(&pool, execution_slot)? {
+            self.b_put_stake_pool(&stake_pool)?;
         }
         self.b_put_mossstake_pool(&pool)?;
 

@@ -43,7 +43,7 @@ async function loadValidators() {
 
     try {
         if (typeof rpc === 'undefined') {
-            table.innerHTML = '<tr><td colspan="8" style="text-align:center; color: #FF6B6B;">RPC client not available</td></tr>';
+            table.innerHTML = '<tr><td colspan="10" style="text-align:center; color: #FF6B6B;">RPC client not available</td></tr>';
             updatePagination(0);
             return;
         }
@@ -60,7 +60,7 @@ async function loadValidators() {
         if (!validators || validators.length === 0) {
             allValidators = [];
             validatorNameMap = {};
-            table.innerHTML = '<tr><td colspan="8" style="text-align:center; color: var(--text-muted);">No validators found</td></tr>';
+            table.innerHTML = '<tr><td colspan="10" style="text-align:center; color: var(--text-muted);">No validators found</td></tr>';
             updatePagination(0);
             return;
         }
@@ -84,7 +84,7 @@ async function loadValidators() {
 
     } catch (error) {
         console.error('Failed to load validators:', error);
-        table.innerHTML = '<tr><td colspan="8" style="text-align:center; color: #FF6B6B;">Failed to load validators (RPC error)</td></tr>';
+        table.innerHTML = '<tr><td colspan="10" style="text-align:center; color: #FF6B6B;">Failed to load validators (RPC error)</td></tr>';
         updatePagination(0);
     } finally {
         validatorsLoadInFlight = false;
@@ -95,7 +95,7 @@ function renderValidators() {
     const table = document.getElementById('validatorsTable');
     if (!table) return;
     if (!allValidators.length) {
-        table.innerHTML = '<tr><td colspan="8" style="text-align:center; color: var(--text-muted);">No validators found</td></tr>';
+        table.innerHTML = '<tr><td colspan="10" style="text-align:center; color: var(--text-muted);">No validators found</td></tr>';
         updatePagination(0);
         return;
     }
@@ -111,6 +111,21 @@ function renderValidators() {
             validator.blocks_proposed ?? validator.blocks_produced
         );
         const txsProcessed = validatorNumber(validator.transactions_processed);
+        const stakingV2Active = validator.staking_v2_active === true;
+        const stakingV2EpochActive = validator.staking_v2_epoch_active === true;
+        const commissionBps = validatorNumber(validator.commission_rate);
+        const pendingCommissionBps = validator.pending_commission_rate;
+        const pendingCommissionEpoch = validator.pending_commission_activation_epoch;
+        const commissionNotice = pendingCommissionBps !== null && pendingCommissionBps !== undefined
+            ? `${(commissionBps / 100).toFixed(2)}% → ${(validatorNumber(pendingCommissionBps) / 100).toFixed(2)}% at epoch ${validatorNumber(pendingCommissionEpoch)}`
+            : `${(commissionBps / 100).toFixed(2)}%`;
+        const saturationBps = validatorNumber(validator.saturation_usage_bps);
+        const capacityRemaining = validatorNumber(validator.delegation_capacity_remaining);
+        const saturationNotice = stakingV2Active && !stakingV2EpochActive
+            ? 'Queued for next epoch'
+            : stakingV2Active
+            ? `${(saturationBps / 100).toFixed(2)}% · ${formatLicn(capacityRemaining)} available`
+            : 'Activates with Staking V2';
         const votingPower = validatorTotalStake > 0 ? ((stake / validatorTotalStake) * 100).toFixed(2) : '0.00';
         const lastActiveSlot = validatorNumber(validator.last_active_slot ?? validator.lastActiveSlot);
         const isOnline = validatorCurrentSlot - lastActiveSlot <= 100;
@@ -135,6 +150,8 @@ function renderValidators() {
                     ${copyIcon}
                 </td>
                 <td><span style="font-family: 'JetBrains Mono', monospace; font-weight: 600;">${formatLicn(stake)}</span></td>
+                <td><span class="pill pill-info" title="Current commission and any delayed change">${escapeHtml(commissionNotice)}</span></td>
+                <td><span class="pill ${stakingV2Active && saturationBps >= 9500 ? 'pill-error' : 'pill-info'}" title="Effective stake limit usage and remaining delegation capacity">${escapeHtml(saturationNotice)}</span></td>
                 <td>
                     <div style="display: flex; align-items: center; gap: 0.5rem;">
                         <div style="flex: 1; background: var(--bg-darker); height: 6px; border-radius: 3px; overflow: hidden;">

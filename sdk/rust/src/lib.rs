@@ -33,12 +33,14 @@
 
 pub mod bountyboard;
 pub mod client;
+pub mod compute_market;
 pub mod error;
 pub mod keypair;
 pub mod lichenid;
 pub mod lichenswap;
 pub mod restrictions;
 pub mod sporepay;
+pub mod sporepump;
 pub mod sporevault;
 pub mod thalllend;
 pub mod transaction;
@@ -46,11 +48,20 @@ pub mod types;
 
 // Re-exports for convenience
 pub use bountyboard::{
-    ApproveWorkParams, BountyBoardBountyInfo, BountyBoardClient, BountyBoardPlatformStats,
-    BountyBoardStats, CreateBountyParams, SubmitWorkParams, BOUNTY_STATUS_CANCELLED,
-    BOUNTY_STATUS_COMPLETED, BOUNTY_STATUS_OPEN,
+    ApproveWorkParams, BountyBoardAccountingHealth, BountyBoardAccountingMigrationStatus,
+    BountyBoardAdminTransition, BountyBoardBountyInfo, BountyBoardClient, BountyBoardPlatformStats,
+    BountyBoardStats, BountyBoardSubmission, BountyBoardTerms, CreateBountyParams,
+    SubmitWorkParams, BOUNTY_STATUS_CANCELLED, BOUNTY_STATUS_COMPLETED, BOUNTY_STATUS_OPEN,
 };
 pub use client::{Client, ClientBuilder, DeployContractResult, ReadonlyContractResult};
+pub use compute_market::{
+    ComputeMarketAccountingHealth, ComputeMarketAccountingMigrationStatus,
+    ComputeMarketAgentControls, ComputeMarketAgentPolicy, ComputeMarketClient,
+    ComputeMarketJobInfo, ComputeMarketJobTiming, ComputeMarketPlatformStats,
+    ComputeMarketProviderCapacity, ComputeMarketProviderInfo, SubmitAgentComputeJobParams,
+    SubmitComputeJobParams, COMPUTE_JOB_CANCELLED, COMPUTE_JOB_CLAIMED, COMPUTE_JOB_COMPLETED,
+    COMPUTE_JOB_DISPUTED, COMPUTE_JOB_PENDING, COMPUTE_JOB_RELEASED, COMPUTE_JOB_RESOLVED,
+};
 pub use error::{Error, Result};
 pub use keypair::{Address, Keypair, PqPublicKey, PqSignature, Pubkey};
 pub use lichenid::{
@@ -90,15 +101,20 @@ pub use restrictions::{
 };
 pub use sporepay::{
     CreateStreamParams, CreateStreamWithCliffParams, SporePayClient, SporePayStats, SporePayStream,
-    SporePayStreamInfo, TransferStreamParams, WithdrawFromStreamParams,
+    SporePayStreamIdPage, SporePayStreamInfo, TransferStreamParams, WithdrawFromStreamParams,
+};
+pub use sporepump::{
+    CreateSporePumpTokenParams, SporePumpClient, SporePumpCustodyStatus, SporePumpGraduationConfig,
+    SporePumpGraduationInfo, SporePumpGraduationStatus, SporePumpPlatformStats, SporePumpTokenInfo,
+    SporePumpTokenMetadata, SPOREPUMP_CREATION_FEE,
 };
 pub use sporevault::{
-    SporeVaultClient, SporeVaultStats, SporeVaultStrategyInfo, SporeVaultUserPosition,
-    SporeVaultVaultStats,
+    SporeVaultClient, SporeVaultStats, SporeVaultStatus, SporeVaultStrategyInfo,
+    SporeVaultUserPosition, SporeVaultVaultStats,
 };
 pub use thalllend::{
     LiquidateParams, ThallLendAccountInfo, ThallLendClient, ThallLendInterestRate,
-    ThallLendProtocolStats, ThallLendStats,
+    ThallLendMarketStatus, ThallLendProtocolStats, ThallLendRateModel, ThallLendStats,
 };
 pub use transaction::TransactionBuilder;
 pub use types::{Balance, Block, NetworkInfo, Transaction};

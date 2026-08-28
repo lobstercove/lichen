@@ -67,11 +67,16 @@ impl RpcClient {
         submit_signed_instruction(self, owner, instruction).await
     }
 
-    /// Stake LICN tokens
-    pub async fn stake(&self, keypair: &Keypair, amount: u64) -> Result<String> {
+    /// Stake LICN as self-bond or an exact `(delegator, validator)` delegation.
+    pub async fn stake_to(
+        &self,
+        keypair: &Keypair,
+        validator: &Pubkey,
+        amount: u64,
+    ) -> Result<String> {
         let instruction = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
-            accounts: vec![keypair.pubkey(), keypair.pubkey()],
+            accounts: vec![keypair.pubkey(), *validator],
             data: {
                 let mut data = vec![9u8];
                 data.extend_from_slice(&amount.to_le_bytes());
@@ -125,11 +130,31 @@ impl RpcClient {
         submit_signed_instruction(self, keypair, instruction).await
     }
 
-    /// Unstake LICN tokens
-    pub async fn unstake(&self, keypair: &Keypair, amount: u64) -> Result<String> {
+    /// Queue a bounded Staking V2 validator commission change (opcode 39).
+    pub async fn set_validator_commission(
+        &self,
+        keypair: &Keypair,
+        commission_bps: u64,
+    ) -> Result<String> {
         let instruction = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
-            accounts: vec![keypair.pubkey(), keypair.pubkey()],
+            accounts: vec![keypair.pubkey()],
+            data: build_set_validator_commission_data(commission_bps),
+        };
+
+        submit_signed_instruction(self, keypair, instruction).await
+    }
+
+    /// Remove self-bond or the caller's exact delegation from one validator.
+    pub async fn unstake_from(
+        &self,
+        keypair: &Keypair,
+        validator: &Pubkey,
+        amount: u64,
+    ) -> Result<String> {
+        let instruction = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![keypair.pubkey(), *validator],
             data: {
                 let mut data = vec![10u8];
                 data.extend_from_slice(&amount.to_le_bytes());
@@ -164,6 +189,13 @@ pub(crate) fn build_reclassify_validator_bootstrap_data() -> Vec<u8> {
     vec![38u8]
 }
 
+pub(crate) fn build_set_validator_commission_data(commission_bps: u64) -> Vec<u8> {
+    let mut data = Vec::with_capacity(9);
+    data.push(39u8);
+    data.extend_from_slice(&commission_bps.to_le_bytes());
+    data
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,5 +226,13 @@ mod tests {
     #[test]
     fn reclassify_validator_bootstrap_data_matches_wire_format() {
         assert_eq!(build_reclassify_validator_bootstrap_data(), vec![38u8]);
+    }
+
+    #[test]
+    fn set_validator_commission_data_matches_wire_format() {
+        assert_eq!(
+            build_set_validator_commission_data(600),
+            [vec![39u8], 600u64.to_le_bytes().to_vec()].concat()
+        );
     }
 }

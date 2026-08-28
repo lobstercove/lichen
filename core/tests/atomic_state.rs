@@ -193,9 +193,10 @@ fn test_atomic_put_account_with_mossstake() {
         .put_account(&treasury, &make_account(treasury, 1_000_000))
         .unwrap();
 
-    // Create a MossStake pool with some supply
+    // Create a reconciled MossStake pool with one real position.
     let mut pool = MossStakePool::new();
-    pool.st_licn_token.total_supply = 100_000;
+    let staker = Keypair::new().pubkey();
+    pool.stake(staker, 100_000, 0).unwrap();
 
     // Pre-store the pool
     state.put_mossstake_pool(&pool).unwrap();
@@ -205,7 +206,7 @@ fn test_atomic_put_account_with_mossstake() {
     let mut t_acct = state.get_account(&treasury).unwrap().unwrap();
     t_acct.spores -= moss_share;
     t_acct.spendable -= moss_share;
-    pool.distribute_rewards(moss_share);
+    pool.distribute_rewards(moss_share).unwrap();
 
     // Atomic write
     state

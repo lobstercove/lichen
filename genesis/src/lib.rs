@@ -508,6 +508,33 @@ fn extend_padded_pointer_arg(out: &mut Vec<u8>, bytes: &[u8]) {
     out.resize(out.len() + padding, 0);
 }
 
+fn oracle_feeder_args(feeder: &Pubkey, asset: &[u8]) -> Vec<u8> {
+    let mut data = Vec::with_capacity(32 + 32 + 4);
+    data.extend_from_slice(&feeder.0);
+    extend_padded_pointer_arg(&mut data, asset);
+    data.extend_from_slice(&(asset.len() as u32).to_le_bytes());
+    layout_args(&[0x20, 0x20, 0x04], &data)
+}
+
+fn oracle_submit_price_args(feeder: &Pubkey, asset: &[u8], price_8dec: u64) -> Vec<u8> {
+    let mut data = Vec::with_capacity(32 + 32 + 4 + 8 + 1);
+    data.extend_from_slice(&feeder.0);
+    extend_padded_pointer_arg(&mut data, asset);
+    data.extend_from_slice(&(asset.len() as u32).to_le_bytes());
+    data.extend_from_slice(&price_8dec.to_le_bytes());
+    data.push(lichen_core::ORACLE_PRICE_DECIMALS);
+    layout_args(&[0x20, 0x20, 0x04, 0x08, 0x01], &data)
+}
+
+fn thalllend_oracle_args(admin: &[u8; 32], oracle: &[u8; 32], asset: &[u8]) -> Vec<u8> {
+    let mut data = Vec::with_capacity(32 + 32 + 32 + 4);
+    data.extend_from_slice(admin);
+    data.extend_from_slice(oracle);
+    extend_padded_pointer_arg(&mut data, asset);
+    data.extend_from_slice(&(asset.len() as u32).to_le_bytes());
+    layout_args(&[0x20, 0x20, 0x20, 0x04], &data)
+}
+
 fn sorted_unique_pubkeys(pubkeys: &[Pubkey]) -> Vec<Pubkey> {
     let mut out = pubkeys.to_vec();
     out.sort_by_key(|pk| pk.0);
@@ -893,18 +920,17 @@ pub fn genesis_initialize_contracts(
         .map(|p| p.0)
         .ok_or_else(|| "mandatory genesis contract lusd_token missing".to_string())?;
 
-    // DAO: governance_token = LICN address, treasury = community_treasury wallet,
-    // min_proposal_threshold = 10,000 LICN in spores (10_000 * 1e9)
-    let dao_treasury = state
-        .get_community_treasury_pubkey()
-        .ok()
-        .flatten()
-        .map(|pk| pk.0)
-        .unwrap_or(admin); // Fallback to deployer if community_treasury not set yet
+    // DAO: governance_token = LICN and treasury = the DAO contract itself.
+    // Contract actions cannot spend from an external wallet, so governance
+    // allocations must be transferred into this self-custodied treasury.
+    let dao_treasury = address_map
+        .get("lichendao")
+        .map(|pubkey| pubkey.0)
+        .ok_or_else(|| "mandatory genesis contract lichendao missing".to_string())?;
     let dao_threshold: u64 = 10_000_000_000_000; // 10,000 LICN
     let mut dao_args = Vec::with_capacity(72);
     dao_args.extend_from_slice(&licn_addr); // governance_token (32B)
-    dao_args.extend_from_slice(&dao_treasury); // treasury (32B = community_treasury wallet)
+    dao_args.extend_from_slice(&dao_treasury); // treasury (32B = DAO contract)
     dao_args.extend_from_slice(&dao_threshold.to_le_bytes()); // min_proposal_threshold (8B)
 
     // LichenSwap: token_a = LICN, token_b = LUSD
@@ -916,13 +942,6 @@ pub fn genesis_initialize_contracts(
     let mut lichenmarket_args = Vec::with_capacity(64);
     lichenmarket_args.extend_from_slice(&admin);
     lichenmarket_args.extend_from_slice(&admin); // fee recipient = deployer initially
-
-    // LichenAuction: initialize(marketplace_addr) + initialize_ma_admin(admin)
-    // marketplace_addr = lichenmarket address for integration
-    let lichenmarket_addr = address_map
-        .get("lichenmarket")
-        .map(|p| p.0)
-        .unwrap_or(admin);
 
     let specs: Vec<InitSpec> = vec![
         // ── Layer 0: Tokens ──
@@ -1274,19 +1293,24 @@ pub fn genesis_initialize_contracts(
         );
     }
 
-    // LichenAuction requires TWO init calls:
-    // 1. initialize(marketplace_addr) — sets escrow address
-    // 2. initialize_ma_admin(admin) — sets admin
+    // LichenAuction requires TWO ordered init calls:
+    // 1. initialize_ma_admin(admin) — establishes authority
+    // 2. initialize(fee_treasury) — escrow is always the auction contract itself
     if let Some(auction_pk) = address_map.get("lichenauction") {
-        let mkt_args = lichenmarket_addr.to_vec();
-        if exec_as_governance(auction_pk, "initialize", &mkt_args, "lichenauction(escrow)") {
+        let mkt_args = admin.to_vec();
+        if exec_as_governance(
+            auction_pk,
+            "initialize_ma_admin",
+            admin.as_ref(),
+            "lichenauction(admin)",
+        ) {
             if exec_as_governance(
                 auction_pk,
-                "initialize_ma_admin",
-                admin.as_ref(),
-                "lichenauction(admin)",
+                "initialize",
+                &mkt_args,
+                "lichenauction(fee_treasury)",
             ) {
-                info!("  INIT lichenauction (escrow + admin)");
+                info!("  INIT lichenauction (admin + self-custody + fee treasury)");
                 initialized += 1;
             } else {
                 skipped += 1;
@@ -1690,30 +1714,45 @@ pub fn genesis_initialize_contracts(
     // ── DEX Margin: wire standard lUSD collateral custody ──
     // Positions use lUSD approval/transfer_from custody, matching the DEX quote
     // asset path instead of host-level native LICN locking.
-    if let Some(dex_margin_pk) = address_map.get("dex_margin") {
-        let margin_addr = dex_margin_pk.0;
-        let oracle_addr = address_map
-            .get("lichenoracle")
-            .map(|p| p.0)
-            .unwrap_or(admin);
-        let configs: &[(u8, &[u8; 32], &str)] = &[
-            (29, &oracle_addr, "dex_margin(set_oracle_contract)"),
-            (33, &lusd_addr, "dex_margin(set_collateral_token_address)"),
-            (34, &margin_addr, "dex_margin(set_self_address)"),
-        ];
+    let dex_margin_pk = address_map
+        .get("dex_margin")
+        .ok_or_else(|| "mandatory genesis contract dex_margin missing".to_string())?;
+    let margin_addr = dex_margin_pk.0;
+    let oracle_addr = address_map
+        .get("lichenoracle")
+        .map(|p| p.0)
+        .ok_or_else(|| "mandatory genesis contract lichenoracle missing".to_string())?;
+    let configs: &[(u8, &[u8; 32], &str)] = &[
+        (29, &oracle_addr, "dex_margin(set_oracle_contract)"),
+        (33, &lusd_addr, "dex_margin(set_collateral_token_address)"),
+        (34, &margin_addr, "dex_margin(set_self_address)"),
+    ];
 
-        for &(opcode, addr, label) in configs {
-            let mut args = Vec::with_capacity(65);
-            args.push(opcode);
-            args.extend_from_slice(&admin);
-            args.extend_from_slice(addr);
-            if exec_as_governance(dex_margin_pk, "call", &args, label) {
-                info!("  SET {label}");
-            } else {
-                warn!("  WARN: Failed to set {label}");
-            }
+    for &(opcode, addr, contract_label) in configs {
+        let mut args = Vec::with_capacity(65);
+        args.push(opcode);
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(addr);
+        if !exec_as_governance(dex_margin_pk, "call", &args, contract_label) {
+            return Err(format!("mandatory genesis setup failed: {contract_label}"));
         }
+        info!("  SET {contract_label}");
     }
+
+    let mut margin_v2_args = Vec::with_capacity(49);
+    margin_v2_args.push(50u8);
+    margin_v2_args.extend_from_slice(&admin);
+    margin_v2_args.extend_from_slice(&0u64.to_le_bytes());
+    margin_v2_args.extend_from_slice(&0u64.to_le_bytes());
+    if !exec_as_governance(
+        dex_margin_pk,
+        "call",
+        &margin_v2_args,
+        "dex_margin(finalize_and_activate_margin_v2)",
+    ) {
+        return Err("mandatory genesis setup failed: dex_margin V2 activation".to_string());
+    }
+    info!("  SET dex_margin(finalize_and_activate_margin_v2)");
 
     // ── DEX Core + AMM: set fee treasury to community_treasury ──
     // Resolved from the same wallet used by DAO treasury — single canonical address.
@@ -1810,6 +1849,23 @@ pub fn genesis_initialize_contracts(
             info!("  SET sporepay(set_self_address)");
         } else {
             warn!("  WARN: Failed to set sporepay self address");
+        }
+
+        let lichenid_addr = address_map
+            .get("lichenid")
+            .ok_or_else(|| "mandatory genesis contract lichenid missing".to_string())?;
+        let mut identity_args = Vec::with_capacity(64);
+        identity_args.extend_from_slice(&admin);
+        identity_args.extend_from_slice(&lichenid_addr.0);
+        if exec_as_governance(
+            sporepay_pk,
+            "set_lichenid_address",
+            &identity_args,
+            "sporepay(set_lichenid_address)",
+        ) {
+            info!("  SET sporepay(set_lichenid_address)");
+        } else {
+            warn!("  WARN: Failed to set sporepay LichenID address");
         }
     }
 
@@ -1919,41 +1975,108 @@ pub fn genesis_initialize_contracts(
         info!("  SET canonical SporePump graduation path");
     }
 
-    // ── SporeVault: wire LICN token address for withdraw() payouts ──
-    // Without this, withdraw() silently fails, locking depositor funds.
+    // ── SporeVault: bind the real ThallLend adapter and activate the default
+    // conservative strategy. initialize() already configures native LICN.
     if let Some(sporevault_pk) = address_map.get("sporevault") {
-        let mut args = Vec::with_capacity(64);
-        args.extend_from_slice(&admin);
-        args.extend_from_slice(&licn_addr);
-        if exec_as_governance(
+        let thalllend_addr = address_map
+            .get("thalllend")
+            .map(|program| program.0)
+            .ok_or_else(|| "mandatory genesis contract thalllend missing".to_string())?;
+        let mut protocol_args = Vec::with_capacity(96);
+        protocol_args.extend_from_slice(&admin);
+        protocol_args.extend_from_slice(&thalllend_addr);
+        protocol_args.extend_from_slice(&[0u8; 32]);
+        if !exec_as_governance(
             sporevault_pk,
-            "set_licn_token",
-            &args,
-            "sporevault(set_licn_token)",
+            "set_protocol_addresses",
+            &protocol_args,
+            "sporevault(set_protocol_addresses)",
         ) {
-            info!("  SET sporevault(set_licn_token)");
-        } else {
-            warn!("  WARN: Failed to set sporevault licn token address");
+            return Err("mandatory SporeVault ThallLend binding failed".to_string());
         }
+
+        let mut strategy_data = Vec::with_capacity(41);
+        strategy_data.extend_from_slice(&admin);
+        strategy_data.push(1u8); // STRATEGY_LENDING
+        strategy_data.extend_from_slice(&33u64.to_le_bytes());
+        let strategy_args = layout_args(&[0x20, 0x01, 0x08], &strategy_data);
+        if !exec_as_governance(
+            sporevault_pk,
+            "add_strategy",
+            &strategy_args,
+            "sporevault(add_strategy=lending:33%)",
+        ) {
+            return Err("mandatory SporeVault conservative strategy activation failed".to_string());
+        }
+        info!("  SET sporevault(native LICN, ThallLend, conservative 33% strategy)");
     }
 
-    // ── Compute Market: wire LICN token address for job escrow ──
-    // Without this, submit_job fails — job creation blocked entirely.
-    if let Some(compute_pk) = address_map.get("compute_market") {
-        let mut args = Vec::with_capacity(64);
-        args.extend_from_slice(&admin);
-        args.extend_from_slice(&licn_addr);
-        if exec_as_governance(
-            compute_pk,
-            "set_token_address",
-            &args,
-            "compute_market(set_token_address)",
-        ) {
-            info!("  SET compute_market(set_token_address)");
-        } else {
-            warn!("  WARN: Failed to set compute_market token address");
-        }
+    let lichenid_addr = address_map
+        .get("lichenid")
+        .map(|program| program.0)
+        .ok_or_else(|| "mandatory genesis contract lichenid missing".to_string())?;
+
+    // ── BountyBoard: bind native LICN custody and the real LichenID
+    // dependency. Accounting V2 was activated by initialize; both immutable
+    // dependencies must be explicit before the board is usable.
+    let bounty_pk = address_map
+        .get("bountyboard")
+        .ok_or_else(|| "mandatory genesis contract bountyboard missing".to_string())?;
+    let mut bounty_token_args = Vec::with_capacity(64);
+    bounty_token_args.extend_from_slice(&admin);
+    bounty_token_args.extend_from_slice(&licn_addr);
+    if !exec_as_governance(
+        bounty_pk,
+        "set_token_address",
+        &bounty_token_args,
+        "bountyboard(set_token_address)",
+    ) {
+        return Err("mandatory BountyBoard LICN custody binding failed".to_string());
     }
+    let mut bounty_identity_args = Vec::with_capacity(64);
+    bounty_identity_args.extend_from_slice(&admin);
+    bounty_identity_args.extend_from_slice(&lichenid_addr);
+    if !exec_as_governance(
+        bounty_pk,
+        "set_lichenid_address",
+        &bounty_identity_args,
+        "bountyboard(set_lichenid_address)",
+    ) {
+        return Err("mandatory BountyBoard LichenID binding failed".to_string());
+    }
+    info!("  SET bountyboard(native LICN, LichenID, Accounting V2)");
+
+    // ── Compute Market: bind native LICN custody and the real LichenID
+    // dependency. The identity address is configured from genesis while the
+    // reputation threshold remains zero until governance explicitly enables
+    // the gate. Both bindings are mandatory and immutable.
+    let compute_pk = address_map
+        .get("compute_market")
+        .ok_or_else(|| "mandatory genesis contract compute_market missing".to_string())?;
+    let mut token_args = Vec::with_capacity(64);
+    token_args.extend_from_slice(&admin);
+    token_args.extend_from_slice(&licn_addr);
+    if !exec_as_governance(
+        compute_pk,
+        "set_token_address",
+        &token_args,
+        "compute_market(set_token_address)",
+    ) {
+        return Err("mandatory Compute Market LICN custody binding failed".to_string());
+    }
+
+    let mut identity_args = Vec::with_capacity(64);
+    identity_args.extend_from_slice(&admin);
+    identity_args.extend_from_slice(&lichenid_addr);
+    if !exec_as_governance(
+        compute_pk,
+        "set_lichenid_address",
+        &identity_args,
+        "compute_market(set_lichenid_address)",
+    ) {
+        return Err("mandatory Compute Market LichenID binding failed".to_string());
+    }
+    info!("  SET compute_market(native LICN, LichenID; identity gate disabled)");
 
     // ── LichenDAO: wire LichenID address for identity verification ──
     // Named export: set_lichenid_address. Args: [admin 32B][lichenid_addr 32B]
@@ -2027,6 +2150,22 @@ pub fn genesis_initialize_contracts(
             info!("  SET thalllend(lichencoin)");
         } else {
             warn!("  WARN: Failed to set thalllend lichencoin address");
+        }
+
+        let oracle_addr = address_map
+            .get("lichenoracle")
+            .map(|program| program.0)
+            .ok_or_else(|| "mandatory genesis contract lichenoracle missing".to_string())?;
+        let oracle_args = thalllend_oracle_args(&admin, &oracle_addr, b"LICN");
+        if exec_as_governance(
+            lend_pk,
+            "set_oracle_feed",
+            &oracle_args,
+            "thalllend(oracle=LICN)",
+        ) {
+            info!("  SET thalllend(oracle=LICN)");
+        } else {
+            return Err("mandatory ThallLend LICN oracle setup failed".to_string());
         }
     }
 
@@ -2914,11 +3053,7 @@ pub fn genesis_seed_oracle(
     // Step 1: Authorize the primary oracle operator as LICN price feeder
     // add_price_feeder(feeder_ptr: 32, asset_ptr: N, asset_len: u32) -> u32
     let asset = b"LICN";
-    let mut feeder_data = Vec::with_capacity(32 + 32 + 4);
-    feeder_data.extend_from_slice(&primary_feeder.0); // feeder pubkey (32 bytes)
-    extend_padded_pointer_arg(&mut feeder_data, asset); // asset name
-    feeder_data.extend_from_slice(&(asset.len() as u32).to_le_bytes()); // asset_len
-    let feeder_args = layout_args(&[0x20, 0x20, 0x04], &feeder_data);
+    let feeder_args = oracle_feeder_args(&primary_feeder, asset);
 
     if genesis_exec_contract(
         state,
@@ -2936,14 +3071,7 @@ pub fn genesis_seed_oracle(
     // Step 2: Submit initial LICN price ($0.10 with 8 decimals = 10_000_000)
     // submit_price(feeder_ptr: 32, asset_ptr: N, asset_len: u32, price: u64, decimals: u8) -> u32
     let launch_price: u64 = prices.licn_usd_8dec;
-    let decimals: u8 = 8;
-    let mut price_data = Vec::with_capacity(32 + 32 + 4 + 8 + 1);
-    price_data.extend_from_slice(&primary_feeder.0); // feeder pubkey
-    extend_padded_pointer_arg(&mut price_data, asset); // asset name
-    price_data.extend_from_slice(&(asset.len() as u32).to_le_bytes()); // asset_len
-    price_data.extend_from_slice(&launch_price.to_le_bytes()); // price
-    price_data.push(decimals); // decimals
-    let price_args = layout_args(&[0x20, 0x20, 0x04, 0x08, 0x01], &price_data);
+    let price_args = oracle_submit_price_args(&primary_feeder, asset, launch_price);
 
     if genesis_exec_contract(
         state,
@@ -2993,11 +3121,7 @@ pub fn genesis_seed_oracle(
 
     for (ext_asset, ext_price, display_price) in &external_feeds {
         // Authorize the primary oracle operator as feeder for this asset
-        let mut ext_feeder_data = Vec::with_capacity(32 + 32 + 4);
-        ext_feeder_data.extend_from_slice(&primary_feeder.0);
-        extend_padded_pointer_arg(&mut ext_feeder_data, ext_asset);
-        ext_feeder_data.extend_from_slice(&(ext_asset.len() as u32).to_le_bytes());
-        let ext_feeder_args = layout_args(&[0x20, 0x20, 0x04], &ext_feeder_data);
+        let ext_feeder_args = oracle_feeder_args(&primary_feeder, ext_asset);
 
         let asset_name = core::str::from_utf8(ext_asset).unwrap_or("?");
         if genesis_exec_contract(
@@ -3021,13 +3145,7 @@ pub fn genesis_seed_oracle(
         }
 
         // Submit initial price
-        let mut ext_price_data = Vec::with_capacity(32 + 32 + 4 + 8 + 1);
-        ext_price_data.extend_from_slice(&primary_feeder.0);
-        extend_padded_pointer_arg(&mut ext_price_data, ext_asset);
-        ext_price_data.extend_from_slice(&(ext_asset.len() as u32).to_le_bytes());
-        ext_price_data.extend_from_slice(&ext_price.to_le_bytes());
-        ext_price_data.push(decimals); // 8 decimals
-        let ext_price_args = layout_args(&[0x20, 0x20, 0x04, 0x08, 0x01], &ext_price_data);
+        let ext_price_args = oracle_submit_price_args(&primary_feeder, ext_asset, *ext_price);
 
         if genesis_exec_contract(
             state,
@@ -3076,6 +3194,13 @@ pub fn genesis_seed_oracle(
             ));
         }
     }
+
+    // Price publication is validator-native after genesis. Close the legacy
+    // single-feeder mutation path before the genesis state bundle is committed;
+    // later blocks only mirror finalized consensus quotes into this storage.
+    state
+        .put_contract_storage(&oracle_pk, b"oracle_consensus_managed", &[1u8])
+        .map_err(|error| format!("failed to activate consensus-managed oracle: {error}"))?;
 
     // ── Step 4: Seed initial analytics prices for oracle-priced pairs ──
     // Write ana_lp_{pair_id} so the RPC /pairs endpoint shows prices from
@@ -3192,80 +3317,115 @@ pub fn genesis_seed_analytics_prices(
 //  Prices fetched live from Binance REST API at genesis time.
 // ========================================================================
 
+fn genesis_margin_pair_prices(
+    prices: &GenesisPrices,
+) -> Result<Vec<(u64, u64, &'static str)>, String> {
+    let usd = |price_8dec: u64| {
+        price_8dec
+            .checked_mul(10)
+            .ok_or_else(|| "genesis margin USD price overflow".to_string())
+    };
+    let cross = |base_8dec: u64| {
+        if prices.licn_usd_8dec == 0 {
+            return Err("genesis LICN oracle price is zero".to_string());
+        }
+        let scaled = base_8dec as u128 * 1_000_000_000u128 / prices.licn_usd_8dec as u128;
+        u64::try_from(scaled).map_err(|_| "genesis margin cross price overflow".to_string())
+    };
+
+    Ok(vec![
+        (1, usd(prices.licn_usd_8dec)?, "LICN"),
+        (2, usd(prices.wsol_usd_8dec)?, "wSOL"),
+        (3, usd(prices.weth_usd_8dec)?, "wETH"),
+        (4, cross(prices.wsol_usd_8dec)?, "wSOL/LICN"),
+        (5, cross(prices.weth_usd_8dec)?, "wETH/LICN"),
+        (6, usd(prices.wbnb_usd_8dec)?, "wBNB"),
+        (7, cross(prices.wbnb_usd_8dec)?, "wBNB/LICN"),
+        (8, usd(prices.wneo_usd_8dec)?, "wNEO"),
+        (9, cross(prices.wneo_usd_8dec)?, "wNEO/LICN"),
+        (10, usd(prices.wgas_usd_8dec)?, "wGAS"),
+        (11, cross(prices.wgas_usd_8dec)?, "wGAS/LICN"),
+        (12, usd(prices.wbtc_usd_8dec)?, "wBTC"),
+        (13, cross(prices.wbtc_usd_8dec)?, "wBTC/LICN"),
+    ])
+}
+
 pub fn genesis_seed_margin_prices(
     state: &StateStore,
     deployer_pubkey: &Pubkey,
-    genesis_timestamp: u64,
+    genesis_slot: u64,
     prices: &GenesisPrices,
-) {
+) -> Result<(), String> {
     let margin_pk = match derive_contract_address(deployer_pubkey, "dex_margin") {
         Some(pk) => pk,
-        None => {
-            warn!("  SKIP margin price seeding: dex_margin not derived");
-            return;
-        }
+        None => return Err("mandatory dex_margin address not derived".to_string()),
     };
 
-    const PRICE_SCALE: u64 = 1_000_000_000;
-    let pair_prices = genesis_pair_prices(prices);
+    let pair_prices = genesis_margin_pair_prices(prices)?;
 
     // Collect all storage writes to also update embedded ContractAccount
     let mut margin_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
 
-    for (pair_id, price_f64) in &pair_prices {
-        let price_scaled = (*price_f64 * PRICE_SCALE as f64) as u64;
-
+    for (pair_id, price_scaled, oracle_market) in &pair_prices {
         // Mark price: mrg_mark_{pair_id} → [price 8B LE][timestamp 8B LE]
         let mark_key = format!("mrg_mark_{}", pair_id);
         let mut mark_val = Vec::with_capacity(16);
         mark_val.extend_from_slice(&price_scaled.to_le_bytes());
-        mark_val.extend_from_slice(&genesis_timestamp.to_le_bytes());
+        mark_val.extend_from_slice(&genesis_slot.to_le_bytes());
         state
             .put_contract_storage(&margin_pk, mark_key.as_bytes(), &mark_val)
-            .expect("genesis: put_contract_storage margin mark price failed");
+            .map_err(|error| format!("failed to seed margin mark price {pair_id}: {error}"))?;
         margin_entries.push((mark_key.into_bytes(), mark_val));
 
         // Index price: mrg_idx_{pair_id} → [price 8B LE][timestamp 8B LE]
         let idx_key = format!("mrg_idx_{}", pair_id);
         let mut idx_val = Vec::with_capacity(16);
         idx_val.extend_from_slice(&price_scaled.to_le_bytes());
-        idx_val.extend_from_slice(&genesis_timestamp.to_le_bytes());
+        idx_val.extend_from_slice(&genesis_slot.to_le_bytes());
         state
             .put_contract_storage(&margin_pk, idx_key.as_bytes(), &idx_val)
-            .expect("genesis: put_contract_storage margin index price failed");
+            .map_err(|error| format!("failed to seed margin index price {pair_id}: {error}"))?;
         margin_entries.push((idx_key.into_bytes(), idx_val));
+
+        let market_key = format!("mrg_market_{}", pair_id);
+        let market_val = oracle_market.as_bytes().to_vec();
+        state
+            .put_contract_storage(&margin_pk, market_key.as_bytes(), &market_val)
+            .map_err(|error| format!("failed to seed margin oracle market {pair_id}: {error}"))?;
+        margin_entries.push((market_key.into_bytes(), market_val));
 
         // Enable margin trading: mrg_ena_{pair_id} → [1u64 LE]
         let ena_key = format!("mrg_ena_{}", pair_id);
         let ena_val = 1u64.to_le_bytes().to_vec();
         state
             .put_contract_storage(&margin_pk, ena_key.as_bytes(), &ena_val)
-            .expect("genesis: put_contract_storage margin enable failed");
+            .map_err(|error| format!("failed to enable margin pair {pair_id}: {error}"))?;
         margin_entries.push((ena_key.into_bytes(), ena_val));
 
         info!(
-            "  MARGIN seeded: pair {} → price {:.4}, mark+index+enabled",
-            pair_id, price_f64
+            "  MARGIN seeded: pair {} → raw {} market {}, mark+index+enabled",
+            pair_id, price_scaled, oracle_market
         );
     }
 
     // Also update embedded ContractAccount storage so RPC reads see it
-    if let Ok(Some(margin_account)) = state.get_account(&margin_pk) {
-        if let Ok(mut margin_contract) =
-            serde_json::from_slice::<ContractAccount>(&margin_account.data)
-        {
-            for (key, value) in &margin_entries {
-                margin_contract.set_storage(key.clone(), value.clone());
-            }
-            if let Ok(data) = serde_json::to_vec(&margin_contract) {
-                let mut updated = margin_account;
-                updated.data = data;
-                state
-                    .put_account(&margin_pk, &updated)
-                    .expect("genesis: put_account margin failed");
-            }
-        }
+    let margin_account = state
+        .get_account(&margin_pk)
+        .map_err(|error| format!("failed to read dex_margin account: {error}"))?
+        .ok_or_else(|| "mandatory dex_margin account missing".to_string())?;
+    let mut margin_contract = serde_json::from_slice::<ContractAccount>(&margin_account.data)
+        .map_err(|error| format!("failed to decode dex_margin account: {error}"))?;
+    for (key, value) in &margin_entries {
+        margin_contract.set_storage(key.clone(), value.clone());
     }
+    let data = serde_json::to_vec(&margin_contract)
+        .map_err(|error| format!("failed to encode dex_margin account: {error}"))?;
+    let mut updated = margin_account;
+    updated.data = data;
+    state
+        .put_account(&margin_pk, &updated)
+        .map_err(|error| format!("failed to persist dex_margin account: {error}"))?;
+    Ok(())
 }
 
 // ========================================================================
@@ -3275,7 +3435,11 @@ pub fn genesis_seed_margin_prices(
 //  startup reconciliation before replaying later blocks.
 // ========================================================================
 
-pub fn genesis_seed_consensus_oracle_prices(state: &StateStore, slot: u64, prices: &GenesisPrices) {
+pub fn genesis_seed_consensus_oracle_prices(
+    state: &StateStore,
+    slot: u64,
+    prices: &GenesisPrices,
+) -> Result<(), String> {
     for (asset, price_raw) in [
         ("LICN", prices.licn_usd_8dec),
         ("wSOL", prices.wsol_usd_8dec),
@@ -3285,10 +3449,19 @@ pub fn genesis_seed_consensus_oracle_prices(state: &StateStore, slot: u64, price
         ("wGAS", prices.wgas_usd_8dec),
         ("wBTC", prices.wbtc_usd_8dec),
     ] {
-        if let Err(e) = state.put_oracle_consensus_price(asset, price_raw, 8, slot, 0) {
-            warn!("  Failed to seed consensus oracle price for {asset}: {e}");
-        }
+        state
+            .put_oracle_consensus_price(
+                asset,
+                price_raw,
+                lichen_core::ORACLE_PRICE_DECIMALS,
+                slot,
+                0,
+            )
+            .map_err(|error| {
+                format!("failed to seed consensus oracle price for {asset}: {error}")
+            })?;
     }
+    Ok(())
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -3948,6 +4121,60 @@ mod tests {
     }
 
     #[test]
+    fn test_genesis_margin_pair_prices_use_exact_pair_basis() {
+        let prices = GenesisPrices::default();
+        let pair_prices = genesis_margin_pair_prices(&prices).unwrap();
+
+        assert_eq!(pair_prices.len(), 13);
+        assert_eq!(pair_prices[0], (1, 100_000_000, "LICN"));
+        assert_eq!(pair_prices[1], (2, 81_840_000_000, "wSOL"));
+        assert_eq!(pair_prices[3], (4, 818_400_000_000, "wSOL/LICN"));
+        assert_eq!(pair_prices[12], (13, 1_000_000_000_000_000, "wBTC/LICN"));
+
+        let mut invalid = prices;
+        invalid.licn_usd_8dec = 0;
+        assert_eq!(
+            genesis_margin_pair_prices(&invalid).unwrap_err(),
+            "genesis LICN oracle price is zero"
+        );
+    }
+
+    #[test]
+    fn test_oracle_genesis_args_encode_one_canonical_fixed8_price() {
+        let feeder = Pubkey([7u8; 32]);
+        let args = oracle_submit_price_args(&feeder, b"wSOL", 14_875_000_000);
+
+        assert_eq!(args.len(), 83);
+        assert_eq!(&args[..6], &[0xAB, 0x20, 0x20, 0x04, 0x08, 0x01]);
+        assert_eq!(&args[6..38], &feeder.0);
+        assert_eq!(&args[38..42], b"wSOL");
+        assert!(args[42..70].iter().all(|byte| *byte == 0));
+        assert_eq!(u32::from_le_bytes(args[70..74].try_into().unwrap()), 4);
+        assert_eq!(
+            u64::from_le_bytes(args[74..82].try_into().unwrap()),
+            14_875_000_000
+        );
+        assert_eq!(args[82], lichen_core::ORACLE_PRICE_DECIMALS);
+    }
+
+    #[test]
+    fn test_genesis_consensus_oracle_prices_are_canonical() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        genesis_seed_consensus_oracle_prices(&state, 0, &GenesisPrices::default()).unwrap();
+
+        for asset in ["LICN", "wSOL", "wETH", "wBNB", "wNEO", "wGAS", "wBTC"] {
+            let price = state
+                .get_oracle_consensus_price(asset)
+                .unwrap()
+                .unwrap_or_else(|| panic!("missing {asset} genesis quote"));
+            assert!(price.price > 0);
+            assert_eq!(price.decimals, lichen_core::ORACLE_PRICE_DECIMALS);
+            assert_eq!(price.slot, 0);
+        }
+    }
+
+    #[test]
     fn test_resolve_genesis_governance_authority_uses_community_treasury() {
         let dir = tempdir().unwrap();
         let state = StateStore::open(dir.path()).unwrap();
@@ -4173,6 +4400,22 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .program;
+            let thalllend = state.get_symbol_registry("LEND").unwrap().unwrap().program;
+            let sporevault = state
+                .get_symbol_registry("SPOREVAULT")
+                .unwrap()
+                .unwrap()
+                .program;
+            let compute = state
+                .get_symbol_registry("COMPUTE")
+                .unwrap()
+                .unwrap()
+                .program;
+            let bounty = state
+                .get_symbol_registry("BOUNTY")
+                .unwrap()
+                .unwrap()
+                .program;
 
             assert_contract_storage_pubkey(&state, &predict, b"pm_lichenid_addr", &yid);
             assert_contract_storage_pubkey(&state, &predict, b"pm_oracle_addr", &oracle);
@@ -4204,6 +4447,80 @@ mod tests {
             assert_contract_storage_pubkey(&state, &sporepump, b"cp_dex_core_addr", &dex_core);
             assert_contract_storage_pubkey(&state, &sporepump, b"cp_dex_amm_addr", &dex_amm);
             assert_contract_storage_pubkey(&state, &sporepump, b"cp_dex_router_addr", &dex_router);
+            assert_eq!(
+                state
+                    .get_contract_storage(&thalllend, b"ll_licn_addr")
+                    .unwrap()
+                    .unwrap(),
+                [0u8; 32]
+            );
+            assert_contract_storage_pubkey(&state, &thalllend, b"ll_oracle_addr", &oracle);
+            assert_eq!(
+                state
+                    .get_contract_storage(&thalllend, b"ll_oracle_asset")
+                    .unwrap()
+                    .unwrap(),
+                b"LICN"
+            );
+            assert_eq!(
+                state
+                    .get_contract_storage(&sporevault, b"cv_licn_token")
+                    .unwrap()
+                    .unwrap(),
+                [0u8; 32]
+            );
+            assert_contract_storage_pubkey(&state, &sporevault, b"cv_thalllend_addr", &thalllend);
+            assert_eq!(
+                state
+                    .get_contract_storage(&bounty, b"bounty_token_addr")
+                    .unwrap()
+                    .unwrap(),
+                [0u8; 32]
+            );
+            assert_contract_storage_pubkey(&state, &bounty, b"lichenid_address", &yid);
+            assert_eq!(
+                state
+                    .get_contract_storage(&bounty, b"bb_account_version")
+                    .unwrap()
+                    .unwrap(),
+                2u64.to_le_bytes()
+            );
+            assert_eq!(
+                state
+                    .get_contract_storage(&compute, b"cm_token_address")
+                    .unwrap()
+                    .unwrap(),
+                [0u8; 32]
+            );
+            assert_contract_storage_pubkey(&state, &compute, b"lichenid_address", &yid);
+            assert_eq!(
+                state
+                    .get_contract_storage(&compute, b"cm_account_version")
+                    .unwrap()
+                    .unwrap(),
+                3u64.to_le_bytes()
+            );
+            assert_eq!(
+                state
+                    .get_contract_storage(&sporevault, b"cv_strategy_count")
+                    .unwrap()
+                    .unwrap(),
+                1u64.to_le_bytes()
+            );
+            assert_eq!(
+                state
+                    .get_contract_storage(&sporevault, b"cv_strat_type:0")
+                    .unwrap()
+                    .unwrap(),
+                1u64.to_le_bytes()
+            );
+            assert_eq!(
+                state
+                    .get_contract_storage(&sporevault, b"cv_strat_alloc:0")
+                    .unwrap()
+                    .unwrap(),
+                33u64.to_le_bytes()
+            );
             assert_contract_storage_pubkey(
                 &state,
                 &sporepump,

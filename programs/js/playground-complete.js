@@ -8203,147 +8203,2309 @@ strip = true
         name: 'BountyBoard',
         description: 'On-chain task management',
         files: {
-            'lib.rs': `// BountyBoard - On-Chain Task Management
-// Post bounties with rewards/deadlines, submit proof, approve and pay
+            'lib.rs': `// BountyBoard — Bounty/Task Management Contract for Lichen
+//
+// On-chain bounty system for task management:
+//   - Creators post bounties with rewards and deadlines
+//   - Workers submit proof of work
+//   - Creators approve submissions and pay rewards
+//   - Creators can cancel and get refunds
+//
+// Storage keys:
+//   bounty_{id}       → BountyInfo
+//   bounty_count      → u64
+//   submission_{id}_{idx} → SubmissionInfo
 
 #![no_std]
-#![no_main]
+#![cfg_attr(target_arch = "wasm32", no_main)]
 
 extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    log_info, storage_get, storage_set,
-    bytes_to_u64, u64_to_bytes, get_slot
+    balance_of_token_or_native, bytes_to_u64, call_contract, get_caller, get_contract_address,
+    get_slot, get_value, log_info, receive_token_or_native, storage_get, storage_set,
+    transfer_token_or_native, u64_to_bytes, Address, CrossCall,
 };
+
+// ============================================================================
+// BOUNTY STATUS
+// ============================================================================
 
 const BOUNTY_OPEN: u8 = 0;
 const BOUNTY_COMPLETED: u8 = 1;
 const BOUNTY_CANCELLED: u8 = 2;
-// Bounty: creator(32)+title_hash(32)+reward(8)+deadline(8)+status(1)+sub_count(1)+created(8)+approved_idx(1) = 91
+
+const ERR_PAUSED: u32 = 13;
+
+const BB_COMPLETED_COUNT_KEY: &[u8] = b"bb_completed_count";
+const BB_REWARD_VOLUME_KEY: &[u8] = b"bb_reward_volume";
+const BB_CANCEL_COUNT_KEY: &[u8] = b"bb_cancel_count";
+const BB_PLATFORM_FEE_BPS_KEY: &[u8] = b"platform_fee_bps";
+const BB_FEE_TREASURY_KEY: &[u8] = b"bb_fee_treasury";
+const BB_PENDING_ADMIN_KEY: &[u8] = b"bb_pending_admin";
+const BB_ACCOUNTING_VERSION_KEY: &[u8] = b"bb_account_version";
+const BB_ESCROW_LIABILITY_KEY: &[u8] = b"bb_escrow_liability";
+const BB_MIGRATION_LOCK_KEY: &[u8] = b"bb_account_mig_lock";
+const BB_MIGRATION_EXPECTED_COUNT_KEY: &[u8] = b"bb_account_mig_expected";
+const BB_MIGRATION_CURSOR_KEY: &[u8] = b"bb_account_mig_cursor";
+const BB_MIGRATION_ESCROW_KEY: &[u8] = b"bb_account_mig_escrow";
+const ACCOUNTING_VERSION_V2: u64 = 2;
+
+// ============================================================================
+// STORAGE KEY HELPERS
+// ============================================================================
+
+fn u64_to_decimal(mut n: u64) -> Vec<u8> {
+    if n == 0 {
+        return Vec::from(*b"0");
+    }
+    let mut buf = Vec::new();
+    while n > 0 {
+        buf.push(b'0' + (n % 10) as u8);
+        n /= 10;
+    }
+    buf.reverse();
+    buf
+}
+
+fn bounty_key(bounty_id: u64) -> Vec<u8> {
+    let mut key = Vec::with_capacity(7 + 20);
+    key.extend_from_slice(b"bounty_");
+    key.extend_from_slice(&u64_to_decimal(bounty_id));
+    key
+}
+
+fn submission_key(bounty_id: u64, idx: u8) -> Vec<u8> {
+    let mut key = Vec::with_capacity(12 + 20 + 4);
+    key.extend_from_slice(b"submission_");
+    key.extend_from_slice(&u64_to_decimal(bounty_id));
+    key.push(b'_');
+    key.extend_from_slice(&u64_to_decimal(idx as u64));
+    key
+}
+
+fn bounty_metadata_key(prefix: &[u8], bounty_id: u64) -> Vec<u8> {
+    let mut key = Vec::with_capacity(prefix.len() + 20);
+    key.extend_from_slice(prefix);
+    key.extend_from_slice(&u64_to_decimal(bounty_id));
+    key
+}
+
+fn bounty_token_key(bounty_id: u64) -> Vec<u8> {
+    bounty_metadata_key(b"bounty_token_", bounty_id)
+}
+
+fn bounty_fee_bps_key(bounty_id: u64) -> Vec<u8> {
+    bounty_metadata_key(b"bounty_fee_bps_", bounty_id)
+}
+
+fn worker_submission_key(bounty_id: u64, worker: &[u8; 32]) -> Vec<u8> {
+    let mut key = bounty_metadata_key(b"bounty_worker_", bounty_id);
+    key.push(b'_');
+    key.extend_from_slice(worker);
+    key
+}
+
+fn platform_fee_key(token: Address) -> Vec<u8> {
+    let mut key = b"bb_platform_fee:".to_vec();
+    key.extend_from_slice(&token.0);
+    key
+}
+
+// ============================================================================
+// REENTRANCY GUARD
+// ============================================================================
+
+const BB_REENTRANCY_KEY: &[u8] = b"bb_reentrancy";
+
+fn reentrancy_enter() -> bool {
+    match storage_get(BB_REENTRANCY_KEY).as_deref() {
+        None | Some([0]) => {}
+        Some([1]) | Some(_) => return false,
+    }
+    storage_set(BB_REENTRANCY_KEY, &[1u8]);
+    true
+}
+
+fn reentrancy_exit() {
+    storage_set(BB_REENTRANCY_KEY, &[0u8]);
+}
+
+fn is_bb_paused() -> bool {
+    match storage_get(b"bb_paused").as_deref() {
+        None | Some([0]) => false,
+        Some([1]) | Some(_) => true,
+    }
+}
+
+fn load_configured_address(key: &[u8]) -> Option<[u8; 32]> {
+    storage_get(key).and_then(|bytes| {
+        if bytes.len() != 32 {
+            return None;
+        }
+
+        let mut addr = [0u8; 32];
+        addr.copy_from_slice(&bytes[..32]);
+        Some(addr)
+    })
+}
+
+fn read_address(ptr: *const u8) -> Option<[u8; 32]> {
+    if ptr.is_null() {
+        return None;
+    }
+    let mut addr = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(ptr, addr.as_mut_ptr(), 32);
+    }
+    Some(addr)
+}
+
+fn checked_stored_u64(key: &[u8]) -> Option<u64> {
+    match storage_get(key) {
+        None => Some(0),
+        Some(data) if data.len() == 8 => Some(bytes_to_u64(&data)),
+        Some(_) => None,
+    }
+}
+
+#[cfg(test)]
+fn stored_u64(key: &[u8]) -> u64 {
+    checked_stored_u64(key).unwrap_or(0)
+}
+
+fn checked_increment(key: &[u8]) -> Option<u64> {
+    checked_stored_u64(key)?.checked_add(1)
+}
+
+fn accounting_version() -> Option<u64> {
+    checked_stored_u64(BB_ACCOUNTING_VERSION_KEY)
+}
+
+fn migration_lock_valid() -> bool {
+    matches!(
+        storage_get(BB_MIGRATION_LOCK_KEY).as_deref(),
+        None | Some([0]) | Some([1])
+    )
+}
+
+fn migration_locked() -> bool {
+    storage_get(BB_MIGRATION_LOCK_KEY).as_deref() == Some(&[1])
+}
+
+fn accounting_operational() -> bool {
+    accounting_version() == Some(ACCOUNTING_VERSION_V2)
+        && migration_lock_valid()
+        && !migration_locked()
+        && checked_stored_u64(BB_ESCROW_LIABILITY_KEY).is_some()
+}
+
+fn runtime_configuration_valid() -> bool {
+    if reward_token_or_native().is_none()
+        || checked_stored_u64(BB_PLATFORM_FEE_BPS_KEY).is_none_or(|fee| fee > 1_000)
+        || !load_configured_address(BB_FEE_TREASURY_KEY)
+            .is_some_and(|treasury| treasury.iter().any(|byte| *byte != 0))
+    {
+        return false;
+    }
+
+    match checked_stored_u64(LICHENID_MIN_REP_KEY) {
+        Some(0) => true,
+        Some(_) => load_configured_address(LICHENID_ADDR_KEY)
+            .is_some_and(|address| address.iter().any(|byte| *byte != 0)),
+        None => false,
+    }
+}
+
+fn effectively_paused() -> bool {
+    is_bb_paused() || !accounting_operational() || !runtime_configuration_valid()
+}
+
+fn reward_token_or_native() -> Option<Address> {
+    match storage_get(TOKEN_ADDRESS_KEY) {
+        Some(bytes) if bytes.len() == 32 => {
+            let mut addr = [0u8; 32];
+            addr.copy_from_slice(&bytes);
+            Some(Address(addr))
+        }
+        None | Some(_) => None,
+    }
+}
+
+fn bounty_reward_token(bounty_id: u64) -> Option<Address> {
+    match storage_get(&bounty_token_key(bounty_id)) {
+        Some(bytes) if bytes.len() == 32 => {
+            let mut address = [0u8; 32];
+            address.copy_from_slice(&bytes);
+            Some(Address(address))
+        }
+        None | Some(_) => None,
+    }
+}
+
+fn bounty_platform_fee_bps(bounty_id: u64) -> Option<u64> {
+    match storage_get(&bounty_fee_bps_key(bounty_id)) {
+        Some(bytes) if bytes.len() == 8 => Some(bytes_to_u64(&bytes)),
+        None | Some(_) => None,
+    }
+}
+
+fn split_reward(reward: u64, fee_bps: u64) -> Option<(u64, u64)> {
+    if fee_bps > 10_000 {
+        return None;
+    }
+    let fee = ((reward as u128).checked_mul(fee_bps as u128)? / 10_000) as u64;
+    Some((reward.checked_sub(fee)?, fee))
+}
+
+fn require_admin(caller: &[u8; 32]) -> bool {
+    storage_get(IDENTITY_ADMIN_KEY)
+        .map(|admin| admin.len() == 32 && admin.as_slice() == caller)
+        .unwrap_or(false)
+}
+
+// ============================================================================
+// BOUNTY LAYOUT
+// ============================================================================
+//
+// Bytes 0..32   : creator (address)
+// Bytes 32..64  : title_hash (32 bytes)
+// Bytes 64..72  : reward_amount (u64 LE)
+// Bytes 72..80  : deadline_slot (u64 LE)
+// Byte  80      : status (u8)
+// Byte  81      : submission_count (u8)
+// Bytes 82..90  : created_slot (u64 LE)
+// Byte  90      : approved_idx (u8, 0xFF if none)
+
 const BOUNTY_SIZE: usize = 91;
-// Submission: worker(32)+proof_hash(32)+submitted_slot(8) = 72
+
+struct BountyEncoding<'a> {
+    creator: &'a [u8; 32],
+    title_hash: &'a [u8; 32],
+    reward_amount: u64,
+    deadline_slot: u64,
+    status: u8,
+    submission_count: u8,
+    created_slot: u64,
+    approved_idx: u8,
+}
+
+fn encode_bounty(bounty: BountyEncoding<'_>) -> Vec<u8> {
+    let mut data = Vec::with_capacity(BOUNTY_SIZE);
+    data.extend_from_slice(bounty.creator);
+    data.extend_from_slice(bounty.title_hash);
+    data.extend_from_slice(&u64_to_bytes(bounty.reward_amount));
+    data.extend_from_slice(&u64_to_bytes(bounty.deadline_slot));
+    data.push(bounty.status);
+    data.push(bounty.submission_count);
+    data.extend_from_slice(&u64_to_bytes(bounty.created_slot));
+    data.push(bounty.approved_idx);
+    data
+}
+
+fn bounty_row_valid(data: &[u8]) -> bool {
+    if data.len() != BOUNTY_SIZE
+        || data[..32].iter().all(|byte| *byte == 0)
+        || data[32..64].iter().all(|byte| *byte == 0)
+        || bytes_to_u64(&data[64..72]) == 0
+        || bytes_to_u64(&data[72..80]) <= bytes_to_u64(&data[82..90])
+    {
+        return false;
+    }
+
+    match data[80] {
+        BOUNTY_OPEN | BOUNTY_CANCELLED => data[90] == u8::MAX,
+        BOUNTY_COMPLETED => data[81] > 0 && data[90] < data[81],
+        _ => false,
+    }
+}
+
+// ============================================================================
+// SUBMISSION LAYOUT
+// ============================================================================
+//
+// Bytes 0..32  : worker (address)
+// Bytes 32..64 : proof_hash (32 bytes)
+// Bytes 64..72 : submitted_slot (u64 LE)
+
 const SUBMISSION_SIZE: usize = 72;
 
-fn load_u64(key: &[u8]) -> u64 {
-    storage_get(key).map(|d| bytes_to_u64(&d)).unwrap_or(0)
+fn encode_submission(worker: &[u8; 32], proof_hash: &[u8; 32], submitted_slot: u64) -> Vec<u8> {
+    let mut data = Vec::with_capacity(SUBMISSION_SIZE);
+    data.extend_from_slice(worker);
+    data.extend_from_slice(proof_hash);
+    data.extend_from_slice(&u64_to_bytes(submitted_slot));
+    data
 }
 
-fn store_u64(key: &[u8], val: u64) {
-    storage_set(key, &u64_to_bytes(val));
+fn submission_row_valid(data: &[u8]) -> bool {
+    data.len() == SUBMISSION_SIZE
+        && data[..32].iter().any(|byte| *byte != 0)
+        && data[32..64].iter().any(|byte| *byte != 0)
 }
 
+fn submission_matches_bounty(submission: &[u8], bounty: &[u8]) -> bool {
+    if !submission_row_valid(submission) || !bounty_row_valid(bounty) {
+        return false;
+    }
+    let submitted_slot = bytes_to_u64(&submission[64..72]);
+    submitted_slot >= bytes_to_u64(&bounty[82..90])
+        && submitted_slot <= bytes_to_u64(&bounty[72..80])
+}
+
+// ============================================================================
+// CREATE BOUNTY
+// ============================================================================
+
+/// Create a new bounty.
+///
+/// Parameters:
+///   - creator_ptr: 32-byte creator address
+///   - title_hash_ptr: 32-byte hash of the bounty title/description
+///   - reward_amount: reward in spores
+///   - deadline_slot: deadline for submissions
+///
+/// Returns 0 on success, bounty_id in return data.
 #[no_mangle]
 pub extern "C" fn create_bounty(
     creator_ptr: *const u8,
-    reward: u64,
-    title_ptr: *const u8,
-    title_len: u32,
+    title_hash_ptr: *const u8,
+    reward_amount: u64,
+    deadline_slot: u64,
 ) -> u32 {
-    let creator = unsafe { core::slice::from_raw_parts(creator_ptr, 32) };
-    let title = unsafe { core::slice::from_raw_parts(title_ptr, title_len as usize) };
+    log_info("Creating bounty...");
+    // AUDIT-FIX P2: Enforce pause
+    if effectively_paused() {
+        log_info("BountyBoard is paused or accounting is unavailable");
+        return ERR_PAUSED;
+    }
+    if !reentrancy_enter() {
+        return 100;
+    }
 
-    let id = load_u64(b"bounty_count") + 1;
-    store_u64(b"bounty_count", id);
-
-    let mut bounty = Vec::with_capacity(BOUNTY_SIZE);
-    bounty.extend_from_slice(creator);                      // 0..32
-    bounty.extend_from_slice(title);                        // 32..
-    // Pad title hash to 32 bytes
-    let pad = 32usize.saturating_sub(title_len as usize);
-    for _ in 0..pad { bounty.push(0); }
-    bounty.extend_from_slice(&u64_to_bytes(reward));        // 64..72
-    bounty.extend_from_slice(&u64_to_bytes(get_slot()));    // 72..80
-    bounty.push(BOUNTY_OPEN);                               // 80 status
-    bounty.push(0);                                          // 81 sub_count
-    bounty.extend_from_slice(&u64_to_bytes(get_slot()));    // 82..90
-    bounty.push(0);                                          // 90 approved_idx
-
-    let key = alloc::format!("bounty_{}", id);
-    storage_set(key.as_bytes(), &bounty);
-    log_info(&alloc::format!("Bounty #{} created: {} LICN reward", id, reward));
-    id as u32
-}
-
-#[no_mangle]
-pub extern "C" fn submit_work(submitter_ptr: *const u8, bounty_id: u64, proof_ptr: *const u8, proof_len: u32) -> u32 {
-    let key = alloc::format!("bounty_{}", bounty_id);
-    let mut data = match storage_get(key.as_bytes()) {
-        Some(d) if d.len() >= BOUNTY_SIZE => d,
-        _ => { log_info("Bounty not found"); return 0; }
+    let creator_arr = match read_address(creator_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
     };
-    if data[80] != BOUNTY_OPEN { log_info("Bounty not open"); return 0; }
-
-    let worker = unsafe { core::slice::from_raw_parts(submitter_ptr, 32) };
-    let proof = unsafe { core::slice::from_raw_parts(proof_ptr, proof_len as usize) };
-    let idx = data[81];
-
-    let mut submission = Vec::with_capacity(SUBMISSION_SIZE);
-    submission.extend_from_slice(worker);                   // 0..32
-    submission.extend_from_slice(proof);                    // 32..
-    // Pad proof to 32 bytes
-    let pad = 32usize.saturating_sub(proof_len as usize);
-    for _ in 0..pad { submission.push(0); }
-    submission.extend_from_slice(&u64_to_bytes(get_slot())); // 64..72
-
-    let sub_key = alloc::format!("submission_{}_{}", bounty_id, idx);
-    storage_set(sub_key.as_bytes(), &submission);
-
-    data[81] = idx + 1;
-    storage_set(key.as_bytes(), &data);
-    log_info(&alloc::format!("Work submitted for bounty #{} (submission #{})", bounty_id, idx));
-    1
-}
-
-#[no_mangle]
-pub extern "C" fn approve_work(caller_ptr: *const u8, bounty_id: u64, submission_id: u64) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    let key = alloc::format!("bounty_{}", bounty_id);
-    let mut data = match storage_get(key.as_bytes()) {
-        Some(d) if d.len() >= BOUNTY_SIZE => d,
-        _ => { log_info("Bounty not found"); return 0; }
+    let title_arr = match read_address(title_hash_ptr) {
+        Some(hash) => hash,
+        None => {
+            reentrancy_exit();
+            return 2;
+        }
     };
 
-    if &data[0..32] != caller { log_info("Only creator can approve"); return 0; }
-    if data[80] != BOUNTY_OPEN { log_info("Bounty not open"); return 0; }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != creator_arr {
+        reentrancy_exit();
+        return 200;
+    }
 
-    let reward = bytes_to_u64(&data[64..72]);
-    data[80] = BOUNTY_COMPLETED;
-    data[90] = submission_id as u8;
-    storage_set(key.as_bytes(), &data);
+    if reward_amount == 0 {
+        log_info("Reward must be > 0");
+        reentrancy_exit();
+        return 1;
+    }
+    if title_arr.iter().all(|byte| *byte == 0) {
+        log_info("Title hash must be non-zero");
+        reentrancy_exit();
+        return 3;
+    }
 
-    log_info(&alloc::format!("Bounty #{} completed! Submission #{} approved, {} LICN paid", bounty_id, submission_id, reward));
-    1
+    // LichenID reputation gate
+    if !check_identity_gate(&creator_arr) {
+        log_info("Insufficient LichenID reputation for bounty creation");
+        reentrancy_exit();
+        return 10;
+    }
+
+    let current_slot = get_slot();
+    if deadline_slot <= current_slot {
+        log_info("Deadline must be in the future");
+        reentrancy_exit();
+        return 2;
+    }
+
+    let bounty_id = match checked_stored_u64(b"bounty_count") {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 12;
+        }
+    };
+    let next_bounty_id = match bounty_id.checked_add(1) {
+        Some(next) => next,
+        None => {
+            log_info("Bounty count overflow");
+            reentrancy_exit();
+            return 12;
+        }
+    };
+
+    let reward_token = match reward_token_or_native() {
+        Some(token) => token,
+        None => {
+            log_info("Invalid reward token configuration");
+            reentrancy_exit();
+            return 14;
+        }
+    };
+    let fee_bps = match checked_stored_u64(BB_PLATFORM_FEE_BPS_KEY) {
+        Some(value) if value <= 1_000 => value,
+        _ => {
+            reentrancy_exit();
+            return 15;
+        }
+    };
+    let escrow_liability = match checked_stored_u64(BB_ESCROW_LIABILITY_KEY) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 15;
+        }
+    };
+    let next_escrow_liability = match escrow_liability.checked_add(reward_amount) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 15;
+        }
+    };
+    let attached_value = get_value();
+    let payment_value_is_exact = if reward_token.0 == [0u8; 32] {
+        attached_value == reward_amount
+    } else {
+        attached_value == 0
+    };
+    if !payment_value_is_exact {
+        log_info("Native payment value does not match the configured reward asset");
+        reentrancy_exit();
+        return 11;
+    }
+    if !receive_token_or_native(
+        reward_token,
+        Address(creator_arr),
+        get_contract_address(),
+        reward_amount,
+    )
+    .unwrap_or(false)
+    {
+        log_info("Insufficient reward escrow payment");
+        reentrancy_exit();
+        return 11;
+    }
+    storage_set(b"bounty_count", &u64_to_bytes(next_bounty_id));
+    storage_set(
+        BB_ESCROW_LIABILITY_KEY,
+        &u64_to_bytes(next_escrow_liability),
+    );
+
+    let data = encode_bounty(BountyEncoding {
+        creator: &creator_arr,
+        title_hash: &title_arr,
+        reward_amount,
+        deadline_slot,
+        status: BOUNTY_OPEN,
+        submission_count: 0,
+        created_slot: current_slot,
+        approved_idx: 0xFF,
+    });
+
+    let bk = bounty_key(bounty_id);
+    storage_set(&bk, &data);
+    storage_set(&bounty_token_key(bounty_id), &reward_token.0);
+    storage_set(&bounty_fee_bps_key(bounty_id), &u64_to_bytes(fee_bps));
+
+    lichen_sdk::set_return_data(&u64_to_bytes(bounty_id));
+    log_info("Bounty created");
+    reentrancy_exit();
+    0
 }
 
+// ============================================================================
+// SUBMIT WORK
+// ============================================================================
+
+/// Submit work for a bounty.
+///
+/// Parameters:
+///   - bounty_id: the bounty to submit work for
+///   - worker_ptr: 32-byte worker address
+///   - proof_hash_ptr: 32-byte hash of the proof of work
+///
+/// Returns 0 on success.
+#[no_mangle]
+pub extern "C" fn submit_work(
+    bounty_id: u64,
+    worker_ptr: *const u8,
+    proof_hash_ptr: *const u8,
+) -> u32 {
+    log_info("Submitting work for bounty...");
+    // AUDIT-FIX P2: Enforce pause
+    if effectively_paused() {
+        log_info("BountyBoard is paused or accounting is unavailable");
+        return ERR_PAUSED;
+    }
+    if !reentrancy_enter() {
+        return 100;
+    }
+
+    let worker_arr = match read_address(worker_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
+    let proof_arr = match read_address(proof_hash_ptr) {
+        Some(hash) => hash,
+        None => {
+            reentrancy_exit();
+            return 2;
+        }
+    };
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != worker_arr {
+        reentrancy_exit();
+        return 200;
+    }
+
+    let bk = bounty_key(bounty_id);
+    let mut bounty_data = match storage_get(&bk) {
+        Some(data) => data,
+        None => {
+            log_info("Bounty not found");
+            reentrancy_exit();
+            return 1;
+        }
+    };
+
+    if !bounty_row_valid(&bounty_data) {
+        reentrancy_exit();
+        return 2;
+    }
+
+    if bounty_data[80] != BOUNTY_OPEN {
+        log_info("Bounty is not open");
+        reentrancy_exit();
+        return 3;
+    }
+    if proof_arr.iter().all(|byte| *byte == 0) {
+        log_info("Proof hash must be non-zero");
+        reentrancy_exit();
+        return 6;
+    }
+    if bounty_data[0..32] == worker_arr[..] {
+        log_info("Bounty creator cannot submit to their own bounty");
+        reentrancy_exit();
+        return 7;
+    }
+
+    // LichenID identity gate (any reputation level)
+    if !check_identity_gate(&worker_arr) {
+        log_info("LichenID identity required to submit work");
+        reentrancy_exit();
+        return 10;
+    }
+
+    // Check deadline
+    let deadline = bytes_to_u64(&bounty_data[72..80]);
+    let current_slot = get_slot();
+    if current_slot > deadline {
+        log_info("Bounty deadline passed");
+        reentrancy_exit();
+        return 4;
+    }
+
+    let sub_count = bounty_data[81];
+    if sub_count == u8::MAX {
+        log_info("Maximum submissions reached");
+        reentrancy_exit();
+        return 5;
+    }
+    let worker_key = worker_submission_key(bounty_id, &worker_arr);
+    if storage_get(&worker_key).is_some() {
+        log_info("Worker already submitted to this bounty");
+        reentrancy_exit();
+        return 8;
+    }
+
+    // Store submission
+    let sk = submission_key(bounty_id, sub_count);
+    let sub_data = encode_submission(&worker_arr, &proof_arr, current_slot);
+    storage_set(&sk, &sub_data);
+    storage_set(&worker_key, &[sub_count]);
+
+    // Increment submission count
+    bounty_data[81] = sub_count + 1;
+    storage_set(&bk, &bounty_data);
+
+    lichen_sdk::set_return_data(&[sub_count]); // return submission index
+    log_info("Work submitted");
+    reentrancy_exit();
+    0
+}
+
+// ============================================================================
+// APPROVE WORK
+// ============================================================================
+
+/// Creator approves a submission and pays the reward.
+///
+/// Parameters:
+///   - caller_ptr: 32-byte caller address (must be creator)
+///   - bounty_id: the bounty
+///   - submission_idx: index of submission to approve
+///
+/// Returns 0 on success.
+#[no_mangle]
+pub extern "C" fn approve_work(caller_ptr: *const u8, bounty_id: u64, submission_idx: u8) -> u32 {
+    log_info("Approving bounty work...");
+    // AUDIT-FIX P2: Enforce pause
+    if effectively_paused() {
+        log_info("BountyBoard is paused or accounting is unavailable");
+        return ERR_PAUSED;
+    }
+    if !reentrancy_enter() {
+        return 100;
+    }
+
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
+    let bk = bounty_key(bounty_id);
+    let mut bounty_data = match storage_get(&bk) {
+        Some(data) => data,
+        None => {
+            log_info("Bounty not found");
+            reentrancy_exit();
+            return 1;
+        }
+    };
+
+    if !bounty_row_valid(&bounty_data) {
+        reentrancy_exit();
+        return 2;
+    }
+
+    // Verify caller is creator
+    if bounty_data[0..32] != caller[..] {
+        log_info("Only creator can approve");
+        reentrancy_exit();
+        return 3;
+    }
+
+    if bounty_data[80] != BOUNTY_OPEN {
+        log_info("Bounty is not open");
+        reentrancy_exit();
+        return 4;
+    }
+
+    let sub_count = bounty_data[81];
+    if submission_idx >= sub_count {
+        log_info("Invalid submission index");
+        reentrancy_exit();
+        return 5;
+    }
+
+    // Load submission to get worker address
+    let sk = submission_key(bounty_id, submission_idx);
+    let sub_data = match storage_get(&sk) {
+        Some(data) => data,
+        None => {
+            log_info("Submission not found");
+            reentrancy_exit();
+            return 6;
+        }
+    };
+    if !submission_matches_bounty(&sub_data, &bounty_data) {
+        log_info("Invalid submission data");
+        reentrancy_exit();
+        return 6;
+    }
+
+    // Transfer reward tokens from contract to worker via self-custody
+    // AUDIT-FIX G22-01: Use contract's own address as source (self-custody pattern)
+    let reward_amount = bytes_to_u64(&bounty_data[64..72]);
+    let reward_token = match bounty_reward_token(bounty_id) {
+        Some(token) => token,
+        None => {
+            log_info("Invalid reward token configuration");
+            reentrancy_exit();
+            return 9;
+        }
+    };
+    let self_addr = get_contract_address();
+    let mut worker_addr = [0u8; 32];
+    worker_addr.copy_from_slice(&sub_data[0..32]);
+    let fee_bps = match bounty_platform_fee_bps(bounty_id) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 15;
+        }
+    };
+    let (worker_payment, platform_fee) = match split_reward(reward_amount, fee_bps) {
+        Some(split) => split,
+        None => {
+            log_info("Invalid snapshotted platform fee");
+            reentrancy_exit();
+            return 15;
+        }
+    };
+    let fee_key = platform_fee_key(reward_token);
+    let accrued_platform_fee = match checked_stored_u64(&fee_key) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 15;
+        }
+    };
+    let next_platform_fee = match accrued_platform_fee.checked_add(platform_fee) {
+        Some(next) => next,
+        None => {
+            log_info("Platform fee accounting overflow");
+            reentrancy_exit();
+            return 15;
+        }
+    };
+    let escrow_liability = match checked_stored_u64(BB_ESCROW_LIABILITY_KEY) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 15;
+        }
+    };
+    let next_escrow_liability = match escrow_liability.checked_sub(reward_amount) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 15;
+        }
+    };
+    let next_completed_count = match checked_increment(BB_COMPLETED_COUNT_KEY) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 15;
+        }
+    };
+    let reward_volume = match checked_stored_u64(BB_REWARD_VOLUME_KEY) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 15;
+        }
+    };
+    let next_reward_volume = match reward_volume.checked_add(reward_amount) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 15;
+        }
+    };
+
+    // Mark bounty as completed, then revert this effect if payout fails.
+    bounty_data[80] = BOUNTY_COMPLETED;
+    bounty_data[90] = submission_idx;
+    storage_set(&bk, &bounty_data);
+
+    match transfer_token_or_native(
+        reward_token,
+        self_addr,
+        Address(worker_addr),
+        worker_payment,
+    ) {
+        Ok(true) => {
+            log_info("Reward transferred successfully");
+        }
+        Ok(false) => {
+            bounty_data[80] = BOUNTY_OPEN;
+            bounty_data[90] = 0xFF;
+            storage_set(&bk, &bounty_data);
+            log_info("Reward transfer returned false, bounty reverted to open");
+            reentrancy_exit();
+            return 8;
+        }
+        Err(_) => {
+            bounty_data[80] = BOUNTY_OPEN;
+            bounty_data[90] = 0xFF;
+            storage_set(&bk, &bounty_data);
+            log_info("Reward transfer failed, bounty reverted to open");
+            reentrancy_exit();
+            return 7;
+        }
+    }
+    storage_set(&fee_key, &u64_to_bytes(next_platform_fee));
+    storage_set(
+        BB_ESCROW_LIABILITY_KEY,
+        &u64_to_bytes(next_escrow_liability),
+    );
+    let mut settlement = Vec::with_capacity(16);
+    settlement.extend_from_slice(&u64_to_bytes(worker_payment));
+    settlement.extend_from_slice(&u64_to_bytes(platform_fee));
+    lichen_sdk::set_return_data(&settlement);
+
+    // Track completion stats
+    storage_set(BB_COMPLETED_COUNT_KEY, &u64_to_bytes(next_completed_count));
+    storage_set(BB_REWARD_VOLUME_KEY, &u64_to_bytes(next_reward_volume));
+
+    log_info("Work approved, bounty completed");
+    reentrancy_exit();
+    0
+}
+
+// ============================================================================
+// CANCEL BOUNTY
+// ============================================================================
+
+/// Creator cancels a bounty (refund).
+///
+/// Parameters:
+///   - caller_ptr: 32-byte caller address (must be creator)
+///   - bounty_id: the bounty to cancel
+///
+/// Returns 0 on success.
 #[no_mangle]
 pub extern "C" fn cancel_bounty(caller_ptr: *const u8, bounty_id: u64) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    let key = alloc::format!("bounty_{}", bounty_id);
-    let mut data = match storage_get(key.as_bytes()) {
-        Some(d) if d.len() >= BOUNTY_SIZE => d,
-        _ => { log_info("Bounty not found"); return 0; }
+    log_info("Cancelling bounty...");
+    if !reentrancy_enter() {
+        return 100;
+    }
+    if !accounting_operational() {
+        reentrancy_exit();
+        return ERR_PAUSED;
+    }
+
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
     };
-    if &data[0..32] != caller { log_info("Only creator can cancel"); return 0; }
-    data[80] = BOUNTY_CANCELLED;
-    storage_set(key.as_bytes(), &data);
-    log_info(&alloc::format!("Bounty #{} cancelled, reward refunded", bounty_id));
-    1
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
+    let bk = bounty_key(bounty_id);
+    let mut bounty_data = match storage_get(&bk) {
+        Some(data) => data,
+        None => {
+            log_info("Bounty not found");
+            reentrancy_exit();
+            return 1;
+        }
+    };
+
+    if !bounty_row_valid(&bounty_data) {
+        reentrancy_exit();
+        return 2;
+    }
+
+    if bounty_data[0..32] != caller[..] {
+        log_info("Only creator can cancel");
+        reentrancy_exit();
+        return 3;
+    }
+
+    if bounty_data[80] != BOUNTY_OPEN {
+        log_info("Bounty is not open");
+        reentrancy_exit();
+        return 4;
+    }
+
+    // Once a worker has submitted, preserve the advertised review window.
+    // The creator may still approve at any time, or reclaim the escrow after
+    // the deadline. This prevents cancellation from rugging in-window work.
+    if bounty_data[81] > 0 && get_slot() <= bytes_to_u64(&bounty_data[72..80]) {
+        log_info("Cannot cancel a submitted bounty before its deadline");
+        reentrancy_exit();
+        return 11;
+    }
+
+    let reward = bytes_to_u64(&bounty_data[64..72]);
+
+    // AUDIT-FIX G22-01: Transfer refund from contract to creator (self-custody)
+    let mut creator_addr = [0u8; 32];
+    creator_addr.copy_from_slice(&bounty_data[0..32]);
+    let reward_token = match bounty_reward_token(bounty_id) {
+        Some(token) => token,
+        None => {
+            log_info("Invalid reward token configuration");
+            reentrancy_exit();
+            return 9;
+        }
+    };
+    if bounty_platform_fee_bps(bounty_id).is_none() {
+        reentrancy_exit();
+        return 9;
+    }
+    let escrow_liability = match checked_stored_u64(BB_ESCROW_LIABILITY_KEY) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 10;
+        }
+    };
+    let next_escrow_liability = match escrow_liability.checked_sub(reward) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 10;
+        }
+    };
+    let next_cancel_count = match checked_increment(BB_CANCEL_COUNT_KEY) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 10;
+        }
+    };
+
+    bounty_data[80] = BOUNTY_CANCELLED;
+    storage_set(&bk, &bounty_data);
+
+    if reward > 0 {
+        let self_addr = get_contract_address();
+        match transfer_token_or_native(reward_token, self_addr, Address(creator_addr), reward) {
+            Ok(true) => {
+                log_info("Refund transferred successfully");
+            }
+            Ok(false) | Err(_) => {
+                // Revert cancellation on transfer failure
+                bounty_data[80] = BOUNTY_OPEN;
+                storage_set(&bk, &bounty_data);
+                log_info("Refund transfer failed, cancellation reverted");
+                reentrancy_exit();
+                return 8;
+            }
+        }
+    }
+
+    lichen_sdk::set_return_data(&u64_to_bytes(reward));
+
+    storage_set(
+        BB_ESCROW_LIABILITY_KEY,
+        &u64_to_bytes(next_escrow_liability),
+    );
+    storage_set(BB_CANCEL_COUNT_KEY, &u64_to_bytes(next_cancel_count));
+
+    log_info("Bounty cancelled, refund issued");
+    reentrancy_exit();
+    0
 }
 
+// ============================================================================
+// GET BOUNTY
+// ============================================================================
+
+/// Query bounty information.
+///
+/// Parameters:
+///   - bounty_id: the bounty to query
+///
+/// Returns 0 on success (bounty data as return data), 1 if not found.
 #[no_mangle]
 pub extern "C" fn get_bounty(bounty_id: u64) -> u32 {
-    let key = alloc::format!("bounty_{}", bounty_id);
-    match storage_get(key.as_bytes()) {
-        Some(d) => {
-            let reward = bytes_to_u64(&d[64..72]);
-            let status = match d[80] { 0 => "open", 1 => "completed", 2 => "cancelled", _ => "?" };
-            let subs = d[81];
-            log_info(&alloc::format!("Bounty #{}: {} LICN, {}, {} submissions", bounty_id, reward, status, subs));
+    let bk = bounty_key(bounty_id);
+    match storage_get(&bk) {
+        Some(data) if bounty_row_valid(&data) => {
+            lichen_sdk::set_return_data(&data);
+            0
+        }
+        None => {
+            log_info("Bounty not found");
             1
         }
-        None => 0
+        Some(_) => 2,
     }
+}
+
+/// Query one submission. Returns worker, proof hash, and submitted/updated slot.
+#[no_mangle]
+pub extern "C" fn get_submission(bounty_id: u64, submission_idx: u8) -> u32 {
+    match storage_get(&submission_key(bounty_id, submission_idx)) {
+        Some(data) if submission_row_valid(&data) => {
+            lichen_sdk::set_return_data(&data);
+            0
+        }
+        None => 1,
+        Some(_) => 2,
+    }
+}
+
+/// Replace a worker's proof while the bounty is open and accepting work.
+#[no_mangle]
+pub extern "C" fn update_work(
+    bounty_id: u64,
+    submission_idx: u8,
+    worker_ptr: *const u8,
+    proof_hash_ptr: *const u8,
+) -> u32 {
+    if effectively_paused() {
+        return ERR_PAUSED;
+    }
+    if !reentrancy_enter() {
+        return 100;
+    }
+    let worker = match read_address(worker_ptr) {
+        Some(address) => address,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
+    let proof_hash = match read_address(proof_hash_ptr) {
+        Some(hash) => hash,
+        None => {
+            reentrancy_exit();
+            return 2;
+        }
+    };
+    if get_caller().0 != worker {
+        reentrancy_exit();
+        return 200;
+    }
+    if proof_hash.iter().all(|byte| *byte == 0) {
+        reentrancy_exit();
+        return 2;
+    }
+    let bounty = match storage_get(&bounty_key(bounty_id)) {
+        Some(data) if bounty_row_valid(&data) => data,
+        _ => {
+            reentrancy_exit();
+            return 1;
+        }
+    };
+    if bounty[80] != BOUNTY_OPEN {
+        reentrancy_exit();
+        return 3;
+    }
+    if get_slot() > bytes_to_u64(&bounty[72..80]) {
+        reentrancy_exit();
+        return 4;
+    }
+    let key = submission_key(bounty_id, submission_idx);
+    let mut submission = match storage_get(&key) {
+        Some(data) if submission_matches_bounty(&data, &bounty) => data,
+        _ => {
+            reentrancy_exit();
+            return 5;
+        }
+    };
+    if submission[0..32] != worker[..] {
+        reentrancy_exit();
+        return 6;
+    }
+    submission[32..64].copy_from_slice(&proof_hash);
+    submission[64..72].copy_from_slice(&u64_to_bytes(get_slot()));
+    storage_set(&key, &submission);
+    reentrancy_exit();
+    0
+}
+
+// ============================================================================
+// LICHENID IDENTITY INTEGRATION
+// ============================================================================
+
+/// Storage key for identity admin
+const IDENTITY_ADMIN_KEY: &[u8] = b"identity_admin";
+/// Storage key for minimum reputation threshold
+const LICHENID_MIN_REP_KEY: &[u8] = b"lichenid_min_rep";
+/// Storage key for LichenID contract address (32 bytes)
+const LICHENID_ADDR_KEY: &[u8] = b"lichenid_address";
+/// Storage key for the reward token contract address (32 bytes)
+const TOKEN_ADDRESS_KEY: &[u8] = b"bounty_token_addr";
+
+/// Initialize protocol administration and fresh Accounting V2 state.
+/// Deployment must invoke this atomically before making the program public.
+#[no_mangle]
+pub extern "C" fn set_identity_admin(admin_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
+    let admin = match read_address(admin_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != admin {
+        reentrancy_exit();
+        return 200;
+    }
+
+    if storage_get(IDENTITY_ADMIN_KEY).is_some() {
+        log_info("Identity admin already set");
+        reentrancy_exit();
+        return 1;
+    }
+    if admin.iter().all(|byte| *byte == 0) {
+        reentrancy_exit();
+        return 2;
+    }
+
+    storage_set(IDENTITY_ADMIN_KEY, &admin);
+    storage_set(BB_FEE_TREASURY_KEY, &admin);
+    storage_set(BB_PLATFORM_FEE_BPS_KEY, &u64_to_bytes(0));
+    storage_set(
+        BB_ACCOUNTING_VERSION_KEY,
+        &u64_to_bytes(ACCOUNTING_VERSION_V2),
+    );
+    storage_set(BB_ESCROW_LIABILITY_KEY, &u64_to_bytes(0));
+    storage_set(BB_MIGRATION_LOCK_KEY, &[0]);
+    storage_set(BB_MIGRATION_EXPECTED_COUNT_KEY, &u64_to_bytes(0));
+    storage_set(BB_MIGRATION_CURSOR_KEY, &u64_to_bytes(0));
+    storage_set(BB_MIGRATION_ESCROW_KEY, &u64_to_bytes(0));
+    storage_set(b"bb_paused", &[0]);
+    log_info("Identity admin set");
+    reentrancy_exit();
+    0
+}
+
+/// Set LichenID contract address for cross-contract reputation lookups.
+/// Only callable by the identity admin.
+#[no_mangle]
+pub extern "C" fn set_lichenid_address(caller_ptr: *const u8, lichenid_addr_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
+    let lichenid_addr = match read_address(lichenid_addr_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 3;
+        }
+    };
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
+    let admin = match storage_get(IDENTITY_ADMIN_KEY) {
+        Some(data) => data,
+        None => {
+            reentrancy_exit();
+            return 1;
+        }
+    };
+    if caller[..] != admin[..] {
+        reentrancy_exit();
+        return 2;
+    }
+
+    if lichenid_addr.iter().all(|&b| b == 0) {
+        reentrancy_exit();
+        return 3;
+    }
+
+    if storage_get(LICHENID_ADDR_KEY).is_some() {
+        reentrancy_exit();
+        return 4;
+    }
+
+    storage_set(LICHENID_ADDR_KEY, &lichenid_addr);
+    log_info("LichenID address configured");
+    reentrancy_exit();
+    0
+}
+
+/// Set minimum LichenID reputation required for gated functions.
+/// Only callable by the identity admin.
+#[no_mangle]
+pub extern "C" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
+    let admin = match storage_get(IDENTITY_ADMIN_KEY) {
+        Some(data) => data,
+        None => {
+            reentrancy_exit();
+            return 1;
+        }
+    };
+    if caller[..] != admin[..] {
+        reentrancy_exit();
+        return 2;
+    }
+
+    if min_reputation > 0 {
+        match load_configured_address(LICHENID_ADDR_KEY) {
+            Some(address) if address.iter().any(|byte| *byte != 0) => {}
+            _ => {
+                reentrancy_exit();
+                return 3;
+            }
+        }
+    }
+
+    storage_set(LICHENID_MIN_REP_KEY, &u64_to_bytes(min_reputation));
+    log_info("Identity gate configured");
+    reentrancy_exit();
+    0
+}
+
+/// Set the reward token contract address.
+/// Only callable by the identity admin.
+#[no_mangle]
+pub extern "C" fn set_token_address(caller_ptr: *const u8, token_addr_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
+    let token_addr = match read_address(token_addr_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 3;
+        }
+    };
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
+    let admin = match storage_get(IDENTITY_ADMIN_KEY) {
+        Some(data) => data,
+        None => {
+            reentrancy_exit();
+            return 1;
+        } // no admin set
+    };
+    if caller[..] != admin[..] {
+        reentrancy_exit();
+        return 2; // not admin
+    }
+    // The all-zero address is an explicit native LICN binding. A fresh,
+    // unused zero binding may be replaced during deployment staging; once any
+    // bounty exists the payment asset is immutable.
+    if let Some(existing) = storage_get(TOKEN_ADDRESS_KEY) {
+        if existing.len() != 32 {
+            reentrancy_exit();
+            return 4;
+        }
+        if existing.as_slice() == token_addr {
+            reentrancy_exit();
+            return 0;
+        }
+        if existing.iter().any(|byte| *byte != 0)
+            || checked_stored_u64(b"bounty_count") != Some(0)
+            || checked_stored_u64(BB_ESCROW_LIABILITY_KEY) != Some(0)
+        {
+            reentrancy_exit();
+            return 4;
+        }
+    }
+
+    storage_set(TOKEN_ADDRESS_KEY, &token_addr);
+    log_info("Reward token address configured");
+    reentrancy_exit();
+    0
+}
+
+/// Check if caller meets the LichenID reputation threshold.
+/// Returns true if no gate is set or caller meets threshold.
+fn check_identity_gate(caller: &[u8]) -> bool {
+    let min_rep = match storage_get(LICHENID_MIN_REP_KEY) {
+        None => return true,
+        Some(data) if data.len() == 8 => bytes_to_u64(&data),
+        Some(_) => return false,
+    };
+    if min_rep == 0 {
+        return true;
+    }
+
+    let lichenid_addr = match storage_get(LICHENID_ADDR_KEY) {
+        Some(data) if data.len() == 32 => data,
+        _ => return false,
+    };
+
+    let mut addr = [0u8; 32];
+    addr.copy_from_slice(&lichenid_addr[..32]);
+    let target = Address::new(addr);
+    let mut args = Vec::with_capacity(32);
+    args.extend_from_slice(caller);
+    let call = CrossCall::new(target, "get_reputation", args);
+
+    match call_contract(call) {
+        Ok(result) if result.len() == 8 => {
+            let reputation = bytes_to_u64(&result);
+            reputation >= min_rep
+        }
+        _ => false,
+    }
+}
+
+// ============================================================================
+// ALIASES — bridge test-expected names to actual implementation
+// ============================================================================
+
+/// Tests expect \`initialize\` — admin setup
+#[no_mangle]
+pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
+    set_identity_admin(admin_ptr)
+}
+
+/// Propose a new protocol administrator. The proposed address must accept in a
+/// separate transaction, so a typo cannot immediately orphan the contract.
+#[no_mangle]
+pub extern "C" fn propose_admin(caller_ptr: *const u8, new_admin_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
+    let caller = match read_address(caller_ptr) {
+        Some(address) => address,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
+    let new_admin = match read_address(new_admin_ptr) {
+        Some(address) if address.iter().any(|byte| *byte != 0) => address,
+        Some(_) | None => {
+            reentrancy_exit();
+            return 2;
+        }
+    };
+    if get_caller().0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+    if !require_admin(&caller) {
+        reentrancy_exit();
+        return 1;
+    }
+    if caller == new_admin {
+        reentrancy_exit();
+        return 2;
+    }
+    match storage_get(BB_PENDING_ADMIN_KEY) {
+        None => {}
+        Some(data) if data.len() == 32 && data.as_slice() == new_admin => {
+            reentrancy_exit();
+            return 0;
+        }
+        Some(data) if data.len() == 32 => {}
+        Some(_) => {
+            reentrancy_exit();
+            return 3;
+        }
+    }
+    storage_set(BB_PENDING_ADMIN_KEY, &new_admin);
+    log_info("BountyBoard administrator proposed");
+    reentrancy_exit();
+    0
+}
+
+/// Accept a pending administrator role using the proposed key itself.
+#[no_mangle]
+pub extern "C" fn accept_admin(caller_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
+    let caller = match read_address(caller_ptr) {
+        Some(address) if address.iter().any(|byte| *byte != 0) => address,
+        Some(_) | None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
+    if get_caller().0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+    match storage_get(BB_PENDING_ADMIN_KEY) {
+        Some(data) if data.len() == 32 && data.as_slice() == caller => {}
+        Some(data) if data.len() == 32 => {
+            reentrancy_exit();
+            return 1;
+        }
+        None => {
+            reentrancy_exit();
+            return 2;
+        }
+        Some(_) => {
+            reentrancy_exit();
+            return 3;
+        }
+    }
+    storage_set(IDENTITY_ADMIN_KEY, &caller);
+    lichen_sdk::storage::remove(BB_PENDING_ADMIN_KEY);
+    log_info("BountyBoard administrator accepted");
+    reentrancy_exit();
+    0
+}
+
+/// Return current and pending administrator addresses as exactly 64 bytes.
+/// An all-zero pending address means that no transition is active.
+#[no_mangle]
+pub extern "C" fn get_admin_transition() -> u32 {
+    let current = match storage_get(IDENTITY_ADMIN_KEY) {
+        Some(data) if data.len() == 32 && data.iter().any(|byte| *byte != 0) => data,
+        _ => return 1,
+    };
+    let pending = match storage_get(BB_PENDING_ADMIN_KEY) {
+        None => [0u8; 32],
+        Some(data) if data.len() == 32 && data.iter().any(|byte| *byte != 0) => {
+            let mut address = [0u8; 32];
+            address.copy_from_slice(&data);
+            address
+        }
+        Some(_) => return 2,
+    };
+    let mut result = Vec::with_capacity(64);
+    result.extend_from_slice(&current);
+    result.extend_from_slice(&pending);
+    lichen_sdk::set_return_data(&result);
+    0
+}
+
+/// Revoke a pending administrator handoff before it is accepted.
+#[no_mangle]
+pub extern "C" fn cancel_admin_proposal(caller_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
+    let caller = match read_address(caller_ptr) {
+        Some(address) => address,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
+    if get_caller().0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+    if !require_admin(&caller) {
+        reentrancy_exit();
+        return 1;
+    }
+    match storage_get(BB_PENDING_ADMIN_KEY) {
+        None => {}
+        Some(data) if data.len() == 32 && data.iter().any(|byte| *byte != 0) => {
+            lichen_sdk::storage::remove(BB_PENDING_ADMIN_KEY);
+        }
+        Some(_) => {
+            reentrancy_exit();
+            return 2;
+        }
+    }
+    log_info("BountyBoard administrator proposal cancelled");
+    reentrancy_exit();
+    0
+}
+
+/// Alias: tests call \`approve_submission\` but contract uses \`approve_work\`
+#[no_mangle]
+pub extern "C" fn approve_submission(
+    caller_ptr: *const u8,
+    bounty_id: u64,
+    submission_idx: u8,
+) -> u32 {
+    approve_work(caller_ptr, bounty_id, submission_idx)
+}
+
+/// Tests expect \`get_bounty_count\`
+#[no_mangle]
+pub extern "C" fn get_bounty_count() -> u64 {
+    checked_stored_u64(b"bounty_count").unwrap_or(0)
+}
+
+/// Return the bounty count through return data so malformed state is
+/// distinguishable from a legitimate zero-bounty board. The legacy
+/// \`get_bounty_count\` return-value view remains exported for compatibility.
+#[no_mangle]
+pub extern "C" fn get_bounty_count_exact() -> u32 {
+    let count = match checked_stored_u64(b"bounty_count") {
+        Some(value) => value,
+        None => return 2,
+    };
+    lichen_sdk::set_return_data(&u64_to_bytes(count));
+    0
+}
+
+/// Tests expect \`set_platform_fee\`
+#[no_mangle]
+pub extern "C" fn set_platform_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
+    if !require_admin(&caller) {
+        reentrancy_exit();
+        return 1;
+    }
+    if !accounting_operational() {
+        reentrancy_exit();
+        return 6;
+    }
+    if fee_bps > 1000 {
+        reentrancy_exit();
+        return 2;
+    }
+    if !migration_lock_valid() || migration_locked() {
+        reentrancy_exit();
+        return 3;
+    }
+    storage_set(BB_PLATFORM_FEE_BPS_KEY, &u64_to_bytes(fee_bps));
+    log_info("Platform fee set");
+    reentrancy_exit();
+    0
+}
+
+/// Set the recipient for realized platform-fee withdrawals.
+#[no_mangle]
+pub extern "C" fn set_fee_treasury(caller_ptr: *const u8, treasury_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
+    let caller = match read_address(caller_ptr) {
+        Some(address) => address,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
+    let treasury = match read_address(treasury_ptr) {
+        Some(address) => address,
+        None => {
+            reentrancy_exit();
+            return 3;
+        }
+    };
+    if get_caller().0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+    if !require_admin(&caller) {
+        reentrancy_exit();
+        return 1;
+    }
+    if treasury.iter().all(|byte| *byte == 0) {
+        reentrancy_exit();
+        return 2;
+    }
+    storage_set(BB_FEE_TREASURY_KEY, &treasury);
+    reentrancy_exit();
+    0
+}
+
+/// Withdraw an exact amount of realized fees to the configured treasury.
+#[no_mangle]
+pub extern "C" fn withdraw_platform_fees(
+    caller_ptr: *const u8,
+    token_ptr: *const u8,
+    amount: u64,
+) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
+    let caller = match read_address(caller_ptr) {
+        Some(address) => address,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
+    let token = match read_address(token_ptr) {
+        Some(address) => Address(address),
+        None => {
+            reentrancy_exit();
+            return 3;
+        }
+    };
+    if get_caller().0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+    if !require_admin(&caller) {
+        reentrancy_exit();
+        return 1;
+    }
+    if !accounting_operational() {
+        reentrancy_exit();
+        return 6;
+    }
+    if reward_token_or_native() != Some(token) {
+        reentrancy_exit();
+        return 3;
+    }
+    if amount == 0 {
+        reentrancy_exit();
+        return 2;
+    }
+    let treasury = match load_configured_address(BB_FEE_TREASURY_KEY) {
+        Some(address) if address.iter().any(|byte| *byte != 0) => Address(address),
+        _ => {
+            reentrancy_exit();
+            return 3;
+        }
+    };
+    let key = platform_fee_key(token);
+    let accrued = match checked_stored_u64(&key) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 6;
+        }
+    };
+    let remaining = match accrued.checked_sub(amount) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 4;
+        }
+    };
+    storage_set(&key, &u64_to_bytes(remaining));
+    match transfer_token_or_native(token, get_contract_address(), treasury, amount) {
+        Ok(true) => {
+            lichen_sdk::set_return_data(&u64_to_bytes(amount));
+            reentrancy_exit();
+            0
+        }
+        Ok(false) | Err(_) => {
+            storage_set(&key, &u64_to_bytes(accrued));
+            reentrancy_exit();
+            5
+        }
+    }
+}
+
+/// Query realized platform fees for a reward asset.
+#[no_mangle]
+pub extern "C" fn get_platform_fees(token_ptr: *const u8) -> u32 {
+    let token = match read_address(token_ptr) {
+        Some(address) => Address(address),
+        None => return 3,
+    };
+    if reward_token_or_native() != Some(token) {
+        return 4;
+    }
+    let fees = match checked_stored_u64(&platform_fee_key(token)) {
+        Some(value) => value,
+        None => return 5,
+    };
+    lichen_sdk::set_return_data(&u64_to_bytes(fees));
+    0
+}
+
+/// Compatibility helper for the current Accounting V2 cursor. It can only bind
+/// the already configured canonical asset while migration is locked; the
+/// regular migration step can perform the same deterministic snapshot itself.
+#[no_mangle]
+pub extern "C" fn migrate_bounty_token(
+    caller_ptr: *const u8,
+    bounty_id: u64,
+    token_ptr: *const u8,
+) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
+    let caller = match read_address(caller_ptr) {
+        Some(address) => address,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
+    let token = match read_address(token_ptr) {
+        Some(address) => address,
+        None => {
+            reentrancy_exit();
+            return 3;
+        }
+    };
+    if get_caller().0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+    if !require_admin(&caller) {
+        reentrancy_exit();
+        return 1;
+    }
+    if !migration_locked() || checked_stored_u64(BB_MIGRATION_CURSOR_KEY) != Some(bounty_id) {
+        reentrancy_exit();
+        return 6;
+    }
+    if reward_token_or_native() != Some(Address(token)) {
+        reentrancy_exit();
+        return 7;
+    }
+    let bounty = match storage_get(&bounty_key(bounty_id)) {
+        Some(data) if bounty_row_valid(&data) => data,
+        _ => {
+            reentrancy_exit();
+            return 2;
+        }
+    };
+    if bounty[80] != BOUNTY_OPEN {
+        reentrancy_exit();
+        return 4;
+    }
+    if storage_get(&bounty_token_key(bounty_id)).is_some() {
+        reentrancy_exit();
+        return 5;
+    }
+    storage_set(&bounty_token_key(bounty_id), &token);
+    storage_set(&bounty_fee_bps_key(bounty_id), &u64_to_bytes(0));
+    reentrancy_exit();
+    0
+}
+
+/// Query a bounty's snapshotted payment token, fee, gross reward, worker net,
+/// and realized fee. Returns 64 bytes.
+#[no_mangle]
+pub extern "C" fn get_bounty_terms(bounty_id: u64) -> u32 {
+    let bounty = match storage_get(&bounty_key(bounty_id)) {
+        Some(data) if bounty_row_valid(&data) => data,
+        None => return 1,
+        Some(_) => return 4,
+    };
+    let token = match bounty_reward_token(bounty_id) {
+        Some(value) => value,
+        None => return 2,
+    };
+    let reward = bytes_to_u64(&bounty[64..72]);
+    let fee_bps = match bounty_platform_fee_bps(bounty_id) {
+        Some(value) => value,
+        None => return 3,
+    };
+    let (worker_net, fee) = match split_reward(reward, fee_bps) {
+        Some(split) => split,
+        None => return 3,
+    };
+    let mut terms = Vec::with_capacity(64);
+    terms.extend_from_slice(&token.0);
+    terms.extend_from_slice(&u64_to_bytes(fee_bps));
+    terms.extend_from_slice(&u64_to_bytes(reward));
+    terms.extend_from_slice(&u64_to_bytes(worker_net));
+    terms.extend_from_slice(&u64_to_bytes(fee));
+    lichen_sdk::set_return_data(&terms);
+    0
+}
+
+/// Return the exact immutable bounty row plus the presence and value of its
+/// token and fee snapshots. This makes legacy migration manifests source-bound
+/// even when one or both snapshots do not exist yet. Returns exactly 147 bytes:
+/// bounty (91), token-present u64, token (32), fee-present u64, fee-bps u64.
+#[no_mangle]
+pub extern "C" fn get_bounty_migration_record(bounty_id: u64) -> u32 {
+    let bounty = match storage_get(&bounty_key(bounty_id)) {
+        Some(data) if bounty_row_valid(&data) => data,
+        None => return 1,
+        Some(_) => return 4,
+    };
+    let (token_present, token) = match storage_get(&bounty_token_key(bounty_id)) {
+        None => (false, [0u8; 32]),
+        Some(data) if data.len() == 32 => {
+            let mut token = [0u8; 32];
+            token.copy_from_slice(&data);
+            (true, token)
+        }
+        Some(_) => return 2,
+    };
+    let (fee_present, fee_bps) = match storage_get(&bounty_fee_bps_key(bounty_id)) {
+        None => (false, 0),
+        Some(data) if data.len() == 8 => {
+            let fee_bps = bytes_to_u64(&data);
+            if fee_bps > 1_000 {
+                return 3;
+            }
+            (true, fee_bps)
+        }
+        Some(_) => return 3,
+    };
+
+    let mut record = Vec::with_capacity(147);
+    record.extend_from_slice(&bounty);
+    record.extend_from_slice(&u64_to_bytes(u64::from(token_present)));
+    record.extend_from_slice(&token);
+    record.extend_from_slice(&u64_to_bytes(u64::from(fee_present)));
+    record.extend_from_slice(&u64_to_bytes(fee_bps));
+    lichen_sdk::set_return_data(&record);
+    0
+}
+
+// ============================================================================
+// ACCOUNTING V2 MIGRATION AND SOLVENCY
+// ============================================================================
+
+/// Freeze a legacy deployment and bind migration to the immutable contiguous
+/// bounty frontier. The board remains paused after completion until operators
+/// independently verify the reconstructed liabilities and explicitly unpause.
+#[no_mangle]
+pub extern "C" fn begin_accounting_v2_migration(
+    caller_ptr: *const u8,
+    expected_bounty_count: u64,
+) -> u32 {
+    let caller = match read_address(caller_ptr) {
+        Some(address) => address,
+        None => return 200,
+    };
+    if get_caller().0 != caller {
+        return 200;
+    }
+    if !require_admin(&caller) {
+        return 1;
+    }
+    match accounting_version() {
+        Some(ACCOUNTING_VERSION_V2) => return 2,
+        Some(_) => {}
+        None => return 8,
+    }
+    if !migration_lock_valid() {
+        return 8;
+    }
+    if checked_stored_u64(b"bounty_count") != Some(expected_bounty_count) {
+        return 3;
+    }
+    if reward_token_or_native().is_none() {
+        return 4;
+    }
+    if migration_locked() {
+        return if checked_stored_u64(BB_MIGRATION_EXPECTED_COUNT_KEY) == Some(expected_bounty_count)
+        {
+            0
+        } else {
+            5
+        };
+    }
+
+    storage_set(b"bb_paused", &[1]);
+    storage_set(BB_MIGRATION_LOCK_KEY, &[1]);
+    storage_set(
+        BB_MIGRATION_EXPECTED_COUNT_KEY,
+        &u64_to_bytes(expected_bounty_count),
+    );
+    storage_set(BB_MIGRATION_CURSOR_KEY, &u64_to_bytes(0));
+    storage_set(BB_MIGRATION_ESCROW_KEY, &u64_to_bytes(0));
+    0
+}
+
+/// Reconstruct one exact bounty in ascending ID order. Missing legacy token
+/// and fee snapshots are deterministically bound to the canonical configured
+/// asset and a zero retroactive fee.
+#[no_mangle]
+pub extern "C" fn migrate_accounting_v2_bounty(bounty_id: u64) -> u32 {
+    if !migration_locked() || accounting_version() == Some(ACCOUNTING_VERSION_V2) {
+        return 1;
+    }
+    let cursor = match checked_stored_u64(BB_MIGRATION_CURSOR_KEY) {
+        Some(value) => value,
+        None => return 8,
+    };
+    let expected = match checked_stored_u64(BB_MIGRATION_EXPECTED_COUNT_KEY) {
+        Some(value) => value,
+        None => return 8,
+    };
+    if bounty_id != cursor || bounty_id >= expected {
+        return 2;
+    }
+    let bounty = match storage_get(&bounty_key(bounty_id)) {
+        Some(data) if bounty_row_valid(&data) => data,
+        _ => return 3,
+    };
+    let status = bounty[80];
+    let submission_count = bounty[81];
+    let approved_idx = bounty[90];
+    match status {
+        BOUNTY_OPEN if approved_idx == u8::MAX => {}
+        BOUNTY_COMPLETED if approved_idx < submission_count => {}
+        BOUNTY_CANCELLED if approved_idx == u8::MAX => {}
+        _ => return 4,
+    }
+    if status == BOUNTY_COMPLETED {
+        let approved_submission = match storage_get(&submission_key(bounty_id, approved_idx)) {
+            Some(data) => data,
+            None => return 4,
+        };
+        if !submission_matches_bounty(&approved_submission, &bounty) {
+            return 4;
+        }
+    }
+    let canonical_token = match reward_token_or_native() {
+        Some(token) => token,
+        None => return 5,
+    };
+    let token_key = bounty_token_key(bounty_id);
+    let write_token = match storage_get(&token_key) {
+        None => true,
+        Some(data) if data.len() == 32 && data.as_slice() == canonical_token.0 => false,
+        Some(_) => return 5,
+    };
+    let fee_key = bounty_fee_bps_key(bounty_id);
+    let (fee_bps, write_fee) = match storage_get(&fee_key) {
+        None => (0, true),
+        Some(data) if data.len() == 8 => (bytes_to_u64(&data), false),
+        Some(_) => return 6,
+    };
+    if fee_bps > 1_000 {
+        return 6;
+    }
+    let reward = bytes_to_u64(&bounty[64..72]);
+    if reward == 0 {
+        return 4;
+    }
+    let current_escrow = match checked_stored_u64(BB_MIGRATION_ESCROW_KEY) {
+        Some(value) => value,
+        None => return 8,
+    };
+    let next_escrow = if status == BOUNTY_OPEN {
+        match current_escrow.checked_add(reward) {
+            Some(value) => value,
+            None => return 7,
+        }
+    } else {
+        current_escrow
+    };
+    let next_cursor = match cursor.checked_add(1) {
+        Some(value) => value,
+        None => return 7,
+    };
+
+    if write_token {
+        storage_set(&token_key, &canonical_token.0);
+    }
+    if write_fee {
+        storage_set(&fee_key, &u64_to_bytes(0));
+    }
+    storage_set(BB_MIGRATION_ESCROW_KEY, &u64_to_bytes(next_escrow));
+    storage_set(BB_MIGRATION_CURSOR_KEY, &u64_to_bytes(next_cursor));
+    0
+}
+
+/// Activate Accounting V2 only after full reconstruction, independent expected
+/// totals, and real custody all agree. Explicit pause remains set.
+#[no_mangle]
+pub extern "C" fn complete_accounting_v2_migration(
+    caller_ptr: *const u8,
+    expected_escrow: u64,
+    expected_platform_fees: u64,
+    expected_total_liability: u64,
+) -> u32 {
+    let caller = match read_address(caller_ptr) {
+        Some(address) => address,
+        None => return 200,
+    };
+    if get_caller().0 != caller {
+        return 200;
+    }
+    if !require_admin(&caller) {
+        return 1;
+    }
+    if !migration_locked() || accounting_version() == Some(ACCOUNTING_VERSION_V2) {
+        return 2;
+    }
+    let expected_count = match checked_stored_u64(BB_MIGRATION_EXPECTED_COUNT_KEY) {
+        Some(value) => value,
+        None => return 8,
+    };
+    if checked_stored_u64(BB_MIGRATION_CURSOR_KEY) != Some(expected_count)
+        || checked_stored_u64(b"bounty_count") != Some(expected_count)
+    {
+        return 3;
+    }
+    let escrow = match checked_stored_u64(BB_MIGRATION_ESCROW_KEY) {
+        Some(value) => value,
+        None => return 8,
+    };
+    let token = match reward_token_or_native() {
+        Some(value) => value,
+        None => return 4,
+    };
+    let fees = match checked_stored_u64(&platform_fee_key(token)) {
+        Some(value) => value,
+        None => return 8,
+    };
+    let total = match escrow.checked_add(fees) {
+        Some(value) => value,
+        None => return 7,
+    };
+    if escrow != expected_escrow
+        || fees != expected_platform_fees
+        || total != expected_total_liability
+    {
+        return 5;
+    }
+    let custody = match balance_of_token_or_native(token, get_contract_address()) {
+        Ok(value) => value,
+        Err(_) => return 6,
+    };
+    if custody < total {
+        return 9;
+    }
+
+    storage_set(BB_ESCROW_LIABILITY_KEY, &u64_to_bytes(escrow));
+    storage_set(
+        BB_ACCOUNTING_VERSION_KEY,
+        &u64_to_bytes(ACCOUNTING_VERSION_V2),
+    );
+    storage_set(BB_MIGRATION_LOCK_KEY, &[0]);
+    0
+}
+
+/// Return expected bounty count, cursor, reconstructed escrow, accounting
+/// version, and migration lock as five little-endian u64 values.
+#[no_mangle]
+pub extern "C" fn get_accounting_migration_status() -> u32 {
+    let values = [
+        checked_stored_u64(BB_MIGRATION_EXPECTED_COUNT_KEY),
+        checked_stored_u64(BB_MIGRATION_CURSOR_KEY),
+        checked_stored_u64(BB_MIGRATION_ESCROW_KEY),
+        accounting_version(),
+    ];
+    if values.iter().any(Option::is_none) || !migration_lock_valid() {
+        return 2;
+    }
+    let mut result = Vec::with_capacity(40);
+    for value in values.into_iter().flatten() {
+        result.extend_from_slice(&u64_to_bytes(value));
+    }
+    result.extend_from_slice(&u64_to_bytes(u64::from(migration_locked())));
+    lichen_sdk::set_return_data(&result);
+    0
+}
+
+/// Return version, migration lock, active escrow, platform fees, total
+/// liability, real custody, and solvent/operational flag as seven u64 values.
+#[no_mangle]
+pub extern "C" fn get_accounting_health() -> u32 {
+    let token = match reward_token_or_native() {
+        Some(value) => value,
+        None => return 1,
+    };
+    let version = match accounting_version() {
+        Some(value) => value,
+        None => return 2,
+    };
+    let escrow = match checked_stored_u64(BB_ESCROW_LIABILITY_KEY) {
+        Some(value) => value,
+        None => return 2,
+    };
+    let fees = match checked_stored_u64(&platform_fee_key(token)) {
+        Some(value) => value,
+        None => return 2,
+    };
+    let total = match escrow.checked_add(fees) {
+        Some(value) => value,
+        None => return 3,
+    };
+    let custody = match balance_of_token_or_native(token, get_contract_address()) {
+        Ok(value) => value,
+        Err(_) => return 4,
+    };
+    let mut result = Vec::with_capacity(56);
+    for value in [
+        version,
+        u64::from(migration_locked()),
+        escrow,
+        fees,
+        total,
+        custody,
+        u64::from(accounting_operational() && custody >= total),
+    ] {
+        result.extend_from_slice(&u64_to_bytes(value));
+    }
+    lichen_sdk::set_return_data(&result);
+    0
+}
+
+/// Tests expect \`bb_pause\`
+#[no_mangle]
+pub extern "C" fn bb_pause(caller_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
+    if !require_admin(&caller) {
+        reentrancy_exit();
+        return 1;
+    }
+    storage_set(b"bb_paused", &[1u8]);
+    log_info("BountyBoard paused");
+    reentrancy_exit();
+    0
+}
+
+/// Tests expect \`bb_unpause\`
+#[no_mangle]
+pub extern "C" fn bb_unpause(caller_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
+    if !require_admin(&caller) {
+        reentrancy_exit();
+        return 1;
+    }
+    if !accounting_operational() || !runtime_configuration_valid() {
+        reentrancy_exit();
+        return 2;
+    }
+    let token = match reward_token_or_native() {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 2;
+        }
+    };
+    let escrow = match checked_stored_u64(BB_ESCROW_LIABILITY_KEY) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 2;
+        }
+    };
+    let fees = match checked_stored_u64(&platform_fee_key(token)) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 2;
+        }
+    };
+    let total = match escrow.checked_add(fees) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 2;
+        }
+    };
+    match balance_of_token_or_native(token, get_contract_address()) {
+        Ok(custody) if custody >= total => {}
+        Ok(_) | Err(_) => {
+            reentrancy_exit();
+            return 3;
+        }
+    }
+    storage_set(b"bb_paused", &[0u8]);
+    log_info("BountyBoard unpaused");
+    reentrancy_exit();
+    0
+}
+
+/// Get bounty platform stats [bounty_count(8), completed_count(8), reward_volume(8), cancel_count(8)]
+#[no_mangle]
+pub extern "C" fn get_platform_stats() -> u32 {
+    let values = [
+        checked_stored_u64(b"bounty_count"),
+        checked_stored_u64(BB_COMPLETED_COUNT_KEY),
+        checked_stored_u64(BB_REWARD_VOLUME_KEY),
+        checked_stored_u64(BB_CANCEL_COUNT_KEY),
+    ];
+    if values.iter().any(Option::is_none) {
+        return 2;
+    }
+    let mut buf = Vec::with_capacity(32);
+    for value in values.into_iter().flatten() {
+        buf.extend_from_slice(&u64_to_bytes(value));
+    }
+    lichen_sdk::set_return_data(&buf);
+    0
 }
 `,
             'Cargo.toml': `[package]
@@ -10011,148 +12173,77 @@ lichen-sdk = { package = "lichen-contract-sdk", path = "../../sdk" }
 
     shielded_pool: {
         name: 'Shielded Pool',
-        description: 'Privacy-preserving shielded transaction pool with Merkle commitments',
+        description: 'Fail-closed compatibility ABI for the native shielded protocol',
         files: {
             'lib.rs': `#![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
-extern crate alloc;
-use alloc::{vec, vec::Vec, format};
 use lichen_sdk::*;
 
-// ═══════ Shielded Pool ═══════
-// Privacy-preserving transaction pool
-// Supports shield, unshield, and private transfers via Merkle commitments
+// Compatibility only. The native processor owns custody and canonical state.
+// Proof scheme 0x01 is currently disabled pending a constrained verifier.
+const ERR_NATIVE_ONLY: u32 = 40;
+const EXECUTION_MODEL: &[u8] =
+    b"native-system-opcodes:23,24,25;queries:canonical-shielded-rpc;wasm-state:none";
 
-const TREE_DEPTH: u32 = 20;
-const MAX_COMMITMENTS: u64 = 1_048_576; // 2^20
-
-fn load_u64(key: &[u8]) -> u64 {
-    let d = storage_get(key);
-    if d.len() >= 8 { u64::from_le_bytes(d[..8].try_into().unwrap()) } else { 0 }
-}
-fn store_u64(key: &[u8], val: u64) { storage_set(key, &val.to_le_bytes()); }
-
-#[no_mangle]
-pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
-    let admin = unsafe { core::slice::from_raw_parts(admin_ptr, 32) };
-    storage_set(b"sp_admin", admin);
-    store_u64(b"sp_commitment_count", 0);
-    store_u64(b"sp_paused", 0);
-    // Initialize empty Merkle root
-    storage_set(b"sp_merkle_root", &[0u8; 32]);
-    emit_event(r#"{"type":"Initialized","message":"Shielded Pool ready"}"#);
-    1
+fn native_only(message: &str) -> u32 {
+    log_info(message);
+    ERR_NATIVE_ONLY
 }
 
 #[no_mangle]
-pub extern "C" fn shield(args_ptr: *const u8, args_len: u32) -> u32 {
-    if load_u64(b"sp_paused") == 1 { return 0; }
-    let args = unsafe { core::slice::from_raw_parts(args_ptr, args_len as usize) };
-    if args.len() < 64 { return 0; } // commitment(32) + amount(8) + note(24+)
-
-    let commitment = &args[0..32];
-    let count = load_u64(b"sp_commitment_count");
-    if count >= MAX_COMMITMENTS { return 0; }
-
-    // Store commitment
-    let key = format!("sp_cm_{}", count);
-    storage_set(key.as_bytes(), commitment);
-    store_u64(b"sp_commitment_count", count + 1);
-
-    emit_event(&format!(r#"{{"type":"Shield","index":{}}}"#, count));
-    1
+pub extern "C" fn initialize(_admin_ptr: *const u8) -> u32 {
+    native_only("Use the deployed compatibility marker; no WASM custody state is created")
 }
 
 #[no_mangle]
-pub extern "C" fn unshield(args_ptr: *const u8, args_len: u32) -> u32 {
-    if load_u64(b"sp_paused") == 1 { return 0; }
-    let args = unsafe { core::slice::from_raw_parts(args_ptr, args_len as usize) };
-    if args.len() < 64 { return 0; } // nullifier(32) + recipient(32) + amount(8+)
-
-    let nullifier = &args[0..32];
-
-    // Check nullifier not already spent
-    let null_key = format!("sp_null_{:02x}{:02x}{:02x}{:02x}", nullifier[0], nullifier[1], nullifier[2], nullifier[3]);
-    if storage_get(null_key.as_bytes()).len() > 0 { return 0; }
-
-    // Mark nullifier as spent
-    storage_set(null_key.as_bytes(), &[1]);
-    emit_event(r#"{"type":"Unshield","message":"withdrawal processed"}"#);
-    1
+pub extern "C" fn shield(_args_ptr: *const u8, _args_len: u32) -> u32 {
+    native_only("Native Shield is unavailable while proof scheme 0x01 is disabled")
 }
 
 #[no_mangle]
-pub extern "C" fn transfer(args_ptr: *const u8, args_len: u32) -> u32 {
-    if load_u64(b"sp_paused") == 1 { return 0; }
-    let args = unsafe { core::slice::from_raw_parts(args_ptr, args_len as usize) };
-    if args.len() < 96 { return 0; } // nullifier(32) + new_commitment(32) + proof(32+)
+pub extern "C" fn unshield(_args_ptr: *const u8, _args_len: u32) -> u32 {
+    native_only("Native Unshield is unavailable while proof scheme 0x01 is disabled")
+}
 
-    let nullifier = &args[0..32];
-    let new_commitment = &args[32..64];
-
-    // Check nullifier
-    let null_key = format!("sp_null_{:02x}{:02x}{:02x}{:02x}", nullifier[0], nullifier[1], nullifier[2], nullifier[3]);
-    if storage_get(null_key.as_bytes()).len() > 0 { return 0; }
-
-    // Mark nullifier, add new commitment
-    storage_set(null_key.as_bytes(), &[1]);
-    let count = load_u64(b"sp_commitment_count");
-    let key = format!("sp_cm_{}", count);
-    storage_set(key.as_bytes(), new_commitment);
-    store_u64(b"sp_commitment_count", count + 1);
-
-    emit_event(r#"{"type":"Transfer","message":"private transfer completed"}"#);
-    1
+#[no_mangle]
+pub extern "C" fn transfer(_args_ptr: *const u8, _args_len: u32) -> u32 {
+    native_only("Native ShieldedTransfer is unavailable while proof scheme 0x01 is disabled")
 }
 
 #[no_mangle]
 pub extern "C" fn pause() -> u32 {
-    store_u64(b"sp_paused", 1);
-    emit_event(r#"{"type":"Paused","message":"pool paused"}"#);
-    1
+    native_only("Shielded pause is native-governance-only")
 }
 
 #[no_mangle]
 pub extern "C" fn unpause() -> u32 {
-    store_u64(b"sp_paused", 0);
-    emit_event(r#"{"type":"Unpaused","message":"pool resumed"}"#);
-    1
+    native_only("Shielded unpause is native-governance-only")
 }
 
 #[no_mangle]
 pub extern "C" fn get_pool_stats() -> u32 {
-    let count = load_u64(b"sp_commitment_count");
-    let paused = load_u64(b"sp_paused");
-    set_return_data(&[count.to_le_bytes(), paused.to_le_bytes()].concat());
-    1
+    native_only("Use canonical RPC getShieldedPoolState")
 }
 
 #[no_mangle]
 pub extern "C" fn get_merkle_root() -> u32 {
-    let root = storage_get(b"sp_merkle_root");
-    if root.len() >= 32 { set_return_data(&root); 1 } else { 0 }
+    native_only("Use canonical RPC getShieldedMerkleRoot")
 }
 
 #[no_mangle]
-pub extern "C" fn check_nullifier(nullifier_ptr: *const u8) -> u32 {
-    let nullifier = unsafe { core::slice::from_raw_parts(nullifier_ptr, 32) };
-    let key = format!("sp_null_{:02x}{:02x}{:02x}{:02x}", nullifier[0], nullifier[1], nullifier[2], nullifier[3]);
-    if storage_get(key.as_bytes()).len() > 0 { 1 } else { 0 }
+pub extern "C" fn check_nullifier(_nullifier_ptr: *const u8) -> u32 {
+    native_only("Use canonical RPC isNullifierSpent")
 }
 
 #[no_mangle]
-pub extern "C" fn get_commitments(from_index: u64) -> u32 {
-    let count = load_u64(b"sp_commitment_count");
-    let end = core::cmp::min(from_index + 100, count);
-    let mut result = Vec::new();
-    result.extend_from_slice(&count.to_le_bytes());
-    for i in from_index..end {
-        let key = format!("sp_cm_{}", i);
-        let cm = storage_get(key.as_bytes());
-        if cm.len() >= 32 { result.extend_from_slice(&cm[..32]); }
-    }
-    set_return_data(&result);
-    1
+pub extern "C" fn get_commitments(_from_index: u64) -> u32 {
+    native_only("Use canonical RPC getShieldedCommitments")
+}
+
+#[no_mangle]
+pub extern "C" fn get_execution_model() -> u32 {
+    set_return_data(EXECUTION_MODEL);
+    0
 }
 `,
             'Cargo.toml': `[package]

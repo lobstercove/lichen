@@ -13,8 +13,10 @@ export {
 export { ThallLendClient } from './thalllend.js';
 export { LichenSwapClient } from './lichenswap.js';
 export { SporePayClient } from './sporepay.js';
+export { SporePumpClient, SPOREPUMP_CREATION_FEE } from './sporepump.js';
 export { SporeVaultClient } from './sporevault.js';
 export { BountyBoardClient } from './bountyboard.js';
+export { ComputeMarketClient } from './compute_market.js';
 export {
   BRIDGE_ASSETS,
   BRIDGE_CHAINS,
@@ -96,7 +98,9 @@ export type {
   LiquidateParams,
   ThallLendAccountInfo,
   ThallLendInterestRate,
+  ThallLendMarketStatus,
   ThallLendProtocolStats,
+  ThallLendRateModel,
   ThallLendStats,
 } from './thalllend.js';
 export type {
@@ -115,24 +119,54 @@ export type {
   CreateStreamWithCliffParams,
   SporePayStats,
   SporePayStream,
+  SporePayStreamIdPage,
   SporePayStreamInfo,
   TransferStreamParams,
   WithdrawFromStreamParams,
 } from './sporepay.js';
 export type {
+  CreateSporePumpTokenParams,
+  SporePumpCustodyStatus,
+  SporePumpGraduationConfig,
+  SporePumpGraduationInfo,
+  SporePumpGraduationStatus,
+  SporePumpPlatformStats,
+  SporePumpTokenInfo,
+  SporePumpTokenMetadata,
+} from './sporepump.js';
+export type {
   SporeVaultStats,
+  SporeVaultStatus,
   SporeVaultStrategyInfo,
   SporeVaultUserPosition,
   SporeVaultVaultStats,
 } from './sporevault.js';
 export type {
   ApproveWorkParams,
+  BountyBoardAccountingHealth,
+  BountyBoardAdminTransition,
+  BountyBoardAccountingMigrationStatus,
   BountyBoardBountyInfo,
   BountyBoardPlatformStats,
+  BountyBoardSubmission,
   BountyBoardStats,
+  BountyBoardTerms,
   CreateBountyParams,
   SubmitWorkParams,
 } from './bountyboard.js';
+export type {
+  ComputeMarketAccountingHealth,
+  ComputeMarketAccountingMigrationStatus,
+  ComputeMarketAgentControls,
+  ComputeMarketAgentPolicy,
+  ComputeMarketJobInfo,
+  ComputeMarketJobTiming,
+  ComputeMarketPlatformStats,
+  ComputeMarketProviderCapacity,
+  ComputeMarketProviderInfo,
+  SubmitAgentComputeJobParams,
+  SubmitComputeJobParams,
+} from './compute_market.js';
 export type {
   AccountAssetRestrictionTarget,
   AccountRestrictionTarget,
@@ -190,6 +224,15 @@ export {
   BOUNTY_STATUS_COMPLETED,
   BOUNTY_STATUS_CANCELLED,
 } from './bountyboard.js';
+export {
+  COMPUTE_JOB_PENDING,
+  COMPUTE_JOB_CLAIMED,
+  COMPUTE_JOB_COMPLETED,
+  COMPUTE_JOB_DISPUTED,
+  COMPUTE_JOB_CANCELLED,
+  COMPUTE_JOB_RESOLVED,
+  COMPUTE_JOB_RELEASED,
+} from './compute_market.js';
 
 
 /**

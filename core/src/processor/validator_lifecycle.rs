@@ -231,8 +231,29 @@ impl TxProcessor {
             .map_err(|e| format!("RegisterValidator: treasury insufficient: {}", e))?;
         self.b_put_account(&treasury_pubkey, &treasury)?;
 
-        account.spores = account.spores.saturating_add(grant_amount);
-        account.staked = account.staked.saturating_add(grant_amount);
+        let new_spores = account
+            .spores
+            .checked_add(grant_amount)
+            .ok_or_else(|| "RegisterValidator: validator total balance overflow".to_string())?;
+        let new_staked = account
+            .staked
+            .checked_add(grant_amount)
+            .ok_or_else(|| "RegisterValidator: validator staked balance overflow".to_string())?;
+        let classified_total = account
+            .spendable
+            .checked_add(new_staked)
+            .and_then(|total| total.checked_add(account.locked))
+            .ok_or_else(|| {
+                "RegisterValidator: validator classified balance overflow".to_string()
+            })?;
+        if new_spores != classified_total {
+            return Err(
+                "RegisterValidator: validator account invariant would be violated by grant"
+                    .to_string(),
+            );
+        }
+        account.spores = new_spores;
+        account.staked = new_staked;
         self.b_put_account(&validator_pubkey, &account)?;
 
         let current_slot = self.b_get_last_slot().unwrap_or(0);
@@ -346,6 +367,15 @@ impl TxProcessor {
     /// included in a block, ALL validators verify the evidence and apply the
     /// same economic penalty deterministically.
     pub(super) fn system_slash_validator(&self, ix: &Instruction) -> Result<(), String> {
+        if self.staking_v2_active()? {
+            self.system_slash_validator_v2(ix)
+        } else {
+            self.system_slash_validator_legacy(ix)
+        }
+    }
+
+    /// Exact historical implementation retained for pre-activation replay.
+    fn system_slash_validator_legacy(&self, ix: &Instruction) -> Result<(), String> {
         if ix.accounts.is_empty() {
             return Err("SlashValidator requires [offending_validator] account".to_string());
         }
@@ -472,6 +502,12 @@ impl TxProcessor {
 
         if capped_penalty > 0 {
             pool.slash_validator(&offending_validator, capped_penalty);
+            if self.staking_v2_active()? {
+                pool.checkpoint_staking_v2_validator(
+                    &offending_validator,
+                    self.staking_v2_execution_slot()?,
+                )?;
+            }
             self.b_put_stake_pool(&pool)?;
 
             if let Some(mut acct) = self.b_get_account(&offending_validator)? {
@@ -502,6 +538,269 @@ impl TxProcessor {
         }
 
         Ok(())
+    }
+
+    /// Proof-carrying, chain-bound, owner-proportional slashing used only after
+    /// the coordinated Staking V2 boundary.
+    fn system_slash_validator_v2(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.len() != 2 {
+            return Err(
+                "SlashValidator V2 requires exactly [reporter, offending_validator]".to_string(),
+            );
+        }
+        if ix.data.len() < 2 {
+            return Err("SlashValidator V2: missing evidence data".to_string());
+        }
+        let reporter = ix.accounts[0];
+        let offending_validator = ix.accounts[1];
+        let evidence: crate::consensus::SlashingEvidence = deserialize_legacy_bincode_strict(
+            &ix.data[1..],
+            SLASHING_EVIDENCE_CODEC_LIMIT_BYTES,
+            "slashing evidence V2",
+        )
+        .map_err(|error| format!("SlashValidator V2: invalid evidence encoding: {error}"))?;
+        if evidence.reporter != reporter {
+            return Err("SlashValidator V2: reporter does not match signed account".to_string());
+        }
+        if evidence.validator != offending_validator {
+            return Err("SlashValidator V2: offender does not match evidence".to_string());
+        }
+
+        let execution_slot = self.staking_v2_execution_slot()?;
+        let offense_slot = evidence.offense_slot();
+        if evidence.evidence_slot != offense_slot {
+            return Err(format!(
+                "SlashValidator V2: evidence slot {} does not match offense slot {}",
+                evidence.evidence_slot, offense_slot
+            ));
+        }
+        if offense_slot > execution_slot {
+            return Err("SlashValidator V2: offense is in the future".to_string());
+        }
+        if execution_slot - offense_slot > crate::consensus::SLASHING_V2_EVIDENCE_WINDOW_SLOTS {
+            return Err("SlashValidator V2: evidence is outside its window".to_string());
+        }
+        let chain_id = self
+            .transaction_signing_chain_id()?
+            .ok_or_else(|| "SlashValidator V2: chain-id metadata is missing".to_string())?;
+        if !evidence.verify_with_chain_id(&chain_id) {
+            return Err("SlashValidator V2: evidence proof is invalid".to_string());
+        }
+
+        let mut pool = self.b_get_stake_pool()?;
+        let offense_epoch = crate::consensus::slot_to_epoch(offense_slot);
+        let epoch_state = pool
+            .staking_v2_state()
+            .ok_or_else(|| "SlashValidator V2: epoch state is missing".to_string())?;
+        let offense_snapshot = epoch_state
+            .slash_exposure_snapshots
+            .get(&offense_epoch)
+            .ok_or_else(|| "SlashValidator V2: offense exposure snapshot is missing".to_string())?;
+        if !offense_snapshot.validators.contains_key(&reporter) {
+            return Err(
+                "SlashValidator V2: reporter was not an active validator at the offense epoch"
+                    .to_string(),
+            );
+        }
+        let offense_epoch_start = offense_snapshot.start_slot;
+
+        let params = self.genesis_consensus_params()?;
+        let (kind, slash_percent) = match &evidence.offense {
+            crate::consensus::SlashingOffense::DoubleBlockV2 { .. } => (
+                "double_block".to_string(),
+                params.slashing_percentage_double_sign,
+            ),
+            crate::consensus::SlashingOffense::DoublePrevoteV2 { vote_1, .. } => (
+                if vote_1.round == 0 {
+                    "double_prevote_r0".to_string()
+                } else {
+                    format!("double_prevote_r{}", vote_1.round)
+                },
+                params.slashing_percentage_double_vote,
+            ),
+            crate::consensus::SlashingOffense::DoublePrecommitV2 { vote_1, .. } => (
+                if vote_1.round == 0 {
+                    "double_precommit_r0".to_string()
+                } else {
+                    format!("double_precommit_r{}", vote_1.round)
+                },
+                params.slashing_percentage_double_vote,
+            ),
+            _ => {
+                return Err(
+                    "SlashValidator V2: legacy or non-equivocation evidence is forbidden"
+                        .to_string(),
+                )
+            }
+        };
+        if slash_percent == 0 || slash_percent > 100 {
+            return Err(format!(
+                "SlashValidator V2: invalid genesis slash percentage {slash_percent}"
+            ));
+        }
+        let marker = format!(
+            "slash-v2:{}:{}:{}",
+            offending_validator.to_base58(),
+            offense_slot,
+            kind
+        )
+        .into_bytes();
+        if self
+            .b_get_contract_storage(&SYSTEM_PROGRAM_ID, &marker)?
+            .is_some()
+        {
+            return Ok(());
+        }
+
+        let native = pool.apply_staking_v2_equivocation_slash(
+            &offending_validator,
+            offense_slot,
+            slash_percent,
+            execution_slot,
+        )?;
+        let mut mossstake_pool = self.b_get_mossstake_pool()?;
+        let moss = mossstake_pool
+            .apply_staking_v2_slash(native.mossstake_requested_loss, offense_epoch_start)?;
+        let moss_loss = moss.actual_loss()?;
+        if moss_loss > 0 {
+            pool.record_staking_v2_external_slash(moss_loss)?;
+            let remaining_validators = pool
+                .staking_v2_state()
+                .ok_or_else(|| "SlashValidator V2: epoch state disappeared".to_string())?
+                .validators
+                .keys()
+                .filter(|validator| **validator != offending_validator)
+                .filter(|validator| {
+                    pool.get_stake(validator)
+                        .is_some_and(|stake| stake.is_active)
+                })
+                .copied()
+                .collect::<Vec<_>>();
+            pool.rebalance_mossstake_allocations(
+                mossstake_pool.st_licn_token.total_licn_staked,
+                &remaining_validators,
+                execution_slot,
+            )?;
+        }
+
+        for loss in &native.owner_losses {
+            let mut account = self
+                .b_get_account(&loss.owner)?
+                .ok_or_else(|| format!("SlashValidator V2: owner {} is missing", loss.owner))?;
+            account.staked = account
+                .staked
+                .checked_sub(loss.active_stake)
+                .ok_or_else(|| {
+                    format!("SlashValidator V2: {} active stake underflow", loss.owner)
+                })?;
+            account.locked = account
+                .locked
+                .checked_sub(loss.cooling_down_stake)
+                .ok_or_else(|| {
+                    format!(
+                        "SlashValidator V2: {} cooling-down stake underflow",
+                        loss.owner
+                    )
+                })?;
+            account.spores = account
+                .spores
+                .checked_sub(loss.total()?)
+                .ok_or_else(|| format!("SlashValidator V2: {} balance underflow", loss.owner))?;
+            self.b_put_account(&loss.owner, &account)?;
+        }
+
+        let total_loss = native
+            .native_loss()?
+            .checked_add(moss_loss)
+            .ok_or_else(|| "SlashValidator V2: total loss overflow".to_string())?;
+        if total_loss > 0 {
+            let treasury_pubkey = self
+                .state
+                .get_treasury_pubkey()?
+                .ok_or_else(|| "SlashValidator V2: treasury pubkey is missing".to_string())?;
+            let mut treasury = self
+                .b_get_account(&treasury_pubkey)?
+                .ok_or_else(|| "SlashValidator V2: treasury account is missing".to_string())?;
+            treasury
+                .add_spendable(total_loss)
+                .map_err(|error| format!("SlashValidator V2: treasury credit failed: {error}"))?;
+            self.b_put_account(&treasury_pubkey, &treasury)?;
+        }
+        self.b_put_stake_pool(&pool)?;
+        self.b_put_mossstake_pool(&mossstake_pool)?;
+        self.b_put_contract_storage(&SYSTEM_PROGRAM_ID, &marker, b"1")?;
+        Ok(())
+    }
+
+    fn genesis_consensus_params(&self) -> Result<crate::genesis::ConsensusParams, String> {
+        let genesis = self
+            .state
+            .get_block_by_slot(0)?
+            .ok_or_else(|| "genesis block is missing".to_string())?;
+        let mut embedded = None;
+        for transaction in &genesis.transactions {
+            for instruction in &transaction.message.instructions {
+                if instruction.program_id == SYSTEM_PROGRAM_ID
+                    && instruction.data.len() > 1
+                    && instruction.data[0] == 40
+                {
+                    if embedded.is_some() {
+                        return Err("genesis contains duplicate config instructions".to_string());
+                    }
+                    let config: crate::genesis::GenesisConfig =
+                        serde_json::from_slice(&instruction.data[1..])
+                            .map_err(|error| format!("invalid embedded genesis config: {error}"))?;
+                    config.validate()?;
+                    let chain_id = self
+                        .transaction_signing_chain_id()?
+                        .ok_or_else(|| "chain-id metadata is missing".to_string())?;
+                    if config.chain_id != chain_id {
+                        return Err(format!(
+                            "genesis chain id {} does not match active chain id {}",
+                            config.chain_id, chain_id
+                        ));
+                    }
+                    embedded = Some(config.consensus);
+                }
+            }
+        }
+        embedded.ok_or_else(|| "genesis config instruction is missing".to_string())
+    }
+
+    /// System program: SetValidatorCommission (opcode 39).
+    ///
+    /// Data: `[39 | commission_bps_u64_le]`; accounts: `[validator]`.
+    /// Transaction signature verification authenticates the validator. The
+    /// committed V2 schedule enforces the cap, step, and two-epoch notice.
+    pub(super) fn system_set_validator_commission(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.len() != 1 {
+            return Err("SetValidatorCommission requires exactly [validator]".to_string());
+        }
+        if ix.data.len() != 9 {
+            return Err(
+                "SetValidatorCommission data must be [opcode | commission_bps_u64_le]".to_string(),
+            );
+        }
+        if !self.staking_v2_active()? {
+            return Err("SetValidatorCommission requires active Staking V2".to_string());
+        }
+
+        let validator = ix.accounts[0];
+        let commission_bps = u64::from_le_bytes(
+            ix.data[1..9]
+                .try_into()
+                .map_err(|_| "SetValidatorCommission invalid basis-point encoding".to_string())?,
+        );
+        let mut pool = self.b_get_stake_pool()?;
+        if pool.get_stake(&validator).is_none() {
+            return Err(format!(
+                "SetValidatorCommission validator {} is not registered",
+                validator.to_base58()
+            ));
+        }
+        pool.request_staking_v2_commission_change(&validator, commission_bps)
+            .map_err(|err| format!("SetValidatorCommission: {err}"))?;
+        self.b_put_stake_pool(&pool)
     }
 
     /// System program: DeregisterValidator (opcode 31).
@@ -550,5 +849,364 @@ impl TxProcessor {
             .map_err(|e| format!("DeregisterValidator: failed to queue pending change: {}", e))?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codec::serialize_legacy_bincode;
+    use crate::consensus::{SlashingEvidence, SlashingOffense, StakePool, MIN_VALIDATOR_STAKE};
+    use crate::genesis::GenesisConfig;
+    use crate::mossstake::MossStakePool;
+    use crate::{Block, Keypair, Message};
+    use tempfile::{tempdir, TempDir};
+
+    const TEST_CHAIN_ID: &str = "lichen-slashing-processor-test";
+
+    struct SlashFixture {
+        _temp_dir: TempDir,
+        processor: TxProcessor,
+        state: StateStore,
+        reporter: Keypair,
+        offender: Keypair,
+        delegator: Keypair,
+        treasury: Pubkey,
+        genesis_hash: Hash,
+    }
+
+    fn setup_slash_fixture() -> SlashFixture {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        let processor = TxProcessor::new(state.clone());
+        let reporter = Keypair::generate();
+        let offender = Keypair::generate();
+        let delegator = Keypair::generate();
+        let treasury = Pubkey([0x55; 32]);
+
+        state.set_treasury_pubkey(&treasury).unwrap();
+        state
+            .put_account(&treasury, &Account::new(0, treasury))
+            .unwrap();
+        state
+            .put_metadata(CHAIN_ID_METADATA_KEY, TEST_CHAIN_ID.as_bytes())
+            .unwrap();
+        state
+            .put_metadata(
+                crate::consensus::STAKING_V2_ACTIVATION_SLOT_METADATA_KEY,
+                &0u64.to_le_bytes(),
+            )
+            .unwrap();
+        let mut fee_config = FeeConfig::default_from_constants();
+        fee_config.base_fee = 0;
+        state.set_fee_config_full(&fee_config).unwrap();
+
+        let mut genesis_config = GenesisConfig::default_testnet();
+        genesis_config.chain_id = TEST_CHAIN_ID.to_string();
+        let mut genesis_data = vec![40];
+        genesis_data.extend_from_slice(&serde_json::to_vec(&genesis_config).unwrap());
+        let genesis_tx = Transaction::new(Message::new(
+            vec![Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![treasury],
+                data: genesis_data,
+            }],
+            Hash::default(),
+        ));
+        let genesis = Block::genesis(Hash::default(), 0, vec![genesis_tx]);
+        let genesis_hash = genesis.hash();
+        state.put_block(&genesis).unwrap();
+        state.set_last_slot(0).unwrap();
+
+        let mut pool = StakePool::new();
+        pool.stake(offender.pubkey(), MIN_VALIDATOR_STAKE, 0)
+            .unwrap();
+        pool.stake(reporter.pubkey(), MIN_VALIDATOR_STAKE, 0)
+            .unwrap();
+        pool.delegate(delegator.pubkey(), &offender.pubkey(), MIN_VALIDATOR_STAKE)
+            .unwrap();
+        pool.initialize_staking_v2(0, &[reporter.pubkey(), offender.pubkey()])
+            .unwrap();
+        state.put_stake_pool(&pool).unwrap();
+        state.put_mossstake_pool(&MossStakePool::new()).unwrap();
+
+        for keypair in [&reporter, &offender, &delegator] {
+            let mut account = Account::new(100_000, keypair.pubkey());
+            account.stake(MIN_VALIDATOR_STAKE).unwrap();
+            state.put_account(&keypair.pubkey(), &account).unwrap();
+        }
+
+        SlashFixture {
+            _temp_dir: temp_dir,
+            processor,
+            state,
+            reporter,
+            offender,
+            delegator,
+            treasury,
+            genesis_hash,
+        }
+    }
+
+    fn double_block_evidence(fixture: &SlashFixture, timestamp: u64) -> SlashingEvidence {
+        let mut block_1 = Block::new_with_timestamp(
+            0,
+            Hash::hash(b"parent"),
+            Hash::hash(b"state-a"),
+            fixture.offender.pubkey().0,
+            Vec::new(),
+            1_700_000_000,
+        );
+        block_1.sign_with_chain_id(&fixture.offender, TEST_CHAIN_ID);
+        let mut block_2 = block_1.clone();
+        block_2.header.state_root = Hash::hash(b"state-b");
+        block_2.sign_with_chain_id(&fixture.offender, TEST_CHAIN_ID);
+        SlashingEvidence::new(
+            SlashingOffense::DoubleBlockV2 {
+                header_1: block_1.header,
+                header_2: block_2.header,
+            },
+            fixture.offender.pubkey(),
+            0,
+            fixture.reporter.pubkey(),
+            timestamp,
+        )
+    }
+
+    fn slash_instruction(fixture: &SlashFixture, evidence: &SlashingEvidence) -> Instruction {
+        let mut data = vec![27];
+        data.extend_from_slice(
+            &serialize_legacy_bincode(evidence, "test slashing evidence").unwrap(),
+        );
+        Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![fixture.reporter.pubkey(), fixture.offender.pubkey()],
+            data,
+        }
+    }
+
+    fn signed_slash_transaction(
+        fixture: &SlashFixture,
+        evidence: &SlashingEvidence,
+        signer: &Keypair,
+    ) -> Transaction {
+        let mut transaction = Transaction::new(Message::new(
+            vec![slash_instruction(fixture, evidence)],
+            fixture.genesis_hash,
+        ));
+        transaction.signatures.push(
+            signer.sign(
+                &transaction
+                    .message
+                    .signing_bytes_for_chain_id(TEST_CHAIN_ID),
+            ),
+        );
+        transaction
+    }
+
+    #[test]
+    fn staking_v2_slash_transaction_is_reporter_signed_conserving_and_idempotent() {
+        let fixture = setup_slash_fixture();
+        let evidence = double_block_evidence(&fixture, 1_700_000_001);
+        let transaction = signed_slash_transaction(&fixture, &evidence, &fixture.reporter);
+        let result = fixture
+            .processor
+            .process_transaction(&transaction, &fixture.reporter.pubkey());
+        assert!(
+            result.success,
+            "slash transaction failed: {:?}",
+            result.error
+        );
+        assert_eq!(result.fee_paid, 0);
+
+        let expected_owner_loss = MIN_VALIDATOR_STAKE / 2;
+        let expected_total_loss = expected_owner_loss * 2;
+        let offender_account = fixture
+            .state
+            .get_account(&fixture.offender.pubkey())
+            .unwrap()
+            .unwrap();
+        let delegator_account = fixture
+            .state
+            .get_account(&fixture.delegator.pubkey())
+            .unwrap()
+            .unwrap();
+        let treasury_account = fixture
+            .state
+            .get_account(&fixture.treasury)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            offender_account.staked,
+            MIN_VALIDATOR_STAKE - expected_owner_loss
+        );
+        assert_eq!(
+            delegator_account.staked,
+            MIN_VALIDATOR_STAKE - expected_owner_loss
+        );
+        assert_eq!(treasury_account.spendable, expected_total_loss);
+        assert_eq!(treasury_account.spores, expected_total_loss);
+
+        let pool = fixture.state.get_stake_pool().unwrap();
+        let offender_stake = pool.get_stake(&fixture.offender.pubkey()).unwrap();
+        assert_eq!(
+            offender_stake.amount,
+            MIN_VALIDATOR_STAKE - expected_owner_loss
+        );
+        assert_eq!(
+            offender_stake.delegated_amount,
+            MIN_VALIDATOR_STAKE - expected_owner_loss
+        );
+        assert!(!offender_stake.is_active);
+        assert_eq!(pool.total_slashed(), expected_total_loss);
+        let marker = format!(
+            "slash-v2:{}:0:double_block",
+            fixture.offender.pubkey().to_base58()
+        );
+        assert_eq!(
+            fixture
+                .state
+                .get_contract_storage(&SYSTEM_PROGRAM_ID, marker.as_bytes())
+                .unwrap(),
+            Some(b"1".to_vec())
+        );
+
+        let pool_hash_after_first = pool.canonical_hash();
+        let evidence_again = double_block_evidence(&fixture, 1_700_000_002);
+        let transaction_again =
+            signed_slash_transaction(&fixture, &evidence_again, &fixture.reporter);
+        let repeated = fixture
+            .processor
+            .process_transaction(&transaction_again, &fixture.reporter.pubkey());
+        assert!(
+            repeated.success,
+            "idempotent retry failed: {:?}",
+            repeated.error
+        );
+        assert_eq!(
+            fixture.state.get_stake_pool().unwrap().canonical_hash(),
+            pool_hash_after_first
+        );
+        assert_eq!(
+            fixture
+                .state
+                .get_account(&fixture.treasury)
+                .unwrap()
+                .unwrap()
+                .spendable,
+            expected_total_loss
+        );
+    }
+
+    #[test]
+    fn staking_v2_slash_rejects_offender_signature_and_wrong_chain_proof() {
+        let fixture = setup_slash_fixture();
+        let evidence = double_block_evidence(&fixture, 1_700_000_001);
+        let before = fixture.state.get_stake_pool().unwrap().canonical_hash();
+        let offender_signed = signed_slash_transaction(&fixture, &evidence, &fixture.offender);
+        let result = fixture
+            .processor
+            .process_transaction(&offender_signed, &fixture.reporter.pubkey());
+        assert!(!result.success);
+        assert!(result.error.unwrap_or_default().contains("signature"));
+        assert_eq!(
+            fixture.state.get_stake_pool().unwrap().canonical_hash(),
+            before
+        );
+
+        let mut wrong_chain = evidence;
+        if let SlashingOffense::DoubleBlockV2 { header_1, header_2 } = &mut wrong_chain.offense {
+            header_1.signature = Some(fixture.offender.sign(
+                &crate::signing::maybe_versioned_signing_bytes(
+                    crate::signing::DOMAIN_BLOCK,
+                    "another-chain",
+                    &header_1.signable_hash().0,
+                ),
+            ));
+            header_2.signature = Some(fixture.offender.sign(
+                &crate::signing::maybe_versioned_signing_bytes(
+                    crate::signing::DOMAIN_BLOCK,
+                    "another-chain",
+                    &header_2.signable_hash().0,
+                ),
+            ));
+        }
+        let wrong_chain_tx = signed_slash_transaction(&fixture, &wrong_chain, &fixture.reporter);
+        let result = fixture
+            .processor
+            .process_transaction(&wrong_chain_tx, &fixture.reporter.pubkey());
+        assert!(!result.success);
+        assert!(result
+            .error
+            .unwrap_or_default()
+            .contains("proof is invalid"));
+        assert_eq!(
+            fixture.state.get_stake_pool().unwrap().canonical_hash(),
+            before
+        );
+    }
+
+    #[test]
+    fn staking_v2_slash_rolls_back_every_mutation_on_late_treasury_failure() {
+        let fixture = setup_slash_fixture();
+        let missing_treasury = Pubkey([0x77; 32]);
+        fixture
+            .state
+            .set_treasury_pubkey(&missing_treasury)
+            .unwrap();
+        let evidence = double_block_evidence(&fixture, 1_700_000_001);
+        let transaction = signed_slash_transaction(&fixture, &evidence, &fixture.reporter);
+        let pool_before = fixture.state.get_stake_pool().unwrap().canonical_hash();
+        let moss_before = fixture.state.get_mossstake_pool().unwrap().canonical_hash();
+        let offender_before = fixture
+            .state
+            .get_account(&fixture.offender.pubkey())
+            .unwrap()
+            .unwrap();
+        let delegator_before = fixture
+            .state
+            .get_account(&fixture.delegator.pubkey())
+            .unwrap()
+            .unwrap();
+
+        let result = fixture
+            .processor
+            .process_transaction(&transaction, &fixture.reporter.pubkey());
+        assert!(!result.success);
+        assert!(result
+            .error
+            .unwrap_or_default()
+            .contains("treasury account is missing"));
+        assert_eq!(
+            fixture.state.get_stake_pool().unwrap().canonical_hash(),
+            pool_before
+        );
+        assert_eq!(
+            fixture.state.get_mossstake_pool().unwrap().canonical_hash(),
+            moss_before
+        );
+        let offender_after = fixture
+            .state
+            .get_account(&fixture.offender.pubkey())
+            .unwrap()
+            .unwrap();
+        let delegator_after = fixture
+            .state
+            .get_account(&fixture.delegator.pubkey())
+            .unwrap()
+            .unwrap();
+        assert_eq!(offender_after.spores, offender_before.spores);
+        assert_eq!(offender_after.staked, offender_before.staked);
+        assert_eq!(delegator_after.spores, delegator_before.spores);
+        assert_eq!(delegator_after.staked, delegator_before.staked);
+        let marker = format!(
+            "slash-v2:{}:0:double_block",
+            fixture.offender.pubkey().to_base58()
+        );
+        assert!(fixture
+            .state
+            .get_contract_storage(&SYSTEM_PROGRAM_ID, marker.as_bytes())
+            .unwrap()
+            .is_none());
     }
 }

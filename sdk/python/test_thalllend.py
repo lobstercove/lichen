@@ -51,6 +51,18 @@ class FakeConnection:
             payload += (40).to_bytes(8, "little")
             payload += (3_000).to_bytes(8, "little")
             return {"success": True, "returnCode": 0, "returnData": base64.b64encode(payload).decode("ascii")}
+        if function_name == "get_rate_model":
+            payload = b"".join(
+                value.to_bytes(8, "little")
+                for value in (1_000_000_000_000, 78_894_000, 254, 508, 400, 80, 25_400)
+            )
+            return {"success": True, "returnCode": 0, "returnData": base64.b64encode(payload).decode("ascii")}
+        if function_name == "get_market_status":
+            payload = b"".join(
+                value.to_bytes(8, "little")
+                for value in (0, 1, 1, 1, 1, 10_000, 10, 75, 85, 5)
+            )
+            return {"success": True, "returnCode": 0, "returnData": base64.b64encode(payload).decode("ascii")}
         if function_name == "get_deposit_count":
             payload = (7).to_bytes(8, "little")
             return {"success": True, "returnCode": 0, "returnData": base64.b64encode(payload).decode("ascii")}
@@ -66,10 +78,19 @@ class FakeConnection:
         return {
             "total_deposits": 5_000,
             "total_borrows": 2_000,
+            "available_liquidity": 3_000,
+            "utilization_pct": 40,
             "reserves": 150,
             "deposit_count": 7,
             "borrow_count": 5,
+            "repay_count": 3,
             "liquidation_count": 2,
+            "deposit_cap": 10_000,
+            "reserve_factor_pct": 10,
+            "licn_configured": True,
+            "native_licn": True,
+            "oracle_config_present": True,
+            "oracle_config_valid": True,
             "paused": False,
         }
 
@@ -111,6 +132,8 @@ async def test_thalllend_read_helpers_decode_expected_payloads() -> None:
     account_info = await client.get_account_info(user)
     protocol_stats = await client.get_protocol_stats()
     interest_rate = await client.get_interest_rate()
+    rate_model = await client.get_rate_model()
+    market_status = await client.get_market_status()
     deposit_count = await client.get_deposit_count()
     borrow_count = await client.get_borrow_count()
     liquidation_count = await client.get_liquidation_count()
@@ -124,15 +147,45 @@ async def test_thalllend_read_helpers_decode_expected_payloads() -> None:
         "reserves": 150,
     }
     assert interest_rate == {"rate_per_slot": 254, "utilization_pct": 40, "total_available": 3_000}
+    assert rate_model == {
+        "rate_scale": 1_000_000_000_000,
+        "slots_per_year": 78_894_000,
+        "base_rate_per_slot": 254,
+        "current_rate_per_slot": 508,
+        "current_annual_bps": 400,
+        "utilization_kink_pct": 80,
+        "max_rate_per_slot": 25_400,
+    }
+    assert market_status == {
+        "paused": False,
+        "licn_configured": True,
+        "native_licn": True,
+        "oracle_config_present": True,
+        "oracle_config_valid": True,
+        "deposit_cap": 10_000,
+        "reserve_factor_pct": 10,
+        "collateral_factor_pct": 75,
+        "liquidation_threshold_pct": 85,
+        "liquidation_bonus_pct": 5,
+    }
     assert deposit_count == 7
     assert borrow_count == 5
     assert liquidation_count == 2
     assert stats == {
         "total_deposits": 5_000,
         "total_borrows": 2_000,
+        "available_liquidity": 3_000,
+        "utilization_pct": 40,
         "reserves": 150,
         "deposit_count": 7,
         "borrow_count": 5,
+        "repay_count": 3,
         "liquidation_count": 2,
+        "deposit_cap": 10_000,
+        "reserve_factor_pct": 10,
+        "licn_configured": True,
+        "native_licn": True,
+        "oracle_config_present": True,
+        "oracle_config_valid": True,
         "paused": False,
     }

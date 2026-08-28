@@ -12,11 +12,19 @@ pub(super) async fn handle_stake_command(
     stake_cmd: StakeCommands,
 ) -> Result<()> {
     match stake_cmd {
-        StakeCommands::Add { amount, keypair } => {
-            handle_stake_add(client, keypair_mgr, amount, keypair).await?
+        StakeCommands::Add {
+            amount,
+            validator,
+            keypair,
+        } => {
+            handle_stake_add(client, keypair_mgr, amount, validator, keypair).await?
         }
-        StakeCommands::Remove { amount, keypair } => {
-            handle_stake_remove(client, keypair_mgr, amount, keypair).await?
+        StakeCommands::Remove {
+            amount,
+            validator,
+            keypair,
+        } => {
+            handle_stake_remove(client, keypair_mgr, amount, validator, keypair).await?
         }
         StakeCommands::Status { address, keypair } => {
             handle_stake_status(client, keypair_mgr, address, keypair).await?

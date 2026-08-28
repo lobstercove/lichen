@@ -326,10 +326,57 @@ async function runTests() {
 
     await tryRpc('getThallLendStats', [], 'getThallLendStats');
     await tryRpc('getSporePayStats', [], 'getSporePayStats');
-    await tryRpc('getBountyBoardStats', [], 'getBountyBoardStats');
+    const sporePumpStatsRpc = await tryRpc('getSporePumpStats', [], 'getSporePumpStats');
+    if (sporePumpStatsRpc) {
+        assert(
+            typeof sporePumpStatsRpc.accounting_ready === 'boolean'
+            && typeof sporePumpStatsRpc.paused === 'boolean'
+            && typeof sporePumpStatsRpc.token_count_exact === 'string'
+            && typeof sporePumpStatsRpc.curve_reserve_raw_exact === 'string'
+            && typeof sporePumpStatsRpc.creator_liability_raw_exact === 'string',
+            'getSporePumpStats shape: exact accounting and operational controls',
+        );
+    }
+    const bountyBoardStatsRpc = await tryRpc('getBountyBoardStats', [], 'getBountyBoardStats');
+    if (bountyBoardStatsRpc) {
+        assert(
+            typeof bountyBoardStatsRpc.accounting_ready === 'boolean'
+            && typeof bountyBoardStatsRpc.solvent === 'boolean'
+            && typeof bountyBoardStatsRpc.paused === 'boolean'
+            && typeof bountyBoardStatsRpc.bounty_count_exact === 'string'
+            && typeof bountyBoardStatsRpc.escrow_liability_raw_exact === 'string'
+            && typeof bountyBoardStatsRpc.total_liability_raw_exact === 'string'
+            && typeof bountyBoardStatsRpc.custody_balance_raw_exact === 'string',
+            'getBountyBoardStats shape: exact liabilities, custody, and operational controls',
+        );
+    }
     await tryRpc('getComputeMarketStats', [], 'getComputeMarketStats');
     await tryRpc('getMossStorageStats', [], 'getMossStorageStats');
-    await tryRpc('getLichenMarketStats', [], 'getLichenMarketStats');
+    const marketStatsRpc = await tryRpc('getLichenMarketStats', [], 'getLichenMarketStats');
+    if (marketStatsRpc) {
+        assert(
+            typeof marketStatsRpc.accounting_ready === 'boolean'
+            && typeof marketStatsRpc.paused === 'boolean'
+            && typeof marketStatsRpc.sale_count_exact === 'string'
+            && typeof marketStatsRpc.native_sale_volume_raw_exact === 'string'
+            && typeof marketStatsRpc.legacy_mixed_sale_volume_raw_exact === 'string',
+            'getLichenMarketStats shape: exact native and legacy accounting',
+        );
+        const nativeMarketStats = await tryRpc(
+            'getLichenMarketTokenStats',
+            ['11111111111111111111111111111111'],
+            'getLichenMarketTokenStats',
+        );
+        if (nativeMarketStats) {
+            assert(
+                typeof nativeMarketStats.sale_count_exact === 'string'
+                && typeof nativeMarketStats.sale_volume_raw_exact === 'string'
+                && typeof nativeMarketStats.realized_fees_raw_exact === 'string'
+                && typeof nativeMarketStats.withdrawable_fees_raw_exact === 'string',
+                'getLichenMarketTokenStats shape: exact per-token accounting',
+            );
+        }
+    }
     await tryRpc('getLichenAuctionStats', [], 'getLichenAuctionStats');
     await tryRpc('getLichenPunksStats', [], 'getLichenPunksStats');
 
@@ -462,6 +509,63 @@ async function runTests() {
     assertRestShape(restResults.get('/api/v1/launchpad/tokens'), 'Launchpad tokens shape: tokens array', (data) =>
         data && Array.isArray(data.tokens)
     );
+    assertRestShape(restResults.get('/api/v1/launchpad/stats'), 'Launchpad stats shape: exact liabilities and controls', (data) =>
+        data
+        && typeof data.accounting_ready === 'boolean'
+        && typeof data.paused === 'boolean'
+        && typeof data.platform_fees_raw_exact === 'string'
+        && typeof data.curve_reserve_raw_exact === 'string'
+        && typeof data.creator_liability_raw_exact === 'string'
+    );
+
+    const launchpadStats = apiData(restResults.get('/api/v1/launchpad/stats'));
+    const launchpadTokens = apiData(restResults.get('/api/v1/launchpad/tokens'))?.tokens || [];
+    const launchpadToken = launchpadTokens.find((token) => !token.graduated && !token.frozen);
+    if (launchpadToken) {
+        const tokenId = String(launchpadToken.id_exact || launchpadToken.id);
+        const detailPath = `/api/v1/launchpad/tokens/${tokenId}`;
+        const detail = await tryRest(detailPath);
+        assertRestShape(detail, 'Launchpad token detail shape: exact raw fields and frozen status', (data) =>
+            data
+            && typeof data.id_exact === 'string'
+            && typeof data.supply_sold_raw_exact === 'string'
+            && typeof data.licn_raised_raw_exact === 'string'
+            && typeof data.frozen === 'boolean'
+        );
+
+        if (launchpadStats?.accounting_ready && !launchpadStats.paused) {
+            const buyQuote = await tryRest(`/api/v1/launchpad/tokens/${tokenId}/quote?amount_raw=1000000000`);
+            assertRestShape(buyQuote, 'Launchpad buy quote shape: exact charge, fees, refund, and output', (data) =>
+                data
+                && typeof data.curve_cost_raw === 'string'
+                && typeof data.platform_fee_raw === 'string'
+                && typeof data.creator_royalty_raw === 'string'
+                && typeof data.charged_raw === 'string'
+                && typeof data.refund_raw === 'string'
+                && typeof data.tokens_received_raw === 'string'
+            );
+        } else {
+            skip('Launchpad buy quote: protocol is paused or Accounting V3 is not active');
+        }
+
+        const supplyRaw = BigInt(launchpadToken.supply_sold_raw_exact || '0');
+        if (launchpadStats?.accounting_ready && supplyRaw >= 1_000_000n) {
+            const sellAmountRaw = supplyRaw < 1_000_000_000n ? supplyRaw : 1_000_000_000n;
+            const sellQuote = await tryRest(`/api/v1/launchpad/tokens/${tokenId}/sell-quote?amount_raw=${sellAmountRaw}`);
+            assertRestShape(sellQuote, 'Launchpad sell quote shape: exact gross refund, fees, and net output', (data) =>
+                data
+                && typeof data.curve_refund_raw === 'string'
+                && typeof data.platform_fee_raw === 'string'
+                && typeof data.creator_royalty_raw === 'string'
+                && typeof data.licn_received_raw === 'string'
+                && typeof data.minimum_licn_out_raw === 'string'
+            );
+        } else {
+            skip('Launchpad sell quote: no active token with sufficient curve supply');
+        }
+    } else {
+        skip('Launchpad token detail/quote coverage: no active unfrozen token');
+    }
 
     await tryRestStatus('POST', '/api/v1/orders', { pairId: 1 }, 405, 'sendTransaction');
     await tryRestStatus('DELETE', '/api/v1/orders/1', undefined, 405, 'sendTransaction');

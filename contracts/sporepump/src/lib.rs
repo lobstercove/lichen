@@ -12,14 +12,15 @@
 
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 extern crate alloc;
 use alloc::vec::Vec;
 use lichen_sdk::{
-    bytes_to_u64, call_contract, can_receive, can_send, get_caller, get_contract_address,
-    get_contract_code_hash, get_slot, get_timestamp, log_info, receive_token_or_native,
-    set_return_data, storage, storage_get, storage_set, transfer_token_or_native, u64_to_bytes,
-    Address, CrossCall,
+    balance_of_token_or_native, bytes_to_u64, call_contract, can_receive, can_send, get_caller,
+    get_contract_address, get_contract_code_hash, get_slot, get_timestamp, get_value,
+    is_native_token, log_info, receive_token_or_native, set_return_data, storage, storage_get,
+    storage_set, transfer_token_or_native, u64_to_bytes, Address, CrossCall,
 };
 
 // T5.12: Reentrancy guard
@@ -85,8 +86,23 @@ const DEFAULT_SELL_COOLDOWN_SLOTS: u64 = 13; // ~5.2 seconds
 /// Creator royalty: basis points on each trade (default 50 = 0.5%)
 const DEFAULT_CREATOR_ROYALTY_BPS: u64 = 50;
 const BPS_SCALE: u64 = 10_000;
+const PLATFORM_FEE_BPS: u64 = PLATFORM_FEE_PERCENT * 100;
 /// Emergency pause key
 const PAUSE_KEY: &[u8] = b"cp_paused";
+
+// Exact custody accounting. Legacy deployments do not have these keys and
+// therefore fail closed until the resumable V3 migration is completed.
+const ACCOUNTING_VERSION: u64 = 3;
+const ACCOUNTING_VERSION_KEY: &[u8] = b"cp_account_version";
+const CURVE_RESERVE_KEY: &[u8] = b"cp_curve_reserve";
+const CREATOR_LIABILITY_KEY: &[u8] = b"cp_creator_liability";
+const ACCOUNTING_MIGRATION_LOCK_KEY: &[u8] = b"cp_account_migration_lock";
+const ACCOUNTING_MIGRATION_EXPECTED_KEY: &[u8] = b"cp_account_migration_expected";
+const ACCOUNTING_MIGRATION_CURSOR_KEY: &[u8] = b"cp_account_migration_cursor";
+const ACCOUNTING_MIGRATION_CURVE_KEY: &[u8] = b"cp_account_migration_curve";
+const ACCOUNTING_MIGRATION_ROYALTY_KEY: &[u8] = b"cp_account_migration_royalty";
+const ACCOUNTING_MIGRATION_GRADUATED_KEY: &[u8] = b"cp_account_migration_graduated";
+const TOTAL_GRADUATED_KEY: &[u8] = b"cp_total_graduated";
 
 // ============================================================================
 // DEX MIGRATION CONSTANTS
@@ -108,6 +124,10 @@ const GRADUATION_LIQUIDITY_PERCENT: u64 = 80;
 /// Percentage of raised LICN retained as platform revenue on graduation (20%)
 const GRADUATION_PLATFORM_PERCENT: u64 = 20;
 const MIGRATION_TIMEOUT_SLOTS: u64 = 9_000;
+/// Concentrated-liquidity rounding may leave a few indivisible units unused.
+/// Larger shortfalls abort instead of silently converting liquidity into
+/// platform revenue.
+const MAX_GRADUATION_DUST: u64 = 1_000;
 
 const GRADUATION_ACTIVE: u8 = 0;
 const GRADUATION_ELIGIBLE: u8 = 1;
@@ -153,10 +173,17 @@ fn graduation_key(prefix: &[u8], token_id: u64) -> Vec<u8> {
     make_key(prefix, &u64_to_hex(token_id))
 }
 
+fn checked_graduation_state(token_id: u64) -> Option<u8> {
+    match storage_get(&graduation_key(b"cpgs:", token_id)) {
+        Some(data) if data.len() == 1 && data[0] <= GRADUATION_GRADUATED => Some(data[0]),
+        Some(_) => None,
+        None => Some(GRADUATION_ACTIVE),
+    }
+}
+
+#[cfg(test)]
 fn graduation_state(token_id: u64) -> u8 {
-    storage_get(&graduation_key(b"cpgs:", token_id))
-        .and_then(|data| data.first().copied())
-        .unwrap_or(GRADUATION_ACTIVE)
+    checked_graduation_state(token_id).unwrap_or(u8::MAX)
 }
 
 fn set_graduation_state(token_id: u64, state: u8) {
@@ -165,11 +192,11 @@ fn set_graduation_state(token_id: u64, state: u8) {
 
 fn graduation_candidate(token_id: u64) -> Option<[u8; 32]> {
     storage_get(&graduation_key(b"cpgt:", token_id)).and_then(|data| {
-        if data.len() < 32 {
+        if data.len() != 32 {
             return None;
         }
         let mut address = [0u8; 32];
-        address.copy_from_slice(&data[..32]);
+        address.copy_from_slice(&data);
         Some(address)
     })
 }
@@ -178,13 +205,18 @@ fn set_graduation_u64(prefix: &[u8], token_id: u64, value: u64) {
     store_u64(&graduation_key(prefix, token_id), value);
 }
 
+#[cfg(test)]
 fn get_graduation_u64(prefix: &[u8], token_id: u64) -> u64 {
     load_u64(&graduation_key(prefix, token_id))
 }
 
+fn checked_graduation_u64(prefix: &[u8], token_id: u64) -> Option<u64> {
+    checked_stored_u64(&graduation_key(prefix, token_id))
+}
+
 fn token_record(token_id: u64) -> Option<Vec<u8>> {
     storage_get(&make_key(b"cpt:", &u64_to_hex(token_id)))
-        .filter(|data| data.len() >= TOKEN_DATA_SIZE)
+        .filter(|data| data.len() == TOKEN_DATA_SIZE)
 }
 
 fn token_name_key(token_id: u64) -> Vec<u8> {
@@ -229,14 +261,59 @@ fn read_metadata_bytes(ptr: *const u8, len: u32, max_len: usize) -> Option<Vec<u
     Some(unsafe { core::slice::from_raw_parts(ptr, len) }.to_vec())
 }
 
-fn token_metadata(token_id: u64) -> (Vec<u8>, Vec<u8>) {
-    let name = storage_get(&token_name_key(token_id))
-        .filter(|value| valid_token_name(value))
-        .unwrap_or_else(|| alloc::format!("Spore Token {}", token_id).into_bytes());
-    let symbol = storage_get(&token_symbol_key(token_id))
-        .and_then(|value| normalize_token_symbol(&value))
-        .unwrap_or_else(|| alloc::format!("SPT{}", token_id).into_bytes());
-    (name, symbol)
+fn default_token_metadata(token_id: u64) -> (Vec<u8>, Vec<u8>) {
+    (
+        alloc::format!("Spore Token {}", token_id).into_bytes(),
+        alloc::format!("SPT{}", token_id).into_bytes(),
+    )
+}
+
+fn checked_token_metadata(token_id: u64) -> Option<(Vec<u8>, Vec<u8>)> {
+    let name = storage_get(&token_name_key(token_id))?;
+    let symbol = storage_get(&token_symbol_key(token_id))?;
+    if !valid_token_name(&name) || normalize_token_symbol(&symbol).as_deref() != Some(&symbol) {
+        return None;
+    }
+    Some((name, symbol))
+}
+
+/// Accounting V3 is also the explicit boundary that makes legacy token
+/// metadata canonical. Pre-metadata rows receive their deterministic historic
+/// labels; partially present, malformed, or conflicting rows abort migration.
+fn backfill_legacy_token_metadata(token_id: u64) -> bool {
+    let name_key = token_name_key(token_id);
+    let symbol_key = token_symbol_key(token_id);
+    let stored_name = storage_get(&name_key);
+    let stored_symbol = storage_get(&symbol_key);
+    let (name, symbol, needs_metadata_write) = match (stored_name, stored_symbol) {
+        (None, None) => {
+            let (name, symbol) = default_token_metadata(token_id);
+            (name, symbol, true)
+        }
+        (Some(name), Some(symbol))
+            if valid_token_name(&name)
+                && normalize_token_symbol(&symbol).as_deref() == Some(&symbol) =>
+        {
+            (name, symbol, false)
+        }
+        _ => return false,
+    };
+
+    let index_key = token_symbol_index_key(&symbol);
+    let needs_index_write = match storage_get(&index_key) {
+        Some(data) if data.len() == 8 && bytes_to_u64(&data) == token_id => false,
+        None => true,
+        _ => return false,
+    };
+
+    if needs_metadata_write {
+        storage_set(&name_key, &name);
+        storage_set(&symbol_key, &symbol);
+    }
+    if needs_index_write {
+        store_u64(&index_key, token_id);
+    }
+    true
 }
 
 fn token_market_cap(data: &[u8]) -> u64 {
@@ -248,7 +325,7 @@ fn integer_sqrt_u128(value: u128) -> u64 {
     if value == 0 {
         return 0;
     }
-    let mut x = 1u128 << ((128 - value.leading_zeros() as usize + 1) / 2);
+    let mut x = 1u128 << (128 - value.leading_zeros() as usize).div_ceil(2);
     loop {
         let next = (x + value / x) / 2;
         if next >= x {
@@ -266,8 +343,8 @@ fn initial_sqrt_price(price: u64) -> u64 {
 fn cross_call_id(target: [u8; 32], function: &str, args: Vec<u8>) -> Option<u64> {
     call_contract(CrossCall::new(Address(target), function, args))
         .ok()
-        .filter(|response| response.len() >= 8)
-        .map(|response| bytes_to_u64(&response[..8]))
+        .filter(|response| response.len() == 8)
+        .map(|response| bytes_to_u64(&response))
         .filter(|id| *id != 0)
 }
 
@@ -276,7 +353,10 @@ fn cross_call_succeeded(target: [u8; 32], function: &str, args: Vec<u8>) -> bool
 }
 
 fn refresh_eligibility(token_id: u64, data: &[u8]) {
-    let state = graduation_state(token_id);
+    let Some(state) = checked_graduation_state(token_id) else {
+        log_info("Malformed graduation state");
+        return;
+    };
     let eligible = token_market_cap(data) >= GRADUATION_MARKET_CAP;
     if eligible && state == GRADUATION_ACTIVE {
         set_graduation_state(token_id, GRADUATION_ELIGIBLE);
@@ -293,8 +373,25 @@ fn load_u64(key: &[u8]) -> u64 {
     storage_get(key).map(|d| bytes_to_u64(&d)).unwrap_or(0)
 }
 
+fn checked_stored_u64(key: &[u8]) -> Option<u64> {
+    match storage_get(key) {
+        Some(data) if data.len() == 8 => Some(bytes_to_u64(&data)),
+        Some(_) => None,
+        None => Some(0),
+    }
+}
+
 fn store_u64(key: &[u8], val: u64) {
     storage_set(key, &u64_to_bytes(val));
+}
+
+fn checked_bool(key: &[u8], default: bool) -> Option<bool> {
+    match storage_get(key) {
+        Some(data) if data.as_slice() == [0] => Some(false),
+        Some(data) if data.as_slice() == [1] => Some(true),
+        Some(_) => None,
+        None => Some(default),
+    }
 }
 
 fn u128_to_u64_saturating(value: u128) -> u64 {
@@ -306,9 +403,9 @@ fn u128_to_u64_saturating(value: u128) -> u64 {
 }
 
 fn is_paused() -> bool {
-    storage_get(PAUSE_KEY)
-        .map(|v| v.first().copied() == Some(1))
-        .unwrap_or(false)
+    // A malformed control flag is an operational fault, never permission to
+    // continue accepting new value. `unpause` can still repair it to `[0]`.
+    checked_bool(PAUSE_KEY, false).unwrap_or(true)
 }
 
 fn is_admin(caller: &[u8]) -> bool {
@@ -318,10 +415,44 @@ fn is_admin(caller: &[u8]) -> bool {
     }
 }
 
+fn accounting_migration_locked() -> bool {
+    checked_bool(ACCOUNTING_MIGRATION_LOCK_KEY, false).unwrap_or(true)
+}
+
+fn accounting_ready() -> bool {
+    checked_stored_u64(ACCOUNTING_VERSION_KEY) == Some(ACCOUNTING_VERSION)
+        && !accounting_migration_locked()
+}
+
+fn creator_royalty_key(token_id: u64, creator: &[u8; 32]) -> Vec<u8> {
+    let id_hex = u64_to_hex(token_id);
+    let creator_hex = hex_encode_addr(creator);
+    let mut key = Vec::with_capacity(4 + id_hex.len() + 1 + creator_hex.len());
+    key.extend_from_slice(b"cry:");
+    key.extend_from_slice(&id_hex);
+    key.push(b':');
+    key.extend_from_slice(&creator_hex);
+    key
+}
+
+fn total_custody_obligations() -> Option<u64> {
+    checked_stored_u64(CURVE_RESERVE_KEY)?
+        .checked_add(checked_stored_u64(b"cp_fees_collected")?)?
+        .checked_add(checked_stored_u64(CREATOR_LIABILITY_KEY)?)
+}
+
 fn has_configured_address(key: &[u8]) -> bool {
     storage_get(key)
         .map(|data| data.len() == 32)
         .unwrap_or(false)
+}
+
+fn configured_address_status(key: &[u8]) -> Option<u8> {
+    match storage_get(key) {
+        Some(data) if data.len() == 32 && data.iter().any(|byte| *byte != 0) => Some(1),
+        Some(_) => None,
+        None => Some(0),
+    }
 }
 
 fn configured_address(key: &[u8]) -> Option<[u8; 32]> {
@@ -357,9 +488,7 @@ fn graduation_claim_key(token_id: u64, holder: &[u8; 32]) -> Vec<u8> {
 fn is_token_frozen(token_id: u64) -> bool {
     let id_hex = u64_to_hex(token_id);
     let key = make_key(b"cpf:", &id_hex);
-    storage_get(&key)
-        .map(|v| v.first().copied() == Some(1))
-        .unwrap_or(false)
+    checked_bool(&key, false).unwrap_or(true)
 }
 
 fn launchpad_balance_key(token_id: u64, account: &[u8; 32]) -> Vec<u8> {
@@ -395,38 +524,53 @@ fn launchpad_can_send(account: &[u8; 32], amount: u64, balance: u64) -> bool {
     )
 }
 
-fn last_buy_key(token_id: u64, buyer_hex: &[u8; 64]) -> Vec<u8> {
+fn last_buy_slot_key(token_id: u64, buyer_hex: &[u8; 64]) -> Vec<u8> {
     let id_hex = u64_to_hex(token_id);
     let mut key = Vec::with_capacity(4 + 16 + 1 + 64);
-    key.extend_from_slice(b"lbk:");
+    // `lbk:` was written from get_timestamp() despite being documented as a
+    // slot cooldown. A new keyspace avoids interpreting legacy timestamps as
+    // slots and permanently locking accounts after the upgrade boundary.
+    key.extend_from_slice(b"lbs:");
     key.extend_from_slice(&id_hex);
     key.push(b':');
     key.extend_from_slice(buyer_hex);
     key
 }
 
+#[cfg(test)]
 fn get_buy_cooldown() -> u64 {
-    storage_get(b"cp_buy_cooldown")
-        .map(|d| bytes_to_u64(&d))
+    checked_config_u64(b"cp_buy_cooldown", DEFAULT_BUY_COOLDOWN_SLOTS)
         .unwrap_or(DEFAULT_BUY_COOLDOWN_SLOTS)
 }
 
+#[cfg(test)]
 fn get_sell_cooldown() -> u64 {
-    storage_get(b"cp_sell_cooldown")
-        .map(|d| bytes_to_u64(&d))
+    checked_config_u64(b"cp_sell_cooldown", DEFAULT_SELL_COOLDOWN_SLOTS)
         .unwrap_or(DEFAULT_SELL_COOLDOWN_SLOTS)
 }
 
+#[cfg(test)]
 fn get_max_buy() -> u64 {
-    storage_get(b"cp_max_buy")
-        .map(|d| bytes_to_u64(&d))
-        .unwrap_or(DEFAULT_MAX_BUY_AMOUNT)
+    checked_config_u64(b"cp_max_buy", DEFAULT_MAX_BUY_AMOUNT).unwrap_or(DEFAULT_MAX_BUY_AMOUNT)
 }
 
+#[cfg(test)]
 fn get_creator_royalty() -> u64 {
-    storage_get(b"cp_creator_royalty")
-        .map(|d| bytes_to_u64(&d))
+    checked_config_u64(b"cp_creator_royalty", DEFAULT_CREATOR_ROYALTY_BPS)
         .unwrap_or(DEFAULT_CREATOR_ROYALTY_BPS)
+}
+
+fn checked_config_u64(key: &[u8], default: u64) -> Option<u64> {
+    match storage_get(key) {
+        Some(data) if data.len() == 8 => Some(bytes_to_u64(&data)),
+        Some(_) => None,
+        None => Some(default),
+    }
+}
+
+fn checked_creator_royalty() -> Option<u64> {
+    checked_config_u64(b"cp_creator_royalty", DEFAULT_CREATOR_ROYALTY_BPS)
+        .filter(|value| *value <= 1_000)
 }
 
 /// G24-01: Transfer LICN tokens from the contract to a recipient (self-custody).
@@ -458,7 +602,7 @@ fn transfer_licn_out(recipient: &[u8; 32], amount: u64) -> bool {
     }
 }
 
-fn load_licn_token_or_native() -> Address {
+fn configured_licn_token() -> Option<Address> {
     storage_get(LICN_TOKEN_KEY)
         .and_then(|data| {
             if data.len() != 32 {
@@ -468,7 +612,14 @@ fn load_licn_token_or_native() -> Address {
             token.copy_from_slice(&data);
             Some(Address(token))
         })
-        .unwrap_or(Address([0u8; 32]))
+}
+
+fn payment_value_matches(token: Address, amount: u64) -> bool {
+    if is_native_token(&token) {
+        get_value() == amount
+    } else {
+        get_value() == 0
+    }
 }
 
 // ============================================================================
@@ -497,6 +648,9 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     if real_caller.0 != admin {
         return 200;
     }
+    if admin.iter().all(|byte| *byte == 0) {
+        return 2;
+    }
 
     if storage_get(ADMIN_KEY).is_some() {
         log_info("Already initialized");
@@ -506,6 +660,14 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     storage_set(ADMIN_KEY, &admin);
     store_u64(TOKEN_COUNT_KEY, 0);
     store_u64(b"cp_fees_collected", 0);
+    store_u64(CURVE_RESERVE_KEY, 0);
+    store_u64(CREATOR_LIABILITY_KEY, 0);
+    store_u64(TOTAL_GRADUATED_KEY, 0);
+    store_u64(ACCOUNTING_VERSION_KEY, ACCOUNTING_VERSION);
+    storage_set(ACCOUNTING_MIGRATION_LOCK_KEY, &[0]);
+    // LICN is the chain-native asset. Persist the sentinel explicitly so value
+    // paths never infer native custody from missing configuration.
+    storage_set(LICN_TOKEN_KEY, &[0u8; 32]);
 
     log_info("SporePump initialized");
     0
@@ -556,6 +718,9 @@ fn create_token_internal(
     if creator_ptr.is_null() {
         return ERROR_RETURN;
     }
+    if is_paused() || !accounting_ready() {
+        return ERROR_RETURN;
+    }
     let mut creator = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(creator_ptr, creator.as_mut_ptr(), 32);
@@ -564,11 +729,19 @@ fn create_token_internal(
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != creator {
-        return 200;
+        return ERROR_RETURN;
     }
 
-    if fee_paid < CREATION_FEE {
+    if fee_paid != CREATION_FEE {
         log_info("Insufficient creation fee (need 10 LICN)");
+        return ERROR_RETURN;
+    }
+    let Some(payment_token) = configured_licn_token() else {
+        log_info("LICN token address is not configured");
+        return ERROR_RETURN;
+    };
+    if !payment_value_matches(payment_token, CREATION_FEE) {
+        log_info("Creation payment value does not match the declared fee");
         return ERROR_RETURN;
     }
 
@@ -600,7 +773,6 @@ fn create_token_internal(
     };
 
     // G24-01: Verify actual payment instead of trusting the parameter.
-    let payment_token = load_licn_token_or_native();
     if !receive_token_or_native(
         payment_token,
         Address(creator),
@@ -636,13 +808,15 @@ fn create_token_internal(
     token_id
 }
 
-/// Return name_len(u16) + name + symbol_len(u16) + symbol for any token ID.
+/// Return name_len(u16) + name + symbol_len(u16) + symbol for a canonical token.
 #[no_mangle]
 pub extern "C" fn get_token_metadata(token_id: u64) -> u32 {
     if token_record(token_id).is_none() {
         return 1;
     }
-    let (name, symbol) = token_metadata(token_id);
+    let Some((name, symbol)) = checked_token_metadata(token_id) else {
+        return 2;
+    };
     let mut result = Vec::with_capacity(4 + name.len() + symbol.len());
     result.extend_from_slice(&(name.len() as u16).to_le_bytes());
     result.extend_from_slice(&name);
@@ -705,6 +879,94 @@ fn current_price(supply_sold: u64) -> u64 {
     ))
 }
 
+/// Split fees from the smallest gross payment that covers `curve_cost` while
+/// charging the configured platform and creator percentages on gross value.
+/// The creator share is carved out of the combined fee, never out of the
+/// bonding-curve reserve.
+fn buy_fee_components(curve_cost: u64, creator_bps: u64) -> Option<(u64, u64)> {
+    let total_bps = PLATFORM_FEE_BPS.checked_add(creator_bps)?;
+    if total_bps >= BPS_SCALE {
+        return None;
+    }
+    if total_bps == 0 {
+        return Some((0, 0));
+    }
+    let denominator = (BPS_SCALE - total_bps) as u128;
+    let total_fee = (curve_cost as u128)
+        .checked_mul(total_bps as u128)?
+        .div_ceil(denominator);
+    let total_fee = u64::try_from(total_fee).ok()?;
+    let creator_fee = u64::try_from(
+        (total_fee as u128)
+            .checked_mul(creator_bps as u128)?
+            / total_bps as u128,
+    )
+    .ok()?;
+    Some((total_fee.checked_sub(creator_fee)?, creator_fee))
+}
+
+fn buy_charge(curve_cost: u64, creator_bps: u64) -> Option<(u64, u64, u64)> {
+    let (platform_fee, creator_fee) = buy_fee_components(curve_cost, creator_bps)?;
+    let charged = curve_cost
+        .checked_add(platform_fee)?
+        .checked_add(creator_fee)?;
+    Some((charged, platform_fee, creator_fee))
+}
+
+/// Deduct sell-side fees from the curve refund. Both fee shares are funded by
+/// the seller's gross proceeds, so the curve reserve is reduced by the exact
+/// integral while platform and creator liabilities remain fully collateralized.
+fn sell_fee_components(raw_refund: u64, creator_bps: u64) -> Option<(u64, u64, u64)> {
+    if creator_bps > 1_000 {
+        return None;
+    }
+    let platform_fee = u64::try_from(
+        (raw_refund as u128).checked_mul(PLATFORM_FEE_BPS as u128)? / BPS_SCALE as u128,
+    )
+    .ok()?;
+    let creator_fee = u64::try_from(
+        (raw_refund as u128).checked_mul(creator_bps as u128)? / BPS_SCALE as u128,
+    )
+    .ok()?;
+    let net_refund = raw_refund
+        .checked_sub(platform_fee)?
+        .checked_sub(creator_fee)?;
+    Some((platform_fee, creator_fee, net_refund))
+}
+
+fn quote_buy_components(
+    supply_sold: u64,
+    max_supply: u64,
+    licn_amount: u64,
+    creator_bps: u64,
+) -> Option<(u64, u64, u64, u64, u64)> {
+    if licn_amount == 0 || supply_sold >= max_supply {
+        return None;
+    }
+    let mut lo = 0u64;
+    let mut hi = max_supply.checked_sub(supply_sold)?;
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        let cost = calculate_buy_cost(supply_sold, mid);
+        let affordable = buy_charge(cost, creator_bps)
+            .is_some_and(|(charged, _, _)| cost > 0 && charged <= licn_amount);
+        if affordable {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    if lo == 0 {
+        return None;
+    }
+    let curve_cost = calculate_buy_cost(supply_sold, lo);
+    let (charged, platform_fee, creator_fee) = buy_charge(curve_cost, creator_bps)?;
+    if curve_cost == 0 || charged > licn_amount {
+        return None;
+    }
+    Some((lo, curve_cost, platform_fee, creator_fee, charged))
+}
+
 // ============================================================================
 // BUY / SELL
 // ============================================================================
@@ -713,10 +975,22 @@ fn current_price(supply_sold: u64) -> u64 {
 /// Returns number of tokens received. Validation failures return ERROR_RETURN so the host reverts value transfers.
 #[no_mangle]
 pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> u64 {
+    buy_with_min_output(buyer_ptr, token_id, licn_amount, 0)
+}
+
+/// Buy with an explicit minimum token output so a delayed transaction cannot
+/// accept materially worse curve execution than the caller signed.
+#[no_mangle]
+pub extern "C" fn buy_with_min_output(
+    buyer_ptr: *const u8,
+    token_id: u64,
+    licn_amount: u64,
+    minimum_tokens_out: u64,
+) -> u64 {
     if licn_amount == 0 {
         return ERROR_RETURN;
     }
-    if is_paused() {
+    if is_paused() || !accounting_ready() {
         log_info("Protocol is paused");
         return ERROR_RETURN;
     }
@@ -730,7 +1004,11 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     }
 
     // v2: Max buy per tx
-    let max_buy = get_max_buy();
+    let Some(max_buy) = checked_config_u64(b"cp_max_buy", DEFAULT_MAX_BUY_AMOUNT) else {
+        reentrancy_exit();
+        log_info("Malformed max-buy configuration");
+        return ERROR_RETURN;
+    };
     if licn_amount > max_buy {
         reentrancy_exit();
         log_info("Exceeds max buy per transaction");
@@ -746,38 +1024,28 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     let real_caller = get_caller();
     if real_caller.0 != buyer {
         reentrancy_exit();
-        return 200;
-    }
-
-    if graduation_state(token_id) != GRADUATION_ACTIVE {
-        reentrancy_exit();
-        log_info("Bonding-curve buys are closed for graduation");
         return ERROR_RETURN;
     }
 
-    // G24-01: Verify actual payment instead of trusting parameter
-    let payment_token = load_licn_token_or_native();
-    if !receive_token_or_native(
-        payment_token,
-        Address(buyer),
-        get_contract_address(),
-        licn_amount,
-    )
-    .unwrap_or(false)
-    {
+    if checked_graduation_state(token_id) != Some(GRADUATION_ACTIVE) {
         reentrancy_exit();
-        log_info("Insufficient payment for buy");
+        log_info("Bonding-curve buys are closed for graduation");
         return ERROR_RETURN;
     }
 
     let buyer_hex = hex_encode_addr(&buyer);
 
     // v2: Buy cooldown
-    let cooldown = get_buy_cooldown();
-    let lbk = last_buy_key(token_id, &buyer_hex);
-    let last_buy_ts = load_u64(&lbk);
-    let now = get_timestamp();
-    if last_buy_ts > 0 && now < last_buy_ts.saturating_add(cooldown) {
+    let Some(cooldown) = checked_config_u64(b"cp_buy_cooldown", DEFAULT_BUY_COOLDOWN_SLOTS)
+    else {
+        reentrancy_exit();
+        log_info("Malformed buy-cooldown configuration");
+        return ERROR_RETURN;
+    };
+    let lbk = last_buy_slot_key(token_id, &buyer_hex);
+    let last_buy_slot = load_u64(&lbk);
+    let now = get_slot();
+    if last_buy_slot > 0 && now < last_buy_slot.saturating_add(cooldown) {
         reentrancy_exit();
         log_info("Buy cooldown not expired");
         return ERROR_RETURN;
@@ -787,7 +1055,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     let token_key = make_key(b"cpt:", &id_hex);
 
     let mut data = match storage_get(&token_key) {
-        Some(d) if d.len() >= TOKEN_DATA_SIZE => d,
+        Some(d) if d.len() == TOKEN_DATA_SIZE => d,
         _ => {
             log_info("Token not found");
             reentrancy_exit();
@@ -805,59 +1073,27 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     let licn_raised = bytes_to_u64(&data[40..48]);
     let max_supply = bytes_to_u64(&data[48..56]);
 
-    // Platform fee
-    let maximum_fee =
-        u128_to_u64_saturating(licn_amount as u128 * PLATFORM_FEE_PERCENT as u128 / 100);
-    let net_amount = licn_amount - maximum_fee;
-
-    // Binary search for how many tokens we can buy with net_amount
-    let mut lo: u64 = 0;
-    let mut hi: u64 = max_supply.saturating_sub(supply_sold);
-
-    while lo < hi {
-        let mid = lo + (hi - lo + 1) / 2;
-        let cost = calculate_buy_cost(supply_sold, mid);
-        if cost <= net_amount {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-
-    let tokens_bought = lo;
-    if tokens_bought == 0 {
-        log_info("Amount too small to buy any tokens");
+    let Some(creator_bps) = checked_creator_royalty() else {
         reentrancy_exit();
+        log_info("Malformed creator royalty configuration");
         return ERROR_RETURN;
-    }
-
-    let actual_cost = calculate_buy_cost(supply_sold, tokens_bought);
-    if actual_cost == 0 {
-        reentrancy_exit();
-        log_info("Calculated launchpad buy cost is zero");
-        return ERROR_RETURN;
-    }
-    let fee_denominator = 100u128.saturating_sub(PLATFORM_FEE_PERCENT as u128);
-    let fee = u128_to_u64_saturating(
-        (actual_cost as u128 * PLATFORM_FEE_PERCENT as u128)
-            .saturating_add(fee_denominator.saturating_sub(1))
-            / fee_denominator,
-    );
-    let charged = match actual_cost.checked_add(fee) {
-        Some(charged) if charged <= licn_amount => charged,
-        _ => {
-            reentrancy_exit();
-            log_info("Launchpad buy charge overflow");
-            return ERROR_RETURN;
-        }
     };
-    let refund = licn_amount - charged;
-    if refund > 0 && !transfer_licn_out(&buyer, refund) {
+    let Some((tokens_bought, actual_cost, platform_fee, creator_fee, charged)) =
+        quote_buy_components(supply_sold, max_supply, licn_amount, creator_bps)
+    else {
         reentrancy_exit();
-        log_info("Launchpad buy refund failed");
+        log_info("Amount too small or curve arithmetic invalid");
+        return ERROR_RETURN;
+    };
+    if tokens_bought < minimum_tokens_out {
+        reentrancy_exit();
+        log_info("Minimum token output not met");
         return ERROR_RETURN;
     }
-    let new_supply = supply_sold + tokens_bought;
+    let Some(new_supply) = supply_sold.checked_add(tokens_bought) else {
+        reentrancy_exit();
+        return ERROR_RETURN;
+    };
     let new_raised = match licn_raised.checked_add(actual_cost) {
         Some(v) => v,
         None => {
@@ -883,6 +1119,65 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
         }
     };
 
+    let Some(curve_reserve) = checked_stored_u64(CURVE_RESERVE_KEY) else {
+        reentrancy_exit();
+        return ERROR_RETURN;
+    };
+    let Some(new_curve_reserve) = curve_reserve.checked_add(actual_cost) else {
+        reentrancy_exit();
+        return ERROR_RETURN;
+    };
+    let Some(fees) = checked_stored_u64(b"cp_fees_collected") else {
+        reentrancy_exit();
+        return ERROR_RETURN;
+    };
+    let Some(new_fees) = fees.checked_add(platform_fee) else {
+        reentrancy_exit();
+        return ERROR_RETURN;
+    };
+    let creator: [u8; 32] = data[0..32].try_into().unwrap_or([0u8; 32]);
+    let royalty_key = creator_royalty_key(token_id, &creator);
+    let Some(previous_royalty) = checked_stored_u64(&royalty_key) else {
+        reentrancy_exit();
+        return ERROR_RETURN;
+    };
+    let Some(new_royalty) = previous_royalty.checked_add(creator_fee) else {
+        reentrancy_exit();
+        return ERROR_RETURN;
+    };
+    let Some(creator_liability) = checked_stored_u64(CREATOR_LIABILITY_KEY) else {
+        reentrancy_exit();
+        return ERROR_RETURN;
+    };
+    let Some(new_creator_liability) = creator_liability.checked_add(creator_fee) else {
+        reentrancy_exit();
+        return ERROR_RETURN;
+    };
+    let Some(payment_token) = configured_licn_token() else {
+        reentrancy_exit();
+        log_info("LICN token address is not configured");
+        return ERROR_RETURN;
+    };
+    if !payment_value_matches(payment_token, licn_amount)
+        || !receive_token_or_native(
+            payment_token,
+            Address(buyer),
+            get_contract_address(),
+            licn_amount,
+        )
+        .unwrap_or(false)
+    {
+        reentrancy_exit();
+        log_info("Insufficient or mismatched payment for buy");
+        return ERROR_RETURN;
+    }
+    let refund = licn_amount - charged;
+    if refund > 0 && !transfer_licn_out(&buyer, refund) {
+        reentrancy_exit();
+        log_info("Launchpad buy refund failed");
+        return ERROR_RETURN;
+    }
+
     // Update token data
     data[32..40].copy_from_slice(&u64_to_bytes(new_supply));
     data[40..48].copy_from_slice(&u64_to_bytes(new_raised));
@@ -891,26 +1186,10 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     // Track buyer balance
     store_u64(&bal_key, new_balance);
 
-    // Collect platform fee
-    let fees = load_u64(b"cp_fees_collected");
-    store_u64(b"cp_fees_collected", fees.saturating_add(fee));
-
-    // v2: Creator royalty
-    let royalty_bps = get_creator_royalty();
-    if royalty_bps > 0 {
-        let royalty =
-            u128_to_u64_saturating(actual_cost as u128 * royalty_bps as u128 / BPS_SCALE as u128);
-        if royalty > 0 {
-            let creator_hex = hex_encode_addr(&data[0..32].try_into().unwrap_or([0u8; 32]));
-            let mut cr_key = Vec::with_capacity(4 + 16 + 1 + 64);
-            cr_key.extend_from_slice(b"cry:");
-            cr_key.extend_from_slice(&id_hex);
-            cr_key.push(b':');
-            cr_key.extend_from_slice(&creator_hex);
-            let prev_royalty = load_u64(&cr_key);
-            store_u64(&cr_key, prev_royalty.saturating_add(royalty));
-        }
-    }
+    store_u64(CURVE_RESERVE_KEY, new_curve_reserve);
+    store_u64(b"cp_fees_collected", new_fees);
+    store_u64(&royalty_key, new_royalty);
+    store_u64(CREATOR_LIABILITY_KEY, new_creator_liability);
 
     // v2: Record last buy timestamp for cooldown
     store_u64(&lbk, now);
@@ -925,7 +1204,22 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
 /// Returns LICN refund amount. Validation failures return ERROR_RETURN so the host reverts.
 #[no_mangle]
 pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) -> u64 {
+    sell_with_min_output(seller_ptr, token_id, token_amount, 0)
+}
+
+/// Sell with an explicit minimum LICN output for deterministic slippage
+/// protection.
+#[no_mangle]
+pub extern "C" fn sell_with_min_output(
+    seller_ptr: *const u8,
+    token_id: u64,
+    token_amount: u64,
+    minimum_licn_out: u64,
+) -> u64 {
     if token_amount == 0 {
+        return ERROR_RETURN;
+    }
+    if !accounting_ready() {
         return ERROR_RETURN;
     }
     if is_token_frozen(token_id) {
@@ -946,10 +1240,12 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
     let real_caller = get_caller();
     if real_caller.0 != seller {
         reentrancy_exit();
-        return 200;
+        return ERROR_RETURN;
     }
 
-    if graduation_state(token_id) >= GRADUATION_MIGRATING {
+    if checked_graduation_state(token_id)
+        .is_none_or(|state| state >= GRADUATION_MIGRATING)
+    {
         reentrancy_exit();
         log_info("Bonding-curve sells are closed during or after migration");
         return ERROR_RETURN;
@@ -958,11 +1254,16 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
     let seller_hex = hex_encode_addr(&seller);
 
     // v2: Sell cooldown — check last buy timestamp
-    let sell_cd = get_sell_cooldown();
-    let lbk = last_buy_key(token_id, &seller_hex);
-    let last_buy_ts = load_u64(&lbk);
-    let now = get_timestamp();
-    if last_buy_ts > 0 && now < last_buy_ts.saturating_add(sell_cd) {
+    let Some(sell_cd) = checked_config_u64(b"cp_sell_cooldown", DEFAULT_SELL_COOLDOWN_SLOTS)
+    else {
+        reentrancy_exit();
+        log_info("Malformed sell-cooldown configuration");
+        return ERROR_RETURN;
+    };
+    let lbk = last_buy_slot_key(token_id, &seller_hex);
+    let last_buy_slot = load_u64(&lbk);
+    let now = get_slot();
+    if last_buy_slot > 0 && now < last_buy_slot.saturating_add(sell_cd) {
         reentrancy_exit();
         log_info("Sell cooldown not expired (anti-dump)");
         return ERROR_RETURN;
@@ -972,7 +1273,7 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
     let token_key = make_key(b"cpt:", &id_hex);
 
     let mut data = match storage_get(&token_key) {
-        Some(d) if d.len() >= TOKEN_DATA_SIZE => d,
+        Some(d) if d.len() == TOKEN_DATA_SIZE => d,
         _ => {
             log_info("Token not found");
             reentrancy_exit();
@@ -1015,8 +1316,57 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
         reentrancy_exit();
         return ERROR_RETURN;
     }
-    let fee = u128_to_u64_saturating(raw_refund as u128 * PLATFORM_FEE_PERCENT as u128 / 100);
-    let net_refund = raw_refund - fee;
+    let Some(creator_bps) = checked_creator_royalty() else {
+        reentrancy_exit();
+        log_info("Malformed creator royalty configuration");
+        return ERROR_RETURN;
+    };
+    let Some((platform_fee, creator_fee, net_refund)) =
+        sell_fee_components(raw_refund, creator_bps)
+    else {
+        reentrancy_exit();
+        log_info("Sell fee arithmetic invalid");
+        return ERROR_RETURN;
+    };
+    if net_refund < minimum_licn_out || raw_refund > licn_raised {
+        log_info("Sell output below minimum or reserve is inconsistent");
+        reentrancy_exit();
+        return ERROR_RETURN;
+    }
+    let Some(curve_reserve) = checked_stored_u64(CURVE_RESERVE_KEY) else {
+        reentrancy_exit();
+        return ERROR_RETURN;
+    };
+    let Some(new_curve_reserve) = curve_reserve.checked_sub(raw_refund) else {
+        reentrancy_exit();
+        return ERROR_RETURN;
+    };
+    let Some(fees) = checked_stored_u64(b"cp_fees_collected") else {
+        reentrancy_exit();
+        return ERROR_RETURN;
+    };
+    let Some(new_fees) = fees.checked_add(platform_fee) else {
+        reentrancy_exit();
+        return ERROR_RETURN;
+    };
+    let creator: [u8; 32] = data[0..32].try_into().unwrap_or([0u8; 32]);
+    let royalty_key = creator_royalty_key(token_id, &creator);
+    let Some(previous_royalty) = checked_stored_u64(&royalty_key) else {
+        reentrancy_exit();
+        return ERROR_RETURN;
+    };
+    let Some(new_royalty) = previous_royalty.checked_add(creator_fee) else {
+        reentrancy_exit();
+        return ERROR_RETURN;
+    };
+    let Some(creator_liability) = checked_stored_u64(CREATOR_LIABILITY_KEY) else {
+        reentrancy_exit();
+        return ERROR_RETURN;
+    };
+    let Some(new_creator_liability) = creator_liability.checked_add(creator_fee) else {
+        reentrancy_exit();
+        return ERROR_RETURN;
+    };
 
     // G24-01: Transfer LICN refund before mutating accounting. If payout fails,
     // no bonding-curve state is committed and the host reverts the transaction.
@@ -1028,7 +1378,7 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
 
     // Update token data
     let new_supply = supply_sold - token_amount;
-    let new_raised = licn_raised.saturating_sub(raw_refund);
+    let new_raised = licn_raised - raw_refund;
     data[32..40].copy_from_slice(&u64_to_bytes(new_supply));
     data[40..48].copy_from_slice(&u64_to_bytes(new_raised));
     storage_set(&token_key, &data);
@@ -1037,9 +1387,10 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
     // Update seller balance
     store_u64(&bal_key, balance - token_amount);
 
-    // Collect fee
-    let fees = load_u64(b"cp_fees_collected");
-    store_u64(b"cp_fees_collected", fees.saturating_add(fee));
+    store_u64(CURVE_RESERVE_KEY, new_curve_reserve);
+    store_u64(b"cp_fees_collected", new_fees);
+    store_u64(&royalty_key, new_royalty);
+    store_u64(CREATOR_LIABILITY_KEY, new_creator_liability);
 
     log_info("Sell successful");
     reentrancy_exit();
@@ -1057,12 +1408,24 @@ pub extern "C" fn get_token_info(token_id: u64) -> u32 {
     let token_key = make_key(b"cpt:", &id_hex);
 
     let data = match storage_get(&token_key) {
-        Some(d) if d.len() >= TOKEN_DATA_SIZE => d,
-        _ => return 1,
+        Some(d) if d.len() == TOKEN_DATA_SIZE => d,
+        Some(_) => return 2,
+        None => return 1,
     };
 
     let supply_sold = bytes_to_u64(&data[32..40]);
     let licn_raised = bytes_to_u64(&data[40..48]);
+    let max_supply = bytes_to_u64(&data[48..56]);
+    let Some(state) = checked_graduation_state(token_id) else {
+        return 2;
+    };
+    if data[0..32].iter().all(|byte| *byte == 0)
+        || supply_sold > max_supply
+        || data[64] > 1
+        || (data[64] == 1) != (state == GRADUATION_GRADUATED)
+    {
+        return 2;
+    }
     let price = current_price(supply_sold);
     let market_cap =
         u128_to_u64_saturating(price as u128 * supply_sold as u128 / 1_000_000_000u128);
@@ -1080,33 +1443,61 @@ pub extern "C" fn get_token_info(token_id: u64) -> u32 {
 /// Get buy quote: how many tokens for given LICN amount
 #[no_mangle]
 pub extern "C" fn get_buy_quote(token_id: u64, licn_amount: u64) -> u64 {
-    if licn_amount == 0 {
+    if licn_amount == 0 || is_paused() || !accounting_ready() || is_token_frozen(token_id) {
         return 0;
     }
     let id_hex = u64_to_hex(token_id);
     let token_key = make_key(b"cpt:", &id_hex);
 
     let data = match storage_get(&token_key) {
-        Some(d) if d.len() >= TOKEN_DATA_SIZE => d,
+        Some(d) if d.len() == TOKEN_DATA_SIZE => d,
         _ => return 0,
     };
+    if data[64] != 0 || checked_graduation_state(token_id) != Some(GRADUATION_ACTIVE) {
+        return 0;
+    }
 
     let supply_sold = bytes_to_u64(&data[32..40]);
     let max_supply = bytes_to_u64(&data[48..56]);
-    let net =
-        u128_to_u64_saturating(licn_amount as u128 * (100 - PLATFORM_FEE_PERCENT) as u128 / 100);
-
-    let mut lo: u64 = 0;
-    let mut hi = max_supply.saturating_sub(supply_sold);
-    while lo < hi {
-        let mid = lo + (hi - lo + 1) / 2;
-        if calculate_buy_cost(supply_sold, mid) <= net {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
+    if checked_config_u64(b"cp_max_buy", DEFAULT_MAX_BUY_AMOUNT)
+        .is_none_or(|max_buy| licn_amount > max_buy)
+    {
+        return 0;
     }
-    lo
+    checked_creator_royalty()
+        .and_then(|creator_bps| {
+            quote_buy_components(supply_sold, max_supply, licn_amount, creator_bps)
+        })
+        .map(|quote| quote.0)
+        .unwrap_or(0)
+}
+
+/// Quote the net LICN proceeds for a curve sale.
+#[no_mangle]
+pub extern "C" fn get_sell_quote(token_id: u64, token_amount: u64) -> u64 {
+    if token_amount == 0 || !accounting_ready() || is_token_frozen(token_id) {
+        return 0;
+    }
+    let data = match token_record(token_id) {
+        Some(data)
+            if data[64] == 0
+                && checked_graduation_state(token_id)
+                    .is_some_and(|state| state < GRADUATION_MIGRATING) =>
+        {
+            data
+        }
+        _ => return 0,
+    };
+    let supply_sold = bytes_to_u64(&data[32..40]);
+    let licn_raised = bytes_to_u64(&data[40..48]);
+    let raw = calculate_sell_refund(supply_sold, token_amount);
+    if raw == 0 || raw > licn_raised {
+        return 0;
+    }
+    checked_creator_royalty()
+        .and_then(|creator_bps| sell_fee_components(raw, creator_bps))
+        .map(|(_, _, net_refund)| net_refund)
+        .unwrap_or(0)
 }
 
 /// Get total token count
@@ -1115,17 +1506,73 @@ pub extern "C" fn get_token_count() -> u64 {
     load_u64(TOKEN_COUNT_KEY)
 }
 
-/// Get platform stats: [token_count(8), fees_collected(8)]
+/// Get exact platform accounting:
+/// token_count, platform_fees, curve_reserve, creator_liability,
+/// cumulative_graduation_revenue, graduated_count, accounting_version,
+/// migration_expected, migration_cursor, migration_locked, creator_royalty_bps
+/// (all u64 LE).
 #[no_mangle]
 pub extern "C" fn get_platform_stats() -> u32 {
-    let count = load_u64(TOKEN_COUNT_KEY);
-    let fees = load_u64(b"cp_fees_collected");
+    let Some(count) = checked_stored_u64(TOKEN_COUNT_KEY) else {
+        return 1;
+    };
+    let Some(fees) = checked_stored_u64(b"cp_fees_collected") else {
+        return 1;
+    };
+    let Some(curve_reserve) = checked_stored_u64(CURVE_RESERVE_KEY) else {
+        return 1;
+    };
+    let Some(creator_liability) = checked_stored_u64(CREATOR_LIABILITY_KEY) else {
+        return 1;
+    };
+    let Some(graduation_revenue) = checked_stored_u64(b"cp_graduation_revenue") else {
+        return 1;
+    };
+    let Some(graduated) = checked_stored_u64(TOTAL_GRADUATED_KEY) else {
+        return 1;
+    };
+    let Some(accounting_version) = checked_stored_u64(ACCOUNTING_VERSION_KEY) else {
+        return 1;
+    };
+    let Some(migration_expected) = checked_stored_u64(ACCOUNTING_MIGRATION_EXPECTED_KEY) else {
+        return 1;
+    };
+    let Some(migration_cursor) = checked_stored_u64(ACCOUNTING_MIGRATION_CURSOR_KEY) else {
+        return 1;
+    };
+    let Some(migration_locked) = checked_bool(ACCOUNTING_MIGRATION_LOCK_KEY, false) else {
+        return 1;
+    };
+    let Some(creator_royalty) = checked_creator_royalty() else {
+        return 1;
+    };
 
-    let mut result = Vec::with_capacity(16);
+    let mut result = Vec::with_capacity(88);
     result.extend_from_slice(&u64_to_bytes(count));
     result.extend_from_slice(&u64_to_bytes(fees));
+    result.extend_from_slice(&u64_to_bytes(curve_reserve));
+    result.extend_from_slice(&u64_to_bytes(creator_liability));
+    result.extend_from_slice(&u64_to_bytes(graduation_revenue));
+    result.extend_from_slice(&u64_to_bytes(graduated));
+    result.extend_from_slice(&u64_to_bytes(accounting_version));
+    result.extend_from_slice(&u64_to_bytes(migration_expected));
+    result.extend_from_slice(&u64_to_bytes(migration_cursor));
+    result.extend_from_slice(&u64_to_bytes(migration_locked as u64));
+    result.extend_from_slice(&u64_to_bytes(creator_royalty));
     set_return_data(&result);
     0
+}
+
+#[no_mangle]
+pub extern "C" fn get_creator_royalty_balance(token_id: u64, creator_ptr: *const u8) -> u64 {
+    let creator = read_address(creator_ptr);
+    let Some(data) = token_record(token_id) else {
+        return 0;
+    };
+    if data[0..32] != creator {
+        return 0;
+    }
+    checked_stored_u64(&creator_royalty_key(token_id, &creator)).unwrap_or(0)
 }
 
 // ============================================================================
@@ -1174,6 +1621,9 @@ pub extern "C" fn unpause(caller_ptr: *const u8) -> u32 {
     if !is_admin(&caller) {
         return 1;
     }
+    if !accounting_ready() {
+        return 3;
+    }
     if !is_paused() {
         return 2;
     }
@@ -1199,6 +1649,9 @@ pub extern "C" fn freeze_token(caller_ptr: *const u8, token_id: u64) -> u32 {
     if !is_admin(&caller) {
         return 1;
     }
+    if token_record(token_id).is_none() {
+        return 2;
+    }
     let id_hex = u64_to_hex(token_id);
     let key = make_key(b"cpf:", &id_hex);
     storage_set(&key, &[1]);
@@ -1222,6 +1675,9 @@ pub extern "C" fn unfreeze_token(caller_ptr: *const u8, token_id: u64) -> u32 {
 
     if !is_admin(&caller) {
         return 1;
+    }
+    if token_record(token_id).is_none() {
+        return 2;
     }
     let id_hex = u64_to_hex(token_id);
     let key = make_key(b"cpf:", &id_hex);
@@ -1337,10 +1793,15 @@ pub extern "C" fn withdraw_fees(caller_ptr: *const u8, amount: u64) -> u32 {
     if !is_admin(&caller) {
         return 1;
     }
+    if !accounting_ready() {
+        return 5;
+    }
     if amount == 0 {
         return 2;
     }
-    let fees = load_u64(b"cp_fees_collected");
+    let Some(fees) = checked_stored_u64(b"cp_fees_collected") else {
+        return 5;
+    };
     if amount > fees {
         return 3;
     }
@@ -1355,6 +1816,337 @@ pub extern "C" fn withdraw_fees(caller_ptr: *const u8, amount: u64) -> u32 {
     }
 
     log_info("Fees withdrawn");
+    0
+}
+
+/// Claim the funded creator royalty for one launch. Claims remain available
+/// while paused, but not while accounting is unversioned or migrating.
+#[no_mangle]
+pub extern "C" fn claim_creator_royalty(
+    creator_ptr: *const u8,
+    token_id: u64,
+    amount: u64,
+) -> u32 {
+    let creator = read_address(creator_ptr);
+    if get_caller().0 != creator {
+        return 200;
+    }
+    if amount == 0 || !accounting_ready() {
+        return 1;
+    }
+    let Some(data) = token_record(token_id) else {
+        return 2;
+    };
+    if data[0..32] != creator {
+        return 3;
+    }
+    let royalty_key = creator_royalty_key(token_id, &creator);
+    let Some(royalty) = checked_stored_u64(&royalty_key) else {
+        return 4;
+    };
+    let Some(total_liability) = checked_stored_u64(CREATOR_LIABILITY_KEY) else {
+        return 4;
+    };
+    if amount > royalty || amount > total_liability {
+        return 5;
+    }
+    store_u64(&royalty_key, royalty - amount);
+    store_u64(CREATOR_LIABILITY_KEY, total_liability - amount);
+    if !transfer_licn_out(&creator, amount) {
+        store_u64(&royalty_key, royalty);
+        store_u64(CREATOR_LIABILITY_KEY, total_liability);
+        return 6;
+    }
+    0
+}
+
+/// Report custody balance, exact obligations, and recoverable surplus.
+#[no_mangle]
+pub extern "C" fn get_custody_status() -> u32 {
+    let Some(token) = configured_licn_token() else {
+        return 1;
+    };
+    let balance = match balance_of_token_or_native(token, get_contract_address()) {
+        Ok(balance) => balance,
+        Err(_) => return 2,
+    };
+    let Some(obligations) = total_custody_obligations() else {
+        return 3;
+    };
+    let mut result = Vec::with_capacity(24);
+    result.extend_from_slice(&u64_to_bytes(balance));
+    result.extend_from_slice(&u64_to_bytes(obligations));
+    result.extend_from_slice(&u64_to_bytes(balance.saturating_sub(obligations)));
+    set_return_data(&result);
+    0
+}
+
+/// Return the canonical inputs used by Accounting V3 reconstruction for one
+/// token: creator(32), supply(8), raised(8), max supply(8), created slot(8),
+/// lifecycle state(1), and funded creator royalty(8). This direct bounded view
+/// lets migration tooling seal a complete manifest without scanning storage.
+#[no_mangle]
+pub extern "C" fn get_accounting_migration_token(token_id: u64) -> u32 {
+    let Some(data) = token_record(token_id) else {
+        return 1;
+    };
+    let Some(state) = checked_graduation_state(token_id) else {
+        return 2;
+    };
+    if state == GRADUATION_MIGRATING
+        || (data[64] == 1) != (state == GRADUATION_GRADUATED)
+    {
+        return 2;
+    }
+    let creator: [u8; 32] = data[0..32].try_into().unwrap_or([0u8; 32]);
+    if creator.iter().all(|byte| *byte == 0) {
+        return 2;
+    }
+    let Some(royalty) = checked_stored_u64(&creator_royalty_key(token_id, &creator)) else {
+        return 3;
+    };
+    let mut result = Vec::with_capacity(73);
+    result.extend_from_slice(&data[0..64]);
+    result.push(state);
+    result.extend_from_slice(&u64_to_bytes(royalty));
+    set_return_data(&result);
+    0
+}
+
+/// Governance-only recovery of funds proven to exceed every platform, curve,
+/// and creator obligation. Requiring pause prevents the proof from racing a
+/// user value mutation.
+#[no_mangle]
+pub extern "C" fn recover_custody_surplus(caller_ptr: *const u8, amount: u64) -> u32 {
+    let caller = read_address(caller_ptr);
+    if get_caller().0 != caller {
+        return 200;
+    }
+    if !is_admin(&caller) {
+        return 1;
+    }
+    if amount == 0 || !is_paused() || !accounting_ready() {
+        return 2;
+    }
+    let Some(token) = configured_licn_token() else {
+        return 3;
+    };
+    let balance = match balance_of_token_or_native(token, get_contract_address()) {
+        Ok(balance) => balance,
+        Err(_) => return 3,
+    };
+    let Some(obligations) = total_custody_obligations() else {
+        return 4;
+    };
+    if amount > balance.saturating_sub(obligations) {
+        return 5;
+    }
+    if !transfer_licn_out(&caller, amount) {
+        return 6;
+    }
+    0
+}
+
+/// Start a paused, exact, token-by-token Accounting V3 reconstruction.
+#[no_mangle]
+pub extern "C" fn begin_accounting_v3_migration(
+    caller_ptr: *const u8,
+    expected_token_count: u64,
+) -> u32 {
+    let caller = read_address(caller_ptr);
+    if get_caller().0 != caller {
+        return 200;
+    }
+    if !is_admin(&caller) {
+        return 1;
+    }
+    if !is_paused() || accounting_migration_locked() {
+        return 2;
+    }
+    if checked_stored_u64(ACCOUNTING_VERSION_KEY) == Some(ACCOUNTING_VERSION) {
+        return 3;
+    }
+    if checked_stored_u64(TOKEN_COUNT_KEY) != Some(expected_token_count)
+        || checked_stored_u64(b"cp_fees_collected").is_none()
+        || checked_stored_u64(b"cp_graduation_revenue").is_none()
+        || configured_licn_token().is_none()
+    {
+        return 4;
+    }
+    storage_set(ACCOUNTING_MIGRATION_LOCK_KEY, &[1]);
+    store_u64(ACCOUNTING_MIGRATION_EXPECTED_KEY, expected_token_count);
+    store_u64(ACCOUNTING_MIGRATION_CURSOR_KEY, 0);
+    store_u64(ACCOUNTING_MIGRATION_CURVE_KEY, 0);
+    store_u64(ACCOUNTING_MIGRATION_ROYALTY_KEY, 0);
+    store_u64(ACCOUNTING_MIGRATION_GRADUATED_KEY, 0);
+    0
+}
+
+/// Reconstruct exactly one contiguous token row. Permissionless progress is
+/// safe because every input is canonical contract storage.
+#[no_mangle]
+pub extern "C" fn migrate_accounting_v3_token(token_id: u64) -> u32 {
+    if !accounting_migration_locked() {
+        return 1;
+    }
+    let Some(cursor) = checked_stored_u64(ACCOUNTING_MIGRATION_CURSOR_KEY) else {
+        return 2;
+    };
+    let Some(expected) = checked_stored_u64(ACCOUNTING_MIGRATION_EXPECTED_KEY) else {
+        return 2;
+    };
+    if cursor.checked_add(1) != Some(token_id) || token_id > expected {
+        return 3;
+    }
+    let Some(data) = token_record(token_id) else {
+        return 4;
+    };
+    let Some(state) = checked_graduation_state(token_id) else {
+        return 5;
+    };
+    if state == GRADUATION_MIGRATING || (data[64] == 1) != (state == GRADUATION_GRADUATED) {
+        return 5;
+    }
+    let creator: [u8; 32] = data[0..32].try_into().unwrap_or([0u8; 32]);
+    if creator.iter().all(|byte| *byte == 0) {
+        return 6;
+    }
+    let Some(royalty) = checked_stored_u64(&creator_royalty_key(token_id, &creator)) else {
+        return 7;
+    };
+    let Some(royalty_accumulator) = checked_stored_u64(ACCOUNTING_MIGRATION_ROYALTY_KEY)
+    else {
+        return 7;
+    };
+    let Some(next_royalty) = royalty_accumulator.checked_add(royalty) else {
+        return 8;
+    };
+    let Some(curve_accumulator) = checked_stored_u64(ACCOUNTING_MIGRATION_CURVE_KEY) else {
+        return 7;
+    };
+    let curve_amount = if data[64] == 0 {
+        bytes_to_u64(&data[40..48])
+    } else {
+        0
+    };
+    let Some(next_curve) = curve_accumulator.checked_add(curve_amount) else {
+        return 8;
+    };
+    let Some(graduated) = checked_stored_u64(ACCOUNTING_MIGRATION_GRADUATED_KEY) else {
+        return 7;
+    };
+    let Some(next_graduated) = graduated.checked_add(u64::from(data[64] == 1)) else {
+        return 8;
+    };
+    if !backfill_legacy_token_metadata(token_id) {
+        return 9;
+    }
+    store_u64(ACCOUNTING_MIGRATION_CURVE_KEY, next_curve);
+    store_u64(ACCOUNTING_MIGRATION_ROYALTY_KEY, next_royalty);
+    store_u64(ACCOUNTING_MIGRATION_GRADUATED_KEY, next_graduated);
+    store_u64(ACCOUNTING_MIGRATION_CURSOR_KEY, token_id);
+    0
+}
+
+/// Activate V3 only when reconstructed liabilities are fully funded. Legacy
+/// creator accrual is reclassified out of platform fees; graduation revenue,
+/// which previously had no withdrawal path, becomes explicit platform value.
+#[no_mangle]
+pub extern "C" fn complete_accounting_v3_migration(caller_ptr: *const u8) -> u32 {
+    let caller = read_address(caller_ptr);
+    if get_caller().0 != caller {
+        return 200;
+    }
+    if !is_admin(&caller) {
+        return 1;
+    }
+    if !is_paused() || !accounting_migration_locked() {
+        return 2;
+    }
+    let Some(expected) = checked_stored_u64(ACCOUNTING_MIGRATION_EXPECTED_KEY) else {
+        return 3;
+    };
+    if checked_stored_u64(ACCOUNTING_MIGRATION_CURSOR_KEY) != Some(expected)
+        || checked_stored_u64(TOKEN_COUNT_KEY) != Some(expected)
+    {
+        return 3;
+    }
+    let Some(curve) = checked_stored_u64(ACCOUNTING_MIGRATION_CURVE_KEY) else {
+        return 4;
+    };
+    let Some(royalty) = checked_stored_u64(ACCOUNTING_MIGRATION_ROYALTY_KEY) else {
+        return 4;
+    };
+    let Some(legacy_fees) = checked_stored_u64(b"cp_fees_collected") else {
+        return 4;
+    };
+    let Some(graduation_revenue) = checked_stored_u64(b"cp_graduation_revenue") else {
+        return 4;
+    };
+    let Some(platform_fees) = legacy_fees
+        .checked_sub(royalty)
+        .and_then(|fees| fees.checked_add(graduation_revenue))
+    else {
+        return 5;
+    };
+    let Some(obligations) = curve
+        .checked_add(royalty)
+        .and_then(|value| value.checked_add(platform_fees))
+    else {
+        return 5;
+    };
+    let Some(token) = configured_licn_token() else {
+        return 6;
+    };
+    let balance = match balance_of_token_or_native(token, get_contract_address()) {
+        Ok(balance) => balance,
+        Err(_) => return 6,
+    };
+    if balance < obligations {
+        return 8;
+    }
+    store_u64(CURVE_RESERVE_KEY, curve);
+    store_u64(CREATOR_LIABILITY_KEY, royalty);
+    store_u64(b"cp_fees_collected", platform_fees);
+    store_u64(
+        TOTAL_GRADUATED_KEY,
+        load_u64(ACCOUNTING_MIGRATION_GRADUATED_KEY),
+    );
+    store_u64(ACCOUNTING_VERSION_KEY, ACCOUNTING_VERSION);
+    storage_set(ACCOUNTING_MIGRATION_LOCK_KEY, &[0]);
+    0
+}
+
+const PENDING_ADMIN_KEY: &[u8] = b"cp_pending_admin";
+
+#[no_mangle]
+pub extern "C" fn propose_admin(caller_ptr: *const u8, next_admin_ptr: *const u8) -> u32 {
+    let caller = read_address(caller_ptr);
+    if get_caller().0 != caller {
+        return 200;
+    }
+    if !is_admin(&caller) {
+        return 1;
+    }
+    let next_admin = read_address(next_admin_ptr);
+    if next_admin.iter().all(|byte| *byte == 0) || next_admin == caller {
+        return 2;
+    }
+    storage_set(PENDING_ADMIN_KEY, &next_admin);
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn accept_admin(caller_ptr: *const u8) -> u32 {
+    let caller = read_address(caller_ptr);
+    if get_caller().0 != caller {
+        return 200;
+    }
+    if configured_address(PENDING_ADMIN_KEY) != Some(caller) {
+        return 1;
+    }
+    storage_set(ADMIN_KEY, &caller);
+    storage::remove(PENDING_ADMIN_KEY);
     0
 }
 
@@ -1381,7 +2173,10 @@ pub extern "C" fn set_licn_token(caller_ptr: *const u8, token_ptr: *const u8) ->
         core::ptr::copy_nonoverlapping(token_ptr, token.as_mut_ptr(), 32);
     }
 
-    if has_configured_address(LICN_TOKEN_KEY) {
+    if let Some(existing) = storage_get(LICN_TOKEN_KEY) {
+        if existing.as_slice() == token {
+            return 0;
+        }
         log_info("LICN token already configured");
         return 2;
     }
@@ -1534,11 +2329,14 @@ pub extern "C" fn begin_migration(
     if get_caller().0 != keeper {
         return 200;
     }
+    if !accounting_ready() {
+        return 8;
+    }
     let data = match token_record(token_id) {
         Some(data) => data,
         None => return 1,
     };
-    if graduation_state(token_id) != GRADUATION_ELIGIBLE
+    if checked_graduation_state(token_id) != Some(GRADUATION_ELIGIBLE)
         || token_market_cap(&data) < GRADUATION_MARKET_CAP
     {
         return 2;
@@ -1590,10 +2388,15 @@ pub extern "C" fn abort_migration(keeper_ptr: *const u8, token_id: u64) -> u32 {
     if get_caller().0 != keeper {
         return 200;
     }
-    if graduation_state(token_id) != GRADUATION_MIGRATING {
+    if !accounting_ready() {
+        return 4;
+    }
+    if checked_graduation_state(token_id) != Some(GRADUATION_MIGRATING) {
         return 1;
     }
-    let boundary = get_graduation_u64(b"cpgb:", token_id);
+    let Some(boundary) = checked_graduation_u64(b"cpgb:", token_id) else {
+        return 5;
+    };
     if get_slot() < boundary.saturating_add(MIGRATION_TIMEOUT_SLOTS) {
         return 2;
     }
@@ -1617,7 +2420,10 @@ pub extern "C" fn finalize_migration(keeper_ptr: *const u8, token_id: u64) -> u3
     if get_caller().0 != keeper {
         return 200;
     }
-    if graduation_state(token_id) != GRADUATION_MIGRATING {
+    if !accounting_ready() {
+        return 18;
+    }
+    if checked_graduation_state(token_id) != Some(GRADUATION_MIGRATING) {
         return 1;
     }
     let candidate = match graduation_candidate(token_id) {
@@ -1682,10 +2488,18 @@ pub extern "C" fn finalize_migration(keeper_ptr: *const u8, token_id: u64) -> u3
         return 8;
     }
 
-    let tick_size = load_u64(GRADUATION_TICK_SIZE_KEY);
-    let lot_size = load_u64(GRADUATION_LOT_SIZE_KEY);
-    let min_order = load_u64(GRADUATION_MIN_ORDER_KEY);
-    let amm_fee_tier = load_u64(GRADUATION_AMM_FEE_TIER_KEY);
+    let Some(tick_size) = checked_stored_u64(GRADUATION_TICK_SIZE_KEY) else {
+        return 9;
+    };
+    let Some(lot_size) = checked_stored_u64(GRADUATION_LOT_SIZE_KEY) else {
+        return 9;
+    };
+    let Some(min_order) = checked_stored_u64(GRADUATION_MIN_ORDER_KEY) else {
+        return 9;
+    };
+    let Some(amm_fee_tier) = checked_stored_u64(GRADUATION_AMM_FEE_TIER_KEY) else {
+        return 9;
+    };
     if tick_size == 0 || lot_size == 0 || min_order < 1_000 || amm_fee_tier > 3 {
         return 9;
     }
@@ -1727,7 +2541,7 @@ pub extern "C" fn finalize_migration(keeper_ptr: *const u8, token_id: u64) -> u3
         CrossCall::new(Address(dex_amm), "add_liquidity", liquidity_args)
             .with_value(licn_liquidity_limit),
     ) {
-        Ok(response) if response.len() >= 24 => response,
+        Ok(response) if response.len() == 24 => response,
         _ => return 12,
     };
     let position_id = bytes_to_u64(&liquidity_response[0..8]);
@@ -1738,9 +2552,48 @@ pub extern "C" fn finalize_migration(keeper_ptr: *const u8, token_id: u64) -> u3
         || actual_licn_liquidity == 0
         || actual_token_liquidity > token_liquidity_limit
         || actual_licn_liquidity > licn_liquidity_limit
+        || token_liquidity_limit - actual_token_liquidity > MAX_GRADUATION_DUST
+        || licn_liquidity_limit - actual_licn_liquidity > MAX_GRADUATION_DUST
     {
         return 13;
     }
+    let unused_token_inventory = token_liquidity_limit - actual_token_liquidity;
+    if unused_token_inventory > 0
+        && !cross_call_succeeded(
+            candidate,
+            "burn_migration_inventory",
+            u64_to_bytes(unused_token_inventory).to_vec(),
+        )
+    {
+        return 19;
+    }
+
+    let platform_revenue = licn_raised - actual_licn_liquidity;
+    let Some(graduation_revenue) = checked_stored_u64(b"cp_graduation_revenue")
+        .and_then(|value| value.checked_add(platform_revenue))
+    else {
+        return 16;
+    };
+    let Some(graduation_revision) = checked_stored_u64(b"cp_graduation_revision")
+        .and_then(|value| value.checked_add(1))
+    else {
+        return 17;
+    };
+    let Some(new_curve_reserve) = checked_stored_u64(CURVE_RESERVE_KEY)
+        .and_then(|value| value.checked_sub(licn_raised))
+    else {
+        return 20;
+    };
+    let Some(new_platform_fees) = checked_stored_u64(b"cp_fees_collected")
+        .and_then(|value| value.checked_add(platform_revenue))
+    else {
+        return 20;
+    };
+    let Some(new_total_graduated) = checked_stored_u64(TOTAL_GRADUATED_KEY)
+        .and_then(|value| value.checked_add(1))
+    else {
+        return 20;
+    };
 
     let mut forward_route_args = Vec::with_capacity(90);
     forward_route_args.extend_from_slice(&sporepump);
@@ -1777,22 +2630,12 @@ pub extern "C" fn finalize_migration(keeper_ptr: *const u8, token_id: u64) -> u3
     liquidity.extend_from_slice(&u64_to_bytes(actual_licn_liquidity));
     liquidity.extend_from_slice(&u64_to_bytes(actual_token_liquidity));
     storage_set(&graduation_key(b"cpgl:", token_id), &liquidity);
-    set_graduation_u64(
-        b"cpgx:",
-        token_id,
-        token_liquidity_limit - actual_token_liquidity,
-    );
-    let platform_revenue = licn_raised - actual_licn_liquidity;
-    let Some(graduation_revenue) =
-        load_u64(b"cp_graduation_revenue").checked_add(platform_revenue)
-    else {
-        return 16;
-    };
-    let Some(graduation_revision) = load_u64(b"cp_graduation_revision").checked_add(1) else {
-        return 17;
-    };
+    set_graduation_u64(b"cpgx:", token_id, 0);
     store_u64(b"cp_graduation_revenue", graduation_revenue);
     store_u64(b"cp_graduation_revision", graduation_revision);
+    store_u64(CURVE_RESERVE_KEY, new_curve_reserve);
+    store_u64(b"cp_fees_collected", new_platform_fees);
+    store_u64(TOTAL_GRADUATED_KEY, new_total_graduated);
     data[64] = 1;
     storage_set(&graduation_key(b"cpt:", token_id), &data);
     set_graduation_state(token_id, GRADUATION_GRADUATED);
@@ -1813,7 +2656,7 @@ pub extern "C" fn finalize_migration(keeper_ptr: *const u8, token_id: u64) -> u3
 /// atomically rolls this write back.
 #[no_mangle]
 pub extern "C" fn consume_graduation_claim(token_id: u64, holder_ptr: *const u8) -> u64 {
-    if graduation_state(token_id) != GRADUATION_GRADUATED {
+    if checked_graduation_state(token_id) != Some(GRADUATION_GRADUATED) {
         return 0;
     }
     let candidate = match graduation_candidate(token_id) {
@@ -1841,51 +2684,126 @@ pub extern "C" fn consume_graduation_claim(token_id: u64, holder_ptr: *const u8)
 }
 
 /// Lifecycle status: state(1), eligibility slot(8), boundary slot(8),
-/// candidate(32), pair id(8), pool id(8), route id(8).
+/// candidate(32), pair id(8), pool id(8), forward route id(8), reverse route
+/// id(8), position id(8), LICN liquidity(8), token liquidity(8), protocol
+/// token inventory(8). The original 73-byte prefix remains unchanged.
 #[no_mangle]
 pub extern "C" fn get_graduation_status(token_id: u64) -> u32 {
     if token_record(token_id).is_none() {
         return 1;
     }
-    let mut result = Vec::with_capacity(73);
-    result.push(graduation_state(token_id));
-    result.extend_from_slice(&u64_to_bytes(get_graduation_u64(b"cpge:", token_id)));
-    result.extend_from_slice(&u64_to_bytes(get_graduation_u64(b"cpgb:", token_id)));
-    result.extend_from_slice(&graduation_candidate(token_id).unwrap_or([0u8; 32]));
-    result.extend_from_slice(&u64_to_bytes(get_graduation_u64(b"cpgp:", token_id)));
-    result.extend_from_slice(&u64_to_bytes(get_graduation_u64(b"cpga:", token_id)));
-    result.extend_from_slice(&u64_to_bytes(get_graduation_u64(b"cpgr:", token_id)));
+    let Some(state) = checked_graduation_state(token_id) else {
+        return 2;
+    };
+    let Some(eligibility_slot) = checked_graduation_u64(b"cpge:", token_id) else {
+        return 2;
+    };
+    let Some(boundary_slot) = checked_graduation_u64(b"cpgb:", token_id) else {
+        return 2;
+    };
+    let Some(pair_id) = checked_graduation_u64(b"cpgp:", token_id) else {
+        return 2;
+    };
+    let Some(pool_id) = checked_graduation_u64(b"cpga:", token_id) else {
+        return 2;
+    };
+    let Some(forward_route_id) = checked_graduation_u64(b"cpgr:", token_id) else {
+        return 2;
+    };
+    let Some(reverse_route_id) = checked_graduation_u64(b"cpgr2:", token_id) else {
+        return 2;
+    };
+    let Some(position_id) = checked_graduation_u64(b"cpgpos:", token_id) else {
+        return 2;
+    };
+    let Some(protocol_inventory) = checked_graduation_u64(b"cpgx:", token_id) else {
+        return 2;
+    };
+    let liquidity = match storage_get(&graduation_key(b"cpgl:", token_id)) {
+        Some(value) if value.len() == 16 => value,
+        Some(_) => return 2,
+        None => Vec::from([0u8; 16]),
+    };
+    let candidate = match storage_get(&graduation_key(b"cpgt:", token_id)) {
+        Some(value) if value.len() == 32 && value.iter().any(|byte| *byte != 0) => value,
+        Some(_) => return 2,
+        None => Vec::from([0u8; 32]),
+    };
+
+    let mut result = Vec::with_capacity(113);
+    result.push(state);
+    result.extend_from_slice(&u64_to_bytes(eligibility_slot));
+    result.extend_from_slice(&u64_to_bytes(boundary_slot));
+    result.extend_from_slice(&candidate);
+    result.extend_from_slice(&u64_to_bytes(pair_id));
+    result.extend_from_slice(&u64_to_bytes(pool_id));
+    result.extend_from_slice(&u64_to_bytes(forward_route_id));
+    result.extend_from_slice(&u64_to_bytes(reverse_route_id));
+    result.extend_from_slice(&u64_to_bytes(position_id));
+    result.extend_from_slice(&liquidity);
+    result.extend_from_slice(&u64_to_bytes(protocol_inventory));
     set_return_data(&result);
     0
 }
 
-/// Get graduation info: [graduation_revenue(8), dex_core_set(1), dex_amm_set(1)]
+/// Get graduation info. The original revenue/core/AMM prefix remains stable;
+/// router, template, governance, accounting readiness, and exact DEX settings
+/// are appended for deployment and agent health checks.
 #[no_mangle]
 pub extern "C" fn get_graduation_info() -> u32 {
-    let revenue = load_u64(b"cp_graduation_revenue");
-    let core_set: u8 = storage_get(DEX_CORE_ADDRESS_KEY)
-        .map(|b| {
-            if b.len() == 32 && b.iter().any(|&x| x != 0) {
-                1
-            } else {
-                0
-            }
-        })
-        .unwrap_or(0);
-    let amm_set: u8 = storage_get(DEX_AMM_ADDRESS_KEY)
-        .map(|b| {
-            if b.len() == 32 && b.iter().any(|&x| x != 0) {
-                1
-            } else {
-                0
-            }
-        })
-        .unwrap_or(0);
+    let Some(revenue) = checked_stored_u64(b"cp_graduation_revenue") else {
+        return 1;
+    };
+    let Some(core_configured) = configured_address_status(DEX_CORE_ADDRESS_KEY) else {
+        return 1;
+    };
+    let Some(amm_configured) = configured_address_status(DEX_AMM_ADDRESS_KEY) else {
+        return 1;
+    };
+    let Some(router_configured) = configured_address_status(DEX_ROUTER_ADDRESS_KEY) else {
+        return 1;
+    };
+    let Some(template_configured) = configured_address_status(GRADUATED_TOKEN_TEMPLATE_HASH_KEY)
+    else {
+        return 1;
+    };
+    let Some(governance_configured) = configured_address_status(GRADUATION_GOVERNANCE_KEY) else {
+        return 1;
+    };
+    let Some(accounting_version) = checked_stored_u64(ACCOUNTING_VERSION_KEY) else {
+        return 1;
+    };
+    let Some(migration_locked) = checked_bool(ACCOUNTING_MIGRATION_LOCK_KEY, false) else {
+        return 1;
+    };
+    let Some(tick_size) = checked_stored_u64(GRADUATION_TICK_SIZE_KEY) else {
+        return 1;
+    };
+    let Some(lot_size) = checked_stored_u64(GRADUATION_LOT_SIZE_KEY) else {
+        return 1;
+    };
+    let Some(min_order) = checked_stored_u64(GRADUATION_MIN_ORDER_KEY) else {
+        return 1;
+    };
+    let Some(amm_fee_tier) = checked_stored_u64(GRADUATION_AMM_FEE_TIER_KEY) else {
+        return 1;
+    };
+    if amm_fee_tier > u32::MAX as u64 {
+        return 1;
+    }
 
-    let mut result = Vec::with_capacity(10);
+    let mut result = Vec::with_capacity(46);
     result.extend_from_slice(&u64_to_bytes(revenue));
-    result.push(core_set);
-    result.push(amm_set);
+    result.push(core_configured);
+    result.push(amm_configured);
+    result.push(router_configured);
+    result.push(template_configured);
+    result.push(governance_configured);
+    result.push((accounting_version == ACCOUNTING_VERSION && !migration_locked) as u8);
+    result.extend_from_slice(&u64_to_bytes(tick_size));
+    result.extend_from_slice(&u64_to_bytes(lot_size));
+    result.extend_from_slice(&u64_to_bytes(min_order));
+    result.extend_from_slice(&u64_to_bytes(amm_fee_tier));
     set_return_data(&result);
     0
 }
@@ -1900,6 +2818,24 @@ mod tests {
 
     fn setup() {
         test_mock::reset();
+    }
+
+    fn create_active_token_with_buy() -> (u64, [u8; 32], [u8; 32], u64) {
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(initialize(admin.as_ptr()), 0);
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(CREATION_FEE);
+        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
+        assert_ne!(token_id, ERROR_RETURN);
+        let buyer = [3u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(buyer);
+        test_mock::set_value(1_000_000_000);
+        let bought = buy(buyer.as_ptr(), token_id, 1_000_000_000);
+        assert_ne!(bought, ERROR_RETURN);
+        (token_id, creator, buyer, bought)
     }
 
     fn create_threshold_token() -> (u64, [u8; 32], [u8; 32]) {
@@ -1919,9 +2855,9 @@ mod tests {
         data[32..40].copy_from_slice(&u64_to_bytes(400_000_000_000_000));
         data[40..48].copy_from_slice(&u64_to_bytes(50_000_000_000_000_000));
         storage_set(&token_key, &data);
+        store_u64(CURVE_RESERVE_KEY, 50_000_000_000_000_000);
 
         let buyer = [3u8; 32];
-        test_mock::set_timestamp(10_000);
         test_mock::set_slot(100);
         test_mock::set_caller(buyer);
         let buy_amount = 1_000_000_000_000;
@@ -2040,7 +2976,8 @@ mod tests {
         test_mock::set_caller(creator);
         test_mock::set_value(CREATION_FEE);
 
-        assert_eq!(create_token(creator.as_ptr(), u64::MAX), 1);
+        assert_eq!(create_token(creator.as_ptr(), u64::MAX), ERROR_RETURN);
+        assert_eq!(create_token(creator.as_ptr(), CREATION_FEE), 1);
         assert_eq!(load_u64(b"cp_fees_collected"), CREATION_FEE);
     }
 
@@ -2131,9 +3068,11 @@ mod tests {
         let bought = buy(buyer.as_ptr(), token_id, payment);
         assert_eq!(bought, quoted, "quote and credited amount must match");
 
-        let net = payment * (100 - PLATFORM_FEE_PERCENT) / 100;
-        assert!(calculate_buy_cost(0, bought) <= net);
-        assert!(calculate_buy_cost(0, bought + 1) > net);
+        let creator_bps = checked_creator_royalty().unwrap();
+        let bought_cost = calculate_buy_cost(0, bought);
+        let next_cost = calculate_buy_cost(0, bought + 1);
+        assert!(buy_charge(bought_cost, creator_bps).unwrap().0 <= payment);
+        assert!(buy_charge(next_cost, creator_bps).unwrap().0 > payment);
     }
 
     #[test]
@@ -2155,17 +3094,22 @@ mod tests {
         let buyer = [3u8; 32];
         let payment = 1_000_000_000;
         let actual_cost = calculate_buy_cost(0, 1_000_000_000);
-        let actual_fee = (actual_cost * PLATFORM_FEE_PERCENT + 98) / 99;
+        let (charged, platform_fee, creator_fee) =
+            buy_charge(actual_cost, checked_creator_royalty().unwrap()).unwrap();
         test_mock::set_caller(buyer);
         test_mock::set_value(payment);
         assert_eq!(buy(buyer.as_ptr(), token_id, payment), 1_000_000_000);
-        assert_eq!(load_u64(b"cp_fees_collected"), CREATION_FEE + actual_fee);
+        assert_eq!(
+            load_u64(b"cp_fees_collected"),
+            CREATION_FEE + platform_fee
+        );
+        assert_eq!(load_u64(CREATOR_LIABILITY_KEY), creator_fee);
         let call = test_mock::get_last_cross_call().expect("refund transfer");
         assert_eq!(call.1, "transfer");
         assert_eq!(&call.2[0..32], &buyer);
         assert_eq!(
             bytes_to_u64(&call.2[32..40]),
-            payment - actual_cost - actual_fee
+            payment - charged
         );
     }
 
@@ -2208,9 +3152,9 @@ mod tests {
         let buyer = [3u8; 32];
         let bal_key = launchpad_balance_key(token_id, &buyer);
         let buyer_hex = hex_encode_addr(&buyer);
-        let lbk = last_buy_key(token_id, &buyer_hex);
+        let lbk = last_buy_slot_key(token_id, &buyer_hex);
         test_mock::set_can_receive(false);
-        test_mock::set_timestamp(10_000);
+        test_mock::set_slot(10_000);
         test_mock::set_caller(buyer);
         test_mock::set_value(1_000_000_000);
 
@@ -2244,22 +3188,19 @@ mod tests {
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
-        // CON-05: Configure LICN token so transfer_licn_out succeeds
-        let licn = [42u8; 32];
-        set_licn_token(admin.as_ptr(), licn.as_ptr());
         test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
         test_mock::set_value(CREATION_FEE);
         let token_id = create_token(creator.as_ptr(), CREATION_FEE);
         let buyer = [3u8; 32];
-        test_mock::set_timestamp(10_000);
+        test_mock::set_slot(10_000);
         test_mock::set_caller(buyer);
         test_mock::set_value(1_000_000_000);
         let bought = buy(buyer.as_ptr(), token_id, 1_000_000_000);
         assert!(bought > 0);
         // Advance past sell cooldown (default 13 slots)
-        test_mock::set_timestamp(20_000);
+        test_mock::set_slot(20_000);
         // Sell half the bought tokens
         let _refund = sell(buyer.as_ptr(), token_id, bought / 2);
         // Verify buyer balance decreased
@@ -2275,13 +3216,89 @@ mod tests {
     }
 
     #[test]
+    fn test_sell_quote_and_execution_fund_both_fee_liabilities_exactly() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
+
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(CREATION_FEE);
+        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
+        let buyer = [3u8; 32];
+        test_mock::set_slot(10_000);
+        test_mock::set_caller(buyer);
+        test_mock::set_value(1_000_000_000);
+        let bought = buy(buyer.as_ptr(), token_id, 1_000_000_000);
+        assert!(bought > 0);
+
+        let amount = bought / 2;
+        let data = token_record(token_id).unwrap();
+        let raw_refund = calculate_sell_refund(bytes_to_u64(&data[32..40]), amount);
+        let (platform_fee, creator_fee, expected_net) =
+            sell_fee_components(raw_refund, DEFAULT_CREATOR_ROYALTY_BPS).unwrap();
+        assert_eq!(get_sell_quote(token_id, amount), expected_net);
+
+        let royalty_key = creator_royalty_key(token_id, &creator);
+        let fees_before = load_u64(b"cp_fees_collected");
+        let royalty_before = load_u64(&royalty_key);
+        let liability_before = load_u64(CREATOR_LIABILITY_KEY);
+        let reserve_before = load_u64(CURVE_RESERVE_KEY);
+
+        test_mock::set_slot(20_000);
+        assert_eq!(sell(buyer.as_ptr(), token_id, amount), expected_net);
+        assert_eq!(load_u64(b"cp_fees_collected"), fees_before + platform_fee);
+        assert_eq!(load_u64(&royalty_key), royalty_before + creator_fee);
+        assert_eq!(
+            load_u64(CREATOR_LIABILITY_KEY),
+            liability_before + creator_fee
+        );
+        assert_eq!(load_u64(CURVE_RESERVE_KEY), reserve_before - raw_refund);
+    }
+
+    #[test]
+    fn test_malformed_trade_configuration_fails_closed_without_mutation() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(CREATION_FEE);
+        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
+        let buyer = [3u8; 32];
+
+        storage_set(b"cp_max_buy", &[1]);
+        test_mock::set_slot(10_000);
+        test_mock::set_caller(buyer);
+        test_mock::set_value(1_000_000_000);
+        assert_eq!(buy(buyer.as_ptr(), token_id, 1_000_000_000), ERROR_RETURN);
+        assert_eq!(token_record(token_id).unwrap()[32..40], [0u8; 8]);
+
+        storage_set(b"cp_max_buy", &u64_to_bytes(DEFAULT_MAX_BUY_AMOUNT));
+        let bought = buy(buyer.as_ptr(), token_id, 1_000_000_000);
+        assert!(bought > 0);
+        let before = token_record(token_id).unwrap();
+        let balance_before = load_u64(&launchpad_balance_key(token_id, &buyer));
+        storage_set(b"cp_sell_cooldown", &[1]);
+        test_mock::set_slot(20_000);
+        assert_eq!(sell(buyer.as_ptr(), token_id, bought / 2), ERROR_RETURN);
+        assert_eq!(token_record(token_id).unwrap(), before);
+        assert_eq!(
+            load_u64(&launchpad_balance_key(token_id, &buyer)),
+            balance_before
+        );
+    }
+
+    #[test]
     fn test_transfer_licn_out_rejects_false_status() {
         setup();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
-        let licn = [42u8; 32];
-        assert_eq!(set_licn_token(admin.as_ptr(), licn.as_ptr()), 0);
         test_mock::set_cross_call_response(Some(vec![2u8]));
 
         let recipient = [3u8; 32];
@@ -2294,16 +3311,13 @@ mod tests {
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
-        let licn = [42u8; 32];
-        assert_eq!(set_licn_token(admin.as_ptr(), licn.as_ptr()), 0);
-
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
         test_mock::set_value(CREATION_FEE);
         let token_id = create_token(creator.as_ptr(), CREATION_FEE);
 
         let buyer = [3u8; 32];
-        test_mock::set_timestamp(10_000);
+        test_mock::set_slot(10_000);
         test_mock::set_caller(buyer);
         test_mock::set_value(1_000_000_000);
         let bought = buy(buyer.as_ptr(), token_id, 1_000_000_000);
@@ -2321,7 +3335,7 @@ mod tests {
         let before_token = storage_get(&token_key).unwrap();
         let before_fees = load_u64(b"cp_fees_collected");
 
-        test_mock::set_timestamp(20_000);
+        test_mock::set_slot(20_000);
         test_mock::set_cross_call_response(Some(vec![2u8]));
         assert_eq!(sell(buyer.as_ptr(), token_id, bought / 2), ERROR_RETURN);
         assert_eq!(load_u64(&bal_key), before_balance);
@@ -2335,8 +3349,6 @@ mod tests {
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
-        let licn = [42u8; 32];
-        assert_eq!(set_licn_token(admin.as_ptr(), licn.as_ptr()), 0);
         test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
 
         let creator = [2u8; 32];
@@ -2345,7 +3357,7 @@ mod tests {
         let token_id = create_token(creator.as_ptr(), CREATION_FEE);
 
         let buyer = [3u8; 32];
-        test_mock::set_timestamp(10_000);
+        test_mock::set_slot(10_000);
         test_mock::set_caller(buyer);
         test_mock::set_value(1_000_000_000);
         let bought = buy(buyer.as_ptr(), token_id, 1_000_000_000);
@@ -2360,7 +3372,7 @@ mod tests {
         let last_call_before = test_mock::get_last_cross_call();
 
         test_mock::set_can_send(false);
-        test_mock::set_timestamp(20_000);
+        test_mock::set_slot(20_000);
         assert_eq!(sell(buyer.as_ptr(), token_id, bought / 2), ERROR_RETURN);
         assert_eq!(test_mock::get_storage(&token_key).unwrap(), token_before);
         assert_eq!(load_u64(&bal_key), balance_before);
@@ -2466,7 +3478,7 @@ mod tests {
         create_token(c.as_ptr(), CREATION_FEE);
         assert_eq!(get_platform_stats(), 0);
         let ret = test_mock::get_return_data();
-        assert_eq!(ret.len(), 16);
+        assert_eq!(ret.len(), 88);
         assert_eq!(bytes_to_u64(&ret[0..8]), 1);
         assert_eq!(bytes_to_u64(&ret[8..16]), CREATION_FEE);
     }
@@ -2505,8 +3517,6 @@ mod tests {
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
-        let licn = [42u8; 32];
-        assert_eq!(set_licn_token(admin.as_ptr(), licn.as_ptr()), 0);
         test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
 
         let creator = [2u8; 32];
@@ -2515,7 +3525,7 @@ mod tests {
         create_token(creator.as_ptr(), CREATION_FEE);
 
         let buyer = [3u8; 32];
-        test_mock::set_timestamp(10_000);
+        test_mock::set_slot(10_000);
         test_mock::set_caller(buyer);
         test_mock::set_value(1_000_000_000);
         let tokens = buy(buyer.as_ptr(), 1, 1_000_000_000);
@@ -2524,7 +3534,7 @@ mod tests {
         test_mock::set_caller(admin);
         assert_eq!(pause(admin.as_ptr()), 0);
 
-        test_mock::set_timestamp(10_014);
+        test_mock::set_slot(10_014);
         test_mock::set_caller(buyer);
         let refund = sell(buyer.as_ptr(), 1, tokens / 2);
         assert!(refund > 0, "sell should remain available while paused");
@@ -2539,6 +3549,60 @@ mod tests {
         let other = [9u8; 32];
         test_mock::set_caller(other);
         assert_eq!(pause(other.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_malformed_control_flags_fail_closed_and_are_admin_repairable() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(CREATION_FEE);
+        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
+
+        storage_set(PAUSE_KEY, &[2]);
+        assert!(is_paused());
+        test_mock::set_caller(admin);
+        assert_eq!(unpause(admin.as_ptr()), 0);
+        assert_eq!(storage_get(PAUSE_KEY), Some(vec![0]));
+
+        storage_set(ACCOUNTING_MIGRATION_LOCK_KEY, &[2]);
+        assert!(!accounting_ready());
+        assert_eq!(get_platform_stats(), 1);
+        assert_eq!(get_graduation_info(), 1);
+        let buyer = [3u8; 32];
+        test_mock::set_caller(buyer);
+        test_mock::set_value(1_000_000_000);
+        assert_eq!(
+            buy(buyer.as_ptr(), token_id, 1_000_000_000),
+            ERROR_RETURN
+        );
+        storage_set(ACCOUNTING_MIGRATION_LOCK_KEY, &[0]);
+
+        let frozen_key = graduation_key(b"cpf:", token_id);
+        storage_set(&frozen_key, &[0, 1]);
+        assert!(is_token_frozen(token_id));
+        assert_eq!(
+            buy(buyer.as_ptr(), token_id, 1_000_000_000),
+            ERROR_RETURN
+        );
+        test_mock::set_caller(admin);
+        assert_eq!(unfreeze_token(admin.as_ptr(), token_id), 0);
+        assert_eq!(storage_get(&frozen_key), Some(vec![0]));
+
+        storage_set(&graduation_key(b"cpgs:", token_id), &[0, 1]);
+        assert!(checked_graduation_state(token_id).is_none());
+        test_mock::set_caller(buyer);
+        test_mock::set_value(1_000_000_000);
+        assert_eq!(
+            buy(buyer.as_ptr(), token_id, 1_000_000_000),
+            ERROR_RETURN
+        );
+        assert_eq!(get_buy_quote(token_id, 1_000_000_000), 0);
+        assert_eq!(get_token_info(token_id), 2);
+        assert_eq!(get_graduation_status(token_id), 2);
     }
 
     #[test]
@@ -2557,7 +3621,7 @@ mod tests {
         assert!(is_token_frozen(1));
         // Buy blocked (frozen check is before caller check)
         let buyer = [3u8; 32];
-        test_mock::set_timestamp(10_000);
+        test_mock::set_slot(10_000);
         assert_eq!(buy(buyer.as_ptr(), 1, 1_000_000_000), ERROR_RETURN);
 
         // Unfreeze
@@ -2577,8 +3641,6 @@ mod tests {
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
-        let licn = [42u8; 32];
-        assert_eq!(set_licn_token(admin.as_ptr(), licn.as_ptr()), 0);
         test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
 
         let creator = [2u8; 32];
@@ -2587,7 +3649,7 @@ mod tests {
         let token_id = create_token(creator.as_ptr(), CREATION_FEE);
 
         let buyer = [3u8; 32];
-        test_mock::set_timestamp(10_000);
+        test_mock::set_slot(10_000);
         test_mock::set_caller(buyer);
         test_mock::set_value(1_000_000_000);
         let bought = buy(buyer.as_ptr(), token_id, 1_000_000_000);
@@ -2604,7 +3666,7 @@ mod tests {
         let fees_before = load_u64(b"cp_fees_collected");
         let last_call_before = test_mock::get_last_cross_call();
 
-        test_mock::set_timestamp(20_000);
+        test_mock::set_slot(20_000);
         test_mock::set_caller(buyer);
         assert_eq!(sell(buyer.as_ptr(), token_id, bought / 2), ERROR_RETURN);
         assert_eq!(test_mock::get_storage(&token_key).unwrap(), token_before);
@@ -2637,18 +3699,18 @@ mod tests {
         create_token(creator.as_ptr(), CREATION_FEE);
 
         let buyer = [3u8; 32];
-        test_mock::set_timestamp(10_000);
+        test_mock::set_slot(10_000);
         test_mock::set_caller(buyer);
         test_mock::set_value(1_000_000_000);
         let tokens = buy(buyer.as_ptr(), 1, 1_000_000_000);
         assert!(tokens > 0);
 
         // Second buy within cooldown (default 5 slots)
-        test_mock::set_timestamp(10_003);
+        test_mock::set_slot(10_003);
         assert_eq!(buy(buyer.as_ptr(), 1, 1_000_000_000), ERROR_RETURN);
 
         // After cooldown
-        test_mock::set_timestamp(10_006);
+        test_mock::set_slot(10_006);
         let tokens2 = buy(buyer.as_ptr(), 1, 1_000_000_000);
         assert!(tokens2 > 0);
     }
@@ -2667,12 +3729,12 @@ mod tests {
         create_token(creator.as_ptr(), CREATION_FEE);
 
         let buyer = [3u8; 32];
-        test_mock::set_timestamp(10_000);
+        test_mock::set_slot(10_000);
         test_mock::set_caller(buyer);
         test_mock::set_value(1_000_000_000);
         assert!(buy(buyer.as_ptr(), 1, 1_000_000_000) > 0);
 
-        test_mock::set_timestamp(20_000);
+        test_mock::set_slot(20_000);
         test_mock::set_value(1_000_000_000);
         assert_eq!(buy(buyer.as_ptr(), 1, 1_000_000_000), ERROR_RETURN);
     }
@@ -2683,9 +3745,6 @@ mod tests {
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
-        // CON-05: Configure LICN token so transfer_licn_out succeeds
-        let licn = [42u8; 32];
-        set_licn_token(admin.as_ptr(), licn.as_ptr());
         test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
@@ -2693,18 +3752,18 @@ mod tests {
         create_token(creator.as_ptr(), CREATION_FEE);
 
         let buyer = [3u8; 32];
-        test_mock::set_timestamp(10_000);
+        test_mock::set_slot(10_000);
         test_mock::set_caller(buyer);
         test_mock::set_value(1_000_000_000);
         let tokens = buy(buyer.as_ptr(), 1, 1_000_000_000);
         assert!(tokens > 0);
 
         // Sell within sell cooldown (default 13 slots)
-        test_mock::set_timestamp(10_010);
+        test_mock::set_slot(10_010);
         assert_eq!(sell(buyer.as_ptr(), 1, tokens / 2), ERROR_RETURN);
 
         // After sell cooldown
-        test_mock::set_timestamp(10_014);
+        test_mock::set_slot(10_014);
         let refund = sell(buyer.as_ptr(), 1, tokens / 2);
         assert!(refund > 0);
     }
@@ -2725,7 +3784,7 @@ mod tests {
         assert_eq!(set_max_buy(admin.as_ptr(), 500_000_000), 0); // 0.5 LICN
 
         let buyer = [3u8; 32];
-        test_mock::set_timestamp(10_000);
+        test_mock::set_slot(10_000);
         test_mock::set_caller(buyer);
         // Over limit rejected (max buy check is before caller check)
         test_mock::set_value(1_000_000_000);
@@ -2781,9 +3840,6 @@ mod tests {
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
-        // CON-05: Configure LICN token so transfer_licn_out succeeds
-        let licn = [42u8; 32];
-        set_licn_token(admin.as_ptr(), licn.as_ptr());
         test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
@@ -2935,12 +3991,12 @@ mod tests {
     fn test_threshold_crossing_enters_eligible_and_closes_buys() {
         setup();
         let (token_id, _, buyer) = create_threshold_token();
-        test_mock::set_timestamp(20_000);
+        test_mock::set_slot(20_000);
         test_mock::set_value(1_000_000_000);
         assert_eq!(buy(buyer.as_ptr(), token_id, 1_000_000_000), ERROR_RETURN);
         assert_eq!(get_graduation_status(token_id), 0);
         let status = test_mock::get_return_data();
-        assert_eq!(status.len(), 73);
+        assert_eq!(status.len(), 113);
         assert_eq!(status[0], GRADUATION_ELIGIBLE);
         assert_eq!(bytes_to_u64(&status[1..9]), 100);
     }
@@ -2951,13 +4007,12 @@ mod tests {
         let admin = [1u8; 32];
         let (token_id, _, buyer) = create_threshold_token();
         test_mock::set_caller(admin);
-        assert_eq!(set_licn_token(admin.as_ptr(), [42u8; 32].as_ptr()), 0);
         let token_key = graduation_key(b"cpt:", token_id);
         let data = test_mock::get_storage(&token_key).unwrap();
         let supply = bytes_to_u64(&data[32..40]);
         store_u64(&launchpad_balance_key(token_id, &buyer), supply);
         test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
-        test_mock::set_timestamp(30_000);
+        test_mock::set_slot(30_000);
         test_mock::set_caller(buyer);
         let refund = sell(buyer.as_ptr(), token_id, supply / 2);
         assert_ne!(refund, ERROR_RETURN);
@@ -2974,11 +4029,12 @@ mod tests {
 
         assert_eq!(get_graduation_info(), 0);
         let ret = test_mock::get_return_data();
-        assert_eq!(ret.len(), 10);
+        assert_eq!(ret.len(), 46);
         // revenue=0, core_set=0, amm_set=0
         assert_eq!(bytes_to_u64(&ret[0..8]), 0);
         assert_eq!(ret[8], 0);
         assert_eq!(ret[9], 0);
+        assert_eq!(ret[13], 1); // accounting ready
     }
 
     #[test]
@@ -2994,7 +4050,7 @@ mod tests {
 
         assert_eq!(get_graduation_info(), 0);
         let ret = test_mock::get_return_data();
-        assert_eq!(ret.len(), 10);
+        assert_eq!(ret.len(), 46);
         assert_eq!(bytes_to_u64(&ret[0..8]), 0); // no revenue yet
         assert_eq!(ret[8], 1); // core_set
         assert_eq!(ret[9], 1); // amm_set
@@ -3103,21 +4159,26 @@ mod tests {
     fn finalization_responses(
         token_liquidity: u64,
         licn_liquidity: u64,
+        burns_remainder: bool,
         reverse_route: Vec<u8>,
     ) -> Vec<Vec<u8>> {
         let mut deposit = Vec::with_capacity(24);
         deposit.extend_from_slice(&u64_to_bytes(13));
         deposit.extend_from_slice(&u64_to_bytes(token_liquidity));
         deposit.extend_from_slice(&u64_to_bytes(licn_liquidity));
-        vec![
+        let mut responses = vec![
             0u32.to_le_bytes().to_vec(),
             0u32.to_le_bytes().to_vec(),
             u64_to_bytes(11).to_vec(),
             u64_to_bytes(12).to_vec(),
             deposit,
-            u64_to_bytes(14).to_vec(),
-            reverse_route,
-        ]
+        ];
+        if burns_remainder {
+            responses.push(0u32.to_le_bytes().to_vec());
+        }
+        responses.push(u64_to_bytes(14).to_vec());
+        responses.push(reverse_route);
+        responses
     }
 
     #[test]
@@ -3127,6 +4188,7 @@ mod tests {
         let data = token_record(token_id).unwrap();
         let supply = bytes_to_u64(&data[32..40]);
         let raised = bytes_to_u64(&data[40..48]);
+        assert_eq!(load_u64(CURVE_RESERVE_KEY), raised);
         let licn_limit = raised * GRADUATION_LIQUIDITY_PERCENT / 100;
         let token_limit = u128_to_u64_saturating(
             licn_limit as u128 * 1_000_000_000u128 / current_price(supply) as u128,
@@ -3136,6 +4198,7 @@ mod tests {
         test_mock::set_cross_call_responses(finalization_responses(
             actual_token,
             actual_licn,
+            true,
             u64_to_bytes(15).to_vec(),
         ));
 
@@ -3162,6 +4225,7 @@ mod tests {
         let data = token_record(token_id).unwrap();
         let supply = bytes_to_u64(&data[32..40]);
         let raised = bytes_to_u64(&data[40..48]);
+        assert_eq!(load_u64(CURVE_RESERVE_KEY), raised);
         let licn_limit = raised * GRADUATION_LIQUIDITY_PERCENT / 100;
         let token_limit = u128_to_u64_saturating(
             licn_limit as u128 * 1_000_000_000u128 / current_price(supply) as u128,
@@ -3169,6 +4233,7 @@ mod tests {
         test_mock::set_cross_call_responses(finalization_responses(
             token_limit,
             licn_limit,
+            false,
             Vec::new(),
         ));
 
@@ -3266,9 +4331,6 @@ mod tests {
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
-        // CON-05: Configure LICN token so transfer_licn_out succeeds
-        let licn = [42u8; 32];
-        set_licn_token(admin.as_ptr(), licn.as_ptr());
         test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
@@ -3276,7 +4338,7 @@ mod tests {
         create_token(creator.as_ptr(), CREATION_FEE);
 
         let buyer = [3u8; 32];
-        test_mock::set_timestamp(10_000);
+        test_mock::set_slot(10_000);
         test_mock::set_caller(buyer);
         test_mock::set_value(1_000_000_000);
         let bought = buy(buyer.as_ptr(), 1, 1_000_000_000);
@@ -3284,14 +4346,14 @@ mod tests {
 
         // Sell after cooldown — refund should be > 0 (transfer_licn_out returns
         // true via graceful degradation when LICN token address is not configured)
-        test_mock::set_timestamp(20_000);
+        test_mock::set_slot(20_000);
         let refund = sell(buyer.as_ptr(), 1, bought / 2);
         assert!(refund > 0, "Sell should return refund amount");
     }
 
     #[test]
     fn test_g24_set_licn_token() {
-        // Admin can set LICN token address for outgoing transfers
+        // Native LICN is explicit and immutable after initialization.
         setup();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
@@ -3304,12 +4366,12 @@ mod tests {
         assert_eq!(set_licn_token(other.as_ptr(), token.as_ptr()), 1);
 
         test_mock::set_caller(admin);
-        assert_eq!(set_licn_token(admin.as_ptr(), token.as_ptr()), 0);
+        assert_eq!(set_licn_token(admin.as_ptr(), token.as_ptr()), 2);
         let stored = test_mock::get_storage(LICN_TOKEN_KEY);
-        assert_eq!(stored, Some(token.to_vec()));
+        assert_eq!(stored, Some([0u8; 32].to_vec()));
 
         let zero = [0u8; 32];
-        assert_eq!(set_licn_token(admin.as_ptr(), zero.as_ptr()), 2);
+        assert_eq!(set_licn_token(admin.as_ptr(), zero.as_ptr()), 0);
     }
 
     #[test]
@@ -3334,9 +4396,6 @@ mod tests {
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
-        // CON-05: Configure LICN token so transfer_licn_out succeeds
-        let licn = [42u8; 32];
-        set_licn_token(admin.as_ptr(), licn.as_ptr());
         test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
@@ -3373,9 +4432,10 @@ mod tests {
         data[32..40].copy_from_slice(&u64_to_bytes(supply));
         data[40..48].copy_from_slice(&u64_to_bytes(50_000_000_000_000_000));
         storage_set(&token_key, &data);
+        store_u64(CURVE_RESERVE_KEY, 50_000_000_000_000_000);
 
         let buyer = [3u8; 32];
-        test_mock::set_timestamp(10_000);
+        test_mock::set_slot(10_000);
         test_mock::set_caller(buyer);
         test_mock::set_value(1_000_000_000_000);
         assert!(buy(buyer.as_ptr(), token_id, 1_000_000_000_000) > 0);
@@ -3383,8 +4443,254 @@ mod tests {
         let data2 = test_mock::get_storage(&token_key).unwrap();
         assert_eq!(data2[64], 0);
 
-        test_mock::set_timestamp(15_000);
+        test_mock::set_slot(15_000);
         test_mock::set_value(1_000_000_000);
         assert!(buy(buyer.as_ptr(), token_id, 1_000_000_000) > 0);
+    }
+
+    #[test]
+    fn test_accounting_v3_migration_reconstructs_and_funds_every_obligation() {
+        setup();
+        let (token_id, creator, buyer, bought) = create_active_token_with_buy();
+        let admin = [1u8; 32];
+        let data = token_record(token_id).unwrap();
+        let expected_curve = bytes_to_u64(&data[40..48]);
+        let royalty_key = creator_royalty_key(token_id, &creator);
+        let expected_royalty = load_u64(&royalty_key);
+        let legacy_fees = load_u64(b"cp_fees_collected");
+        assert!(expected_curve > 0 && expected_royalty > 0 && legacy_fees >= expected_royalty);
+
+        // Legacy deployments predate persisted metadata. V3 backfills the
+        // deterministic labels and their uniqueness index at the same sealed
+        // protocol boundary instead of preserving a read-time fallback.
+        storage::remove(&token_name_key(token_id));
+        storage::remove(&token_symbol_key(token_id));
+        storage::remove(&token_symbol_index_key(b"SPT1"));
+        assert_eq!(get_token_metadata(token_id), 2);
+
+        test_mock::set_caller(admin);
+        assert_eq!(pause(admin.as_ptr()), 0);
+        storage::remove(ACCOUNTING_VERSION_KEY);
+        storage::remove(CURVE_RESERVE_KEY);
+        storage::remove(CREATOR_LIABILITY_KEY);
+        storage::remove(TOTAL_GRADUATED_KEY);
+        storage::remove(ACCOUNTING_MIGRATION_LOCK_KEY);
+
+        test_mock::set_caller(buyer);
+        test_mock::set_slot(200);
+        assert_eq!(sell(buyer.as_ptr(), token_id, bought / 2), ERROR_RETURN);
+
+        test_mock::set_caller(admin);
+        assert_eq!(begin_accounting_v3_migration(admin.as_ptr(), 1), 0);
+        assert_eq!(migrate_accounting_v3_token(2), 3);
+        assert_eq!(migrate_accounting_v3_token(1), 0);
+        assert_eq!(migrate_accounting_v3_token(1), 3);
+        assert_eq!(storage_get(&token_name_key(token_id)).unwrap(), b"Spore Token 1");
+        assert_eq!(storage_get(&token_symbol_key(token_id)).unwrap(), b"SPT1");
+        assert_eq!(
+            checked_stored_u64(&token_symbol_index_key(b"SPT1")),
+            Some(token_id)
+        );
+        assert_eq!(get_token_metadata(token_id), 0);
+        test_mock::set_cross_call_response(Some(u64_to_bytes(u64::MAX).to_vec()));
+        assert_eq!(complete_accounting_v3_migration(admin.as_ptr()), 0);
+
+        assert_eq!(load_u64(CURVE_RESERVE_KEY), expected_curve);
+        assert_eq!(load_u64(CREATOR_LIABILITY_KEY), expected_royalty);
+        assert_eq!(
+            load_u64(b"cp_fees_collected"),
+            legacy_fees - expected_royalty
+        );
+        assert_eq!(load_u64(ACCOUNTING_VERSION_KEY), ACCOUNTING_VERSION);
+        assert!(!accounting_migration_locked());
+        assert!(is_paused());
+        assert_eq!(unpause(admin.as_ptr()), 0);
+    }
+
+    #[test]
+    fn test_accounting_v3_rejects_partial_or_conflicting_metadata_without_advancing() {
+        setup();
+        let (token_id, _, _, _) = create_active_token_with_buy();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(pause(admin.as_ptr()), 0);
+        storage::remove(ACCOUNTING_VERSION_KEY);
+        storage::remove(CURVE_RESERVE_KEY);
+        storage::remove(CREATOR_LIABILITY_KEY);
+        storage::remove(TOTAL_GRADUATED_KEY);
+        storage::remove(ACCOUNTING_MIGRATION_LOCK_KEY);
+        assert_eq!(begin_accounting_v3_migration(admin.as_ptr(), 1), 0);
+
+        storage::remove(&token_name_key(token_id));
+        assert_eq!(migrate_accounting_v3_token(token_id), 9);
+        assert_eq!(checked_stored_u64(ACCOUNTING_MIGRATION_CURSOR_KEY), Some(0));
+
+        storage_set(&token_name_key(token_id), b"Spore Token 1");
+        store_u64(&token_symbol_index_key(b"SPT1"), token_id + 1);
+        assert_eq!(migrate_accounting_v3_token(token_id), 9);
+        assert_eq!(checked_stored_u64(ACCOUNTING_MIGRATION_CURSOR_KEY), Some(0));
+    }
+
+    #[test]
+    fn test_accounting_migration_token_view_is_exact_and_rejects_inflight_state() {
+        setup();
+        let (token_id, creator, _, _) = create_active_token_with_buy();
+        let data = token_record(token_id).unwrap();
+        let royalty = load_u64(&creator_royalty_key(token_id, &creator));
+
+        assert_eq!(get_accounting_migration_token(token_id), 0);
+        let payload = test_mock::get_return_data();
+        assert_eq!(payload.len(), 73);
+        assert_eq!(&payload[0..32], &creator);
+        assert_eq!(&payload[32..64], &data[32..64]);
+        assert_eq!(payload[64], GRADUATION_ACTIVE);
+        assert_eq!(bytes_to_u64(&payload[65..73]), royalty);
+
+        set_graduation_state(token_id, GRADUATION_MIGRATING);
+        assert_eq!(get_accounting_migration_token(token_id), 2);
+        assert_eq!(get_accounting_migration_token(token_id + 1), 1);
+    }
+
+    #[test]
+    fn test_accounting_v3_insolvency_keeps_contract_paused_and_locked() {
+        setup();
+        let (token_id, creator, _, _) = create_active_token_with_buy();
+        let admin = [1u8; 32];
+        let legacy_fees = load_u64(b"cp_fees_collected");
+        let royalty = load_u64(&creator_royalty_key(token_id, &creator));
+        test_mock::set_caller(admin);
+        assert_eq!(pause(admin.as_ptr()), 0);
+        storage::remove(ACCOUNTING_VERSION_KEY);
+        storage::remove(CURVE_RESERVE_KEY);
+        storage::remove(CREATOR_LIABILITY_KEY);
+        storage::remove(TOTAL_GRADUATED_KEY);
+        storage::remove(ACCOUNTING_MIGRATION_LOCK_KEY);
+        assert_eq!(begin_accounting_v3_migration(admin.as_ptr(), 1), 0);
+        assert_eq!(migrate_accounting_v3_token(1), 0);
+        let curve = load_u64(ACCOUNTING_MIGRATION_CURVE_KEY);
+        let obligations = curve + legacy_fees;
+        assert!(royalty > 0 && obligations > 0);
+        test_mock::set_cross_call_response(Some(u64_to_bytes(obligations - 1).to_vec()));
+        assert_eq!(complete_accounting_v3_migration(admin.as_ptr()), 8);
+        assert!(accounting_migration_locked());
+        assert!(is_paused());
+        assert_ne!(load_u64(ACCOUNTING_VERSION_KEY), ACCOUNTING_VERSION);
+    }
+
+    #[test]
+    fn test_creator_royalty_is_funded_claimable_and_failure_safe() {
+        setup();
+        let (token_id, creator, _, _) = create_active_token_with_buy();
+        let royalty_key = creator_royalty_key(token_id, &creator);
+        let royalty = load_u64(&royalty_key);
+        assert!(royalty > 1);
+        assert_eq!(load_u64(CREATOR_LIABILITY_KEY), royalty);
+
+        test_mock::set_caller(creator);
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
+        let first_claim = royalty / 2;
+        assert_eq!(
+            claim_creator_royalty(creator.as_ptr(), token_id, first_claim),
+            0
+        );
+        assert_eq!(load_u64(&royalty_key), royalty - first_claim);
+        assert_eq!(
+            load_u64(CREATOR_LIABILITY_KEY),
+            royalty - first_claim
+        );
+
+        let remaining = royalty - first_claim;
+        test_mock::set_cross_call_response(Some(vec![2u8]));
+        assert_eq!(
+            claim_creator_royalty(creator.as_ptr(), token_id, remaining),
+            6
+        );
+        assert_eq!(load_u64(&royalty_key), remaining);
+        assert_eq!(load_u64(CREATOR_LIABILITY_KEY), remaining);
+    }
+
+    #[test]
+    fn test_minimum_output_guards_buy_and_sell_without_mutation() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(initialize(admin.as_ptr()), 0);
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(CREATION_FEE);
+        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
+        let buyer = [3u8; 32];
+        let payment = 1_000_000_000;
+        let quote = get_buy_quote(token_id, payment);
+        assert!(quote > 0);
+        test_mock::set_caller(buyer);
+        test_mock::set_slot(100);
+        test_mock::set_value(payment);
+        assert_eq!(
+            buy_with_min_output(buyer.as_ptr(), token_id, payment, quote + 1),
+            ERROR_RETURN
+        );
+        assert_eq!(load_u64(CURVE_RESERVE_KEY), 0);
+        assert_eq!(
+            buy_with_min_output(buyer.as_ptr(), token_id, payment, quote),
+            quote
+        );
+
+        let sell_amount = quote / 2;
+        let sell_quote = get_sell_quote(token_id, sell_amount);
+        assert!(sell_quote > 0);
+        test_mock::set_slot(200);
+        assert_eq!(
+            sell_with_min_output(
+                buyer.as_ptr(),
+                token_id,
+                sell_amount,
+                sell_quote + 1
+            ),
+            ERROR_RETURN
+        );
+        assert_eq!(load_u64(&launchpad_balance_key(token_id, &buyer)), quote);
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
+        assert_eq!(
+            sell_with_min_output(buyer.as_ptr(), token_id, sell_amount, sell_quote),
+            sell_quote
+        );
+    }
+
+    #[test]
+    fn test_native_value_must_match_declared_input_exactly() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(initialize(admin.as_ptr()), 0);
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(CREATION_FEE + 1);
+        assert_eq!(create_token(creator.as_ptr(), CREATION_FEE), ERROR_RETURN);
+        test_mock::set_value(CREATION_FEE);
+        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
+        let buyer = [3u8; 32];
+        test_mock::set_caller(buyer);
+        test_mock::set_value(1_000_000_001);
+        assert_eq!(buy(buyer.as_ptr(), token_id, 1_000_000_000), ERROR_RETURN);
+        assert_eq!(load_u64(CURVE_RESERVE_KEY), 0);
+    }
+
+    #[test]
+    fn test_two_step_admin_rotation_cannot_be_hijacked() {
+        setup();
+        let admin = [1u8; 32];
+        let next = [8u8; 32];
+        let attacker = [9u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(initialize(admin.as_ptr()), 0);
+        assert_eq!(propose_admin(admin.as_ptr(), next.as_ptr()), 0);
+        test_mock::set_caller(attacker);
+        assert_eq!(accept_admin(attacker.as_ptr()), 1);
+        assert!(is_admin(&admin));
+        test_mock::set_caller(next);
+        assert_eq!(accept_admin(next.as_ptr()), 0);
+        assert!(is_admin(&next));
+        assert!(!is_admin(&admin));
     }
 }

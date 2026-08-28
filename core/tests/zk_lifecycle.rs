@@ -1,21 +1,19 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// ZK Privacy Full Lifecycle Integration Tests
+// ZK Privacy Fail-Closed Integration Tests
 //
-// These tests exercise the complete shielded pool pipeline end-to-end:
-//   1. Generate native STARK proofs for shield/unshield operations
+// These tests exercise the disabled shielded pool pipeline end-to-end:
+//   1. Generate legacy scheme-0x01 STARK proof envelopes
 //   2. Process transactions through the TxProcessor with real state
-//   3. Verify all state changes (balances, commitments, nullifiers, merkle root)
-//   4. Verify security properties (double-spend rejection, invalid proofs)
+//   3. Verify the unconstrained scheme is rejected without custody mutation
+//   4. Retain structural and precondition rejection coverage
 //
 // Each test performs full cryptographic operations so execution is slow
 // (~30–60 seconds per test on commodity hardware).
 // ═══════════════════════════════════════════════════════════════════════════════
 
 use lichen_core::zk::circuits::shield::ShieldCircuit;
-use lichen_core::zk::circuits::unshield::UnshieldCircuit;
 use lichen_core::zk::{
-    commitment_hash, nullifier_hash, random_scalar_bytes, recipient_hash,
-    recipient_preimage_from_bytes, MerkleTree, Prover,
+    commitment_hash, random_scalar_bytes, recipient_hash, recipient_preimage_from_bytes, Prover,
 };
 use lichen_core::*;
 
@@ -125,20 +123,20 @@ fn make_unshield_tx(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Test 1: Full Shield → Unshield Lifecycle
+// Test 1: Legacy Scheme Is Disabled Without State Mutation
 //
-// Proves: shield deposits into the pool, unshield withdraws back, balances
-// and pool state update correctly at every step, Merkle tree is consistent.
+// Proves: even a proof envelope produced from a valid local witness is refused
+// until a constrained verifier version is activated, and no custody state is
+// changed by the failed transaction.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn test_shield_then_unshield_full_lifecycle() {
+fn test_legacy_shield_proof_is_disabled_without_state_mutation() {
     let env = create_test_env();
     let validator = Pubkey([42u8; 32]);
 
     let prover = Prover::new();
 
-    // ── Step 2: Shield 0.5 LICN ─────────────────────────────────────────
     let shield_amount = 500_000_000u64; // 0.5 LICN
     let blinding = random_scalar_bytes();
     let commitment_bytes = commitment_hash(shield_amount, &blinding);
@@ -147,7 +145,8 @@ fn test_shield_then_unshield_full_lifecycle() {
         ShieldCircuit::new_bytes(shield_amount, shield_amount, blinding, commitment_bytes);
     let shield_proof = prover.prove_shield(shield_circuit).expect("prove shield");
 
-    let alice_balance_before = env.state.get_balance(&env.alice).unwrap();
+    let alice_before = env.state.get_account(&env.alice).unwrap().unwrap();
+    let pool_before = env.state.get_shielded_pool_state().unwrap();
     let shield_tx = make_shield_tx(
         &env,
         shield_amount,
@@ -155,156 +154,49 @@ fn test_shield_then_unshield_full_lifecycle() {
         &shield_proof.proof_bytes,
     );
     let shield_result = env.processor.process_transaction(&shield_tx, &validator);
+    assert!(!shield_result.success, "scheme 0x01 must fail closed");
+    assert!(shield_result.fee_paid > 0);
     assert!(
-        shield_result.success,
-        "Shield should succeed: {:?}",
+        shield_result
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("disabled for shield")),
+        "unexpected error: {:?}",
         shield_result.error
     );
 
-    // ── Step 3: Verify state after shield ───────────────────────────────
-    let alice_balance_after_shield = env.state.get_balance(&env.alice).unwrap();
+    let mut expected_alice_after = alice_before.clone();
+    expected_alice_after
+        .deduct_spendable(shield_result.fee_paid)
+        .expect("failed transaction fee is affordable");
     assert_eq!(
-        alice_balance_before - alice_balance_after_shield - shield_result.fee_paid,
-        shield_amount,
-        "Balance decrease (minus fee) should equal shielded amount"
-    );
-
-    let pool_after_shield = env.state.get_shielded_pool_state().unwrap();
-    assert_eq!(pool_after_shield.commitment_count, 1);
-    assert_eq!(pool_after_shield.total_shielded, shield_amount);
-
-    // Verify commitment is stored correctly
-    let stored = env.state.get_shielded_commitment(0).unwrap();
-    assert_eq!(stored, Some(commitment_bytes));
-
-    // Verify Merkle root is correct (single-leaf tree)
-    let mut expected_tree = MerkleTree::new();
-    expected_tree.insert(commitment_bytes);
-    assert_eq!(
-        pool_after_shield.merkle_root,
-        expected_tree.root(),
-        "Merkle root should match single-leaf tree"
-    );
-
-    // ── Step 4: Unshield the same amount ────────────────────────────────
-    // Derive secrets for unshield
-    let serial = random_scalar_bytes();
-    let spending_key = random_scalar_bytes();
-    let nullifier_bytes = nullifier_hash(&serial, &spending_key);
-
-    let recipient_preimage = recipient_preimage_from_bytes(env.alice.0);
-    let recipient_public_bytes = recipient_hash(&recipient_preimage);
-
-    // Get Merkle path for the commitment we just shielded
-    let proof_path = expected_tree.proof(0).unwrap();
-    let merkle_path = proof_path.siblings.clone();
-
-    // Build and prove unshield circuit
-    let unshield_circuit = UnshieldCircuit::new_bytes(
-        pool_after_shield.merkle_root,
-        nullifier_bytes,
-        shield_amount,
-        recipient_public_bytes,
-        shield_amount,
-        blinding,
-        serial,
-        spending_key,
-        recipient_preimage,
-        merkle_path,
-        proof_path.path_bits,
-    );
-    let unshield_proof = prover
-        .prove_unshield(unshield_circuit)
-        .expect("prove unshield");
-
-    let unshield_tx = make_unshield_tx(
-        &env,
-        shield_amount,
-        &nullifier_bytes,
-        &pool_after_shield.merkle_root,
-        &recipient_public_bytes,
-        &unshield_proof.proof_bytes,
-    );
-    let unshield_result = env.processor.process_transaction(&unshield_tx, &validator);
-    assert!(
-        unshield_result.success,
-        "Unshield should succeed: {:?}",
-        unshield_result.error
-    );
-
-    // ── Step 5: Verify state after unshield ──────────────────────────────
-    let alice_balance_after_unshield = env.state.get_balance(&env.alice).unwrap();
-    // After shield+unshield, alice should have: original - shield_fee - unshield_fee
-    // (the shielded amount goes back to her via credit)
-    let total_fees = shield_result.fee_paid + unshield_result.fee_paid;
-    assert_eq!(
-        alice_balance_after_unshield,
-        alice_balance_before - total_fees,
-        "After shield+unshield cycle, balance should only lose fees"
-    );
-
-    let pool_after_unshield = env.state.get_shielded_pool_state().unwrap();
-    assert_eq!(
-        pool_after_unshield.total_shielded, 0,
-        "Pool should be empty after unshielding everything"
+        lichen_core::codec::serialize_legacy_bincode(
+            &env.state.get_account(&env.alice).unwrap().unwrap(),
+            "account after disabled shield",
+        )
+        .unwrap(),
+        lichen_core::codec::serialize_legacy_bincode(
+            &expected_alice_after,
+            "expected account after disabled shield fee",
+        )
+        .unwrap()
     );
     assert_eq!(
-        pool_after_unshield.commitment_count, 1,
-        "Commitment count should stay at 1 (commitments are never removed)"
+        env.state.get_shielded_pool_state().unwrap().merkle_root,
+        pool_before.merkle_root
     );
-
-    // Nullifier should be marked as spent
-    assert!(
-        env.state.is_nullifier_spent(&nullifier_bytes).unwrap(),
-        "Nullifier should be marked spent after unshield"
+    assert_eq!(
+        env.state
+            .get_shielded_pool_state()
+            .unwrap()
+            .commitment_count,
+        0
     );
-
-    // ── Step 6: Double-spend attempt → must be rejected ─────────────────
-    // Use a different recent_blockhash so the tx isn't flagged as a duplicate.
-    // Create a second block to get a fresh hash.
-    let block1 = Block::new_with_timestamp(
-        1,
-        env.genesis_hash,
-        Hash::hash(b"block-1"),
-        [0u8; 32],
-        Vec::new(),
-        1,
+    assert_eq!(
+        env.state.get_shielded_pool_state().unwrap().total_shielded,
+        0
     );
-    let block1_hash = block1.hash();
-    env.state.put_block(&block1).unwrap();
-    env.state.set_last_slot(1).unwrap();
-
-    // Build a NEW unshield tx with the same nullifier but different blockhash
-    let mut dupe_data = vec![24u8];
-    dupe_data.extend_from_slice(&shield_amount.to_le_bytes());
-    dupe_data.extend_from_slice(&nullifier_bytes);
-    dupe_data.extend_from_slice(&pool_after_unshield.merkle_root);
-    dupe_data.extend_from_slice(&recipient_public_bytes);
-    dupe_data.extend_from_slice(&unshield_proof.proof_bytes);
-
-    let dupe_ix = Instruction {
-        program_id: SYSTEM_PROGRAM_ID,
-        accounts: vec![env.alice],
-        data: dupe_data,
-    };
-    let dupe_msg = transaction::Message::new(vec![dupe_ix], block1_hash);
-    let mut unshield_tx2 = Transaction::new(dupe_msg);
-    unshield_tx2
-        .signatures
-        .push(env.alice_kp.sign(&unshield_tx2.message.serialize()));
-
-    let dupe_result = env.processor.process_transaction(&unshield_tx2, &validator);
-    assert!(!dupe_result.success, "Double-spend should fail");
-    // The processor may reject for "nullifier already spent" OR "insufficient
-    // shielded pool balance" (since the pool is now empty) — both are correct.
-    let err_msg = dupe_result.error.as_ref().unwrap();
-    assert!(
-        err_msg.contains("nullifier already spent")
-            || err_msg.contains("insufficient")
-            || err_msg.contains("merkle root"),
-        "Error should reject the double-spend: {:?}",
-        dupe_result.error
-    );
+    assert_eq!(env.state.get_shielded_commitment(0).unwrap(), None);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -347,20 +239,7 @@ fn test_invalid_proof_bytes_rejected() {
 fn test_wrong_merkle_root_rejected() {
     let env = create_test_env();
     let validator = Pubkey([42u8; 32]);
-    let prover = Prover::new();
-
-    // Shield some amount
     let amount = 200_000_000u64;
-    let blinding = random_scalar_bytes();
-    let commitment_bytes = commitment_hash(amount, &blinding);
-
-    let shield_circuit = ShieldCircuit::new_bytes(amount, amount, blinding, commitment_bytes);
-    let shield_proof = prover.prove_shield(shield_circuit).unwrap();
-    let shield_tx = make_shield_tx(&env, amount, &commitment_bytes, &shield_proof.proof_bytes);
-    let shield_result = env.processor.process_transaction(&shield_tx, &validator);
-    assert!(shield_result.success, "Shield should succeed");
-
-    // Now try to unshield with a WRONG merkle root
     let wrong_root = [0xAB; 32];
     let nullifier = random_scalar_bytes();
     let recipient_public_bytes = recipient_hash(&recipient_preimage_from_bytes(env.alice.0));
@@ -385,21 +264,22 @@ fn test_wrong_merkle_root_rejected() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Test 4: Pool State Consistency Across Multiple Shields
+// Test 4: Repeated Disabled Proofs Cannot Accumulate State
 //
-// Proves: Multiple shield operations maintain correct pool state,
-// monotonically increasing commitment count, and accurate Merkle root.
+// Proves: retries of the disabled scheme remain deterministic and do not
+// insert commitments or change the pool balance.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn test_multiple_shields_maintain_consistent_pool_state() {
+fn test_repeated_disabled_shields_do_not_accumulate_state() {
     let env = create_test_env();
     let validator = Pubkey([42u8; 32]);
     let prover = Prover::new();
 
     let amounts = [100_000_000u64, 250_000_000u64, 150_000_000u64];
-    let mut expected_tree = MerkleTree::new();
-    let mut total_shielded = 0u64;
+    let account_before = env.state.get_account(&env.alice).unwrap().unwrap();
+    let pool_before = env.state.get_shielded_pool_state().unwrap();
+    let mut total_fees = 0u64;
 
     for (i, &amount) in amounts.iter().enumerate() {
         let blinding = random_scalar_bytes();
@@ -409,39 +289,42 @@ fn test_multiple_shields_maintain_consistent_pool_state() {
         let proof = prover.prove_shield(circuit).unwrap();
         let tx = make_shield_tx(&env, amount, &commitment_bytes, &proof.proof_bytes);
         let result = env.processor.process_transaction(&tx, &validator);
+        assert!(!result.success, "Shield {i} must fail closed");
+        assert!(result.fee_paid > 0);
+        total_fees = total_fees.checked_add(result.fee_paid).unwrap();
         assert!(
-            result.success,
-            "Shield {} should succeed: {:?}",
-            i, result.error
+            result
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("disabled for shield")),
+            "unexpected error: {:?}",
+            result.error
         );
 
-        expected_tree.insert(commitment_bytes);
-        total_shielded += amount;
-
-        // Verify incremental state correctness
         let pool = env.state.get_shielded_pool_state().unwrap();
-        assert_eq!(pool.commitment_count, (i + 1) as u64);
-        assert_eq!(pool.total_shielded, total_shielded);
-        assert_eq!(
-            pool.merkle_root,
-            expected_tree.root(),
-            "Merkle root should match after shield {}",
-            i
-        );
-
-        // Verify commitment is stored at the correct index
+        assert_eq!(pool.commitment_count, 0);
+        assert_eq!(pool.total_shielded, 0);
+        assert_eq!(pool.merkle_root, pool_before.merkle_root);
         let stored = env.state.get_shielded_commitment(i as u64).unwrap();
-        assert_eq!(stored, Some(commitment_bytes));
+        assert_eq!(stored, None);
     }
 
-    // Verify final state
-    let final_pool = env.state.get_shielded_pool_state().unwrap();
-    assert_eq!(final_pool.commitment_count, 3);
-    assert_eq!(final_pool.total_shielded, 500_000_000); // 100M + 250M + 150M
-
-    // Verify all commitments are retrievable
-    let all = env.state.get_all_shielded_commitments(3).unwrap();
-    assert_eq!(all.len(), 3);
+    let mut expected_account_after = account_before.clone();
+    expected_account_after
+        .deduct_spendable(total_fees)
+        .expect("failed transaction fees are affordable");
+    assert_eq!(
+        lichen_core::codec::serialize_legacy_bincode(
+            &env.state.get_account(&env.alice).unwrap().unwrap(),
+            "account after repeated disabled shields",
+        )
+        .unwrap(),
+        lichen_core::codec::serialize_legacy_bincode(
+            &expected_account_after,
+            "expected account after repeated disabled shield fees",
+        )
+        .unwrap()
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

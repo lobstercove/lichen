@@ -15,6 +15,45 @@ pub(super) async fn handle_validator_info(client: &RpcClient, address: &str) -> 
         Ok(info) => {
             println!("📍 Pubkey: {}", info.pubkey);
             println!("💰 Stake: {} LICN", info.stake as f64 / 1_000_000_000.0);
+            println!(
+                "💼 Commission: {:.2}%",
+                info.commission_rate as f64 / 100.0
+            );
+            if let (Some(pending), Some(epoch)) = (
+                info.pending_commission_rate,
+                info.pending_commission_activation_epoch,
+            ) {
+                println!(
+                    "⏳ Pending commission: {:.2}% from epoch {}",
+                    pending as f64 / 100.0,
+                    epoch
+                );
+            }
+            if info.staking_v2_active {
+                if !info.staking_v2_epoch_active {
+                    println!("⏳ Staking V2 epoch status: queued for the next epoch");
+                }
+                println!(
+                    "🔐 Self-bond: {:.9} LICN · delegated: {:.9} LICN",
+                    info.self_bond as f64 / 1_000_000_000.0,
+                    info.delegated_stake as f64 / 1_000_000_000.0
+                );
+                println!(
+                    "⚖️  Effective stake: {:.9} LICN · frozen epoch power: {:.9} LICN",
+                    info.effective_stake as f64 / 1_000_000_000.0,
+                    info.epoch_consensus_power as f64 / 1_000_000_000.0
+                );
+                println!(
+                    "📊 Saturation: {:.2}% · limit: {:.9} LICN · remaining: {:.9} LICN",
+                    info.saturation_usage_bps as f64 / 100.0,
+                    info.effective_stake_limit as f64 / 1_000_000_000.0,
+                    info.delegation_capacity_remaining as f64 / 1_000_000_000.0
+                );
+                println!(
+                    "🌐 Network saturation cap: {:.2}%",
+                    info.network_saturation_cap_bps as f64 / 100.0
+                );
+            }
             println!("⭐ Reputation: {}", info.reputation);
             println!(
                 "📊 Status: {}",
@@ -202,6 +241,40 @@ pub(super) async fn handle_validator_reclassify_bootstrap(
         }
     }
 
+    Ok(())
+}
+
+pub(super) async fn handle_validator_set_commission(
+    client: &RpcClient,
+    keypair_mgr: &KeypairManager,
+    commission_bps: u64,
+    keypair: Option<PathBuf>,
+) -> Result<()> {
+    if commission_bps > lichen_core::MAX_VALIDATOR_COMMISSION_BPS {
+        bail!(
+            "validator commission cannot exceed {} basis points",
+            lichen_core::MAX_VALIDATOR_COMMISSION_BPS
+        );
+    }
+    let kp = load_staker_keypair(keypair_mgr, keypair)?;
+    println!("Queueing validator commission change");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Validator: {}", kp.pubkey().to_base58());
+    println!(
+        "Commission: {:.2}% (activates after the protocol notice delay)",
+        commission_bps as f64 / 100.0
+    );
+    println!();
+
+    match client.set_validator_commission(&kp, commission_bps).await {
+        Ok(signature) => {
+            println!("SetValidatorCommission transaction sent");
+            println!("Signature: {}", signature);
+        }
+        Err(error) => {
+            println!("SetValidatorCommission failed: {}", error);
+        }
+    }
     Ok(())
 }
 

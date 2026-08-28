@@ -50,12 +50,28 @@ from .sporepay import (
     TransferStreamParams,
     WithdrawFromStreamParams,
 )
+from .sporepump import (
+    CreateSporePumpTokenParams,
+    SPOREPUMP_CREATION_FEE,
+    SporePumpClient,
+    SporePumpGraduationConfig,
+)
 from .sporevault import SporeVaultClient
 from .bountyboard import (
     BountyBoardClient,
     BOUNTY_STATUS_CANCELLED,
     BOUNTY_STATUS_COMPLETED,
     BOUNTY_STATUS_OPEN,
+)
+from .compute_market import (
+    ComputeMarketClient,
+    COMPUTE_JOB_PENDING,
+    COMPUTE_JOB_CLAIMED,
+    COMPUTE_JOB_COMPLETED,
+    COMPUTE_JOB_DISPUTED,
+    COMPUTE_JOB_CANCELLED,
+    COMPUTE_JOB_RESOLVED,
+    COMPUTE_JOB_RELEASED,
 )
 from .restrictions import (
     AccountAssetRestrictionTarget,
@@ -145,11 +161,23 @@ __all__ = [
     "SetRateAsParams",
     "SetRecoveryGuardiansParams",
     "SporePayClient",
+    "SporePumpClient",
+    "CreateSporePumpTokenParams",
+    "SporePumpGraduationConfig",
+    "SPOREPUMP_CREATION_FEE",
     "SporeVaultClient",
     "BountyBoardClient",
     "BOUNTY_STATUS_CANCELLED",
     "BOUNTY_STATUS_COMPLETED",
     "BOUNTY_STATUS_OPEN",
+    "ComputeMarketClient",
+    "COMPUTE_JOB_PENDING",
+    "COMPUTE_JOB_CLAIMED",
+    "COMPUTE_JOB_COMPLETED",
+    "COMPUTE_JOB_DISPUTED",
+    "COMPUTE_JOB_CANCELLED",
+    "COMPUTE_JOB_RESOLVED",
+    "COMPUTE_JOB_RELEASED",
     "AccountAssetRestrictionTarget",
     "AccountRestrictionTarget",
     "AssetRestrictionTarget",

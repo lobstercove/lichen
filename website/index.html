@@ -6,17 +6,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Lichen — Post-quantum L1 for Agents, Payments, Commerce, and Storage</title>
     <meta name="description"
-        content="Lichen is a Post-quantum L1 for agents, payments, commerce, communication, programs, storage, and markets. ML-DSA-65 signing, transparent STARK privacy, dual WASM + EVM execution, and low-cost finality.">
+        content="Lichen is a Post-quantum L1 for agents, payments, commerce, communication, programs, storage, and markets. ML-DSA-65 signing, dual WASM + EVM execution, and low-cost finality.">
     <meta property="og:type" content="website">
     <meta property="og:title" content="Lichen — Post-quantum L1 for Agents, Payments, Commerce, and Storage">
     <meta property="og:description"
-        content="ML-DSA-65 signing, transparent STARK privacy, dual WASM + EVM execution, and low-cost infrastructure for agents, payments, commerce, communication, storage, and markets.">
+        content="ML-DSA-65 signing, dual WASM + EVM execution, and low-cost infrastructure for agents, payments, commerce, communication, storage, and markets.">
     <meta property="og:image" content="Lichen_Logo_256.png">
     <meta property="og:url" content="https://lichen.network">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Lichen — Post-quantum L1 for Agents, Payments, Commerce, and Storage">
     <meta name="twitter:description"
-        content="ML-DSA-65 signing, transparent STARK privacy, dual WASM + EVM execution, and low-cost infrastructure for agents, payments, commerce, communication, storage, and markets.">
+        content="ML-DSA-65 signing, dual WASM + EVM execution, and low-cost infrastructure for agents, payments, commerce, communication, storage, and markets.">
     <meta name="twitter:image" content="Lichen_Logo_256.png">
     <link rel="canonical" href="https://lichen.network/">
     <link rel="icon" href="favicon.ico">
@@ -107,7 +107,7 @@
                         </span>
                     </h1>
                     <p class="hero-subtitle">
-                        Lichen combines ML-DSA-65 accounts, transparent STARK privacy, dual WASM + EVM execution,
+                        Lichen combines ML-DSA-65 accounts, dual WASM + EVM execution,
                         and low-cost finality so teams can ship agent systems, payment rails, commerce flows,
                         application logic, communication layers, storage workflows, and market infrastructure on one
                         settlement layer.
@@ -1297,11 +1297,11 @@
                     </div>
                     <div class="feature-card animate-on-scroll">
                         <div class="feature-icon"><i class="fas fa-shield-alt"></i></div>
-                        <h3>Privacy Layer</h3>
-                        <p>Shielded transactions run on a transparent STARK/Poseidon2 architecture with hash-based
-                            commitments, Poseidon2 Merkle paths, and nullifier-based double-spend protection. The
-                            live runtime verifies proofs end-to-end without any trusted setup.</p>
-                        <span class="feature-detail">See Developer Architecture: Privacy &amp; Security</span>
+                        <h3>Shielded History (Read-only)</h3>
+                        <p>The historical Poseidon2 commitment pool remains queryable, but proof scheme 0x01 is
+                            disabled because it does not constrain private witnesses. Shield, unshield, and transfer
+                            operations remain unavailable pending a sound versioned verifier.</p>
+                        <span class="feature-detail">Fail-closed · No active privacy claim</span>
                     </div>
                     <div class="feature-card animate-on-scroll">
                         <div class="feature-icon"><i class="fas fa-address-card"></i></div>
@@ -1447,7 +1447,7 @@
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-hand-holding-usd"></i></div>
                         <h3>ThallLend</h3>
-                        <p>P2P lending: deposit collateral, borrow assets, earn interest, automated liquidations.</p>
+                        <p>LICN money market: supply LICN, borrow LICN against overcollateralized deposits, earn interest, and support automated liquidations.</p>
                         <span class="contract-size">12 KB WASM</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="defi">
@@ -1467,8 +1467,8 @@
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-vault"></i></div>
                         <h3>SporeVault</h3>
-                        <p>Yield aggregator: auto-compounding across DeFi protocols. 10% performance fee, 2% management
-                            fee.</p>
+                        <p>Auto-compounding LICN lending vault backed by real ThallLend custody. 10% performance fee,
+                            2% annualized management fee.</p>
                         <span class="contract-size">17 KB WASM</span>
                     </div>
 
@@ -1510,7 +1510,7 @@
                     <div class="contract-card animate-on-scroll" data-category="infra">
                         <div class="contract-icon"><i class="fas fa-broadcast-tower"></i></div>
                         <h3>LichenOracle</h3>
-                        <p>Decentralized price feeds, validator-entropy commit-reveal randomness, attestation services.
+                        <p>Stake-quorum fixed8 price feeds, validator-entropy commit-reveal randomness, and bounded hash-bound attestations.
                         </p>
                         <span class="contract-size">16.4 KB WASM</span>
                     </div>
@@ -1523,9 +1523,9 @@
                     <div class="contract-card animate-on-scroll" data-category="infra">
                         <div class="contract-icon"><i class="fas fa-tasks"></i></div>
                         <h3>BountyBoard</h3>
-                        <p>On-chain task management. Post bounties with rewards/deadlines, submit proof, approve and
-                            pay.</p>
-                        <span class="contract-size">16.0 KB WASM</span>
+                        <p>Exact-custody native or token bounties with immutable terms, work proofs, fair cancellation,
+                            identity gates, fees, migration, and solvency monitoring.</p>
+                        <span class="contract-size">50.1 KB WASM</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="infra">
                         <div class="contract-icon"><i class="fas fa-server"></i></div>
@@ -1542,9 +1542,9 @@
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="infra">
                         <div class="contract-icon"><i class="fas fa-shield-alt"></i></div>
-                        <h3>Shielded Pool</h3>
-                        <p>Privacy-preserving transactions using transparent STARK proofs with Poseidon2 commitments.
-                            Deposit, withdraw, and transfer shielded assets.</p>
+                        <h3>Shielded Pool Compatibility ABI</h3>
+                        <p>Read-only historical metadata and a fail-closed compatibility ABI. Native shield,
+                            unshield, and transfer operations are disabled pending a constrained verifier.</p>
                         <span class="contract-size">18.2 KB WASM</span>
                     </div>
 
@@ -2026,8 +2026,8 @@ console.log(`Balance: ${result.licn} LICN`);
                                 </div>
                                 <div class="phase-item done"><i class="fas fa-check-circle"></i> Mainnet + Testnet Live
                                 </div>
-                                <div class="phase-item done"><i class="fas fa-check-circle"></i> Shielded Pool + STARK
-                                    Privacy Live</div>
+                                <div class="phase-item done"><i class="fas fa-check-circle"></i> Historical Shielded
+                                    Pool Data Read-only; Scheme 0x01 Disabled</div>
                                 <div class="phase-item done"><i class="fas fa-check-circle"></i> 32 Smart Contracts,
                                     Wallet, Explorer, DEX, Marketplace, Programs, Dev Portal</div>
                                 <div class="phase-item done"><i class="fas fa-check-circle"></i> Solana, Ethereum, and

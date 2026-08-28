@@ -24,13 +24,45 @@ export interface ThallLendInterestRate {
     totalAvailable: bigint;
 }
 
+export interface ThallLendRateModel {
+    rateScale: bigint;
+    slotsPerYear: bigint;
+    baseRatePerSlot: bigint;
+    currentRatePerSlot: bigint;
+    currentAnnualBps: bigint;
+    utilizationKinkPct: bigint;
+    maxRatePerSlot: bigint;
+}
+
+export interface ThallLendMarketStatus {
+    paused: boolean;
+    licnConfigured: boolean;
+    nativeLicn: boolean;
+    oracleConfigPresent: boolean;
+    oracleConfigValid: boolean;
+    depositCap: bigint;
+    reserveFactorPct: bigint;
+    collateralFactorPct: bigint;
+    liquidationThresholdPct: bigint;
+    liquidationBonusPct: bigint;
+}
+
 export interface ThallLendStats {
     totalDeposits: number;
     totalBorrows: number;
+    availableLiquidity: number;
+    utilizationPct: number;
     reserves: number;
     depositCount: number;
     borrowCount: number;
+    repayCount: number;
     liquidationCount: number;
+    depositCap: number;
+    reserveFactorPct: number;
+    licnConfigured: boolean;
+    nativeLicn: boolean;
+    oracleConfigPresent: boolean;
+    oracleConfigValid: boolean;
     paused: boolean;
 }
 
@@ -179,6 +211,49 @@ function decodeInterestRate(result: ReadonlyContractResult): ThallLendInterestRa
     };
 }
 
+function decodeRateModel(result: ReadonlyContractResult): ThallLendRateModel {
+    ensureReadonlySuccess(result, 'get_rate_model');
+    if (!result.returnData) {
+        throw new Error('ThallLend get_rate_model did not return model data');
+    }
+    const bytes = decodeReturnData(result.returnData);
+    if (bytes.length < 56) {
+        throw new Error('ThallLend get_rate_model payload was shorter than expected');
+    }
+    return {
+        rateScale: readU64(bytes, 0),
+        slotsPerYear: readU64(bytes, 8),
+        baseRatePerSlot: readU64(bytes, 16),
+        currentRatePerSlot: readU64(bytes, 24),
+        currentAnnualBps: readU64(bytes, 32),
+        utilizationKinkPct: readU64(bytes, 40),
+        maxRatePerSlot: readU64(bytes, 48),
+    };
+}
+
+function decodeMarketStatus(result: ReadonlyContractResult): ThallLendMarketStatus {
+    ensureReadonlySuccess(result, 'get_market_status');
+    if (!result.returnData) {
+        throw new Error('ThallLend get_market_status did not return status data');
+    }
+    const bytes = decodeReturnData(result.returnData);
+    if (bytes.length < 80) {
+        throw new Error('ThallLend get_market_status payload was shorter than expected');
+    }
+    return {
+        paused: readU64(bytes, 0) !== 0n,
+        licnConfigured: readU64(bytes, 8) !== 0n,
+        nativeLicn: readU64(bytes, 16) !== 0n,
+        oracleConfigPresent: readU64(bytes, 24) !== 0n,
+        oracleConfigValid: readU64(bytes, 32) !== 0n,
+        depositCap: readU64(bytes, 40),
+        reserveFactorPct: readU64(bytes, 48),
+        collateralFactorPct: readU64(bytes, 56),
+        liquidationThresholdPct: readU64(bytes, 64),
+        liquidationBonusPct: readU64(bytes, 72),
+    };
+}
+
 export class ThallLendClient {
     private resolvedProgram?: PublicKey;
 
@@ -226,6 +301,14 @@ export class ThallLendClient {
         return decodeInterestRate(await this.callReadonly('get_interest_rate'));
     }
 
+    async getRateModel(): Promise<ThallLendRateModel> {
+        return decodeRateModel(await this.callReadonly('get_rate_model'));
+    }
+
+    async getMarketStatus(): Promise<ThallLendMarketStatus> {
+        return decodeMarketStatus(await this.callReadonly('get_market_status'));
+    }
+
     async getDepositCount(): Promise<bigint> {
         return decodeU64Return(await this.callReadonly('get_deposit_count'), 'get_deposit_count');
     }
@@ -243,10 +326,19 @@ export class ThallLendClient {
         return {
             totalDeposits: stats.total_deposits ?? 0,
             totalBorrows: stats.total_borrows ?? 0,
+            availableLiquidity: stats.available_liquidity ?? 0,
+            utilizationPct: stats.utilization_pct ?? 0,
             reserves: stats.reserves ?? 0,
             depositCount: stats.deposit_count ?? 0,
             borrowCount: stats.borrow_count ?? 0,
+            repayCount: stats.repay_count ?? 0,
             liquidationCount: stats.liquidation_count ?? 0,
+            depositCap: stats.deposit_cap ?? 0,
+            reserveFactorPct: stats.reserve_factor_pct ?? 0,
+            licnConfigured: Boolean(stats.licn_configured),
+            nativeLicn: Boolean(stats.native_licn),
+            oracleConfigPresent: Boolean(stats.oracle_config_present),
+            oracleConfigValid: Boolean(stats.oracle_config_valid),
             paused: Boolean(stats.paused),
         };
     }

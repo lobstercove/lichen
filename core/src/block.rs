@@ -52,7 +52,7 @@ pub struct CommitSignature {
 }
 
 /// Block header
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BlockHeader {
     /// Block number (slot)
     pub slot: u64,
@@ -85,6 +85,31 @@ pub struct BlockHeader {
     /// Optional PQ signature of the block producer over the header fields.
     #[serde(default)]
     pub signature: Option<PqSignature>,
+}
+
+impl BlockHeader {
+    /// Hash of every producer-signed header field, excluding the signature.
+    pub fn signable_hash(&self) -> Hash {
+        let mut data = Vec::new();
+        data.extend_from_slice(&self.slot.to_le_bytes());
+        data.extend_from_slice(&self.parent_hash.0);
+        data.extend_from_slice(&self.state_root.0);
+        data.extend_from_slice(&self.tx_root.0);
+        data.extend_from_slice(&self.timestamp.to_le_bytes());
+        data.extend_from_slice(&self.validators_hash.0);
+        data.extend_from_slice(&self.validator);
+        Hash::hash(&data)
+    }
+
+    /// Verify the producer signature in the active chain-id domain.
+    pub fn verify_signature_with_chain_id(&self, chain_id: &str) -> bool {
+        let validator = crate::account::Pubkey(self.validator);
+        let signable =
+            maybe_versioned_signing_bytes(DOMAIN_BLOCK, chain_id, &self.signable_hash().0);
+        self.signature.as_ref().is_some_and(|signature| {
+            crate::account::Keypair::verify(&validator, &signable, signature)
+        })
+    }
 }
 
 /// Complete block
@@ -218,16 +243,7 @@ impl Block {
 
     /// Get the signable hash (hash of header fields excluding the signature)
     pub fn signable_hash(&self) -> Hash {
-        // Serialize only the fields that are signed (everything except signature)
-        let mut data = Vec::new();
-        data.extend_from_slice(&self.header.slot.to_le_bytes());
-        data.extend_from_slice(&self.header.parent_hash.0);
-        data.extend_from_slice(&self.header.state_root.0);
-        data.extend_from_slice(&self.header.tx_root.0);
-        data.extend_from_slice(&self.header.timestamp.to_le_bytes());
-        data.extend_from_slice(&self.header.validators_hash.0);
-        data.extend_from_slice(&self.header.validator);
-        Hash::hash(&data)
+        self.header.signable_hash()
     }
 
     /// Sign the block with the validator's keypair
@@ -258,15 +274,7 @@ impl Block {
 
     /// Verify the block producer signature against a chain-id domain.
     pub fn verify_signature_with_chain_id(&self, chain_id: &str) -> bool {
-        let validator_pubkey = crate::account::Pubkey(self.header.validator);
-        let hash = self.signable_hash();
-        match &self.header.signature {
-            Some(signature) => {
-                let signable = maybe_versioned_signing_bytes(DOMAIN_BLOCK, chain_id, &hash.0);
-                crate::account::Keypair::verify(&validator_pubkey, &signable, signature)
-            }
-            None => self.header.slot == 0,
-        }
+        self.header.slot == 0 || self.header.verify_signature_with_chain_id(chain_id)
     }
 
     /// Verify an archived block across a known chain-domain activation.
@@ -460,22 +468,16 @@ pub fn compute_bft_timestamp(
     // Collect (timestamp, stake) pairs for active commit voters.
     let mut weighted: Vec<(u64, u64)> = commit_signatures
         .iter()
-        .filter(|cs| {
+        .filter_map(|cs| {
             let pubkey = crate::Pubkey(cs.validator);
-            matches!(
-                validator_set.get_validator(&pubkey),
-                Some(info) if !info.pending_activation
+            crate::consensus::eligible_validator_stake(
+                &pubkey,
+                validator_set,
+                stake_pool,
+                crate::consensus::MIN_VALIDATOR_STAKE,
             )
+            .map(|stake| (cs.timestamp, stake))
         })
-        .map(|cs| {
-            let pubkey = crate::Pubkey(cs.validator);
-            let stake = stake_pool
-                .get_stake(&pubkey)
-                .map(|s| s.total_stake())
-                .unwrap_or(0);
-            (cs.timestamp, stake)
-        })
-        .filter(|(_, stake)| *stake > 0)
         .collect();
 
     if weighted.is_empty() {

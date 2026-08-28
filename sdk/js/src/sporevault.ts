@@ -25,6 +25,32 @@ export interface SporeVaultStrategyInfo {
     deployedAmount: bigint;
 }
 
+export interface SporeVaultStatus {
+    accountingVersion: bigint;
+    paused: boolean;
+    licnConfigPresent: boolean;
+    licnConfigValid: boolean;
+    nativeLicn: boolean;
+    thallLendConfigPresent: boolean;
+    thallLendConfigValid: boolean;
+    strategyRegistryValid: boolean;
+    idleAssets: bigint;
+    lendingAssets: bigint;
+    totalAssets: bigint;
+    totalShares: bigint;
+    protocolFees: bigint;
+    realLiquidCustody: bigint;
+    custodyQueryOk: boolean;
+    liquidCustodyCoversAccounting: boolean;
+    depositFeeBps: bigint;
+    withdrawalFeeBps: bigint;
+    depositCap: bigint;
+    riskTier: bigint;
+    performanceFeePercent: bigint;
+    managementFeeBps: bigint;
+    targetSlotsPerYear: bigint;
+}
+
 export interface SporeVaultStats {
     totalAssets: number;
     totalShares: number;
@@ -32,7 +58,25 @@ export interface SporeVaultStats {
     totalEarned: number;
     feesEarned: number;
     protocolFees: number;
+    idleAssets: number;
+    lendingAssets: number;
+    accountingVersion: number;
+    depositFeeBps: number;
+    withdrawalFeeBps: number;
+    depositCap: number;
+    riskTier: number;
+    activeLendingStrategies: number;
+    lendingStrategyRows: number;
+    strategyRegistryBounded: boolean;
+    strategyRegistryValid: boolean;
+    totalStrategyAllocation: number;
+    nativeLicn: boolean;
+    thallLendConfigValid: boolean;
+    componentsMatchTotal: boolean;
+    shareStateConsistent: boolean;
+    liquidCustodyCoversAccounting: boolean;
     paused: boolean;
+    operational: boolean;
 }
 
 function normalizeAddress(value: PublicKey | string): PublicKey {
@@ -85,6 +129,67 @@ function encodeUserLookupArgs(user: PublicKey | string): Uint8Array {
 
 function encodeIndexArgs(index: number | bigint): Uint8Array {
     return buildLayoutArgs([0x08], [u64LE(index, 'index')]);
+}
+
+function encodeAdminU64Args(admin: PublicKey, value: number | bigint, fieldName: string): Uint8Array {
+    return buildLayoutArgs([0x20, 0x08], [admin.toBytes(), u64LE(value, fieldName)]);
+}
+
+function encodeAdminU8Args(admin: PublicKey, value: number, fieldName: string): Uint8Array {
+    if (!Number.isInteger(value) || value < 0 || value > 0xff) {
+        throw new Error(`${fieldName} must be a u8 integer value`);
+    }
+    return buildLayoutArgs([0x20, 0x01], [admin.toBytes(), Uint8Array.of(value)]);
+}
+
+function encodeAdminStrategyArgs(admin: PublicKey, strategyType: number, allocation: number | bigint): Uint8Array {
+    if (!Number.isInteger(strategyType) || strategyType < 0 || strategyType > 0xff) {
+        throw new Error('strategyType must be a u8 integer value');
+    }
+    return buildLayoutArgs(
+        [0x20, 0x01, 0x08],
+        [admin.toBytes(), Uint8Array.of(strategyType), u64LE(allocation, 'allocation')],
+    );
+}
+
+function encodeAdminIndexValueArgs(admin: PublicKey, index: number | bigint, value: number | bigint): Uint8Array {
+    return buildLayoutArgs(
+        [0x20, 0x08, 0x08],
+        [admin.toBytes(), u64LE(index, 'index'), u64LE(value, 'value')],
+    );
+}
+
+function encodeAdminAddressArgs(admin: PublicKey, address: PublicKey): Uint8Array {
+    return buildLayoutArgs([0x20, 0x20], [admin.toBytes(), address.toBytes()]);
+}
+
+function encodeProtocolAddressArgs(admin: PublicKey, thallLend: PublicKey, lichenSwap: PublicKey): Uint8Array {
+    return buildLayoutArgs(
+        [0x20, 0x20, 0x20],
+        [admin.toBytes(), thallLend.toBytes(), lichenSwap.toBytes()],
+    );
+}
+
+function encodeLegacyStrategyRetirementArgs(
+    admin: PublicKey,
+    index: number | bigint,
+    expectedType: number,
+    expectedAllocation: number | bigint,
+    expectedDeployed: number | bigint,
+): Uint8Array {
+    if (!Number.isInteger(expectedType) || expectedType < 0 || expectedType > 0xff) {
+        throw new Error('expectedType must be a u8 integer value');
+    }
+    return buildLayoutArgs(
+        [0x20, 0x08, 0x01, 0x08, 0x08],
+        [
+            admin.toBytes(),
+            u64LE(index, 'index'),
+            Uint8Array.of(expectedType),
+            u64LE(expectedAllocation, 'expectedAllocation'),
+            u64LE(expectedDeployed, 'expectedDeployed'),
+        ],
+    );
 }
 
 function decodeReturnData(returnData: string): Uint8Array {
@@ -160,6 +265,43 @@ function decodeStrategyInfo(result: ReadonlyContractResult): SporeVaultStrategyI
     };
 }
 
+function decodeVaultStatus(result: ReadonlyContractResult): SporeVaultStatus {
+    ensureReadonlySuccess(result, 'get_vault_status');
+    if (!result.returnData) {
+        throw new Error('SporeVault get_vault_status did not return status data');
+    }
+    const bytes = decodeReturnData(result.returnData);
+    if (bytes.length < 23 * 8) {
+        throw new Error('SporeVault get_vault_status payload was shorter than expected');
+    }
+    const value = (index: number): bigint => readU64(bytes, index * 8);
+    return {
+        accountingVersion: value(0),
+        paused: value(1) !== 0n,
+        licnConfigPresent: value(2) !== 0n,
+        licnConfigValid: value(3) !== 0n,
+        nativeLicn: value(4) !== 0n,
+        thallLendConfigPresent: value(5) !== 0n,
+        thallLendConfigValid: value(6) !== 0n,
+        strategyRegistryValid: value(7) !== 0n,
+        idleAssets: value(8),
+        lendingAssets: value(9),
+        totalAssets: value(10),
+        totalShares: value(11),
+        protocolFees: value(12),
+        realLiquidCustody: value(13),
+        custodyQueryOk: value(14) !== 0n,
+        liquidCustodyCoversAccounting: value(15) !== 0n,
+        depositFeeBps: value(16),
+        withdrawalFeeBps: value(17),
+        depositCap: value(18),
+        riskTier: value(19),
+        performanceFeePercent: value(20),
+        managementFeeBps: value(21),
+        targetSlotsPerYear: value(22),
+    };
+}
+
 export class SporeVaultClient {
     private resolvedProgram?: PublicKey;
 
@@ -211,6 +353,10 @@ export class SporeVaultClient {
         return decodeStrategyInfo(result);
     }
 
+    async getVaultStatus(): Promise<SporeVaultStatus> {
+        return decodeVaultStatus(await this.callReadonly('get_vault_status'));
+    }
+
     async getStats(): Promise<SporeVaultStats> {
         const stats = await this.connection.getSporeVaultStats();
         return {
@@ -220,7 +366,25 @@ export class SporeVaultClient {
             totalEarned: stats.total_earned ?? 0,
             feesEarned: stats.fees_earned ?? 0,
             protocolFees: stats.protocol_fees ?? 0,
+            idleAssets: stats.idle_assets ?? 0,
+            lendingAssets: stats.lending_assets ?? 0,
+            accountingVersion: stats.accounting_version ?? 0,
+            depositFeeBps: stats.deposit_fee_bps ?? 0,
+            withdrawalFeeBps: stats.withdrawal_fee_bps ?? 0,
+            depositCap: stats.deposit_cap ?? 0,
+            riskTier: stats.risk_tier ?? 0,
+            activeLendingStrategies: stats.active_lending_strategies ?? 0,
+            lendingStrategyRows: stats.lending_strategy_rows ?? 0,
+            strategyRegistryBounded: Boolean(stats.strategy_registry_bounded),
+            strategyRegistryValid: Boolean(stats.strategy_registry_valid),
+            totalStrategyAllocation: stats.total_strategy_allocation ?? 0,
+            nativeLicn: Boolean(stats.native_licn),
+            thallLendConfigValid: Boolean(stats.thalllend_config_valid),
+            componentsMatchTotal: Boolean(stats.components_match_total),
+            shareStateConsistent: Boolean(stats.share_state_consistent),
+            liquidCustodyCoversAccounting: Boolean(stats.liquid_custody_covers_accounting),
             paused: Boolean(stats.paused),
+            operational: Boolean(stats.operational),
         };
     }
 
@@ -228,6 +392,12 @@ export class SporeVaultClient {
         const programId = await this.getProgramId();
         const args = encodeUserAmountArgs(depositor.pubkey(), amount);
         return this.connection.callContract(depositor, programId, 'deposit', args, normalizeUnsignedU64(amount, 'amount'));
+    }
+
+    async depositMt20(depositor: Keypair, amount: number | bigint): Promise<string> {
+        const programId = await this.getProgramId();
+        const args = encodeUserAmountArgs(depositor.pubkey(), amount);
+        return this.connection.callContract(depositor, programId, 'deposit', args);
     }
 
     async withdraw(depositor: Keypair, sharesToBurn: number | bigint): Promise<string> {
@@ -239,5 +409,123 @@ export class SporeVaultClient {
     async harvest(caller: Keypair): Promise<string> {
         const programId = await this.getProgramId();
         return this.connection.callContract(caller, programId, 'harvest');
+    }
+
+    async rebalance(caller: Keypair): Promise<string> {
+        const programId = await this.getProgramId();
+        return this.connection.callContract(caller, programId, 'rebalance');
+    }
+
+    private async callAdmin(admin: Keypair, functionName: string, args: Uint8Array): Promise<string> {
+        const programId = await this.getProgramId();
+        return this.connection.callContract(admin, programId, functionName, args);
+    }
+
+    async pause(admin: Keypair): Promise<string> {
+        return this.callAdmin(admin, 'cv_pause', buildLayoutArgs([0x20], [admin.pubkey().toBytes()]));
+    }
+
+    async unpause(admin: Keypair): Promise<string> {
+        return this.callAdmin(admin, 'cv_unpause', buildLayoutArgs([0x20], [admin.pubkey().toBytes()]));
+    }
+
+    async setDepositFee(admin: Keypair, feeBps: number | bigint): Promise<string> {
+        return this.callAdmin(admin, 'set_deposit_fee', encodeAdminU64Args(admin.pubkey(), feeBps, 'feeBps'));
+    }
+
+    async setWithdrawalFee(admin: Keypair, feeBps: number | bigint): Promise<string> {
+        return this.callAdmin(admin, 'set_withdrawal_fee', encodeAdminU64Args(admin.pubkey(), feeBps, 'feeBps'));
+    }
+
+    async setDepositCap(admin: Keypair, cap: number | bigint): Promise<string> {
+        return this.callAdmin(admin, 'set_deposit_cap', encodeAdminU64Args(admin.pubkey(), cap, 'cap'));
+    }
+
+    async setRiskTier(admin: Keypair, tier: number): Promise<string> {
+        return this.callAdmin(admin, 'set_risk_tier', encodeAdminU8Args(admin.pubkey(), tier, 'tier'));
+    }
+
+    async addStrategy(admin: Keypair, strategyType: number, allocationPercent: number | bigint): Promise<string> {
+        return this.callAdmin(
+            admin,
+            'add_strategy',
+            encodeAdminStrategyArgs(admin.pubkey(), strategyType, allocationPercent),
+        );
+    }
+
+    async removeStrategy(admin: Keypair, index: number | bigint): Promise<string> {
+        return this.callAdmin(admin, 'remove_strategy', encodeAdminU64Args(admin.pubkey(), index, 'index'));
+    }
+
+    async updateStrategyAllocation(
+        admin: Keypair,
+        index: number | bigint,
+        allocationPercent: number | bigint,
+    ): Promise<string> {
+        return this.callAdmin(
+            admin,
+            'update_strategy_allocation',
+            encodeAdminIndexValueArgs(admin.pubkey(), index, allocationPercent),
+        );
+    }
+
+    async withdrawProtocolFees(admin: Keypair): Promise<string> {
+        return this.callAdmin(
+            admin,
+            'withdraw_protocol_fees',
+            buildLayoutArgs([0x20], [admin.pubkey().toBytes()]),
+        );
+    }
+
+    async setProtocolAddresses(
+        admin: Keypair,
+        thallLend: PublicKey | string,
+        lichenSwap: PublicKey | string = new PublicKey(new Uint8Array(32)),
+    ): Promise<string> {
+        return this.callAdmin(
+            admin,
+            'set_protocol_addresses',
+            encodeProtocolAddressArgs(admin.pubkey(), normalizeAddress(thallLend), normalizeAddress(lichenSwap)),
+        );
+    }
+
+    async setLicnToken(admin: Keypair, token: PublicKey | string): Promise<string> {
+        return this.callAdmin(
+            admin,
+            'set_licn_token',
+            encodeAdminAddressArgs(admin.pubkey(), normalizeAddress(token)),
+        );
+    }
+
+    async migrateAccountingV2(
+        admin: Keypair,
+        expectedIdleAssets: number | bigint,
+        expectedLendingAssets: number | bigint,
+    ): Promise<string> {
+        return this.callAdmin(
+            admin,
+            'migrate_accounting_v2',
+            encodeAdminIndexValueArgs(admin.pubkey(), expectedIdleAssets, expectedLendingAssets),
+        );
+    }
+
+    async retireLegacyStrategy(
+        admin: Keypair,
+        index: number | bigint,
+        expectedType: number,
+        expectedAllocation: number | bigint,
+        expectedDeployed: number | bigint,
+    ): Promise<string> {
+        return this.callAdmin(
+            admin,
+            'retire_legacy_strategy',
+            encodeLegacyStrategyRetirementArgs(
+                admin.pubkey(),
+                index,
+                expectedType,
+                expectedAllocation,
+                expectedDeployed,
+            ),
+        );
     }
 }

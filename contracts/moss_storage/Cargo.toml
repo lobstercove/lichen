@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 lichen-sdk = { package = "lichen-contract-sdk", path = "../../sdk" }
+sha2 = { version = "0.10", default-features = false }
 
 [profile.release]
 opt-level = "z"

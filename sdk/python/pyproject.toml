@@ -8,7 +8,7 @@ version = "1.0.1"
 description = "Official Python SDK for Lichen blockchain"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.9"
+requires-python = ">=3.9.2"
 authors = [
     { name = "Lichen Labs", email = "hello@lichen.network" },
 ]

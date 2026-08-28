@@ -26,11 +26,24 @@ pub struct SporePayStreamInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SporePayStreamIdPage {
+    pub total_count: u64,
+    pub next_cursor: u64,
+    pub stream_ids: Vec<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SporePayStats {
     pub stream_count: u64,
     pub total_streamed: u64,
     pub total_withdrawn: u64,
     pub cancel_count: u64,
+    pub escrow_liability: u64,
+    pub unpaid_liability: u64,
+    pub accounting_version: u64,
+    pub migration_locked: bool,
+    pub migration_expected_streams: u64,
+    pub migration_cursor: u64,
     pub paused: bool,
 }
 
@@ -144,6 +157,21 @@ fn encode_stream_lookup_args(stream_id: u64) -> Vec<u8> {
     build_layout_args(&[0x08], &[stream_id.to_le_bytes().to_vec()])
 }
 
+fn encode_address_args(address: &Pubkey) -> Vec<u8> {
+    build_layout_args(&[0x20], &[address.as_ref().to_vec()])
+}
+
+fn encode_address_page_args(address: &Pubkey, cursor: u64, limit: u64) -> Vec<u8> {
+    build_layout_args(
+        &[0x20, 0x08, 0x08],
+        &[
+            address.as_ref().to_vec(),
+            cursor.to_le_bytes().to_vec(),
+            limit.to_le_bytes().to_vec(),
+        ],
+    )
+}
+
 fn ensure_readonly_success(
     result: &crate::client::ReadonlyContractResult,
     function_name: &str,
@@ -210,6 +238,40 @@ fn decode_stream_info(stream_id: u64, bytes: &[u8]) -> Result<SporePayStreamInfo
     Ok(SporePayStreamInfo {
         stream: decode_stream(stream_id, bytes)?,
         cliff_slot: u64::from_le_bytes(bytes[105..113].try_into().unwrap()),
+    })
+}
+
+fn decode_stream_id_page(bytes: &[u8]) -> Result<SporePayStreamIdPage> {
+    if bytes.len() < 24 {
+        return Err(Error::ParseError(
+            "SporePay stream-ID page payload was shorter than expected".into(),
+        ));
+    }
+    let returned = u64::from_le_bytes(bytes[16..24].try_into().unwrap());
+    let returned = usize::try_from(returned)
+        .map_err(|_| Error::ParseError("SporePay stream-ID page count overflow".into()))?;
+    let expected_len =
+        24usize
+            .checked_add(returned.checked_mul(8).ok_or_else(|| {
+                Error::ParseError("SporePay stream-ID page length overflow".into())
+            })?)
+            .ok_or_else(|| Error::ParseError("SporePay stream-ID page length overflow".into()))?;
+    if bytes.len() != expected_len {
+        return Err(Error::ParseError(
+            "SporePay stream-ID page payload length was inconsistent".into(),
+        ));
+    }
+    let mut stream_ids = Vec::with_capacity(returned);
+    for index in 0..returned {
+        let offset = 24 + index * 8;
+        stream_ids.push(u64::from_le_bytes(
+            bytes[offset..offset + 8].try_into().unwrap(),
+        ));
+    }
+    Ok(SporePayStreamIdPage {
+        total_count: u64::from_le_bytes(bytes[0..8].try_into().unwrap()),
+        next_cursor: u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+        stream_ids,
     })
 }
 
@@ -323,6 +385,66 @@ impl SporePayClient {
         serde_json::from_value(value).map_err(|err| Error::ParseError(err.to_string()))
     }
 
+    pub async fn get_unpaid_payout(&self, recipient: &Pubkey) -> Result<u64> {
+        let result = self
+            .client
+            .call_readonly_contract(
+                &self.get_program_id().await?,
+                "get_unpaid_payout",
+                encode_address_args(recipient),
+                None,
+            )
+            .await?;
+        ensure_readonly_success(&result, "get_unpaid_payout")?;
+        let bytes = decode_return_data(&result, "get_unpaid_payout")?;
+        if bytes.len() < 8 {
+            return Err(Error::ParseError(
+                "SporePay unpaid-payout payload was shorter than expected".into(),
+            ));
+        }
+        Ok(u64::from_le_bytes(bytes[..8].try_into().unwrap()))
+    }
+
+    async fn get_stream_id_page(
+        &self,
+        function_name: &str,
+        address: &Pubkey,
+        cursor: u64,
+        limit: u64,
+    ) -> Result<SporePayStreamIdPage> {
+        let result = self
+            .client
+            .call_readonly_contract(
+                &self.get_program_id().await?,
+                function_name,
+                encode_address_page_args(address, cursor, limit),
+                None,
+            )
+            .await?;
+        ensure_readonly_success(&result, function_name)?;
+        decode_stream_id_page(&decode_return_data(&result, function_name)?)
+    }
+
+    pub async fn get_sender_stream_ids(
+        &self,
+        sender: &Pubkey,
+        cursor: u64,
+        limit: u64,
+    ) -> Result<SporePayStreamIdPage> {
+        self.get_stream_id_page("get_sender_stream_ids", sender, cursor, limit)
+            .await
+    }
+
+    pub async fn get_recipient_stream_ids(
+        &self,
+        recipient: &Pubkey,
+        cursor: u64,
+        limit: u64,
+    ) -> Result<SporePayStreamIdPage> {
+        self.get_stream_id_page("get_recipient_stream_ids", recipient, cursor, limit)
+            .await
+    }
+
     pub async fn create_stream(
         &self,
         sender: &Keypair,
@@ -378,6 +500,19 @@ impl SporePayClient {
             .call_contract(recipient, &program_id, "transfer_stream", args, 0)
             .await
     }
+
+    pub async fn claim_unpaid_payout(&self, recipient: &Keypair) -> Result<String> {
+        let program_id = self.get_program_id().await?;
+        self.client
+            .call_contract(
+                recipient,
+                &program_id,
+                "claim_unpaid_payout",
+                encode_address_args(&recipient.pubkey()),
+                0,
+            )
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -412,5 +547,20 @@ mod tests {
         let info = decode_stream_info(7, &payload).unwrap();
         assert_eq!(info.stream.stream_id, 7);
         assert_eq!(info.cliff_slot, 12);
+    }
+
+    #[test]
+    fn decode_stream_id_page_validates_count_and_length() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&2u64.to_le_bytes());
+        payload.extend_from_slice(&2u64.to_le_bytes());
+        payload.extend_from_slice(&2u64.to_le_bytes());
+        payload.extend_from_slice(&4u64.to_le_bytes());
+        payload.extend_from_slice(&9u64.to_le_bytes());
+        let page = decode_stream_id_page(&payload).unwrap();
+        assert_eq!(page.total_count, 2);
+        assert_eq!(page.next_cursor, 2);
+        assert_eq!(page.stream_ids, vec![4, 9]);
+        assert!(decode_stream_id_page(&payload[..payload.len() - 1]).is_err());
     }
 }

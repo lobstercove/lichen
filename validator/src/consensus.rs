@@ -21,7 +21,7 @@ use lichen_core::consensus::{
 };
 use lichen_core::{
     Block, CommitSignature, Hash, Keypair, PqSignature, Precommit, Prevote, Proposal, Pubkey,
-    RoundStep, StakePool, ValidatorSet, MIN_VALIDATOR_STAKE,
+    RoundStep, SlashingOffense, StakePool, ValidatorSet, MIN_VALIDATOR_STAKE,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
@@ -94,6 +94,8 @@ pub enum ConsensusAction {
         vote_type: &'static str,
         hash_1: Option<Hash>,
         hash_2: Option<Hash>,
+        /// Both conflicting, chain-domain-signed messages.
+        offense: SlashingOffense,
     },
 }
 
@@ -197,11 +199,15 @@ pub struct ConsensusEngine {
     /// Height is implicit because `start_height()` clears all per-height vote
     /// state and future-height votes are buffered until they become current.
     seen_prevotes: HashMap<(u32, Pubkey), Option<Hash>>,
+    /// Full signed prevotes retained to make equivocation independently provable.
+    seen_prevote_messages: HashMap<(u32, Pubkey), Prevote>,
     /// Precommits we've already processed for the current height:
     /// (round, validator) → voted hash.
     /// Height is implicit because `start_height()` clears all per-height vote
     /// state and future-height votes are buffered until they become current.
     seen_precommits: HashMap<(u32, Pubkey), Option<Hash>>,
+    /// Full signed precommits retained to make equivocation independently provable.
+    seen_precommit_messages: HashMap<(u32, Pubkey), Precommit>,
     /// Precommit signatures retained for commit certificates: (round, validator) → (signature, timestamp).
     precommit_sigs: HashMap<(u32, Pubkey), (PqSignature, u64)>,
     /// Rounds for which we already signed a prevote, to prevent equivocation.
@@ -304,7 +310,9 @@ impl ConsensusEngine {
             precommit_any_power: HashMap::new(),
             proposal_blocks: HashMap::new(),
             seen_prevotes: HashMap::new(),
+            seen_prevote_messages: HashMap::new(),
             seen_precommits: HashMap::new(),
+            seen_precommit_messages: HashMap::new(),
             precommit_sigs: HashMap::new(),
             signed_prevote_rounds: HashMap::new(),
             signed_precommit_rounds: HashMap::new(),
@@ -334,7 +342,9 @@ impl ConsensusEngine {
         self.precommit_any_power.clear();
         self.proposal_blocks.clear();
         self.seen_prevotes.clear();
+        self.seen_prevote_messages.clear();
         self.seen_precommits.clear();
+        self.seen_precommit_messages.clear();
         self.precommit_sigs.clear();
         self.signed_prevote_rounds.clear();
         self.signed_precommit_rounds.clear();
@@ -744,6 +754,12 @@ impl ConsensusEngine {
                     existing_hash.map(|h| hex::encode(&h.0[..4])).unwrap_or_else(|| "nil".into()),
                     prevote.block_hash.map(|h| hex::encode(&h.0[..4])).unwrap_or_else(|| "nil".into()),
                 );
+                let Some(existing_vote) = self.seen_prevote_messages.get(&dedup_key) else {
+                    warn!(
+                        "BFT: conflicting prevote has no retained signed predecessor; rejecting unprovable evidence"
+                    );
+                    return ConsensusAction::None;
+                };
                 return ConsensusAction::EquivocationDetected {
                     height: self.height,
                     round: prevote.round,
@@ -751,12 +767,18 @@ impl ConsensusEngine {
                     vote_type: "prevote",
                     hash_1: *existing_hash,
                     hash_2: prevote.block_hash,
+                    offense: SlashingOffense::DoublePrevoteV2 {
+                        vote_1: existing_vote.clone(),
+                        vote_2: prevote,
+                    },
                 };
             }
             // Exact duplicate — ignore
             return ConsensusAction::None;
         }
         self.seen_prevotes.insert(dedup_key, prevote.block_hash);
+        self.seen_prevote_messages
+            .insert(dedup_key, prevote.clone());
 
         // Record the prevote
         self.prevotes
@@ -911,6 +933,12 @@ impl ConsensusEngine {
                     existing_hash.map(|h| hex::encode(&h.0[..4])).unwrap_or_else(|| "nil".into()),
                     precommit.block_hash.map(|h| hex::encode(&h.0[..4])).unwrap_or_else(|| "nil".into()),
                 );
+                let Some(existing_vote) = self.seen_precommit_messages.get(&dedup_key) else {
+                    warn!(
+                        "BFT: conflicting precommit has no retained signed predecessor; rejecting unprovable evidence"
+                    );
+                    return ConsensusAction::None;
+                };
                 return ConsensusAction::EquivocationDetected {
                     height: self.height,
                     round: precommit.round,
@@ -918,6 +946,10 @@ impl ConsensusEngine {
                     vote_type: "precommit",
                     hash_1: *existing_hash,
                     hash_2: precommit.block_hash,
+                    offense: SlashingOffense::DoublePrecommitV2 {
+                        vote_1: existing_vote.clone(),
+                        vote_2: precommit,
+                    },
                 };
             }
             // Exact duplicate — ignore
@@ -927,6 +959,8 @@ impl ConsensusEngine {
             return ConsensusAction::None;
         }
         self.seen_precommits.insert(dedup_key, precommit.block_hash);
+        self.seen_precommit_messages
+            .insert(dedup_key, precommit.clone());
 
         // Record the precommit
         self.precommits
@@ -1269,6 +1303,8 @@ impl ConsensusEngine {
         self.signed_prevote_rounds.insert(self.round, block_hash);
         self.seen_prevotes
             .insert((self.round, self.validator_pubkey), block_hash);
+        self.seen_prevote_messages
+            .insert((self.round, self.validator_pubkey), prevote.clone());
         self.prevotes
             .entry((self.round, block_hash))
             .or_default()
@@ -1390,6 +1426,8 @@ impl ConsensusEngine {
         self.signed_precommit_rounds.insert(self.round, block_hash);
         self.seen_precommits
             .insert((self.round, self.validator_pubkey), block_hash);
+        self.seen_precommit_messages
+            .insert((self.round, self.validator_pubkey), precommit.clone());
         self.precommits
             .entry((self.round, block_hash))
             .or_default()
@@ -2054,6 +2092,16 @@ impl ConsensusEngine {
         self.signed_prevote_rounds.insert(round, block_hash);
         self.seen_prevotes
             .insert((round, self.validator_pubkey), block_hash);
+        self.seen_prevote_messages.insert(
+            (round, self.validator_pubkey),
+            Prevote {
+                height,
+                round,
+                block_hash,
+                validator: self.validator_pubkey,
+                signature,
+            },
+        );
         let voters = self.prevotes.entry((round, block_hash)).or_default();
         if !voters.contains(&self.validator_pubkey) {
             voters.push(self.validator_pubkey);
@@ -2112,6 +2160,17 @@ impl ConsensusEngine {
         self.signed_precommit_rounds.insert(round, block_hash);
         self.seen_precommits
             .insert((round, self.validator_pubkey), block_hash);
+        self.seen_precommit_messages.insert(
+            (round, self.validator_pubkey),
+            Precommit {
+                height,
+                round,
+                block_hash,
+                validator: self.validator_pubkey,
+                signature: signature.clone(),
+                timestamp,
+            },
+        );
         let voters = self.precommits.entry((round, block_hash)).or_default();
         if !voters.contains(&self.validator_pubkey) {
             voters.push(self.validator_pubkey);
@@ -3288,6 +3347,7 @@ mod tests {
                 vote_type,
                 hash_1,
                 hash_2,
+                offense,
             } => {
                 assert_eq!(height, 10);
                 assert_eq!(round, 0);
@@ -3295,6 +3355,14 @@ mod tests {
                 assert_eq!(vote_type, "prevote");
                 assert_eq!(hash_1, block_hash_a);
                 assert_eq!(hash_2, block_hash_b);
+                assert!(matches!(
+                    offense,
+                    SlashingOffense::DoublePrevoteV2 { ref vote_1, ref vote_2 }
+                        if vote_1.block_hash == block_hash_a
+                            && vote_2.block_hash == block_hash_b
+                            && vote_1.verify_signature_with_chain_id("")
+                            && vote_2.verify_signature_with_chain_id("")
+                ));
             }
             other => panic!("expected prevote equivocation, got {:?}", other),
         }
@@ -3390,6 +3458,7 @@ mod tests {
                 vote_type,
                 hash_1,
                 hash_2,
+                offense,
             } => {
                 assert_eq!(height, 10);
                 assert_eq!(round, 0);
@@ -3397,6 +3466,14 @@ mod tests {
                 assert_eq!(vote_type, "precommit");
                 assert_eq!(hash_1, block_hash_a);
                 assert_eq!(hash_2, block_hash_b);
+                assert!(matches!(
+                    offense,
+                    SlashingOffense::DoublePrecommitV2 { ref vote_1, ref vote_2 }
+                        if vote_1.block_hash == block_hash_a
+                            && vote_2.block_hash == block_hash_b
+                            && vote_1.verify_signature_with_chain_id("")
+                            && vote_2.verify_signature_with_chain_id("")
+                ));
             }
             other => panic!("expected precommit equivocation, got {:?}", other),
         }

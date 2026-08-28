@@ -23,6 +23,44 @@ const MAX_SHIELDED_NOTE_PAYLOAD_BYTES: usize = 4096;
 
 type ShieldedNoteEnvelope = (Vec<u8>, Vec<u8>);
 
+#[cfg(feature = "zk")]
+fn validate_rebuilt_scalar(
+    label: &str,
+    value: &[u8; 32],
+    slot: u64,
+    tx_index: usize,
+) -> Result<(), String> {
+    if *value == [0u8; 32] {
+        return Err(format!(
+            "{} is zero at slot {} tx {}",
+            label, slot, tx_index
+        ));
+    }
+    if !crate::zk::merkle::is_canonical_scalar_bytes(value) {
+        return Err(format!(
+            "{} is non-canonical at slot {} tx {}: {}",
+            label,
+            slot,
+            tx_index,
+            hex::encode(value)
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "zk")]
+fn checked_rebuild_counter(
+    current: u64,
+    increment: u64,
+    label: &str,
+    slot: u64,
+    tx_index: usize,
+) -> Result<u64, String> {
+    current
+        .checked_add(increment)
+        .ok_or_else(|| format!("{} overflow at slot {} tx {}", label, slot, tx_index))
+}
+
 fn parse_shielded_note_envelope(
     data: &[u8],
     envelope_offset: usize,
@@ -354,7 +392,20 @@ impl StateStore {
 
     /// Collect all commitment leaves [0..count) from CF_SHIELDED_COMMITMENTS.
     pub fn get_all_shielded_commitments(&self, count: u64) -> Result<Vec<[u8; 32]>, String> {
-        let mut leaves = Vec::with_capacity(count as usize);
+        if count > crate::zk::TREE_CAPACITY {
+            return Err(format!(
+                "Shielded commitment count {} exceeds tree capacity {}",
+                count,
+                crate::zk::TREE_CAPACITY
+            ));
+        }
+        let capacity = usize::try_from(count).map_err(|_| {
+            format!(
+                "Shielded commitment count {} exceeds platform limits",
+                count
+            )
+        })?;
+        let mut leaves = Vec::with_capacity(capacity);
         for index in 0..count {
             match self.get_shielded_commitment(index)? {
                 Some(commitment) => leaves.push(commitment),
@@ -392,7 +443,7 @@ impl StateStore {
         for key in &keys {
             batch.delete_cf(&cf, key);
         }
-        Ok(keys.len() as u64)
+        u64::try_from(keys.len()).map_err(|_| format!("{} entry count exceeds u64", cf_name))
     }
 
     #[cfg(feature = "zk")]
@@ -407,8 +458,9 @@ impl StateStore {
             CF_SHIELDED_POOL,
             CF_SHIELDED_TXS,
         ] {
-            deleted_entries =
-                deleted_entries.saturating_add(self.queue_clear_shielded_cf(&mut batch, cf_name)?);
+            deleted_entries = deleted_entries
+                .checked_add(self.queue_clear_shielded_cf(&mut batch, cf_name)?)
+                .ok_or_else(|| "Shielded deleted-entry count overflow".to_string())?;
         }
         self.db
             .write(batch)
@@ -456,20 +508,24 @@ impl StateStore {
             CF_SHIELDED_POOL,
             CF_SHIELDED_TXS,
         ] {
-            deleted_entries =
-                deleted_entries.saturating_add(self.queue_clear_shielded_cf(&mut batch, cf_name)?);
+            deleted_entries = deleted_entries
+                .checked_add(self.queue_clear_shielded_cf(&mut batch, cf_name)?)
+                .ok_or_else(|| "Shielded deleted-entry count overflow".to_string())?;
         }
 
         let mut pool = crate::zk::ShieldedPoolState::new();
         let mut tree = crate::zk::MerkleTree::new();
         let mut spent_nullifiers = std::collections::HashSet::<[u8; 32]>::new();
+        let mut commitments = std::collections::HashSet::<[u8; 32]>::new();
         let mut scanned_transactions = 0u64;
         let mut shielded_transactions = 0u64;
 
         let scanned_blocks =
             self.for_each_canonical_block_in_range(start_slot, end_slot, |slot, block| {
                 for (tx_index, tx) in block.transactions.iter().enumerate() {
-                    scanned_transactions = scanned_transactions.saturating_add(1);
+                    scanned_transactions = scanned_transactions
+                        .checked_add(1)
+                        .ok_or_else(|| "Scanned transaction count overflow".to_string())?;
                     if self
                         .get_tx_meta_full(&tx.signature())?
                         .is_some_and(|meta| !meta.succeeded())
@@ -477,11 +533,15 @@ impl StateStore {
                         continue;
                     }
                     if is_shielded_transaction(tx) {
-                        shielded_transactions = shielded_transactions.saturating_add(1);
+                        shielded_transactions = shielded_transactions
+                            .checked_add(1)
+                            .ok_or_else(|| "Shielded transaction count overflow".to_string())?;
                         let sig = tx.signature();
                         let mut shielded_key = Vec::with_capacity(48);
                         shielded_key.extend_from_slice(&slot.to_be_bytes());
-                        shielded_key.extend_from_slice(&(tx_index as u64).to_be_bytes());
+                        let tx_index_u64 = u64::try_from(tx_index)
+                            .map_err(|_| "Transaction index exceeds u64".to_string())?;
+                        shielded_key.extend_from_slice(&tx_index_u64.to_be_bytes());
                         shielded_key.extend_from_slice(&sig.0);
                         batch.put_cf(&shielded_txs_cf, &shielded_key, []);
                     }
@@ -509,22 +569,61 @@ impl StateStore {
                                     ));
                                 }
                                 let commitment = read_bytes32(&ix.data, 9, "Shield commitment")?;
+                                validate_rebuilt_scalar(
+                                    "Shield commitment",
+                                    &commitment,
+                                    slot,
+                                    tx_index,
+                                )?;
+                                if !commitments.insert(commitment) {
+                                    return Err(format!(
+                                        "Duplicate shielded commitment {} at slot {} tx {}",
+                                        hex::encode(commitment),
+                                        slot,
+                                        tx_index
+                                    ));
+                                }
                                 let note_payload = shield_deposit_note_payload(&ix.data, &commitment)?;
                                 let index = pool.commitment_count;
-                                batch.put_cf(&commitments_cf, index.to_be_bytes(), commitment);
-                                if let Some(payload) = note_payload {
-                                    batch.put_cf(&note_payloads_cf, index.to_be_bytes(), payload);
+                                let next_commitment_count = checked_rebuild_counter(
+                                    index,
+                                    1,
+                                    "Shield commitment counter",
+                                    slot,
+                                    tx_index,
+                                )?;
+                                if next_commitment_count > crate::zk::TREE_CAPACITY {
+                                    return Err(format!(
+                                        "Shield commitment tree capacity {} exceeded at slot {} tx {}",
+                                        crate::zk::TREE_CAPACITY,
+                                        slot,
+                                        tx_index
+                                    ));
                                 }
-                                tree.insert(commitment);
-                                pool.commitment_count = pool.commitment_count.saturating_add(1);
-                                pool.shield_count = pool.shield_count.saturating_add(1);
-                                pool.total_shielded =
+                                let next_shield_count = checked_rebuild_counter(
+                                    pool.shield_count,
+                                    1,
+                                    "Shield operation counter",
+                                    slot,
+                                    tx_index,
+                                )?;
+                                let next_total_shielded =
                                     pool.total_shielded.checked_add(amount).ok_or_else(|| {
                                         format!(
                                             "Shielded pool balance overflow at slot {} tx {}",
                                             slot, tx_index
                                         )
                                     })?;
+                                tree.try_insert(commitment).map_err(|error| {
+                                    format!("{} at slot {} tx {}", error, slot, tx_index)
+                                })?;
+                                batch.put_cf(&commitments_cf, index.to_be_bytes(), commitment);
+                                if let Some(payload) = note_payload {
+                                    batch.put_cf(&note_payloads_cf, index.to_be_bytes(), payload);
+                                }
+                                pool.commitment_count = next_commitment_count;
+                                pool.shield_count = next_shield_count;
+                                pool.total_shielded = next_total_shielded;
                                 pool.merkle_root = tree.root();
                             }
                             24 => {
@@ -542,6 +641,26 @@ impl StateStore {
                                     ));
                                 }
                                 let nullifier = read_bytes32(&ix.data, 9, "Unshield nullifier")?;
+                                validate_rebuilt_scalar(
+                                    "Unshield nullifier",
+                                    &nullifier,
+                                    slot,
+                                    tx_index,
+                                )?;
+                                let merkle_root =
+                                    read_bytes32(&ix.data, 41, "Unshield Merkle root")?;
+                                validate_rebuilt_scalar(
+                                    "Unshield Merkle root",
+                                    &merkle_root,
+                                    slot,
+                                    tx_index,
+                                )?;
+                                if merkle_root != pool.merkle_root {
+                                    return Err(format!(
+                                        "Unshield Merkle root conflicts with rebuilt pool at slot {} tx {}",
+                                        slot, tx_index
+                                    ));
+                                }
                                 if !spent_nullifiers.insert(nullifier) {
                                     return Err(format!(
                                         "Duplicate shielded nullifier {} at slot {} tx {}",
@@ -550,16 +669,31 @@ impl StateStore {
                                         tx_index
                                     ));
                                 }
-                                batch.put_cf(&nullifiers_cf, nullifier, [0x01]);
-                                pool.unshield_count = pool.unshield_count.saturating_add(1);
-                                pool.nullifier_count = pool.nullifier_count.saturating_add(1);
-                                pool.total_shielded =
+                                let next_unshield_count = checked_rebuild_counter(
+                                    pool.unshield_count,
+                                    1,
+                                    "Unshield operation counter",
+                                    slot,
+                                    tx_index,
+                                )?;
+                                let next_nullifier_count = checked_rebuild_counter(
+                                    pool.nullifier_count,
+                                    1,
+                                    "Unshield nullifier counter",
+                                    slot,
+                                    tx_index,
+                                )?;
+                                let next_total_shielded =
                                     pool.total_shielded.checked_sub(amount).ok_or_else(|| {
                                         format!(
                                             "Shielded pool underflow at slot {} tx {}",
                                             slot, tx_index
                                         )
                                     })?;
+                                batch.put_cf(&nullifiers_cf, nullifier, [0x01]);
+                                pool.unshield_count = next_unshield_count;
+                                pool.nullifier_count = next_nullifier_count;
+                                pool.total_shielded = next_total_shielded;
                             }
                             25 => {
                                 if ix.data.len() < 161 {
@@ -572,6 +706,18 @@ impl StateStore {
                                     read_bytes32(&ix.data, 1, "ShieldedTransfer nullifier A")?;
                                 let nullifier_b =
                                     read_bytes32(&ix.data, 33, "ShieldedTransfer nullifier B")?;
+                                validate_rebuilt_scalar(
+                                    "ShieldedTransfer nullifier A",
+                                    &nullifier_a,
+                                    slot,
+                                    tx_index,
+                                )?;
+                                validate_rebuilt_scalar(
+                                    "ShieldedTransfer nullifier B",
+                                    &nullifier_b,
+                                    slot,
+                                    tx_index,
+                                )?;
                                 if nullifier_a == nullifier_b {
                                     return Err(format!(
                                         "Duplicate in-tx shielded nullifier at slot {} tx {}",
@@ -587,13 +733,57 @@ impl StateStore {
                                             tx_index
                                         ));
                                     }
-                                    batch.put_cf(&nullifiers_cf, nullifier, [0x01]);
                                 }
 
                                 let commitment_c =
                                     read_bytes32(&ix.data, 65, "ShieldedTransfer commitment C")?;
                                 let commitment_d =
                                     read_bytes32(&ix.data, 97, "ShieldedTransfer commitment D")?;
+                                validate_rebuilt_scalar(
+                                    "ShieldedTransfer commitment C",
+                                    &commitment_c,
+                                    slot,
+                                    tx_index,
+                                )?;
+                                validate_rebuilt_scalar(
+                                    "ShieldedTransfer commitment D",
+                                    &commitment_d,
+                                    slot,
+                                    tx_index,
+                                )?;
+                                if commitment_c == commitment_d {
+                                    return Err(format!(
+                                        "Duplicate ShieldedTransfer output commitments at slot {} tx {}",
+                                        slot, tx_index
+                                    ));
+                                }
+                                for commitment in [commitment_c, commitment_d] {
+                                    if !commitments.insert(commitment) {
+                                        return Err(format!(
+                                            "Duplicate shielded commitment {} at slot {} tx {}",
+                                            hex::encode(commitment),
+                                            slot,
+                                            tx_index
+                                        ));
+                                    }
+                                }
+                                let merkle_root = read_bytes32(
+                                    &ix.data,
+                                    129,
+                                    "ShieldedTransfer Merkle root",
+                                )?;
+                                validate_rebuilt_scalar(
+                                    "ShieldedTransfer Merkle root",
+                                    &merkle_root,
+                                    slot,
+                                    tx_index,
+                                )?;
+                                if merkle_root != pool.merkle_root {
+                                    return Err(format!(
+                                        "ShieldedTransfer Merkle root conflicts with rebuilt pool at slot {} tx {}",
+                                        slot, tx_index
+                                    ));
+                                }
                                 let output_payloads = shielded_transfer_note_payloads(
                                     &ix.data,
                                     &commitment_c,
@@ -601,6 +791,50 @@ impl StateStore {
                                 )?;
 
                                 let idx0 = pool.commitment_count;
+                                let idx1 = idx0.checked_add(1).ok_or_else(|| {
+                                    format!(
+                                        "ShieldedTransfer commitment index overflow at slot {} tx {}",
+                                        slot, tx_index
+                                    )
+                                })?;
+                                let next_commitment_count = checked_rebuild_counter(
+                                    idx0,
+                                    2,
+                                    "ShieldedTransfer commitment counter",
+                                    slot,
+                                    tx_index,
+                                )?;
+                                if next_commitment_count > crate::zk::TREE_CAPACITY {
+                                    return Err(format!(
+                                        "ShieldedTransfer commitment tree capacity {} exceeded at slot {} tx {}",
+                                        crate::zk::TREE_CAPACITY,
+                                        slot,
+                                        tx_index
+                                    ));
+                                }
+                                let next_transfer_count = checked_rebuild_counter(
+                                    pool.transfer_count,
+                                    1,
+                                    "ShieldedTransfer operation counter",
+                                    slot,
+                                    tx_index,
+                                )?;
+                                let next_nullifier_count = checked_rebuild_counter(
+                                    pool.nullifier_count,
+                                    2,
+                                    "ShieldedTransfer nullifier counter",
+                                    slot,
+                                    tx_index,
+                                )?;
+                                tree.try_insert(commitment_c).map_err(|error| {
+                                    format!("{} at slot {} tx {}", error, slot, tx_index)
+                                })?;
+                                tree.try_insert(commitment_d).map_err(|error| {
+                                    format!("{} at slot {} tx {}", error, slot, tx_index)
+                                })?;
+                                for nullifier in [nullifier_a, nullifier_b] {
+                                    batch.put_cf(&nullifiers_cf, nullifier, [0x01]);
+                                }
                                 batch.put_cf(&commitments_cf, idx0.to_be_bytes(), commitment_c);
                                 if let Some(payloads) = &output_payloads {
                                     batch.put_cf(
@@ -611,22 +845,20 @@ impl StateStore {
                                 }
                                 batch.put_cf(
                                     &commitments_cf,
-                                    (idx0 + 1).to_be_bytes(),
+                                    idx1.to_be_bytes(),
                                     commitment_d,
                                 );
                                 if let Some(payloads) = &output_payloads {
                                     batch.put_cf(
                                         &note_payloads_cf,
-                                        (idx0 + 1).to_be_bytes(),
+                                        idx1.to_be_bytes(),
                                         payloads[1].as_slice(),
                                     );
                                 }
 
-                                tree.insert(commitment_c);
-                                tree.insert(commitment_d);
-                                pool.commitment_count = pool.commitment_count.saturating_add(2);
-                                pool.transfer_count = pool.transfer_count.saturating_add(1);
-                                pool.nullifier_count = pool.nullifier_count.saturating_add(2);
+                                pool.commitment_count = next_commitment_count;
+                                pool.transfer_count = next_transfer_count;
+                                pool.nullifier_count = next_nullifier_count;
                                 pool.merkle_root = tree.root();
                             }
                             _ => {}
