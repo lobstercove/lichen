@@ -15,6 +15,10 @@ const rocksDbConsumerLocks = [
   'sdk/rust/Cargo.lock',
 ].map((relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8'));
 const contractBuilder = fs.readFileSync(path.join(root, 'scripts/build-all-contracts.sh'), 'utf8');
+const contractWorkspaces = fs.readdirSync(path.join(root, 'contracts'), { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => entry.name)
+  .filter((name) => fs.existsSync(path.join(root, 'contracts', name, 'Cargo.toml')));
 
 const checks = [
   [
@@ -49,6 +53,13 @@ const checks = [
   [
     'contract artifact lookup uses the shared target directory',
     /WASM_SOURCE="\$\{CONTRACT_TARGET_DIR\}\/wasm32-unknown-unknown\/release\//.test(contractBuilder),
+  ],
+  [
+    'contract builder inventory covers every in-tree contract workspace',
+    contractWorkspaces.every((name) => {
+      const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`^\\s+${escapedName}\\s*$`, 'm').test(contractBuilder);
+    }),
   ],
 ];
 

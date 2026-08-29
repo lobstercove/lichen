@@ -1,10 +1,12 @@
 # Archive V2 Activation, Cadence Recovery, And Validator Liveness Plan
 
 **Date:** 2026-08-18
-**Last updated:** 2026-08-28
-**Status:** Authoritative execution plan. Signed v0.5.263 is installed and
-running on all four validators from the release-workflow artifact. The running
-validator SHA-256 is
+**Last updated:** 2026-08-29
+**Status:** Authoritative execution plan. Signed v0.5.263 is installed on all
+four validators from the release-workflow artifact. US and Singapore remain
+active, but EU and India failed closed at the 5 GiB root headroom floor and the
+network is halted without a two-thirds quorum at slot `12,266,299`. The
+installed validator SHA-256 is
 `1d8f5277b47cdc0e5741ab096a9c76b2b9999ee045cebad1ea61591782301946` and
 the archive utility SHA-256 is
 `6ded1252d95464d2fb74468afdf01c9ecbdfa796de9f263dd1f06cd0ea038a85`.
@@ -14,17 +16,27 @@ reported four validators, resumed local commits, and agreed at fixed slot
 `237872100f2ade9ca332213308454e18251fbc096b101c5a192f08bc2173bb44`.
 Keys, signers, environments, and stopped WAL evidence were preserved.
 
-The v0.5.264 candidate is now locally qualified through the complete clean-build
-four-validator release gate. It is not committed, merged, tagged, signed,
-hosted-qualified, or deployed yet. The exact local gate predeclared four
-independently owned genesis voters, observed every validator as a proposer, and
-passed fresh join, real quorum loss with a 96-transaction backlog, a 140-slot
-live gap, own-state and coordinated restarts, Archive V2 runtime/corruption/
-source-outage paths, strict volume, launchpad, and terminal slot-7,000 parity.
-All four nodes matched public-history root
-`58460e87a6eb3a3ac41b1c823ba6fb0cd916cdec259f11debcd793f97a89dbcd`
-and state root
-`503ff1270327d1af8ab75afa1e3be34e3b39cf1a6e6c6373245a2b927e91dc9f`.
+Immutable tag v0.5.264 was created from protected `main` at
+`30def3b90cdc4947e5a662e7b40d4b69a043a85d`. Its release workflow passed the
+quality/security, contract, compiler-sandbox, and release-build prerequisites,
+then failed closed in the Linux four-validator gate before any artifact,
+checksum bundle, signature, or release was produced. The accelerated local-dev
+cluster made every colocated validator apply the production single-validator
+host load threshold to the same four-CPU runner; both bounded migrations paused
+at `cpu_pressure:load_one=8.54:cpus=4` and the 180-second durability proof
+correctly rejected the run. The macOS clean local gate could not exercise this
+Linux-only `/proc/loadavg` path.
+
+v0.5.265 is the only successor candidate. It omits the host-wide CPU check only
+for explicit `LICHEN_LOCAL_DEV` accelerated clusters and retains production CPU,
+disk, memory, consensus-latency, and Archive V2 capacity guards. Its exact clean
+local gate now passes all 34 contract builds, independently advancing cold
+migrations, full/cache/consensus joins, outages, corruption recovery, own-state
+and coordinated restarts, `140/140` volume journeys, `104/104` launchpad and
+graduation journeys, and terminal slot-7,000 public-history parity at root
+`c39969f512275e64f8b6a700abb18da84745229fec29164c70d7962497a6a057`.
+It is not deployable until protected-main checks, the immutable Linux tag
+workflow, detached post-quantum signature, and exact live preflight all pass.
 
 The 2026-08-26 live audit identified a direct Archive V2-era request-path
 regression. Public `getHealth` and `getMetrics` synchronously called
@@ -37,10 +49,12 @@ took 0.634 ms; the uncached call accumulated about 4.44 CPU-seconds of full I/O
 stall across the host during that interval. The correction makes public status
 cache-only and permits metadata sampling only inside the bounded cold-
 maintenance blocking pool. That correction shipped as signed v0.5.263. The
-larger v0.5.264 candidate has passed local quality, security, supply-chain,
-contract, frontend, release-build, and clean four-validator gates. Hosted
-release gates and live cadence acceptance still must pass before v0.5.264 can
-become the next signed release.
+larger source candidate passed local quality, security, supply-chain, contract,
+frontend, release-build, and clean four-validator gates before the Linux-only
+release-gate defect above was exposed. v0.5.265 has repeated the mandatory local
+gates; protected-main and immutable-tag Linux evidence remain outstanding.
+Prior v0.5.264 evidence is diagnostic history, not transferable release
+qualification.
 
 Archive V2 roles remain disabled. At the last preserved 2026-08-27 live
 observation, the dual-R2 catalog had 372 segments through slot 12,138,999 and
@@ -74,18 +88,19 @@ ad-hoc production change.
 
 ## 1. Executive Decision
 
-The fleet is safe and live on signed v0.5.263, but it is not mainnet-ready:
-Archive V2 roles and legacy retirement remain open, current storage is not
-approved for indefinite archive growth, and v0.5.264 still requires hosted,
-signed-artifact, coordinated-deployment, and live acceptance gates.
+The fleet state and rollback artifacts remain preserved on signed v0.5.263,
+but the testnet is halted below quorum and is not mainnet-ready. Archive V2
+roles and legacy retirement remain open, current storage is not approved for
+indefinite archive growth, and v0.5.265 still requires hosted signed-artifact,
+coordinated-deployment, and live acceptance gates.
 
 ### 1.1 Current decision
 
 - Preserve the completed cache-only archive-status correction and its proof
   that neither `getHealth` nor `getMetrics` performs RocksDB/FUSE metadata I/O.
-- Preserve the all-green mandatory clean four-validator v0.5.264 evidence, then
-  create a new immutable signed release only if hosted quality, security,
-  outage, rejoin, and Archive V2 gates independently pass.
+- Preserve the mandatory clean four-validator v0.5.265 evidence, then create a
+  new immutable signed release only if hosted quality, security, outage,
+  rejoin, and Archive V2 gates independently pass.
 - Coordinated-deploy that one release, then extend the dual-R2 catalog from one
   stopped immutable source snapshot. Do not perform another genesis rebuild or
   full R2 readback.
@@ -942,7 +957,7 @@ The 2026-08-27 stopped-node proof found a circular dependency in v0.5.263:
    reserve correctly returned `StopValidator` while legacy cold still occupied
    the disk.
 
-v0.5.264 resolves this without changing consensus, Archive V2 object format,
+v0.5.265 carries forward the role-bootstrap correction without changing consensus, Archive V2 object format,
 catalog format, or capacity policy:
 
 - the role marker codec and create-new durable writer are shared by the
@@ -1019,7 +1034,7 @@ Current execution order is fixed:
 2. Preserve the completed cache-only archive-status implementation and its
    all-green local tests; public health and metrics requests cannot trigger a
    RocksDB/FUSE storage refresh.
-3. Commit the clean v0.5.264 candidate, pass every hosted hard release gate,
+3. Commit the clean v0.5.265 candidate, pass every hosted hard release gate,
    create and verify the immutable signed release, and perform one coordinated
    four-host stop/install/start. Prove convergence, artifact parity, preserved
    keys/WALs, bounded proposals, and the moving-network outage/rejoin
