@@ -127,6 +127,7 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/qa/test_github_actions_supply_chain.js
+          node scripts/qa/test_docker_workspace_coverage.js
           node scripts/qa/test_rustsec_advisory_policy.js
           node scripts/qa/test_legacy_bincode_codec_policy.js
           node scripts/qa/test_release_audit_summaries.js

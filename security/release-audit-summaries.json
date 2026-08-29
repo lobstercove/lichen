@@ -112,6 +112,21 @@
       "artifact_policy": "The gate emits a stdout summary only and creates no benchmark, frontend, validator, state, or build artifacts."
     },
     {
+      "id": "AUD-007",
+      "area": "Docker workspace and target coverage",
+      "status": "tracked-gate",
+      "command": "node scripts/qa/test_docker_workspace_coverage.js",
+      "tracked_sources": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/release.yml",
+        "Cargo.toml",
+        "Dockerfile",
+        "scripts/qa/test_docker_workspace_coverage.js"
+      ],
+      "expected_evidence": "Every reachable local Cargo package manifest and source tree is copied into the image build, every default lib/bin target exists in the strict dependency-cache layer, Cargo errors are not suppressed, and the real Docker image build runs on pull requests and main pushes.",
+      "artifact_policy": "The static gate emits a stdout summary only. Hosted Docker builds use ephemeral runners; local images, builders, caches, and target trees are not committed."
+    },
+    {
       "id": "E2E-001",
       "area": "Deterministic local chain smoke",
       "status": "tracked-live-gate",

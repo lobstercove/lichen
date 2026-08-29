@@ -88,6 +88,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Verify GitHub Actions supply-chain hardening
         run: node scripts/qa/test_github_actions_supply_chain.js
+      - name: Verify Docker workspace coverage
+        run: node scripts/qa/test_docker_workspace_coverage.js
       - name: Verify RustSec advisory exception policy
         run: node scripts/qa/test_rustsec_advisory_policy.js
       - name: Verify legacy bincode codec policy
@@ -367,7 +369,7 @@ jobs:
     name: Docker Build
     runs-on: ubuntu-latest
     needs: test
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Set up Docker Buildx
