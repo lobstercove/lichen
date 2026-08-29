@@ -123,7 +123,7 @@
         "Dockerfile",
         "scripts/qa/test_docker_workspace_coverage.js"
       ],
-      "expected_evidence": "Every reachable local Cargo package manifest and source tree is copied into the image build, every default lib/bin target exists in the strict dependency-cache layer, Cargo errors are not suppressed, and the real Docker image build runs on pull requests and main pushes.",
+      "expected_evidence": "Every reachable local Cargo package manifest and source tree is copied into the image build, every default lib/bin and manifest-declared target exists in the strict dependency-cache layer, Cargo errors are not suppressed, and the real Docker image build runs on pull requests and main pushes.",
       "artifact_policy": "The static gate emits a stdout summary only. Hosted Docker builds use ephemeral runners; local images, builders, caches, and target trees are not committed."
     },
     {
