@@ -141,7 +141,7 @@ tokio = { version = "1", features = ["full"] }
                         <code>lichen_client_sdk::{Client, ClientBuilder, Error, Result, Keypair, Pubkey, TransactionBuilder, Balance, Block, NetworkInfo, Transaction}</code>
                     </p>
                     <p>The published crate version is <code>0.1.5</code>. The examples below use public testnet;
-                        switch to <code>https://rpc.lichen.network</code> only when targeting mainnet.</p>
+                        change endpoints only after a signed mainnet launch handoff is published. Mainnet is not live.</p>
                 </div>
             </section>
 
@@ -991,7 +991,7 @@ match client.get_balance(&pubkey).await {
 
             <div class="callout callout-info">
                 <p>For real-time subscriptions, connect directly to
-                    <code>wss://testnet-api.lichen.network/ws</code> or <code>wss://rpc.lichen.network/ws</code>, or
+                    <code>wss://testnet-api.lichen.network/ws</code> (mainnet is not launched), or
                     use the JavaScript and Python SDKs, which already expose high-level subscription helpers.
                 </p>
             </div>

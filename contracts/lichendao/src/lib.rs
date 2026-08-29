@@ -91,7 +91,7 @@ const CONSTITUTIONAL_APPROVAL: u64 = 75;
 const CONSTITUTIONAL_QUORUM: u64 = 30;
 const CONSTITUTIONAL_EXECUTION_DELAY: u64 = 604800; // 7-day time-lock
 
-/// Proposal stake: 10,000 LICN in spores ($1,000 at $0.10/LICN — returned if approved, lost if spam)
+/// Proposal stake: 10,000 LICN in spores (returned if approved, lost if spam).
 const PROPOSAL_STAKE: u64 = 10_000_000_000_000;
 
 /// Max proposal payload sizes (bytes) to prevent oversized allocation abuse.

@@ -1164,8 +1164,8 @@ impl GenesisConfig {
                 fee_voters_percentage: 10,
                 fee_treasury_percentage: 10,
                 fee_community_percentage: 10,
-                base_fee_spores: 1_000_000, // 0.001 LICN — $0.0001 at $0.10/LICN
-                rent_rate_spores_per_kb_month: 10_000, // $0.000001 at $0.10/LICN
+                base_fee_spores: 1_000_000,            // 0.001 LICN
+                rent_rate_spores_per_kb_month: 10_000, // 0.00001 LICN
                 rent_free_kb: 1,
                 enable_smart_contracts: true,
                 enable_staking: true,
@@ -1221,8 +1221,8 @@ impl GenesisConfig {
                 fee_voters_percentage: 10,
                 fee_treasury_percentage: 10,
                 fee_community_percentage: 10,
-                base_fee_spores: 1_000_000, // 0.001 LICN — $0.0001 at $0.10/LICN
-                rent_rate_spores_per_kb_month: 10_000, // $0.000001 at $0.10/LICN
+                base_fee_spores: 1_000_000,            // 0.001 LICN
+                rent_rate_spores_per_kb_month: 10_000, // 0.00001 LICN
                 rent_free_kb: 1,
                 enable_smart_contracts: true,
                 enable_staking: true,

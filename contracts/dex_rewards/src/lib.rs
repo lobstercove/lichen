@@ -28,9 +28,9 @@ const REWARD_POOL_PER_MONTH: u64 = 100_000_000_000_000; // 100K LICN (in spores)
 const SLOTS_PER_MONTH: u64 = 2_592_000;
 
 // Tier thresholds (cumulative volume in spores)
-const TIER_BRONZE_MAX: u64 = 100_000_000_000_000; // <100k LICN ($10K at $0.10)
-const TIER_SILVER_MAX: u64 = 1_000_000_000_000_000; // 100k-1M LICN ($100K at $0.10)
-const TIER_GOLD_MAX: u64 = 10_000_000_000_000_000; // 1M-10M LICN ($1M at $0.10)
+const TIER_BRONZE_MAX: u64 = 100_000_000_000_000; // <100k LICN
+const TIER_SILVER_MAX: u64 = 1_000_000_000_000_000; // 100k-1M LICN
+const TIER_GOLD_MAX: u64 = 10_000_000_000_000_000; // 1M-10M LICN
                                                    // Above GOLD_MAX = Diamond
 
 // Tier multipliers (in basis points, 10000 = 1x)
@@ -41,9 +41,6 @@ const MULTIPLIER_DIAMOND: u64 = 30_000; // 3x
 
 // Referral rates
 const REFERRAL_RATE_BPS: u64 = 1000; // 10% of fees to referrer
-const REFERRAL_DISCOUNT_BPS: u64 = 500; // 5% fee discount for referee
-const REFERRAL_VERIFIED_RATE_BPS: u64 = 1500; // 15% for LichenID-verified
-const REFERRAL_DISCOUNT_DURATION: u64 = 2_592_000; // 30 days
 
 // Storage keys
 const ADMIN_KEY: &[u8] = b"rew_admin";

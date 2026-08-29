@@ -1,22 +1,24 @@
 # Lichen 🦞⚡
 
-**The first blockchain built by agents, for agents.**
+**A post-quantum-native blockchain built for agents and programmable markets.**
 
 Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Multi-language SDKs
 
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current signed testnet release:** `v0.5.239`. The unreleased `v0.5.240`
-candidate keeps transient measured disk growth from becoming a false
-consensus-fatal Archive V2 shutdown and permits a still-headroom-checked 8 GiB
-bound for retirement reclaim when a single RocksDB SST exceeds 4 GiB. It also
-keeps the hard floor while allowing stopped, read-only retrofit sources to use
-separate adequately reserved Archive V2 staging storage. Bounded
-source blocks and parent links, the root-committed historical loss declaration,
-two independently verified replicas, and signed retirement authorization
-remain mandatory. The exact testnet exception cannot be used by a different
-network or genesis; fresh networks and mainnet still fail closed.
+**Current installed signed testnet release:** `v0.5.263`. The locally qualified
+`v0.5.264` source becomes an installable release only when protected-branch CI
+passes and its tag workflow publishes detached post-quantum-signed artifacts. It adds the
+fail-closed Archive V2 role-bootstrap path needed for low-space legacy
+retirement without weakening source, replica, headroom, or signed-authorization
+requirements.
+
+**Network status:** the public network is testnet. Mainnet has not launched and
+is not approved. The current 200 GB validator fleet is not approved for mainnet
+or indefinite archive growth. The testnet-only historical-loss waiver cannot be
+transferred to a fresh network or mainnet; both fail closed on incomplete
+genesis-to-tip public history.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  
@@ -30,14 +32,25 @@ network or genesis; fresh networks and mainnet still fail closed.
 
 ## Why Lichen?
 
-Current blockchains charge agents hundreds of dollars a year just to exist on-chain. Lichen fixes that:
+Lichen combines properties that are verified independently in source and in
+release gates:
 
-| | Lichen | Solana | Ethereum |
-|---|---|---|---|
-| **Tx cost** | $0.0001 | $0.00025 | $1–50 |
-| **Commit latency** | ~400 ms typical block commitment | 400 ms | 12 s |
-| **Agent identity** | Built-in (LichenID) | None | None |
-| **Smart-contract langs** | Rust (WASM); JS, Python, Rust (SDKs) | Rust | Solidity |
+- Native accounts, transactions, blocks, votes, finality certificates, and
+  release checksums use ML-DSA-65 signatures.
+- P2P peers authenticate with ML-DSA-65, establish session keys with ML-KEM-768,
+  and encrypt application frames with XChaCha20-Poly1305 before accepting P2P
+  messages. QUIC/TLS is the carrier, not the peer identity trust root.
+- Tendermint-style BFT targets a 400 ms slot cadence under a healthy two-thirds
+  stake quorum. This is a target, not a latency guarantee.
+- Rust/WASM contracts, EVM transaction execution, JavaScript/Python/Rust SDKs,
+  and on-chain identity share one deterministic settlement layer.
+- The base transfer fee is denominated by the protocol as 0.001 LICN. No USD
+  price is implied because LICN does not have a protocol-defined exchange rate.
+
+External HTTPS, source-chain bridge accounts, operating systems, and other
+third-party infrastructure retain their own cryptographic assumptions. “Post
+quantum” here describes Lichen's native cryptographic boundaries; it is not a
+claim that every external dependency is quantum-resistant.
 
 ---
 
@@ -143,10 +156,10 @@ Release download pattern:
 https://github.com/lobstercove/lichen/releases/download/<tag>/lichen-validator-<platform>.tar.gz
 ```
 
-Examples:
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.236/lichen-validator-linux-x86_64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.236/lichen-validator-darwin-aarch64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.236/lichen-validator-windows-x86_64.tar.gz`
+Platform examples follow the same pattern with
+`linux-x86_64`, `darwin-aarch64`, or `windows-x86_64` substituted for
+`<platform>`. Always resolve and verify the exact signed tag; do not copy an old
+version number from documentation.
 
 Linux x86_64:
 
@@ -163,15 +176,15 @@ grep 'lichen-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
 gh attestation verify lichen-validator-linux-x86_64.tar.gz -R lobstercove/lichen
 tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
 chmod +x lichen-validator lichen-genesis lichen lichen-archive-v2 zk-prove
-mkdir -p "$HOME/.lichen/state-mainnet"
-cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+mkdir -p "$HOME/.lichen/state-testnet"
+cp seeds.json "$HOME/.lichen/state-testnet/seeds.json"
 export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 ./lichen-validator \
-    --network mainnet \
-    --p2p-port 8001 \
-    --rpc-port 9899 \
-    --ws-port 9900 \
-    --db-path "$HOME/.lichen/state-mainnet"
+    --network testnet \
+    --p2p-port 7001 \
+    --rpc-port 8899 \
+    --ws-port 8900 \
+    --db-path "$HOME/.lichen/state-testnet"
 ```
 
 macOS Apple Silicon:
@@ -189,15 +202,15 @@ grep 'lichen-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
 gh attestation verify lichen-validator-darwin-aarch64.tar.gz -R lobstercove/lichen
 tar xzf lichen-validator-darwin-aarch64.tar.gz --strip-components=1
 chmod +x lichen-validator lichen-genesis lichen lichen-archive-v2 zk-prove
-mkdir -p "$HOME/.lichen/state-mainnet"
-cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+mkdir -p "$HOME/.lichen/state-testnet"
+cp seeds.json "$HOME/.lichen/state-testnet/seeds.json"
 export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 ./lichen-validator \
-    --network mainnet \
-    --p2p-port 8001 \
-    --rpc-port 9899 \
-    --ws-port 9900 \
-    --db-path "$HOME/.lichen/state-mainnet"
+    --network testnet \
+    --p2p-port 7001 \
+    --rpc-port 8899 \
+    --ws-port 8900 \
+    --db-path "$HOME/.lichen/state-testnet"
 ```
 
 Windows x64 (PowerShell):
@@ -206,15 +219,15 @@ Windows x64 (PowerShell):
 $version = (Invoke-RestMethod https://api.github.com/repos/lobstercove/lichen/releases/latest).tag_name
 Invoke-WebRequest -Uri "https://github.com/lobstercove/lichen/releases/download/$version/lichen-validator-windows-x86_64.tar.gz" -OutFile "lichen-validator-windows-x86_64.tar.gz"
 tar -xzf .\lichen-validator-windows-x86_64.tar.gz --strip-components=1
-New-Item -ItemType Directory -Force -Path "$HOME\.lichen\state-mainnet" | Out-Null
-Copy-Item .\seeds.json "$HOME\.lichen\state-mainnet\seeds.json" -Force
+New-Item -ItemType Directory -Force -Path "$HOME\.lichen\state-testnet" | Out-Null
+Copy-Item .\seeds.json "$HOME\.lichen\state-testnet\seeds.json" -Force
 $env:LICHEN_KEYPAIR_PASSWORD = 'set-a-long-random-secret-before-first-start'
 .\lichen-validator.exe `
-    --network mainnet `
-    --p2p-port 8001 `
-    --rpc-port 9899 `
-    --ws-port 9900 `
-    --db-path "$HOME\.lichen\state-mainnet"
+    --network testnet `
+    --p2p-port 7001 `
+    --rpc-port 8899 `
+    --ws-port 8900 `
+    --db-path "$HOME\.lichen\state-testnet"
 ```
 
 Windows release assets are now part of the release contract, but if a given tag does not include them yet, use the source-build workflow for Windows until the next release is published.
@@ -257,38 +270,41 @@ using that identity instead of generating a new node address.
 For production deployments, run the validator under a restart supervisor such as `systemd`, `launchd`, or a Windows service/task wrapper and leave auto-update disabled until detached signatures and canary rollout discipline are proven. When canary nodes later opt into `--auto-update=apply`, the updater downloads and stages the new binary, then exits with a restart code so the supervisor can relaunch it.
 
 ```bash
-mkdir -p "$HOME/.lichen/state-mainnet"
-cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+mkdir -p "$HOME/.lichen/state-testnet"
+cp seeds.json "$HOME/.lichen/state-testnet/seeds.json"
 export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 
 lichen-validator \
-    --network mainnet \
-    --p2p-port 8001 \
-    --rpc-port 9899 \
-    --ws-port 9900 \
-    --db-path "$HOME/.lichen/state-mainnet"
+    --network testnet \
+    --p2p-port 7001 \
+    --rpc-port 8899 \
+    --ws-port 8900 \
+    --db-path "$HOME/.lichen/state-testnet"
 ```
 
 If you are building from source inside this repo, use the same runtime flags with the locally built binary:
 
 ```bash
-# Join mainnet with one command (syncs from seed nodes, generates keypair)
-mkdir -p ./data/state-mainnet/home
-cp ./seeds.json ./data/state-mainnet/seeds.json
+# Join testnet with one command (syncs from seed nodes, generates keypair)
+mkdir -p ./data/state-testnet/home
+cp ./seeds.json ./data/state-testnet/seeds.json
 export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 
-env HOME="$PWD/data/state-mainnet/home" \
+env HOME="$PWD/data/state-testnet/home" \
 ./target/release/lichen-validator \
-    --network mainnet \
-    --p2p-port 8001 \
-    --rpc-port 9899 \
-    --ws-port 9900 \
-    --db-path ./data/state-mainnet
+    --network testnet \
+    --p2p-port 7001 \
+    --rpc-port 8899 \
+    --ws-port 8900 \
+    --db-path ./data/state-testnet
 ```
 
-The validator starts an RPC server at `http://localhost:9899` and a WebSocket endpoint at `ws://localhost:9900`.
+The testnet validator starts an RPC server at `http://localhost:8899` and a
+WebSocket endpoint at `ws://localhost:8900`.
 
-**Mainnet RPC:** `https://rpc.lichen.network` · **WebSocket:** `wss://rpc.lichen.network/ws`
+**Public testnet RPC:** `https://testnet-api.lichen.network` · **WebSocket:**
+`wss://testnet-api.lichen.network/ws`. Mainnet endpoints are launch placeholders
+and must not be used until a signed mainnet handoff is published.
 
 ### Use the CLI
 
@@ -393,11 +409,14 @@ lichen token create "My Token" MYTOK --wasm ./path/to/token.wasm --decimals 9
 
 ---
 
-## Run a Mainnet Validator
+## Run a Testnet Validator
 
 Lichen uses **Tendermint-style BFT** consensus (Propose → Prevote → Precommit → Commit). Validators earn LICN by producing blocks, voting, and maintaining uptime.
 
-**Minimum requirements:** 2 CPU cores · 2 GB RAM · 50 GB SSD · stable internet
+**Current operator baseline:** 8 dedicated CPU cores · 32 GB RAM · 500 GB NVMe
+SSD · stable symmetric internet. Archive storage needs a separately capacity-
+planned growth and redundancy budget; 200 GB roots are already insufficient for
+the long-running testnet and are not a mainnet baseline.
 
 ### 1. Build
 
@@ -412,15 +431,15 @@ cargo build --release
 ```bash
 # If you already shipped the binary to the machine, cloning the repo is optional.
 # The validator only needs the binary, a writable db path, and a seed list.
-mkdir -p ./data/state-mainnet
-cp ./seeds.json ./data/state-mainnet/seeds.json
+mkdir -p ./data/state-testnet
+cp ./seeds.json ./data/state-testnet/seeds.json
 export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 ./target/release/lichen-validator \
-    --network mainnet \
-    --p2p-port 8001 \
-    --rpc-port 9899 \
-    --ws-port 9900 \
-    --db-path ./data/state-mainnet
+    --network testnet \
+    --p2p-port 7001 \
+    --rpc-port 8899 \
+    --ws-port 8900 \
+    --db-path ./data/state-testnet
 ```
 
 For a repo checkout on Linux, the foreground command above is the public manual path for ad hoc starts and debugging. Hosted production automation is outside the public repository.
@@ -434,11 +453,11 @@ That's it. The validator will:
 ### 3. Verify
 
 ```bash
-curl -s http://localhost:9899 -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' | jq .
+curl -s http://localhost:8899 -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' | jq .
 # → {"status":"ok","slot":12345}
 ```
 
-### 4. Run as a Service (Optional)
+### 4. Run as a Service (Required for Unattended Operation)
 
 For unattended operation, install the validator as a persistent OS service:
 
@@ -450,18 +469,19 @@ For unattended operation, install the validator as a persistent OS service:
 
 Full platform-specific instructions: [developers.lichen.network/validator.html](https://developers.lichen.network/validator.html)
 
-### Seed Nodes (Mainnet)
+### Seed Nodes (Testnet)
 
 | Region | Endpoint |
 |--------|----------|
-| US East | `seed-01.lichen.network:8001` |
-| EU West | `seed-02.lichen.network:8001` |
-| AP Southeast | `seed-03.lichen.network:8001` |
-| India | `seed-04.lichen.network:8001` |
+| US East | `seed-01.lichen.network:7001` |
+| EU West | `seed-02.lichen.network:7001` |
+| AP Southeast | `seed-03.lichen.network:7001` |
+| India | `seed-04.lichen.network:7001` |
 
 Domain names are preferred over raw IPs for bootstrap because they let the foundation rotate infrastructure without forcing validators to change CLI flags or wait for a new binary release.
 
-The built-in **supervisor** auto-restarts on crash and the **watchdog** alerts on stall — no external process manager needed.
+The built-in watchdog detects stalls, but an external service manager such as
+`systemd` is required to restart and supervise an unattended validator.
 
 **Detailed guides:** https://developers.lichen.network
 
@@ -470,10 +490,15 @@ The built-in **supervisor** auto-restarts on crash and the **watchdog** alerts o
 ## Key Features
 
 ### LichenID — Agent Identity
-Cryptographic on-chain identity with reputation tiers, skill attestations, and fee discounts. Agents build trust through verifiable contribution history.
+Cryptographic on-chain identity with reputation scores, skill attestations,
+vouching, recovery, and `.lichen` names. Base-protocol fees and mempool ordering
+do not privilege reputation; application contracts may choose explicit,
+auditable identity gates.
 
 ### Ultra-Low Fees
-**$0.0001 per transaction (0.001 LICN).** 40 % burned (counter-pressure to inflation), 30 % to block producer, 10 % to voters, 10 % to treasury, 10 % to community.
+**0.001 LICN base transfer fee.** 40 % is burned, 30 % goes to the block
+producer, 10 % to voters, 10 % to treasury, and 10 % to community. Fiat cost
+depends on an external market price and is not specified by the protocol.
 
 ### Smart Contracts
 Write WASM programs in Rust. Deploy with the CLI or the browser-based **Programs IDE**.
@@ -486,10 +511,16 @@ lichen deploy ./target/wasm32-unknown-unknown/release/counter.wasm
 - **SporeSwap** — AMM decentralized exchange
 - **ThallLend** — Lending protocol
 - **SporePump** — Token launchpad (10 LICN to launch)
-- **MossStake** — Liquid staking
+- **MossStake** — Staking V2 implementation; activation on an existing network
+  requires a separately governed migration and is not implicit in this release
 
 ### Multi-Chain Bridges
-Native bridge support for Solana, Ethereum, BNB Chain, Neo X, and Bitcoin routes. Current wrapped assets are wSOL, wETH, wBNB, wGAS, wNEO, wBTC, and LUSD for supported USDC/USDT stablecoin deposits. Dual address format — Base58 *and* 0x hex on the same account.
+Custody-configured route support exists for Solana, Ethereum, BNB Chain, Neo X,
+and Bitcoin assets. A route is available only when its source-chain adapter,
+token address, signer policy, reserves, and reconciliation gates are configured
+and healthy. These are custody and attestation boundaries, not a claim of a
+trustless native bridge. Lichen accounts support Base58 and `0x` representations
+of the same address bytes.
 
 ---
 
@@ -536,9 +567,9 @@ README stays high-level. These are the canonical entry points for the callable d
 
 | Phase | Timeline | Milestones |
 |---|---|---|
-| **Phase 1: Live Foundation** | Live now | Mainnet + testnet live, LichenVM, LichenID, wallet/explorer/DEX/marketplace/programs/developer portal, Solana + Ethereum + BNB + Neo X + Bitcoin wrapped asset support. The historical shielded pool is read-only while proof scheme 0x01 is disabled pending a constrained verifier. |
-| **Phase 2: Network Expansion** | Current buildout | Validator growth and hardening, better bridge + custody UX, deeper SporeSwap and wrapped-asset liquidity, faster SDK and validator onboarding, broader app launches across payments, AI agents, identity, and compute |
-| **Phase 3: Ecosystem Scale** | Next | Larger validator footprint, deeper cross-chain liquidity and routing, stronger privacy and coordination tooling, full-stack agent economy across DeFi/payments/compute/marketplaces, institutional-grade reliability |
+| **Phase 1: Testnet Foundation** | Live testnet | LichenVM, LichenID, wallet/explorer/DEX/marketplace/programs/developer portal, and custody-configured wrapped-asset surfaces. The historical shielded pool is read-only while proof scheme 0x01 remains disabled. |
+| **Phase 2: Production Hardening** | Current | Restore durable validator headroom, complete Archive V2 activation, increase fleet redundancy, verify every application and custody route, and publish reproducible benchmark evidence. |
+| **Phase 3: Mainnet Readiness** | Gated, not launched | Fresh genesis-to-tip archive completeness, dedicated capacity, signed operational handoffs, external security review, migration/activation approvals, and all mainnet release gates. |
 
 ---
 

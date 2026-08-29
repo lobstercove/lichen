@@ -96,6 +96,8 @@ jobs:
         run: python3 scripts/qa/test_rocksdb_wal_inventory.py
       - name: Verify release audit summaries
         run: node scripts/qa/test_release_audit_summaries.js
+      - name: Verify public claims against implementation boundaries
+        run: node scripts/qa/test_public_claims.js
       - name: Verify release signer trust anchor
         run: node scripts/qa/test_release_signer_trust_anchor.js
       - name: Verify deployment env examples
@@ -237,6 +239,7 @@ jobs:
       - name: Contract ABI and WASM dispatch parity
         run: |
           node scripts/qa/test_contract_abi_dispatch_parity.js
+          python3 scripts/coverage_self_test.py
           node scripts/qa/sync_bountyboard_playground.js
 
   fmt:

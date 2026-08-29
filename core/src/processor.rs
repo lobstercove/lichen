@@ -216,24 +216,23 @@ const SECONDS_PER_DAY: u64 = 86_400;
 /// Transactions referencing a blockhash older than this are rejected.
 pub const MAX_TX_AGE_BLOCKS: u64 = 300;
 /// Base transaction fee (0.001 LICN = 1,000,000 spores)
-/// At $0.10/LICN: $0.0001 per tx  |  At $1.00/LICN: $0.001 per tx
-/// Solana ~$0.00025/tx — Lichen is 2.5x cheaper at $0.10/LICN
+/// Fiat cost is intentionally not inferred; LICN has no protocol-defined exchange rate.
 pub const BASE_FEE: u64 = 1_000_000;
 
 /// Contract deployment fee (25 LICN = 25,000,000,000 spores)
-/// At $0.10/LICN: $2.50 per deploy  |  At $1.00/LICN: $25 per deploy
+/// Denominated only in LICN; fiat cost depends on an external market price.
 pub const CONTRACT_DEPLOY_FEE: u64 = 25_000_000_000;
 
 /// Contract upgrade fee (10 LICN = 10,000,000,000 spores)
-/// At $0.10/LICN: $1.00 per upgrade  |  At $1.00/LICN: $10 per upgrade
+/// Denominated only in LICN; fiat cost depends on an external market price.
 pub const CONTRACT_UPGRADE_FEE: u64 = 10_000_000_000;
 
 /// NFT mint fee (0.5 LICN = 500,000,000 spores)
-/// At $0.10/LICN: $0.05 per mint  |  At $1.00/LICN: $0.50 per mint
+/// Denominated only in LICN; fiat cost depends on an external market price.
 pub const NFT_MINT_FEE: u64 = 500_000_000;
 
 /// NFT collection creation fee (1,000 LICN = 1,000,000,000,000 spores)
-/// At $0.10/LICN: $100 per collection  |  At $1.00/LICN: $1,000 per collection
+/// Denominated only in LICN; fiat cost depends on an external market price.
 pub const NFT_COLLECTION_FEE: u64 = 1_000_000_000_000;
 
 /// Minimum balance required to create a nonce account (0.01 LICN = 10,000,000 spores).

@@ -165,7 +165,7 @@ npm --version   # 10.x.x</code></pre>
             <div class="callout callout-info">
                 <div class="callout-title"><i class="fas fa-server"></i> Running a Validator Without Cloning the Repo
                 </div>
-                If you already have a <code>lichen-validator</code> release artifact, you can join mainnet directly
+                If you already have a verified <code>lichen-validator</code> release artifact, you can join public testnet
                 without a repository checkout. Use a writable state directory, keep the bundled
                 <code>zk-prove</code> tool beside the validator, copy the bundled <code>seeds.json</code> into the
                 state directory, and start the binary. See <a href="validator.html">Validator Setup</a> for Linux,
@@ -210,11 +210,12 @@ cp target/release/lichen ~/.cargo/bin/</code></pre>
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code>$ lichen --version
-		lichen 0.5.203</code></pre>
+		lichen 0.5.264</code></pre>
             </div>
 
-            <p>Neo route documentation has been compatibility-checked since the <code>lichen 0.5.197</code> CLI
-                baseline; use the current release output above for new installs.</p>
+            <p>The output above describes the current source candidate. Public-network operators must install only a
+                signed release artifact and verify its detached post-quantum checksum signature; the currently signed
+                testnet release remains <code>v0.5.263</code> until <code>v0.5.264</code> completes the release gates.</p>
 
             <h3>Make <code>lichen</code> discoverable in new spores</h3>
 
@@ -526,8 +527,8 @@ pub extern "C" fn get_greeting() -> u32 {
                 <a href="lichenid.html" class="hub-card">
                     <div class="hub-card-icon primary"><i class="fas fa-fingerprint"></i></div>
                     <div class="hub-card-title">LichenID Identity</div>
-                    <div class="hub-card-desc">Set up on-chain reputation to earn fee discounts and priority transaction
-                        processing.</div>
+                    <div class="hub-card-desc">Register identity, names, skills, vouches, delegates, recovery, and
+                        application-defined reputation gates. Base fees and mempool ordering remain reputation-neutral.</div>
                 </a>
 
                 <a href="architecture.html" class="hub-card">

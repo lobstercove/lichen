@@ -1,7 +1,8 @@
 {
   "scripts": {
     "build-wallet-pq": "node scripts/build-wallet-pq-bundle.mjs",
-    "test-frontend-assets": "node scripts/qa/sync_bountyboard_playground.js && node scripts/qa/test_frontend_asset_integrity.js && node scripts/qa/test_marketplace_moss_storage.js && node scripts/qa/test_explorer_live_cadence.js && node scripts/qa/test_dex_ui_readiness.js && node scripts/qa/test_frontend_shared_helper_drift.js && node scripts/qa/test_monitoring_risk_lifecycle.js",
+    "test-frontend-assets": "node scripts/qa/test_public_claims.js && node scripts/qa/sync_bountyboard_playground.js && node scripts/qa/test_frontend_asset_integrity.js && node scripts/qa/test_marketplace_moss_storage.js && node scripts/qa/test_explorer_live_cadence.js && node scripts/qa/test_dex_ui_readiness.js && node scripts/qa/test_frontend_shared_helper_drift.js && node scripts/qa/test_monitoring_risk_lifecycle.js",
+    "test-public-claims": "node scripts/qa/test_public_claims.js",
     "test-dex-ui-readiness": "node scripts/qa/test_dex_ui_readiness.js",
     "test-contract-abi-dispatch-parity": "node scripts/qa/test_contract_abi_dispatch_parity.js",
     "test-frontend-shared-helpers": "node scripts/qa/test_frontend_shared_helper_drift.js",
