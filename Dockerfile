@@ -44,6 +44,7 @@ RUN set -eu; \
     done; \
     for target in \
         core/src/bin/lichen-archive-v2.rs \
+        core/benches/processor_bench.rs \
         validator/src/main.rs \
         rpc/src/bin/bridge_auth_payload.rs \
         rpc/src/bin/keypair_from_seed_byte.rs \

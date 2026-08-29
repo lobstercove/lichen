@@ -78,7 +78,7 @@ function collectLocalPackages(rootManifest) {
     return Array.from(packages).sort();
 }
 
-function defaultTargetPaths(packageDirectory) {
+function cargoRequiredTargetPaths(packageDirectory) {
     const manifest = read(`${packageDirectory}/Cargo.toml`);
     const targets = new Set();
     const sourceDirectory = path.join(repoRoot, packageDirectory, 'src');
@@ -105,6 +105,36 @@ function defaultTargetPaths(packageDirectory) {
         const target = normalize(path.join(packageDirectory, match[1]));
         if (fs.existsSync(path.join(repoRoot, target))) {
             targets.add(target);
+        }
+    }
+
+    for (const declaration of manifest.matchAll(
+        /\[\[(bin|bench|test|example)\]\]([\s\S]*?)(?=\n\[\[|\n\[[^\]]+\]|$)/g,
+    )) {
+        const kind = declaration[1];
+        const name = declaration[2].match(/^name\s*=\s*"([^"]+)"\s*$/m)?.[1];
+        const explicitPath = declaration[2].match(/^path\s*=\s*"([^"]+\.rs)"\s*$/m)?.[1];
+        if (explicitPath) {
+            targets.add(normalize(path.join(packageDirectory, explicitPath)));
+            continue;
+        }
+        if (!name) {
+            continue;
+        }
+
+        const roots = {
+            bin: 'src/bin',
+            bench: 'benches',
+            test: 'tests',
+            example: 'examples',
+        };
+        const candidates = [
+            `${packageDirectory}/${roots[kind]}/${name}.rs`,
+            `${packageDirectory}/${roots[kind]}/${name}/main.rs`,
+        ];
+        const resolved = candidates.find((candidate) => fs.existsSync(path.join(repoRoot, candidate)));
+        if (resolved) {
+            targets.add(resolved);
         }
     }
 
@@ -165,7 +195,7 @@ for (const packageDirectory of localPackages) {
         `${packageDirectory} real source is available to the final build`,
     );
 
-    for (const targetPath of defaultTargetPaths(packageDirectory)) {
+    for (const targetPath of cargoRequiredTargetPaths(packageDirectory)) {
         assert(
             fullSourceAvailableBeforeCache || preCache.includes(targetPath),
             `${targetPath} is available to the strict cache build`,
