@@ -22,6 +22,12 @@ SOURCE_ALIAS = {
     "lusd_token": "lusd-token",
     "weth_token": "weth-token",
     "wsol_token": "wsol-token",
+    "wbnb_token": "wbnb-token",
+    "wbtc_token": "wbtc-token",
+    "wgas_token": "wgas-token",
+    "wneo_token": "wneo-token",
+    "neo_gas_rewards": "neo-gas-rewards",
+    "shielded_pool": "shielded-pool",
 }
 
 
@@ -56,12 +62,48 @@ def extract_html_live_matrix(html_path: str):
         raise RuntimeError("Could not find #live-exports authoritative matrix block in contract-reference.html")
 
     block = block_match.group(1)
-    rows = re.findall(r"<tr><td>([^<]+)</td><td>([^<]+)</td></tr>", block)
+    rows = re.findall(
+        r"<tr>\s*<td>\s*([^<]+?)\s*</td>\s*<td>\s*(.*?)\s*</td>\s*</tr>",
+        block,
+        re.S,
+    )
     matrix = {}
     for contract, fn_text in rows:
-        funcs = [x.strip() for x in fn_text.split(",") if x.strip()]
+        plain_text = re.sub(r"<[^>]+>", "", fn_text)
+        funcs = [re.sub(r"\s+", " ", x.strip()) for x in plain_text.split(",") if x.strip()]
         matrix[contract.strip()] = funcs
     return matrix
+
+
+def extract_html_card_functions(html_path: str):
+    with open(html_path, "r", encoding="utf-8") as f:
+        html = f.read()
+
+    starts = list(
+        re.finditer(r'<div\s+class="contract-section"\s+id="([^"]+)"[^>]*>', html)
+    )
+    cards = {}
+    for index, match in enumerate(starts):
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(html)
+        block = html[match.end():end]
+        functions = re.findall(r'<span\s+class="fn-chip">\s*([^<]+?)\s*</span>', block)
+        cards[match.group(1)] = [re.sub(r"\s+", " ", fn.strip()) for fn in functions]
+    return cards
+
+
+def extract_abi_functions(repo_root: str):
+    functions = {}
+    pattern = os.path.join(repo_root, "contracts", "*", "abi.json")
+    for path in glob.glob(pattern):
+        contract = os.path.basename(os.path.dirname(path))
+        with open(path, "r", encoding="utf-8") as f:
+            abi = json.load(f)
+        functions[contract] = {
+            entry.get("name")
+            for entry in abi.get("functions", [])
+            if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+        }
+    return functions
 
 
 def extract_skill_contracts(skill_path: str):
@@ -135,18 +177,24 @@ def check_rpc_abis(rpc_url: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Strict coverage self-test for contracts/docs/skillbook")
+    parser = argparse.ArgumentParser(description="Strict coverage self-test for contract source and public docs")
     parser.add_argument("--repo-root", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     parser.add_argument("--rpc-url", default=None, help="Optional RPC URL for live ABI coverage checks")
+    parser.add_argument(
+        "--skill-path",
+        default=None,
+        help="Optional private operator skillbook to compare with source; public clones do not ship one",
+    )
     args = parser.parse_args()
 
     repo_root = args.repo_root
     html_path = os.path.join(repo_root, "developers", "contract-reference.html")
-    skill_path = os.path.join(repo_root, "skill.md")
 
     source_exports = extract_source_exports(repo_root)
     html_matrix = extract_html_live_matrix(html_path)
-    skill_contracts = extract_skill_contracts(skill_path)
+    html_cards = extract_html_card_functions(html_path)
+    abi_functions = extract_abi_functions(repo_root)
+    skill_contracts = extract_skill_contracts(args.skill_path) if args.skill_path else None
 
     failures = []
 
@@ -168,9 +216,19 @@ def main():
                     f"contract-reference {source_contract} has non-source functions: {', '.join(extra)}"
                 )
 
-        if source_contract not in skill_contracts and alias not in skill_contracts:
+        card_id = SOURCE_ALIAS.get(source_contract, source_contract)
+        if card_id in html_cards:
+            callable_functions = set(funcs) | abi_functions.get(source_contract, set())
+            non_callable = [fn for fn in html_cards[card_id] if fn not in callable_functions]
+            if non_callable:
+                failures.append(
+                    f"contract-reference card {card_id} has non-callable function chips: "
+                    f"{', '.join(non_callable)}"
+                )
+
+        if skill_contracts is not None and source_contract not in skill_contracts and alias not in skill_contracts:
             failures.append(
-                f"skill.md missing contract surface entry for {source_contract} (or alias {alias})"
+                f"skillbook missing contract surface entry for {source_contract} (or alias {alias})"
             )
 
     if args.rpc_url:
@@ -185,7 +243,10 @@ def main():
     print("COVERAGE SELF-TEST: PASS")
     print(f"- source contracts checked: {len(source_exports)}")
     print(f"- contract-reference live matrix rows: {len(html_matrix)}")
-    print(f"- skill contract entries parsed: {len(skill_contracts)}")
+    if skill_contracts is not None:
+        print(f"- optional skill contract entries parsed: {len(skill_contracts)}")
+    else:
+        print("- optional private skillbook check: skipped")
     if args.rpc_url:
         print(f"- rpc abi checks: ok ({args.rpc_url})")
 

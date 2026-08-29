@@ -57,7 +57,7 @@ use lichen_sdk::{
 // ============================================================================
 
 const MAX_PAIRS: u64 = 50;
-const MAX_ORDER_SIZE: u64 = 10_000_000_000_000_000; // 10M LICN max order ($1M at $0.10)
+const MAX_ORDER_SIZE: u64 = 10_000_000_000_000_000; // 10M LICN max order
 const MIN_ORDER_VALUE: u64 = 1_000; // minimum 1000 spores
 const MAX_OPEN_ORDERS_PER_USER: u64 = 500;
 const DEFAULT_MAKER_FEE_BPS: i64 = -1; // rebate

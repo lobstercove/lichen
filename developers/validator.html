@@ -93,6 +93,14 @@
                 This guide covers hardware requirements, installation, configuration, staking, monitoring, and
                 production deployment.</p>
 
+            <div class="callout callout-warning">
+                <div class="callout-title"><i class="fas fa-triangle-exclamation"></i> Current Network Status</div>
+                This guide's runnable examples target public testnet. Mainnet has not launched and is not approved. The
+                current 200 GB testnet roots have exhausted safe headroom; they are not a mainnet or long-term archive
+                capacity baseline. Never start a mainnet process until a signed launch handoff publishes the genesis,
+                seed set, capacity plan, release artifact, and operations approval.
+            </div>
+
             <!-- ========== 1. REQUIREMENTS ========== -->
             <h2 id="requirements">Requirements</h2>
 
@@ -102,17 +110,17 @@
                 <div class="req-card">
                     <div class="req-card-icon"><i class="fa-solid fa-desktop"></i></div>
                     <div class="req-card-title">CPU</div>
-                    <div class="req-card-value">4+ cores (8+ recommended)</div>
+                    <div class="req-card-value">8 dedicated cores</div>
                 </div>
                 <div class="req-card">
                     <div class="req-card-icon"><i class="fa-solid fa-brain"></i></div>
                     <div class="req-card-title">RAM</div>
-                    <div class="req-card-value">16 GB minimum</div>
+                    <div class="req-card-value">32 GB</div>
                 </div>
                 <div class="req-card">
                     <div class="req-card-icon"><i class="fa-solid fa-floppy-disk"></i></div>
                     <div class="req-card-title">Storage</div>
-                    <div class="req-card-value">500 GB NVMe SSD</div>
+                    <div class="req-card-value">500 GB+ NVMe; archive capacity planned separately</div>
                 </div>
                 <div class="req-card">
                     <div class="req-card-icon"><i class="fa-solid fa-globe"></i></div>
@@ -148,7 +156,7 @@
                         <td><code>9201</code></td>
                     </tr>
                     <tr>
-                        <td>Mainnet</td>
+                        <td>Mainnet (future; not launched)</td>
                         <td><code>8001</code></td>
                         <td><code>9899</code></td>
                         <td><code>9900</code></td>
@@ -192,15 +200,15 @@ curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA
 grep 'lichen-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
 tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
 chmod +x lichen-validator lichen-genesis lichen zk-prove
-mkdir -p "$HOME/.lichen/state-mainnet"
-cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+mkdir -p "$HOME/.lichen/state-testnet"
+cp seeds.json "$HOME/.lichen/state-testnet/seeds.json"
 export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 ./lichen-validator \
-    --network mainnet \
-    --rpc-port 9899 \
-    --ws-port 9900 \
-    --p2p-port 8001 \
-    --db-path "$HOME/.lichen/state-mainnet"</code></pre>
+    --network testnet \
+    --rpc-port 8899 \
+    --ws-port 8900 \
+    --p2p-port 7001 \
+    --db-path "$HOME/.lichen/state-testnet"</code></pre>
             </div>
 
             <h4>macOS Apple Silicon</h4>
@@ -216,15 +224,15 @@ curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA
 grep 'lichen-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
 tar xzf lichen-validator-darwin-aarch64.tar.gz --strip-components=1
 chmod +x lichen-validator lichen-genesis lichen zk-prove
-mkdir -p "$HOME/.lichen/state-mainnet"
-cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+mkdir -p "$HOME/.lichen/state-testnet"
+cp seeds.json "$HOME/.lichen/state-testnet/seeds.json"
 export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 ./lichen-validator \
-    --network mainnet \
-    --rpc-port 9899 \
-    --ws-port 9900 \
-    --p2p-port 8001 \
-    --db-path "$HOME/.lichen/state-mainnet"</code></pre>
+    --network testnet \
+    --rpc-port 8899 \
+    --ws-port 8900 \
+    --p2p-port 7001 \
+    --db-path "$HOME/.lichen/state-testnet"</code></pre>
             </div>
 
             <h4>Windows x64 (PowerShell)</h4>
@@ -237,15 +245,15 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
                 <pre><code>$version = (Invoke-RestMethod https://api.github.com/repos/lobstercove/lichen/releases/latest).tag_name
 Invoke-WebRequest -Uri "https://github.com/lobstercove/lichen/releases/download/$version/lichen-validator-windows-x86_64.tar.gz" -OutFile "lichen-validator-windows-x86_64.tar.gz"
 tar -xzf .\lichen-validator-windows-x86_64.tar.gz --strip-components=1
-New-Item -ItemType Directory -Force -Path "$HOME\.lichen\state-mainnet" | Out-Null
-Copy-Item .\seeds.json "$HOME\.lichen\state-mainnet\seeds.json" -Force
+New-Item -ItemType Directory -Force -Path "$HOME\.lichen\state-testnet" | Out-Null
+Copy-Item .\seeds.json "$HOME\.lichen\state-testnet\seeds.json" -Force
 $env:LICHEN_KEYPAIR_PASSWORD = 'set-a-long-random-secret-before-first-start'
 .\lichen-validator.exe `
-    --network mainnet `
-    --rpc-port 9899 `
-    --ws-port 9900 `
-    --p2p-port 8001 `
-    --db-path "$HOME\.lichen\state-mainnet"</code></pre>
+    --network testnet `
+    --rpc-port 8899 `
+    --ws-port 8900 `
+    --p2p-port 7001 `
+    --db-path "$HOME\.lichen\state-testnet"</code></pre>
             </div>
 
             <p>If a release predates Windows packaging, use the source-build workflow for Windows until a newer release
@@ -263,17 +271,17 @@ $env:LICHEN_KEYPAIR_PASSWORD = 'set-a-long-random-secret-before-first-start'
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>mkdir -p "$HOME/.lichen/state-mainnet/home"
-cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+                <pre><code>mkdir -p "$HOME/.lichen/state-testnet/home"
+cp seeds.json "$HOME/.lichen/state-testnet/seeds.json"
 export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 
-env HOME="$HOME/.lichen/state-mainnet/home" \
+env HOME="$HOME/.lichen/state-testnet/home" \
 lichen-validator \
-    --network mainnet \
-    --rpc-port 9899 \
-    --ws-port 9900 \
-    --p2p-port 8001 \
-    --db-path "$HOME/.lichen/state-mainnet"</code></pre>
+    --network testnet \
+    --rpc-port 8899 \
+    --ws-port 8900 \
+    --p2p-port 7001 \
+    --db-path "$HOME/.lichen/state-testnet"</code></pre>
             </div>
 
             <p>This is the fastest operational path for agents: validator binary, bundled <code>zk-prove</code>,
@@ -392,7 +400,7 @@ bash scripts/start-local-3validators.sh start-reset</code></pre>
                         <td><code>9201</code></td>
                     </tr>
                     <tr>
-                        <td>Mainnet</td>
+                        <td>Mainnet (future; not launched)</td>
                         <td><code>9899</code></td>
                         <td><code>9900</code></td>
                         <td><code>8001</code></td>
@@ -401,8 +409,8 @@ bash scripts/start-local-3validators.sh start-reset</code></pre>
                 </tbody>
             </table>
 
-            <p>You can run <strong>both</strong> testnet and mainnet on the same machine — they use different ports and
-                separate data directories.</p>
+            <p>Mainnet is not launched. Future mainnet and testnet processes must use separate ports, data directories,
+                identities, and capacity budgets; do not provision a mainnet process from this testnet guide.</p>
 
             <h4>Local Status / Stop</h4>
 
@@ -1385,8 +1393,7 @@ sudo systemctl enable --now lichen-validator</code></pre>
                     <code>/var/log/lichen</code>
                 </li>
                 <li>Copies binaries to <code>/usr/local/bin/</code></li>
-                <li>Generates <code>/etc/lichen/env-testnet</code> and/or <code>/etc/lichen/env-mainnet</code>
-                    with correct port assignments</li>
+                <li>Generates <code>/etc/lichen/env-testnet</code> with the approved testnet port assignments</li>
                 <li>Installs a network-specific systemd service and keeps secrets in an operator-managed store</li>
             </ul>
 
@@ -1479,8 +1486,7 @@ journalctl -u lichen-validator-testnet -f
 # Restart after config change
 sudo systemctl restart lichen-validator-testnet
 
-# Mainnet uses the same commands with -mainnet suffix
-sudo systemctl start lichen-validator-mainnet</code></pre>
+# Mainnet is not launched; do not create or start a mainnet service.</code></pre>
             </div>
 
             <!-- ========== 7b. macOS LaunchAgent ========== -->
@@ -1503,7 +1509,7 @@ sudo systemctl start lichen-validator-mainnet</code></pre>
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>mkdir -p ~/.lichen/bin ~/.lichen/state-mainnet ~/.lichen/logs
+                <pre><code>mkdir -p ~/.lichen/bin ~/.lichen/state-testnet ~/.lichen/logs
 
 cat &gt; ~/.lichen/bin/lichen-service.sh &lt;&lt; 'WRAPPER'
 #!/bin/bash
@@ -1511,7 +1517,7 @@ set -euo pipefail
 
 INSTALL_DIR="$HOME/.lichen/bin"
 BINARY="$INSTALL_DIR/lichen-validator"
-STATE_DIR="$HOME/.lichen/state-mainnet"
+STATE_DIR="$HOME/.lichen/state-testnet"
 LOG_DIR="$HOME/.lichen/logs"
 REPO="lobstercove/lichen"
 
@@ -1568,10 +1574,10 @@ fi
 echo "$(date): Starting lichen-validator..."
 : "${LICHEN_KEYPAIR_PASSWORD:?set LICHEN_KEYPAIR_PASSWORD in the service environment before first start}"
 exec "$BINARY" \
-    --network mainnet \
-    --p2p-port 8001 \
-    --rpc-port 9899 \
-    --ws-port 9900 \
+    --network testnet \
+    --p2p-port 7001 \
+    --rpc-port 8899 \
+    --ws-port 8900 \
     --db-path "$STATE_DIR"
 WRAPPER
 
@@ -1670,7 +1676,7 @@ launchctl load ~/Library/LaunchAgents/network.lichen.validator.plist</code></pre
                             <td>Wrapper script</td>
                         </tr>
                         <tr>
-                            <td><code>~/.lichen/state-mainnet/</code></td>
+                            <td><code>~/.lichen/state-testnet/</code></td>
                             <td>Blockchain state DB</td>
                         </tr>
                         <tr>
@@ -1702,7 +1708,7 @@ launchctl load ~/Library/LaunchAgents/network.lichen.validator.plist</code></pre
 $Version = (Invoke-RestMethod https://api.github.com/repos/lobstercove/lichen/releases/latest).tag_name
 $Url = "https://github.com/lobstercove/lichen/releases/download/$Version/lichen-validator-windows-x86_64.tar.gz"
 $InstallDir = "$env:LOCALAPPDATA\Lichen"
-New-Item -ItemType Directory -Force -Path "$InstallDir\bin", "$InstallDir\state-mainnet", "$InstallDir\logs"
+New-Item -ItemType Directory -Force -Path "$InstallDir\bin", "$InstallDir\state-testnet", "$InstallDir\logs"
 
 Invoke-WebRequest -Uri $Url -OutFile "$env:TEMP\lichen.tar.gz"
 tar -xzf "$env:TEMP\lichen.tar.gz" -C "$InstallDir\bin" --strip-components=1
@@ -1712,8 +1718,8 @@ tar -xzf "$env:TEMP\lichen.tar.gz" -C "$InstallDir\bin" --strip-components=1
 
 # 3. Create the service
 nssm install LichenValidator "$InstallDir\bin\lichen-validator.exe"
-Copy-Item "$InstallDir\bin\seeds.json" "$InstallDir\state-mainnet\seeds.json" -Force
-nssm set LichenValidator AppParameters "--network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 --db-path $InstallDir\state-mainnet"
+Copy-Item "$InstallDir\bin\seeds.json" "$InstallDir\state-testnet\seeds.json" -Force
+nssm set LichenValidator AppParameters "--network testnet --p2p-port 7001 --rpc-port 8899 --ws-port 8900 --db-path $InstallDir\state-testnet"
 nssm set LichenValidator AppDirectory "$InstallDir"
 nssm set LichenValidator AppStdout "$InstallDir\logs\validator.log"
 nssm set LichenValidator AppStderr "$InstallDir\logs\validator.log"
@@ -1736,7 +1742,7 @@ nssm start LichenValidator</code></pre>
 [Environment]::SetEnvironmentVariable("LICHEN_KEYPAIR_PASSWORD", "replace-with-operator-secret", "User")
 $Action = New-ScheduledTaskAction `
     -Execute "$InstallDir\bin\lichen-validator.exe" `
-                    -Argument "--network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 --db-path $InstallDir\state-mainnet" `
+                    -Argument "--network testnet --p2p-port 7001 --rpc-port 8899 --ws-port 8900 --db-path $InstallDir\state-testnet" `
     -WorkingDirectory "$InstallDir"
 $Trigger = New-ScheduledTaskTrigger -AtStartup
 $Settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Seconds 15)
@@ -1775,7 +1781,7 @@ nssm remove LichenValidator confirm</code></pre>
                 <table>
                     <tbody>
                         <tr>
-                            <td><code>%LOCALAPPDATA%\Lichen\state-mainnet\</code></td>
+                            <td><code>%LOCALAPPDATA%\Lichen\state-testnet\</code></td>
                             <td>Blockchain state DB</td>
                         </tr>
                         <tr>

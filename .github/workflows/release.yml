@@ -130,10 +130,12 @@ jobs:
           node scripts/qa/test_rustsec_advisory_policy.js
           node scripts/qa/test_legacy_bincode_codec_policy.js
           node scripts/qa/test_release_audit_summaries.js
+          node scripts/qa/test_public_claims.js
           node scripts/qa/test_release_signer_trust_anchor.js
           node scripts/qa/test_deployment_env_examples.js
           node scripts/qa/test_rust_dependency_policy.js
           node scripts/qa/test_archive_parity_gate_assets.js
+          python3 scripts/coverage_self_test.py
           python3 scripts/qa/update-expected-contracts.py --check
 
   contract-bundle:
@@ -481,8 +483,9 @@ jobs:
             # Extract
             tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
             chmod +x lichen-validator lichen-genesis lichen lichen-archive-v2 zk-prove
-            mkdir -p "$HOME/.lichen/state-mainnet"
-            cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+            # Public deployment is testnet-only; mainnet has not launched.
+            mkdir -p "$HOME/.lichen/state-testnet"
+            cp seeds.json "$HOME/.lichen/state-testnet/seeds.json"
             ```
 
             Each archive includes `lichen-validator`, `lichen-genesis`, `lichen`,

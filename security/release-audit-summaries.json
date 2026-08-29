@@ -87,6 +87,31 @@
       "artifact_policy": "stdout summary only; filled env files, secret-manager exports, and host-specific copies remain untracked operator material."
     },
     {
+      "id": "AUD-006",
+      "area": "Public promise and implementation boundary parity",
+      "status": "tracked-gate",
+      "command": "node scripts/qa/test_public_claims.js && python3 scripts/coverage_self_test.py",
+      "tracked_sources": [
+        "README.md",
+        "core/src/account.rs",
+        "core/src/mempool.rs",
+        "core/src/processor/fees.rs",
+        "core/src/zk/mod.rs",
+        "developers/architecture.html",
+        "developers/contract-reference.html",
+        "developers/index.html",
+        "developers/lichenid.html",
+        "developers/zk-privacy.html",
+        "p2p/src/peer.rs",
+        "scripts/coverage_self_test.py",
+        "scripts/qa/test_public_claims.js",
+        "website/index.html",
+        "website/shared-config.js"
+      ],
+      "expected_evidence": "Current public surfaces identify testnet as the only launched network, distinguish targets and microbenchmarks from guarantees, keep shielded proof acceptance disabled, keep reputation out of base fee and mempool privilege, anchor retained post-quantum claims to current account and P2P source boundaries, and match all contract matrix/card functions to current source exports or ABIs.",
+      "artifact_policy": "The gate emits a stdout summary only and creates no benchmark, frontend, validator, state, or build artifacts."
+    },
+    {
       "id": "E2E-001",
       "area": "Deterministic local chain smoke",
       "status": "tracked-live-gate",

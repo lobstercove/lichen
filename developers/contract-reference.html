@@ -68,22 +68,23 @@
         <!-- Header -->
         <div class="doc-header">
             <h1><i class="fas fa-file-contract"></i> Lichen Contracts Reference</h1>
-            <p>Complete documentation of 32 genesis-deployed smart contracts plus the native LICN asset</p>
+            <p>Source reference for 32 genesis-catalog contracts, two deployable templates, and native LICN. Live
+                address, code-hash, migration, pause, custody, and liquidity status must be queried separately.</p>
             <div class="doc-stats">
                 <div class="doc-stat">
+                    <div class="num">34</div>
+                    <div class="label">Contract Crates</div>
+                </div>
+                <div class="doc-stat">
                     <div class="num">32</div>
-                    <div class="label">Contracts</div>
+                    <div class="label">Genesis Catalog</div>
                 </div>
                 <div class="doc-stat">
-                    <div class="num">82,336</div>
-                    <div class="label">Lines of Rust</div>
-                </div>
-                <div class="doc-stat">
-                    <div class="num">578</div>
+                    <div class="num">771</div>
                     <div class="label">Source Exports</div>
                 </div>
                 <div class="doc-stat">
-                    <div class="num">6</div>
+                    <div class="num">8</div>
                     <div class="label">LichenID Integrations</div>
                 </div>
             </div>
@@ -94,7 +95,14 @@
             <h2><i class="fas fa-sitemap"></i> Contract Architecture</h2>
             <p>Lichen's genesis catalog currently deploys 32 contracts across DeFi, DEX, NFTs, Identity,
                 Infrastructure, Governance, Prediction, and Wrapped Assets. LICN is the native coin and is documented
-                here as a native asset, not a deployed WASM contract.</p>
+                here as a native asset, not a deployed WASM contract. The catalog describes fresh-genesis intent, not
+                proof that an existing network has completed every later accounting migration or service activation.</p>
+            <div class="callout callout-warning">
+                <p><strong>Evidence boundary:</strong> the cards below are selected source overviews, not live-service
+                    attestations or exhaustive ABIs. The machine-checked Source Export Matrix is authoritative for the
+                    current source tree. Release-WASM hashes, deployed code hashes, migrations, configuration, custody,
+                    reserves, provider capacity, liquidity, and network health are separate gates.</p>
+            </div>
             <div class="callout callout-info">
                 <p><strong>Integration tiers:</strong> when a contract has a first-class SDK helper, prefer that
                     surface over generic ABI packing. Today the JS, Python, and Rust SDKs ship
@@ -520,7 +528,7 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                 <a href="#wbtc-token"><span class="toc-num">31</span> Wrapped BTC</a>
                 <a href="#neo-gas-rewards"><span class="toc-num">32</span> Neo GAS Rewards</a>
                 <a href="#shielded-pool"><span class="toc-num">33</span> Shielded Pool</a>
-                <a href="#live-exports"><span class="toc-num">A1</span> Live Export Matrix (Authoritative)</a>
+                <a href="#live-exports"><span class="toc-num">A1</span> Source Export Matrix (Authoritative)</a>
             </div>
         </div>
 
@@ -585,25 +593,25 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                         <h3>LichenSwap</h3>
                         <div class="subtitle">Automated Market Maker DEX</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,764 lines</span><span class="meta-chip">32
-                            fns</span><span class="meta-chip">5.4 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Release-WASM gated</span></div>
                 </div>
                 <div class="contract-body">
-                    <p>Full-featured decentralized exchange using the constant-product (x&middot;y=k) AMM model.
-                        Supports <strong>liquidity pool creation</strong>, token swaps, flash loans (0.09% fee), and
-                        <strong>LichenID reputation-based fee discounts</strong>. SporePump tokens graduate to
-                        LichenSwap
-                        pools once they hit the market cap threshold.
+                    <p>Constant-product (x&middot;y=k) AMM source with liquidity-pool creation, token swaps, and flash
+                        loans. Its optional, explicitly configured LichenID policy can fund an application-local swap
+                        bonus from accrued protocol fees; it does not alter Lichen's base transaction fee or mempool
+                        ordering. SporePump graduation requires governed, atomic migration into configured LichenSwap
+                        programs and is not implied by source presence alone.
                     </p>
                     <div class="sub-heading">Key Features</div>
                     <ul>
                         <li>Add / remove liquidity with LP token accounting</li>
                         <li>Swap in both directions with minimum output slippage protection</li>
                         <li>Flash loans (borrow &rarr; use &rarr; repay in same transaction)</li>
-                        <li>LichenID integration for identity-gated fee discounts</li>
+                        <li>Optional LichenID threshold for an application-local bonus funded from protocol fees</li>
                         <li>Reentrancy guard on all state-changing operations</li>
                     </ul>
-                    <div class="sub-heading">Functions</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span
                             class="fn-chip">add_liquidity</span><span class="fn-chip">remove_liquidity</span><span
                             class="fn-chip">swap_a_for_b</span><span class="fn-chip">swap_b_for_a</span><span
@@ -661,8 +669,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>ThallLend</h3>
                         <div class="subtitle">Decentralized Lending Protocol</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">2,068 lines</span><span class="meta-chip">21
-                            fns</span><span class="meta-chip">12.2 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Release-WASM gated</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Single-asset LICN lending and borrowing with automated liquidations. Depositors earn interest;
@@ -698,7 +706,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>~2% APR (254 / 10B per slot)</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span
                             class="fn-chip">deposit</span><span class="fn-chip">withdraw</span><span
                             class="fn-chip">borrow</span><span class="fn-chip">repay</span><span
@@ -735,8 +743,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>SporePump</h3>
                         <div class="subtitle">Token Launchpad with Bonding Curves</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">4,696 lines</span><span class="meta-chip">42
-                            fns</span><span class="meta-chip">64.5 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Release-WASM gated</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Fair-launch platform for new tokens. Anyone can create a token by paying a small fee; the price
@@ -776,7 +784,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>0.5% default on each buy and sell; governance capped at 10%</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span
                             class="fn-chip">create_token</span><span class="fn-chip">create_token_with_metadata</span><span
                             class="fn-chip">get_token_metadata</span><span class="fn-chip">buy</span><span
@@ -826,8 +834,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>SporePay</h3>
                         <div class="subtitle">Streaming Payments</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">3,709 lines</span><span class="meta-chip">25
-                            fns</span><span class="meta-chip">44.4 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Release-WASM gated</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Sablier-style payment streaming for real-time payroll, subscriptions, and vesting. A sender locks
@@ -845,7 +853,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <li>Bounded sender/recipient stream indexes support deterministic account pagination</li>
                         <li>Identity gate: admin can set a LichenID reputation threshold; missing configuration fails closed</li>
                     </ul>
-                    <div class="sub-heading">Functions</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">create_stream</span><span
                             class="fn-chip">withdraw_from_stream</span><span class="fn-chip">cancel_stream</span><span
                             class="fn-chip">get_stream</span><span class="fn-chip">get_withdrawable</span><span
@@ -888,8 +896,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>SporeVault</h3>
                         <div class="subtitle">Auto-Compounding LICN Lending Vault</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,698 lines</span><span class="meta-chip">19
-                            fns</span><span class="meta-chip">17.0 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Release-WASM gated</span></div>
                 </div>
                 <div class="contract-body">
                     <p>ERC-4626-style LICN vault backed by real idle custody and one ThallLend lending strategy.
@@ -939,7 +947,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>Staking — reserved, fails closed</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span
                             class="fn-chip">add_strategy</span><span class="fn-chip">deposit</span><span
                             class="fn-chip">withdraw</span><span class="fn-chip">set_protocol_addresses</span><span
@@ -976,21 +984,21 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>LichenID</h3>
                         <div class="subtitle">Agent Identity &amp; Reputation System</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">6,688 lines</span><span class="meta-chip">59
-                            fns</span><span class="meta-chip">43.0 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Activation separate</span></div>
                 </div>
                 <div class="contract-body">
-                    <p>The largest and most critical contract in Lichen. LichenID is the <strong>on-chain identity
-                            layer</strong> for AI agents. Register your agent, build reputation through actions and
-                        vouches, claim a <code>.lichen</code> domain name, earn skill attestations, and carry your
-                        identity across the entire ecosystem. Six other contracts integrate LichenID for gating and
-                        verification.</p>
+                    <p>LichenID is an <strong>on-chain identity layer</strong> for agents. It records registrations,
+                        authenticated profile and skill actions, vouches, <code>.lichen</code> names, attestations, and
+                        bounded reputation. Eight other contract crates expose explicit LichenID bindings for local
+                        gating, DEX-local policy, or governance; the base fee market and mempool remain reputation
+                        neutral.</p>
                     <div class="sub-heading">Core Systems</div>
                     <ul>
                         <li><strong>Identity Registration</strong> — name, agent type (trading, dev, analyst, etc.),
                             starting reputation</li>
-                        <li><strong>Reputation</strong> — earned through actions and vouches; starts at 100, ceiling
-                            100K</li>
+                        <li><strong>Reputation</strong> — changed by defined authenticated actions, vouches, and
+                            admin-authorized typed contributions; starts at 100 and is capped at 100K</li>
                         <li><strong>.lichen Naming</strong> — DNS-like agent names; 3-char = 500 LICN, 4-char = 100
                             LICN,
                             5+ = 20 LICN; annual renewal</li>
@@ -1000,7 +1008,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             abilities</li>
                         <li><strong>Achievements</strong> — contribution badges awarded by admin</li>
                         <li><strong>Agent Profiles</strong> — metadata, endpoint URL, availability status, rate</li>
-                        <li><strong>Trust Tiers</strong> — computed from reputation score</li>
+                        <li><strong>Trust Tiers</strong> — descriptive score bands; applications must opt in explicitly</li>
                     </ul>
                     <div class="callout callout-info">
                         <p><strong>SDK helper coverage:</strong> <code>LichenIdClient</code> now wraps the common
@@ -1109,7 +1117,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>Personal</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (59)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span
                             class="fn-chip">register_identity</span><span class="fn-chip">get_identity</span><span
                             class="fn-chip">update_reputation</span><span
@@ -1159,8 +1167,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>LichenDAO</h3>
                         <div class="subtitle">Decentralized Governance</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,840 lines</span><span class="meta-chip">26
-                            fns</span><span class="meta-chip">18.5 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Activation separate</span></div>
                 </div>
                 <div class="contract-body">
                     <p>On-chain governance with <strong>token-weighted voting</strong>, tiered proposal types, treasury
@@ -1197,7 +1205,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>7 days</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (26)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize_dao</span><span
                             class="fn-chip">create_proposal</span><span
                             class="fn-chip">create_proposal_typed</span><span class="fn-chip">vote</span><span
@@ -1227,15 +1235,15 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>LichenPunks</h3>
                         <div class="subtitle">MT-721 NFT Standard</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">748 lines</span><span class="meta-chip">21
-                            fns</span><span class="meta-chip">8.9 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Release-WASM gated</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Reference NFT implementation following the <strong>MT-721</strong> standard. Supports minting
                         with arbitrary metadata, ownership transfer, approval delegation, transfer-from (marketplace
                         compatibility), burning, and balance/supply queries. The blueprint all Lichen NFT collections
                         are built on.</p>
-                    <div class="sub-heading">Functions (21)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span
                             class="fn-chip">transfer</span><span class="fn-chip">owner_of</span><span
                             class="fn-chip">balance_of</span><span class="fn-chip">approve</span><span
@@ -1261,8 +1269,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>LichenMarket</h3>
                         <div class="subtitle">NFT Marketplace</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">2,053 lines</span><span class="meta-chip">26
-                            fns</span><span class="meta-chip">8.5 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Release-WASM gated</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Fixed-price NFT marketplace demonstrating Lichen's <strong>cross-contract
@@ -1280,7 +1288,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>250 (2.5%)</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (26)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span
                             class="fn-chip">list_nft</span><span class="fn-chip">buy_nft</span><span
                             class="fn-chip">cancel_listing</span><span class="fn-chip">get_listing</span><span
@@ -1312,8 +1320,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>LichenAuction</h3>
                         <div class="subtitle">English Auctions &amp; Offers</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,469 lines</span><span class="meta-chip">16
-                            fns</span><span class="meta-chip">35.5 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Release-WASM gated</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Advanced NFT auction house supporting <strong>English auctions</strong> (ascending bid), direct
@@ -1339,7 +1347,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>169 bytes per auction record</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (16)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span
                             class="fn-chip">create_auction</span><span class="fn-chip">place_bid</span><span
                             class="fn-chip">finalize_auction</span><span class="fn-chip">make_offer</span><span
@@ -1364,8 +1372,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>LichenOracle</h3>
                         <div class="subtitle">Price Feeds, Validator Entropy &amp; Attestations</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">2,186 lines</span><span class="meta-chip">25
-                            exports</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Activation separate</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Oracle surface providing three services: <strong>validator-native price feeds</strong> (fixed8
@@ -1428,8 +1436,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>LichenBridge</h3>
                         <div class="subtitle">Cross-Chain Lock-and-Mint Bridge</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">2,653 lines</span><span class="meta-chip">21
-                            fns</span><span class="meta-chip">16.2 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Custody + activation separate</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Cross-chain bridge using the <strong>lock-and-mint</strong> pattern. Lock LICN on Lichen
@@ -1466,7 +1474,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>Cancelled / refunded</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span
                             class="fn-chip">add_bridge_validator</span><span
                             class="fn-chip">remove_bridge_validator</span><span
@@ -1496,8 +1504,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>BountyBoard</h3>
                         <div class="subtitle">On-Chain Bounty &amp; Task Management</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">Accounting V2</span><span class="meta-chip">34
-                            fns</span><span class="meta-chip">Exact custody</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Accounting V2</span><span
+                            class="meta-chip">Exact custody</span><span class="meta-chip">Activation separate</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Decentralized task marketplace where creators post bounties with LICN rewards and deadlines,
@@ -1508,10 +1516,10 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                     <ul>
                         <li><code>create_bounty</code> — lock reward LICN and set deadline</li>
                         <li><code>submit_work</code> — worker submits proof hash</li>
-                        <li><code>approve_work</code> — creator approves, worker gets paid + reputation boost</li>
+                        <li><code>approve_work</code> — creator approves and the selected worker is paid</li>
                         <li><code>cancel_bounty</code> — creator cancels open bounty for refund</li>
                     </ul>
-                    <div class="sub-heading">Functions (34)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">create_bounty</span><span
                             class="fn-chip">submit_work</span><span class="fn-chip">approve_work</span><span
                             class="fn-chip">cancel_bounty</span><span class="fn-chip">get_bounty</span><span
@@ -1562,8 +1570,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>Compute Market</h3>
                         <div class="subtitle">Decentralized Compute Marketplace</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">5,751 lines</span><span class="meta-chip">56
-                            fns</span><span class="meta-chip">70.7 KB WASM</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Providers + activation separate</span></div>
                 </div>
                 <div class="contract-body">
                     <p>On-chain marketplace for decentralized compute resources. <strong>Providers</strong> register
@@ -1595,7 +1603,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                     <p>Every job snapshots its fee and claim/completion/challenge windows. Settlement separates
                         escrow, deferred provider payouts, and withdrawable platform fees, while migration and
                         malformed-state locks stop new value movement until exact custody solvency is proven.</p>
-                    <div class="sub-heading">Functions (56)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">register_provider</span><span
                             class="fn-chip">submit_job</span><span class="fn-chip">claim_job</span><span
                             class="fn-chip">complete_job</span><span class="fn-chip">dispute_job</span><span
@@ -1651,8 +1659,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>Moss Storage</h3>
                         <div class="subtitle">Decentralized Storage Layer</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,694 lines</span><span class="meta-chip">17
-                            fns</span><span class="meta-chip">14.7 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Providers + activation separate</span></div>
                 </div>
                 <div class="contract-body">
                     <p>On-chain coordination layer for decentralized data storage. Data owners submit storage requests
@@ -1682,7 +1690,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>10 spores</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (17)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">store_data</span><span
                             class="fn-chip">confirm_storage</span><span class="fn-chip">get_storage_info</span><span
                             class="fn-chip">register_provider</span><span
@@ -1707,8 +1715,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>DEX Core</h3>
                         <div class="subtitle">Central Limit Order Book &amp; Matching Engine</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">3,873 lines</span><span class="meta-chip">29
-                            fns</span><span class="meta-chip">56 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Dispatch tests</span></div>
                 </div>
                 <div class="contract-body">
                     <p>The heart of Lichen DEX. A full <strong>central limit order book (CLOB)</strong> with price-time
@@ -1731,7 +1739,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>112 bytes (tokens, pair_id, tick/lot size, fees, volume)</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (29)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span
                             class="fn-chip">set_preferred_quote</span><span
                             class="fn-chip">add_allowed_quote</span><span class="fn-chip">create_pair</span><span
@@ -1764,8 +1772,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>DEX AMM</h3>
                         <div class="subtitle">Concentrated Liquidity Pools</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,850 lines</span><span class="meta-chip">17
-                            fns</span><span class="meta-chip">41 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Dispatch tests</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Uniswap V3-style <strong>concentrated liquidity AMM</strong> with Q64.64 fixed-point math. LPs
@@ -1805,16 +1813,18 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>Exotic / volatile</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (17)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">create_pool</span><span
                             class="fn-chip">add_liquidity</span><span class="fn-chip">remove_liquidity</span><span
                             class="fn-chip">collect_fees</span><span class="fn-chip">swap_exact_in</span><span
                             class="fn-chip">get_pool_info</span><span class="fn-chip">quote_swap</span><span
-                            class="fn-chip">set_fee_tier</span><span class="fn-chip">get_fee_tier</span><span
-                            class="fn-chip">amm_pause</span><span class="fn-chip">amm_unpause</span><span
+                            class="fn-chip">set_pool_protocol_fee</span><span class="fn-chip">get_position</span><span
+                            class="fn-chip">emergency_pause</span><span class="fn-chip">emergency_unpause</span><span
                             class="fn-chip">get_pool_count</span><span class="fn-chip">get_tvl</span><span
-                            class="fn-chip">get_swap_count</span><span class="fn-chip">get_pool_fee_info</span><span
-                            class="fn-chip">set_core_address</span><span class="fn-chip">set_rewards_address</span>
+                            class="fn-chip">get_swap_count</span><span
+                            class="fn-chip">get_total_fees_collected</span><span
+                            class="fn-chip">set_fee_treasury_address</span><span
+                            class="fn-chip">set_rewards_address</span>
                     </div>
                     <div class="badge-row"><span class="badge badge-dex">DEX</span></div>
                 </div>
@@ -1830,8 +1840,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>DEX Router</h3>
                         <div class="subtitle">Smart Order Routing Engine</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,193 lines</span><span class="meta-chip">12
-                            fns</span><span class="meta-chip">28 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Dispatch tests</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Aggregates liquidity across <strong>CLOB and concentrated AMM</strong> pools
@@ -1846,7 +1856,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <li><strong>Multi-hop</strong> &mdash; A&rarr;B&rarr;C through intermediary tokens</li>
                         <li><strong>Cross-pool</strong> &mdash; multiple AMM pools in sequence</li>
                     </ul>
-                    <div class="sub-heading">Functions (12)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span
                             class="fn-chip">set_addresses</span><span class="fn-chip">register_route</span><span
                             class="fn-chip">set_route_enabled</span><span class="fn-chip">swap</span><span
@@ -1868,8 +1878,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>DEX Governance</h3>
                         <div class="subtitle">Pair Listing &amp; Fee Voting</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,779 lines</span><span class="meta-chip">18
-                            fns</span><span class="meta-chip">22 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Dispatch tests</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Decentralized governance for DEX operations. Community proposes and votes on <strong>new trading
@@ -1881,7 +1891,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <code>dex_core::pause_pair</code>. All executions write audit trail to <code>gov_exec_*</code>
                         storage keys.
                     </p>
-                    <div class="sub-heading">Functions (18)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">propose_new_pair</span><span
                             class="fn-chip">vote</span><span class="fn-chip">execute_proposal</span><span
                             class="fn-chip">propose_fee_change</span><span class="fn-chip">finalize_proposal</span><span
@@ -1911,15 +1921,15 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>DEX Rewards</h3>
                         <div class="subtitle">Trading Incentives &amp; Referrals</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,326 lines</span><span class="meta-chip">19
-                            fns</span><span class="meta-chip">18 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Dispatch tests</span></div>
                 </div>
                 <div class="contract-body">
-                    <p>Tiered trading rewards with volume-based multipliers, LP incentives, and a <strong>referral
-                            programme</strong>. Referrers earn 10% of referee fees (15% with LichenID verification).
-                        Referees get 5% fee discount for 30 days. <strong>Monthly epoch cap:</strong> 100K LICN/month
-                        (resets after 2,592,000 slots). Trades after budget exhaustion receive 0 reward until next
-                        epoch.</p>
+                    <p>Tiered trading rewards with volume-based multipliers, bounded LP campaigns, and a
+                        <strong>referral programme</strong>. The default referral accrual is 10% of recorded fees and is
+                        admin-configurable up to 30%; the source does not apply a referee fee discount or a LichenID
+                        referral multiplier. The 100K LICN reward-epoch cap resets after 2,592,000 slots; trades after
+                        exhaustion accrue no trading reward until the next epoch.</p>
                     <div class="sub-heading">Trading Tiers</div>
                     <table class="const-table">
                         <tr>
@@ -1929,36 +1939,38 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         </tr>
                         <tr>
                             <td>Bronze</td>
-                            <td>&lt; $10K</td>
+                            <td>&lt; 100K LICN</td>
                             <td>1x</td>
                         </tr>
                         <tr>
                             <td>Silver</td>
-                            <td>$10K &ndash; $100K</td>
+                            <td>100K &ndash; 1M LICN</td>
                             <td>1.5x</td>
                         </tr>
                         <tr>
                             <td>Gold</td>
-                            <td>$100K &ndash; $1M</td>
+                            <td>1M &ndash; 10M LICN</td>
                             <td>2x</td>
                         </tr>
                         <tr>
                             <td>Diamond</td>
-                            <td>&gt; $1M</td>
+                            <td>&gt; 10M LICN</td>
                             <td>3x</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (LP campaign opcodes included)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">claim_trading_rewards</span><span
                             class="fn-chip">claim_lp_rewards</span><span class="fn-chip">get_pending_rewards</span><span
                             class="fn-chip">set_reward_rate</span><span class="fn-chip">register_referral</span><span
-                            class="fn-chip">get_trading_tier</span><span class="fn-chip">record_trade_volume</span><span
-                            class="fn-chip">record_lp_action</span><span class="fn-chip">set_boosted_pairs</span><span
-                            class="fn-chip">set_epoch_duration</span><span class="fn-chip">get_epoch_info</span><span
-                            class="fn-chip">set_core_address</span><span class="fn-chip">set_amm_address</span><span
-                            class="fn-chip">set_lichenid_address</span><span class="fn-chip">dr_pause</span><span
-                            class="fn-chip">dr_unpause</span><span class="fn-chip">get_referral_count</span><span
-                            class="fn-chip">get_trader_volume</span><span
+                            class="fn-chip">get_trading_tier</span><span class="fn-chip">record_trade</span><span
+                            class="fn-chip">accrue_lp_rewards</span><span
+                            class="fn-chip">set_authorized_caller</span><span
+                            class="fn-chip">set_lichencoin_address</span><span
+                            class="fn-chip">set_rewards_pool</span><span class="fn-chip">set_referral_rate</span><span
+                            class="fn-chip">emergency_pause</span><span class="fn-chip">emergency_unpause</span><span
+                            class="fn-chip">get_referral_rate</span><span class="fn-chip">get_trader_count</span><span
+                            class="fn-chip">get_total_volume</span><span class="fn-chip">get_reward_stats</span><span
+                            class="fn-chip">claim_referral_rewards</span><span
                             class="fn-chip">get_total_distributed</span><span
                             class="fn-chip">configure_lp_campaign</span><span
                             class="fn-chip">accrue_lp_rewards_for</span><span
@@ -1969,8 +1981,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <code>dex_rewards.configure_lp_campaign</code> payloads for pair IDs 8 through 11. The contract
                         pays LICN rewards from an approved campaign budget; AMM exits and fee collection must remain
                         available even when incentives are paused or exhausted.</p>
-                    <div class="badge-row"><span class="badge badge-dex">DEX</span><span
-                            class="badge badge-identity">LichenID</span></div>
+                    <div class="badge-row"><span class="badge badge-dex">DEX</span></div>
                 </div>
             </div>
         </div>
@@ -2035,7 +2046,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                     </table>
                     <div class="sub-heading">Core functions</div>
                     <div class="fn-list"><span class="fn-chip">open_position</span><span
-                            class="fn-chip">open_position_with_mode</span><span
+                            class="fn-chip">open_position_limit</span><span
                             class="fn-chip">close_position</span><span class="fn-chip">close_position_limit</span><span
                             class="fn-chip">partial_close</span><span class="fn-chip">partial_close_limit</span><span
                             class="fn-chip">add_margin</span><span class="fn-chip">remove_margin</span><span
@@ -2045,9 +2056,9 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             class="fn-chip">disable_margin_pair</span><span
                             class="fn-chip">is_margin_enabled</span><span class="fn-chip">set_max_leverage</span><span
                             class="fn-chip">set_maintenance_margin</span><span class="fn-chip">get_tier_info</span><span
-                            class="fn-chip">get_maintenance_margin_override</span><span
-                            class="fn-chip">get_position_count</span><span
-                            class="fn-chip">get_insurance_fund</span><span class="fn-chip">get_position_info</span><span
+                            class="fn-chip">get_user_positions</span><span
+                            class="fn-chip">get_total_volume</span><span
+                            class="fn-chip">get_total_pnl</span><span class="fn-chip">get_position_info</span><span
                             class="fn-chip">get_margin_ratio</span><span
                             class="fn-chip">query_user_open_position</span><span
                             class="fn-chip">set_position_sl_tp</span><span
@@ -2077,14 +2088,14 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>DEX Analytics</h3>
                         <div class="subtitle">On-Chain OHLCV, Stats &amp; Leaderboards</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,279 lines</span><span class="meta-chip">11
-                            fns</span><span class="meta-chip">21 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Dispatch tests</span></div>
                 </div>
                 <div class="contract-body">
-                    <p>On-chain analytics engine recording every trade as OHLCV candles across <strong>nine time
-                            intervals</strong> (1m, 5m, 15m, 1H, 4H, 1D, 1W, 1M, 1Y). Provides 24h pair stats,
-                        per-trader stats, and volume leaderboards. Feeds DEX TWAP prices to LichenOracle for use by
-                        ThallLend collateral valuation and SporeVault pricing.</p>
+                    <p>On-chain analytics engine recording authorized trades as OHLCV candles across <strong>nine slot
+                            intervals</strong> labeled 1m, 5m, 15m, 1H, 4H, 1D, 3D, 1W, and 1Y. It provides pair and
+                        trader statistics. These interval labels follow source constants measured in slots; wall-clock
+                        equivalence depends on actual slot production.</p>
                     <div class="sub-heading">Candle Configuration</div>
                     <table class="const-table">
                         <tr>
@@ -2099,46 +2110,46 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         </tr>
                         <tr>
                             <td>5 minutes</td>
-                            <td>288 candles (24h)</td>
+                            <td>2,016 candles</td>
                             <td>48 bytes each</td>
                         </tr>
                         <tr>
                             <td>15 minutes</td>
-                            <td>96 candles (24h)</td>
+                            <td>2,880 candles</td>
                             <td>48 bytes each</td>
                         </tr>
                         <tr>
                             <td>1 hour</td>
-                            <td>168 candles (7d)</td>
+                            <td>2,160 candles</td>
                             <td>48 bytes each</td>
                         </tr>
                         <tr>
                             <td>4 hours</td>
-                            <td>180 candles (30d)</td>
+                            <td>2,190 candles</td>
                             <td>48 bytes each</td>
                         </tr>
                         <tr>
                             <td>1 day</td>
-                            <td>365 candles (1y)</td>
+                            <td>1,095 candles</td>
                             <td>48 bytes each</td>
                         </tr>
                         <tr>
-                            <td>1 week</td>
-                            <td>104 candles (2y)</td>
+                            <td>3-day interval</td>
+                            <td>243 candles</td>
                             <td>48 bytes each</td>
                         </tr>
                         <tr>
-                            <td>1 month</td>
-                            <td>60 candles (5y)</td>
+                            <td>1-week interval</td>
+                            <td>260 candles</td>
                             <td>48 bytes each</td>
                         </tr>
                         <tr>
-                            <td>1 year</td>
-                            <td>10 candles (10y)</td>
+                            <td>1-year interval</td>
+                            <td>Unbounded by source policy</td>
                             <td>48 bytes each</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (11)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">record_trade</span><span
                             class="fn-chip">record_pnl</span><span class="fn-chip">get_ohlcv</span><span
                             class="fn-chip">get_24h_stats</span><span class="fn-chip">get_trader_stats</span><span
@@ -2160,8 +2171,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>Prediction Market</h3>
                         <div class="subtitle">Binary Outcome Markets</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">5,144 lines</span><span class="meta-chip">37
-                            fns</span><span class="meta-chip">38 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Oracle + activation separate</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Full prediction market with AMM pricing, liquidity pools, oracle-based resolution, DAO
@@ -2301,8 +2312,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>lUSD Stablecoin</h3>
                         <div class="subtitle">Treasury-Backed Stablecoin</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,458 lines</span><span class="meta-chip">24
-                            fns</span><span class="meta-chip">23.5 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Reserves + activation separate</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Treasury-backed stablecoin contract with mint/burn mechanics, reserve attestation, epoch
@@ -2323,7 +2334,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>50,000 lUSD</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (24)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span
                             class="fn-chip">burn</span><span class="fn-chip">transfer</span><span
                             class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span
@@ -2353,8 +2364,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>Wrapped ETH</h3>
                         <div class="subtitle">Wrapped ETH Bridge Token</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,128 lines</span><span class="meta-chip">24
-                            fns</span><span class="meta-chip">23.5 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Custody + activation separate</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Wrapped ETH bridge token with epoch rate-limited minting, reserve attestation, and circuit
@@ -2375,7 +2386,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>Configurable</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (24)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span
                             class="fn-chip">burn</span><span class="fn-chip">transfer</span><span
                             class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span
@@ -2405,8 +2416,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>Wrapped SOL</h3>
                         <div class="subtitle">Wrapped SOL Bridge Token</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,137 lines</span><span class="meta-chip">24
-                            fns</span><span class="meta-chip">23.5 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Custody + activation separate</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Wrapped SOL bridge token with epoch rate-limited minting, reserve attestation, and circuit
@@ -2427,7 +2438,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>Configurable</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (24)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span
                             class="fn-chip">burn</span><span class="fn-chip">transfer</span><span
                             class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span
@@ -2457,8 +2468,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>Wrapped BNB</h3>
                         <div class="subtitle">Wrapped BNB Bridge Token</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,128 lines</span><span class="meta-chip">24
-                            fns</span><span class="meta-chip">23.5 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Custody + activation separate</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Wrapped BNB bridge token with epoch rate-limited minting, reserve attestation, and circuit
@@ -2479,7 +2490,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>Configurable</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (24)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span
                             class="fn-chip">burn</span><span class="fn-chip">transfer</span><span
                             class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span
@@ -2509,8 +2520,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>Wrapped NEO</h3>
                         <div class="subtitle">Wrapped NEO Bridge Token</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,532 lines</span><span class="meta-chip">24
-                            fns</span><span class="meta-chip">45.3 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Custody + activation separate</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Wrapped NEO bridge token with epoch rate-limited minting, reserve attestation, circuit breaker
@@ -2534,7 +2545,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>Configurable</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (24)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span
                             class="fn-chip">burn</span><span class="fn-chip">transfer</span><span
                             class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span
@@ -2564,8 +2575,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>Wrapped GAS</h3>
                         <div class="subtitle">Wrapped GAS Bridge Token</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,458 lines</span><span class="meta-chip">24
-                            fns</span><span class="meta-chip">42.8 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Custody + activation separate</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Wrapped GAS bridge token with epoch rate-limited minting, reserve attestation, and circuit
@@ -2585,7 +2596,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>Configurable</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (24)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span
                             class="fn-chip">burn</span><span class="fn-chip">transfer</span><span
                             class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span
@@ -2615,8 +2626,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>Wrapped BTC</h3>
                         <div class="subtitle">Wrapped BTC Bridge Token</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,128 lines</span><span class="meta-chip">24
-                            fns</span><span class="meta-chip">23.5 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Custody + activation separate</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Wrapped BTC bridge token with epoch rate-limited minting, reserve attestation, and circuit
@@ -2637,7 +2648,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>Configurable</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (24)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span
                             class="fn-chip">burn</span><span class="fn-chip">transfer</span><span
                             class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span
@@ -2667,8 +2678,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>Neo GAS Rewards Vault</h3>
                         <div class="subtitle">Reserve-Backed GAS Rewards Distribution</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,713 lines</span><span class="meta-chip">18
-                            exports</span><span class="meta-chip">NEOGASRWD</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Source overview</span><span
+                            class="meta-chip">Reserves + activation separate</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Opt-in rewards vault for Neo users. It accepts whole-lot wNEO principal, imports reserve-backed
@@ -2686,6 +2697,11 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>Requires public beta gate approval before any public network activation</td>
                         </tr>
                         <tr>
+                            <td>Registry symbol</td>
+                            <td><code>NEOGASRWD</code>; resolve the signed registry entry instead of hard-coding an
+                                address</td>
+                        </tr>
+                        <tr>
                             <td>Importer</td>
                             <td>Separate role for recurring wGAS reward imports; not the custody route itself</td>
                         </tr>
@@ -2694,7 +2710,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                             <td>User disclosure version/hash must match the approved manifest</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (18)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span
                             class="fn-chip">set_reward_importer</span><span
                             class="fn-chip">set_token_addresses</span><span
@@ -2721,8 +2737,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <h3>Shielded Pool</h3>
                         <div class="subtitle">Fail-closed Compatibility ABI</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">924 lines</span><span class="meta-chip">10
-                            fns</span><span class="meta-chip">18 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Compatibility ABI</span><span
+                            class="meta-chip">Proof writes disabled</span></div>
                 </div>
                 <div class="contract-body">
                     <p>This contract creates no custody ledger. Direct <strong>shield</strong>,
@@ -2730,7 +2746,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         <code>ERR_NATIVE_ONLY</code>; canonical historical reads come from RPC. Native scheme 0x01
                         operations are also disabled pending a constrained verifier.
                     </p>
-                    <div class="sub-heading">Functions (10)</div>
+                    <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">shield</span><span
                             class="fn-chip">unshield</span><span class="fn-chip">transfer</span><span
                             class="fn-chip">pause</span><span class="fn-chip">unpause</span><span
@@ -2744,15 +2760,15 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
 
         <!-- AUTHORITATIVE LIVE EXPORT MATRIX -->
         <div class="cr-section-bordered" id="live-exports">
-            <h2><i class="fas fa-code-branch"></i> Authoritative Live Export Matrix (Source-Derived)</h2>
+            <h2><i class="fas fa-code-branch"></i> Authoritative Source Export Matrix</h2>
             <p>
                 This matrix is generated from real contract source exports (<code>contracts/*/src/lib.rs</code>,
                 <code>#[no_mangle] pub extern "C" fn ...</code>) and is the authoritative surface.
                 The concise cards above are overviews; use this source-derived section for the exact runtime surface.
                 <code>launchpad_token</code> remains in-tree as the canonical SporePump graduation template whose WASM
                 hash is bound at genesis, and <code>mt20_token</code> remains as a standalone user-deployable MT20
-                template. Neither has a genesis-deployed address in <code>GENESIS_CONTRACT_CATALOG</code>; the matrix
-                below reflects the genesis contract set.
+                template. Neither has a genesis-deployed address in <code>GENESIS_CONTRACT_CATALOG</code>; both remain
+                in this source-export matrix so the documentation covers every standalone contract crate.
             </p>
             <table class="const-table">
                 <tr>
@@ -2767,7 +2783,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                     <td>lichenswap</td>
                     <td>initialize, add_liquidity, remove_liquidity, swap_a_for_b, swap_b_for_a,
                         swap_a_for_b_with_deadline, swap_b_for_a_with_deadline, get_quote, get_reserves,
-                        get_liquidity_balance, get_total_liquidity, flash_loan_borrow, flash_loan_repay,
+                        get_liquidity_balance, get_total_liquidity, flash_loan_borrow, flash_loan_execute, flash_loan_repay,
                         flash_loan_abort, get_flash_loan_fee, get_twap_cumulatives, get_twap_snapshot_count,
                         set_protocol_fee, get_protocol_fees, set_identity_admin, set_lichenid_address,
                         set_reputation_discount, ms_pause, ms_unpause, create_pool, swap, get_pool_info, get_pool_count,
@@ -2776,9 +2792,10 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                 <tr>
                     <td>thalllend</td>
                     <td>initialize, deposit, withdraw, borrow, repay, liquidate, get_account_info, get_protocol_stats,
-                        flash_borrow, flash_repay, pause, unpause, set_deposit_cap, set_reserve_factor,
-                        withdraw_reserves, get_interest_rate, get_deposit_count, get_borrow_count,
-                        get_liquidation_count, get_platform_stats, set_lichencoin_address</td>
+                        flash_borrow, flash_execute, flash_repay, pause, unpause, set_deposit_cap, set_reserve_factor,
+                        withdraw_reserves, set_lichencoin_address, set_oracle_feed, get_interest_rate, get_rate_model,
+                        get_market_status, get_accrued_interest, get_deposit_count, get_borrow_count,
+                        get_liquidation_count, get_platform_stats</td>
                 </tr>
                 <tr>
                     <td>sporepump</td>
@@ -2795,17 +2812,20 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                 </tr>
                 <tr>
                     <td>sporepay</td>
-                    <td>create_stream, withdraw_from_stream, cancel_stream, get_stream, get_withdrawable,
-                        create_stream_with_cliff, transfer_stream, initialize_cp_admin, pause, unpause, get_stream_info,
-                        set_identity_admin, set_lichenid_address, set_identity_gate, get_stream_count,
-                        get_platform_stats, set_token_address, set_self_address</td>
+                    <td>create_stream, withdraw_from_stream, cancel_stream, claim_unpaid_payout, get_unpaid_payout,
+                        get_stream, get_withdrawable, create_stream_with_cliff, transfer_stream, initialize_cp_admin,
+                        set_token_address, set_self_address, pause, unpause, get_stream_info, set_identity_admin,
+                        set_lichenid_address, set_identity_gate, begin_accounting_v3_migration,
+                        migrate_accounting_v3_stream, complete_accounting_v3_migration, get_stream_count,
+                        get_sender_stream_ids, get_recipient_stream_ids, get_platform_stats</td>
                 </tr>
                 <tr>
                     <td>sporevault</td>
-                    <td>initialize, add_strategy, deposit, withdraw, set_protocol_addresses, harvest, get_vault_stats,
-                        get_user_position, get_strategy_info, cv_pause, cv_unpause, set_deposit_fee, set_withdrawal_fee,
-                        set_deposit_cap, set_risk_tier, remove_strategy, withdraw_protocol_fees,
-                        update_strategy_allocation, set_licn_token</td>
+                    <td>initialize, add_strategy, deposit, withdraw, set_protocol_addresses, set_licn_token,
+                        retire_legacy_strategy, migrate_accounting_v2, harvest, rebalance, get_vault_stats,
+                        get_user_position, get_strategy_info, get_vault_status, cv_pause, cv_unpause, set_deposit_fee,
+                        set_withdrawal_fee, set_deposit_cap, set_risk_tier, remove_strategy, withdraw_protocol_fees,
+                        update_strategy_allocation</td>
                 </tr>
                 <tr>
                     <td>lichenid</td>
@@ -2819,41 +2839,58 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         set_metadata, get_metadata, set_availability, get_availability, set_rate, get_rate,
                         set_delegate, revoke_delegate, get_delegate, set_endpoint_as, set_metadata_as,
                         set_availability_as, set_rate_as, update_agent_type_as, get_agent_profile, get_trust_tier,
-                        mid_pause, mid_unpause, transfer_admin, admin_register_reserved_name, set_mid_token_address,
-                        set_mid_self_address</td>
+                        mid_pause, mid_unpause, transfer_admin, accept_admin, set_mid_token_address,
+                        set_mid_self_address, admin_register_reserved_name</td>
                 </tr>
                 <tr>
                     <td>lichendao</td>
-                    <td>initialize_dao, create_proposal, create_proposal_typed, vote, vote_with_reputation,
-                        execute_proposal, veto_proposal, cancel_proposal, treasury_transfer, get_treasury_balance,
+                    <td>initialize_dao, create_proposal, create_proposal_typed, vote_v2, vote, vote_with_reputation,
+                        execute_proposal, veto_proposal, cancel_proposal, claim_proposal_stake_refund,
+                        claim_vote_escrow, treasury_transfer, get_treasury_balance, migrate_treasury_to_self,
                         get_proposal, get_dao_stats, get_active_proposals, initialize, cast_vote, finalize_proposal,
                         get_proposal_count, get_vote, get_vote_count, get_total_supply, set_quorum, set_voting_period,
-                        set_timelock_delay, dao_pause, dao_unpause, set_lichenid_address</td>
+                        set_timelock_delay, set_proposal_type_config, dao_pause, dao_unpause, set_lichenid_address</td>
                 </tr>
                 <tr>
                     <td>lichenpunks</td>
-                    <td>initialize, mint, transfer, owner_of, balance_of, approve, transfer_from, burn, total_minted,
-                        mint_punk, transfer_punk, get_owner_of, get_total_supply, get_punk_metadata, get_punks_by_owner,
-                        set_base_uri, set_max_supply, set_royalty, mp_pause, mp_unpause, get_collection_stats</td>
+                    <td>initialize, mint, transfer, owner_of, balance_of, approve, get_approved, set_approval_for_all,
+                        is_approved_for_all, royalty_info, transfer_from, burn, total_minted, mint_punk, transfer_punk,
+                        get_owner_of, get_total_supply, get_punk_metadata, get_punks_by_owner, set_base_uri,
+                        set_max_supply, set_royalty, mp_pause, mp_unpause, propose_admin, accept_admin,
+                        set_mint_authority, set_royalty_config, get_collection_config, get_collection_stats</td>
                 </tr>
                 <tr>
                     <td>lichenmarket</td>
                     <td>initialize, list_nft, buy_nft, cancel_listing, get_listing, set_marketplace_fee,
-                        list_nft_with_royalty, make_offer, cancel_offer, accept_offer, get_marketplace_stats,
-                        set_nft_attributes, get_nft_attributes, get_offer_count, update_listing_price, create_auction,
-                        place_bid, settle_auction, cancel_auction, get_auction, make_collection_offer,
-                        accept_collection_offer, cancel_collection_offer, make_offer_with_expiry, mm_pause, mm_unpause
-                    </td>
+                        set_fee_treasury, withdraw_platform_fees, get_platform_fees, set_collection_royalty,
+                        get_collection_royalty, get_canonical_royalty, list_nft_with_royalty, make_offer, cancel_offer,
+                        accept_offer, get_marketplace_stats, get_marketplace_token_stats, set_nft_attributes,
+                        get_nft_attributes, get_offer_count, update_listing_price, create_auction, place_bid,
+                        settle_auction, cancel_auction, migrate_auction_escrow, migrate_v3_auction_bid_custody,
+                        get_auction_custody, get_auction, make_collection_offer, accept_collection_offer,
+                        cancel_collection_offer, claim_unpaid_payout, get_unpaid_payout,
+                        migrate_v3_unpaid_payout_custody, get_listing_terms, migrate_v3_listing, get_offer,
+                        get_offer_custody, migrate_v3_offer, migrate_v3_offer_custody, get_auction_terms,
+                        get_collection_offer, get_collection_offer_custody, migrate_v3_collection_offer,
+                        migrate_v3_collection_offer_custody, make_offer_with_expiry, begin_metrics_v3_migration,
+                        seal_metrics_v3_manifest, migrate_metrics_v3_global, migrate_metrics_v3_token,
+                        complete_metrics_v3_migration, get_metrics_v3_migration_status, propose_admin, accept_admin,
+                        get_marketplace_config, mm_pause, mm_unpause</td>
                 </tr>
                 <tr>
                     <td>lichenauction</td>
-                    <td>create_auction, place_bid, finalize_auction, make_offer, accept_offer, set_royalty,
-                        update_collection_stats, get_collection_stats, initialize, set_reserve_price, cancel_auction,
-                        initialize_ma_admin, ma_pause, ma_unpause, get_auction_info, get_auction_stats</td>
+                    <td>create_auction, place_bid, finalize_auction, make_offer, cancel_offer, accept_offer, set_royalty,
+                        update_collection_stats, initialize, set_reserve_price, cancel_auction, initialize_ma_admin,
+                        propose_ma_admin, accept_ma_admin, begin_v3_migration, seal_v3_migration_manifest,
+                        probe_canonical_royalty, migrate_v3_auction, migrate_v3_offer, complete_v3_migration, ma_pause,
+                        ma_unpause, claim_unpaid_payout, get_unpaid_payout, set_fee_treasury, set_platform_fee,
+                        withdraw_platform_fees, get_platform_fees, get_offer_info, get_auction_info, get_auction_stats,
+                        get_marketplace_config, get_v3_migration_status</td>
                 </tr>
                 <tr>
                     <td>lichenoracle</td>
                     <td>initialize_oracle, add_price_feeder, set_authorized_attester, submit_price, get_price,
+                        get_price_value,
                         commit_randomness, reveal_randomness, request_randomness, get_randomness, submit_attestation,
                         verify_attestation, get_attestation_data, query_oracle, get_aggregated_price, get_oracle_stats,
                         initialize, register_feed, get_feed_count, get_feed_list, add_reporter, remove_reporter,
@@ -2863,7 +2900,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                     <td>lichenbridge</td>
                     <td>initialize, add_bridge_validator, remove_bridge_validator, set_required_confirmations,
                         set_request_timeout, lock_tokens, submit_mint, confirm_mint, submit_unlock, confirm_unlock,
-                        cancel_expired_request, get_bridge_status, has_confirmed_mint, has_confirmed_unlock,
+                        cancel_expired_request, get_bridge_status, get_request_terms, is_request_validator,
+                        has_confirmed_mint, has_confirmed_unlock,
                         is_source_tx_used, is_burn_proof_used, set_lichenid_address, set_identity_gate, mb_pause,
                         mb_unpause, set_token_address</td>
                 </tr>
@@ -2883,33 +2921,39 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                     <td>compute_market</td>
                     <td>register_provider, submit_job, claim_job, complete_job, dispute_job, get_job, initialize,
                         set_claim_timeout, set_complete_timeout, set_challenge_period, add_arbitrator,
-                        remove_arbitrator, cancel_job, release_payment, resolve_dispute, deactivate_provider,
-                        reactivate_provider, update_provider, get_escrow, set_identity_admin, set_lichenid_address,
-                        set_identity_gate, create_job, accept_job, submit_result, confirm_result, get_job_info,
-                        get_job_count, get_provider_info, set_platform_fee, cm_pause, cm_unpause, get_platform_stats,
-                        set_token_address, claim_unpaid_payout, get_unpaid_payout, set_agent_compute_controls,
-                        set_agent_spending_policy, disable_agent_spending_policy, submit_agent_job,
-                        get_agent_compute_controls, get_agent_spending_policy, get_agent_spend_window,
-                        get_agent_job_action</td>
+                        remove_arbitrator, set_token_address, set_agent_compute_controls, set_agent_spending_policy,
+                        disable_agent_spending_policy, submit_agent_job, get_agent_compute_controls,
+                        get_agent_spending_policy, get_agent_spend_window, get_agent_job_action, cancel_job,
+                        release_payment, resolve_dispute, deactivate_provider, reactivate_provider, update_provider,
+                        get_escrow, claim_unpaid_payout, get_unpaid_payout, set_identity_admin, set_lichenid_address,
+                        set_identity_gate, pause, unpause, begin_accounting_v3_migration,
+                        migrate_accounting_v3_job, complete_accounting_v3_migration,
+                        get_accounting_migration_status, get_accounting_health, create_job, accept_job, submit_result,
+                        confirm_result, get_job_info, get_job_count, get_provider_info, get_provider_capacity,
+                        set_platform_fee, set_fee_treasury, withdraw_platform_fees, get_platform_fees, get_job_timing,
+                        cm_pause, cm_unpause, get_platform_stats</td>
                 </tr>
                 <tr>
                     <td>moss_storage</td>
-                    <td>store_data, confirm_storage, get_storage_info, register_provider, claim_storage_rewards,
-                        initialize, set_challenge_window, set_slash_percent, stake_collateral, set_storage_price,
-                        get_storage_price, get_provider_stake, issue_challenge, respond_challenge, slash_provider,
-                        get_platform_stats, set_licn_token</td>
+                    <td>store_data, store_data_v2, quote_storage_v2, get_storage_pricing_v2_config, confirm_storage,
+                        get_storage_info, register_provider, claim_storage_rewards, claim_storage_rewards_page,
+                        get_provider_reward_entry_count, initialize, set_licn_token, set_challenge_window,
+                        set_slash_percent, stake_collateral, set_storage_price, get_storage_price,
+                        get_storage_max_price, get_confirmed_storage_price, get_provider_stake, get_provider_info,
+                        close_storage, is_storage_closed, deactivate_provider, withdraw_collateral, issue_challenge,
+                        get_challenge, slash_provider, claim_unpaid_payout, get_unpaid_payout, get_platform_stats</td>
                 </tr>
                 <tr>
                     <td>dex_core</td>
-                    <td>initialize, call</td>
+                    <td>set_sporepump_authority, initialize, call</td>
                 </tr>
                 <tr>
                     <td>dex_amm</td>
-                    <td>initialize, call</td>
+                    <td>initialize, set_sporepump_authority</td>
                 </tr>
                 <tr>
                     <td>dex_router</td>
-                    <td>call</td>
+                    <td>initialize, set_sporepump_authority, call</td>
                 </tr>
                 <tr>
                     <td>dex_governance</td>
@@ -2930,6 +2974,16 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                 <tr>
                     <td>prediction_market</td>
                     <td>initialize, call</td>
+                </tr>
+                <tr>
+                    <td>launchpad_token</td>
+                    <td>initialize, get_provenance, mint_migration_inventory, burn_migration_inventory,
+                        get_migration_supply, claim, balance_of, total_supply, transfer, approve, allowance,
+                        transfer_from, decimals, name, symbol, sporepump_token_id, sporepump_program</td>
+                </tr>
+                <tr>
+                    <td>mt20_token</td>
+                    <td>initialize, mint, burn, balance_of, transfer, approve, allowance, transfer_from, total_supply</td>
                 </tr>
                 <tr>
                     <td>lusd_token</td>
@@ -2977,8 +3031,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         allowance, total_supply, total_minted, total_burned, get_reserve_ratio,
                         get_last_attestation_slot, get_attestation_count, get_epoch_remaining, get_transfer_count,
                         emergency_pause, emergency_unpause, transfer_admin, accept_admin, set_minter,
-                        set_attester, complete_bootstrap; whole-NEO lot enforcement is part of the wrapped NEO
-                        implementation</td>
+                        set_attester, complete_bootstrap</td>
                 </tr>
                 <tr>
                     <td>wbtc_token</td>
@@ -2997,8 +3050,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                 </tr>
                 <tr>
                     <td>shielded_pool</td>
-                    <td>initialize, shield, unshield, transfer, pause, unpause, get_pool_stats, get_merkle_root,
-                        check_nullifier, get_commitments</td>
+                    <td>initialize, pause, unpause, get_pool_stats, get_merkle_root, check_nullifier, get_commitments,
+                        shield, unshield, transfer, get_execution_model</td>
                 </tr>
             </table>
         </div>
@@ -3006,8 +3059,9 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
         <!-- CROSS-CONTRACT INTEGRATIONS -->
         <div class="cr-section-bordered">
             <h2><i class="fas fa-project-diagram"></i> Cross-Contract Integration Map</h2>
-            <p>LichenID is the identity backbone — 6 contracts integrate it for reputation gating, fee discounts, and
-                identity verification. DEX contracts cross-reference each other and the core DeFi stack.</p>
+            <p>Eight contract crates expose LichenID bindings for explicit application-level gating, DEX-local fee
+                policy, or governance rules. These integrations do not grant base-protocol fee or mempool privileges.
+                DEX contracts also cross-reference the core DeFi stack.</p>
             <table class="const-table narrow">
                 <tr>
                     <th>Contract</th>
@@ -3017,7 +3071,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                 <tr>
                     <td>LichenSwap</td>
                     <td>set_lichenid_address, set_reputation_discount</td>
-                    <td>Fee discounts based on reputation tier</td>
+                    <td>Optional DEX-local swap bonus funded from accrued protocol fees</td>
                 </tr>
                 <tr>
                     <td>SporePay</td>
@@ -3032,7 +3086,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                 <tr>
                     <td>BountyBoard</td>
                     <td>set_lichenid_address, set_identity_gate</td>
-                    <td>Reputation bounty gating + rep rewards</td>
+                    <td>Fail-closed identity/reputation threshold for bounty participation</td>
                 </tr>
                 <tr>
                     <td>Compute Market</td>
@@ -3043,6 +3097,16 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                     <td>LichenDAO</td>
                     <td>vote_with_reputation</td>
                     <td>Reputation-weighted governance voting</td>
+                </tr>
+                <tr>
+                    <td>DEX Governance</td>
+                    <td>set_lichenid_address</td>
+                    <td>Fail-closed reputation thresholds for proposals and voting</td>
+                </tr>
+                <tr>
+                    <td>Prediction Market</td>
+                    <td>set_lichenid_address</td>
+                    <td>Creator and resolver reputation thresholds</td>
                 </tr>
             </table>
             <h3>DEX Cross-Contract Dependencies</h3>
@@ -3074,8 +3138,8 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                 </tr>
                 <tr>
                     <td>DEX Rewards</td>
-                    <td>LichenID</td>
-                    <td>LichenID-boosted referrals, native LICN distribution</td>
+                    <td>DEX Core, native LICN</td>
+                    <td>Configured trading, liquidity, and referral rewards</td>
                 </tr>
             </table>
             <h3>Security Patterns</h3>

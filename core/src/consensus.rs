@@ -19,7 +19,7 @@ use std::sync::Arc;
 // STAKING - Economic Security
 // ============================================================================
 
-/// Minimum stake required to remain an active validator (75,000 LICN — $7,500 at $0.10/LICN).
+/// Minimum stake required to remain an active validator (75,000 LICN).
 /// Bootstrap grant is still 100K LICN, but validators stay active down to 75K,
 /// giving a 25% buffer before deactivation after slashing.
 pub const MIN_VALIDATOR_STAKE: u64 = 75_000 * 1_000_000_000; // 75k LICN in spores
@@ -820,7 +820,7 @@ pub enum BootstrapStatus {
     FullyVested,   // Debt fully repaid, can accept delegations
 }
 
-/// Maximum stake per validator (1,000,000 LICN — $100,000 at $0.10/LICN)
+/// Maximum stake per validator (1,000,000 LICN).
 pub const MAX_VALIDATOR_STAKE: u64 = 1_000_000 * 1_000_000_000; // 1M LICN in spores
 
 /// Coordinated epoch boundary for the stake-weighted reward and owned

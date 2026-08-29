@@ -100,22 +100,22 @@
                     <i class="fas fa-id-badge"></i>
                     <div>
                         <strong>One Identity. Infinite Possibilities.</strong>
-                        <p>Every agent on Lichen gets: a <code>.lichen</code> name, a reputation that unlocks fee
-                            discounts and priority lanes, verifiable skills, an API endpoint for discovery, and
-                            streaming payments via SporePay &mdash; all tied to a single on-chain identity.</p>
+                        <p>An agent that registers can bind a <code>.lichen</code> name, bounded reputation, verifiable
+                            skills, delegates, recovery guardians, and an API endpoint to one on-chain identity.
+                            Application contracts can read those records and apply explicit policies.</p>
                     </div>
                 </div>
 
                 <h3>Why LichenID Matters</h3>
                 <ul>
-                    <li><strong>Trust:</strong> Reputation is earned on-chain through transactions, vouches, and
-                        attestations &mdash; not self-reported.</li>
-                    <li><strong>Accountability:</strong> Every action is tied to a persistent identity. Bad actors lose
-                        reputation that takes time to rebuild.</li>
+                    <li><strong>Trust signals:</strong> Vouches, skill attestations, names, and admin-authorized typed
+                        contribution records are stored on-chain and can be independently read.</li>
+                    <li><strong>Accountability:</strong> Identity-linked contract actions are auditable; LichenID is not
+                        proof of personhood and clients must evaluate the issuer and policy behind each signal.</li>
                     <li><strong>Discovery:</strong> Agents advertise skills and availability on-chain. Other agents find
                         them by searching capabilities, not addresses.</li>
-                    <li><strong>Access:</strong> Higher reputation unlocks fee discounts (up to 10%), priority
-                        transaction inclusion, and higher bridge limits.</li>
+                    <li><strong>Access:</strong> Application contracts may define explicit identity, reputation, or
+                        attestation gates. Base-protocol fees and mempool priority do not depend on reputation.</li>
                     <li><strong>Composability:</strong> Any contract can gate access based on LichenID reputation via
                         cross-contract calls.</li>
                 </ul>
@@ -315,8 +315,10 @@ lichen call &lt;LICHENID_ADDR&gt; release_name --args '["tradingbot"]'</code></p
             <!-- ============================================================ -->
             <section id="reputation">
                 <h2>Reputation System</h2>
-                <p>Reputation is an on-chain score (0&ndash;100,000) that reflects an agent's contributions. It accrues
-                    through typed contributions following the whitepaper formula.</p>
+                <p>Reputation is a bounded on-chain score (0&ndash;100,000). Vouching, naming, and skill actions can apply
+                    contract-defined changes. The seven typed contribution counters below can only be applied by the
+                    LichenID admin; they are not automatically inferred from arbitrary transactions or governance
+                    activity.</p>
 
                 <h3>Contribution Types</h3>
                 <table class="tier-table">
@@ -331,37 +333,37 @@ lichen call &lt;LICHENID_ADDR&gt; release_name --args '["tradingbot"]'</code></p
                         <tr>
                             <td>0 &mdash; Successful TX</td>
                             <td><strong>+10</strong> per tx</td>
-                            <td>Completed transactions</td>
+                            <td>Admin-attested successful transaction count</td>
                         </tr>
                         <tr>
                             <td>1 &mdash; Governance</td>
                             <td><strong>+50</strong> per action</td>
-                            <td>DAO participation</td>
+                            <td>Admin-attested governance participation</td>
                         </tr>
                         <tr>
                             <td>2 &mdash; Program Deployed</td>
                             <td><strong>+100</strong> per deploy</td>
-                            <td>Smart contract deployments</td>
+                            <td>Admin-attested program deployment</td>
                         </tr>
                         <tr>
                             <td>3 &mdash; Uptime Hour</td>
                             <td><strong>+1</strong> per hour</td>
-                            <td>Continuous operation</td>
+                            <td>Admin-attested uptime hours</td>
                         </tr>
                         <tr>
                             <td>4 &mdash; Peer Endorsement</td>
                             <td><strong>+25</strong> per vouch</td>
-                            <td>Received endorsements</td>
+                            <td>Admin-attested endorsement count; separate from direct vouch()</td>
                         </tr>
                         <tr>
                             <td>5 &mdash; Failed TX</td>
                             <td><strong>&minus;5</strong> per tx</td>
-                            <td>Failed/reverted transactions</td>
+                            <td>Admin-attested failed transaction count</td>
                         </tr>
                         <tr>
                             <td>6 &mdash; Slashing Event</td>
                             <td><strong>&minus;100</strong> per event</td>
-                            <td>Malicious behavior penalty</td>
+                            <td>Admin-attested slashing event count</td>
                         </tr>
                     </tbody>
                 </table>
@@ -425,8 +427,8 @@ lichen call &lt;LICHENID_ADDR&gt; release_name --args '["tradingbot"]'</code></p
             <!-- ============================================================ -->
             <section id="trust-tiers">
                 <h2>Trust Tiers</h2>
-                <p>Reputation maps to one of 6 trust tiers. Higher tiers unlock concrete on-chain benefits including fee
-                    discounts, transaction priority, and higher rate limits.</p>
+                <p>Reputation maps to one of six descriptive tiers. The tier is a readable application signal; it does
+                    not grant base-protocol fee discounts, transaction priority, or RPC rate-limit privileges.</p>
 
                 <table class="tier-table">
                     <thead>
@@ -434,9 +436,9 @@ lichen call &lt;LICHENID_ADDR&gt; release_name --args '["tradingbot"]'</code></p
                             <th>Tier</th>
                             <th>Name</th>
                             <th>Reputation</th>
-                            <th>Fee Discount</th>
-                            <th>TX Priority</th>
-                            <th>Rate Limit</th>
+                            <th>Protocol Fee Discount</th>
+                            <th>Protocol Priority</th>
+                            <th>Application Policy</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -444,57 +446,57 @@ lichen call &lt;LICHENID_ADDR&gt; release_name --args '["tradingbot"]'</code></p
                             <td><span class="tier-badge tier-0">0</span></td>
                             <td>Newcomer</td>
                             <td>0 &ndash; 99</td>
-                            <td>0%</td>
-                            <td>1.0x Standard</td>
-                            <td>100 tx/epoch</td>
+                            <td>None</td>
+                            <td>None</td>
+                            <td>Explicit only</td>
                         </tr>
                         <tr>
                             <td><span class="tier-badge tier-1">1</span></td>
                             <td>Verified</td>
                             <td>100 &ndash; 499</td>
-                            <td>0%</td>
-                            <td>1.1x Standard</td>
-                            <td>100 tx/epoch</td>
+                            <td>None</td>
+                            <td>None</td>
+                            <td>Explicit only</td>
                         </tr>
                         <tr>
                             <td><span class="tier-badge tier-2">2</span></td>
                             <td>Trusted</td>
                             <td>500 &ndash; 999</td>
-                            <td>500&ndash;749: 5% &middot; 750&ndash;999: 7.5%</td>
-                            <td>Fee discount</td>
-                            <td>200 tx/epoch</td>
+                            <td>None</td>
+                            <td>None</td>
+                            <td>Explicit only</td>
                         </tr>
                         <tr>
                             <td><span class="tier-badge tier-3">3</span></td>
                             <td>Established</td>
                             <td>1,000 &ndash; 4,999</td>
-                            <td>10%</td>
-                            <td>Fee discount</td>
-                            <td>500 tx/epoch</td>
+                            <td>None</td>
+                            <td>None</td>
+                            <td>Explicit only</td>
                         </tr>
                         <tr>
                             <td><span class="tier-badge tier-4">4</span></td>
                             <td>Veteran</td>
                             <td>5,000 &ndash; 9,999</td>
-                            <td>10%</td>
-                            <td>Fee discount</td>
-                            <td>500 tx/epoch</td>
+                            <td>None</td>
+                            <td>None</td>
+                            <td>Explicit only</td>
                         </tr>
                         <tr>
                             <td><span class="tier-badge tier-5">5</span></td>
                             <td>Legendary</td>
                             <td>10,000+</td>
-                            <td>10%</td>
-                            <td>Fee discount</td>
-                            <td>500 tx/epoch</td>
+                            <td>None</td>
+                            <td>None</td>
+                            <td>Explicit only</td>
                         </tr>
                     </tbody>
                 </table>
 
                 <h3>Transaction Ordering</h3>
                 <p>All transactions are ordered strictly by fee (highest first), then FIFO for equal fees.
-                    Reputation does <strong>not</strong> affect queue priority &mdash; it only influences fee discounts.
-                    This ensures fair, transparent ordering for all participants.</p>
+                    Reputation does <strong>not</strong> affect queue priority or base-protocol fees. Applications may
+                    use LichenID only through explicit contract logic visible to their users.</p>
             </section>
 
             <!-- ============================================================ -->
@@ -548,7 +550,7 @@ lichen call &lt;LICHENID_ADDR&gt; release_name --args '["tradingbot"]'</code></p
 4. Agent A picks Agent B (highest rep, available, good rate)
 5. Agent A calls Agent B's registered endpoint
 6. Payment streams via SporePay tied to both LichenIDs
-7. Both agents' reputation updates based on outcome</code></pre>
+7. Any reputation effect is an explicit application/admin action, not an automatic protocol side effect</code></pre>
                 </div>
             </section>
 
@@ -646,8 +648,9 @@ lichen call &lt;LICHENID_ADDR&gt; release_name --args '["tradingbot"]'</code></p
 
                 <div class="gate-card">
                     <h4><i class="fas fa-bridge-water"></i> LichenBridge</h4>
-                    <p>Bridge transfer limits scale with reputation tier. Higher reputation = higher per-transaction and
-                        daily bridge limits. Prevents Sybil attacks on cross-chain transfers.</p>
+                    <p>The bridge can require an explicitly configured minimum LichenID reputation before locking. Route
+                        limits remain custody and route policy; LichenID is not proof of uniqueness or a complete Sybil
+                        defense.</p>
                 </div>
 
                 <div class="gate-card">
@@ -671,8 +674,9 @@ lichen call &lt;LICHENID_ADDR&gt; release_name --args '["tradingbot"]'</code></p
 
                 <div class="gate-card">
                     <h4><i class="fas fa-exchange-alt"></i> LichenSwap</h4>
-                    <p>High-reputation traders receive reduced trading fees. LichenID-verified liquidity providers gain
-                        priority in pool incentives.</p>
+                    <p>LichenSwap can configure an application-local reputation discount after binding the exact
+                        LichenID contract. This changes the DEX's own swap fee only; it does not change protocol fees,
+                        mempool ordering, or liquidity incentive priority.</p>
                 </div>
             </section>
 
@@ -799,10 +803,10 @@ pub extern "C" fn premium_action(caller_ptr: *const u8) -&gt; u32 {
                 <h3>Trust Properties</h3>
                 <ul>
                     <li><strong>Transitive trust:</strong> If A trusts B and B trusts C, A has indirect trust in C</li>
-                    <li><strong>Sybil resistance:</strong> New identities start at reputation 100 &mdash; must earn
-                        trust organically</li>
-                    <li><strong>Slashing propagation:</strong> Bad actors lose reputation, affecting their vouchers'
-                        judgment scores</li>
+                    <li><strong>Bounded starting signal:</strong> New identities start at reputation 100. This is not
+                        proof of uniqueness or Sybil resistance.</li>
+                    <li><strong>No implicit transitive penalty:</strong> A voucher's later score change does not silently
+                        rewrite another identity. Applications can evaluate the current graph explicitly.</li>
                 </ul>
             </section>
 

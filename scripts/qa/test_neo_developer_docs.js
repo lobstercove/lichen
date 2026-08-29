@@ -8,6 +8,7 @@ const ROOT = path.resolve(__dirname, '..', '..');
 
 const FILES = {
     packageJson: 'package.json',
+    cargoToml: 'cli/Cargo.toml',
     developerGuide: 'docs/guides/NEO_DEVELOPER_INTEGRATION.md',
     wrappedAssets: 'docs/defi/WRAPPED_ASSETS.md',
     custodyDeployment: 'docs/deployment/CUSTODY_DEPLOYMENT.md',
@@ -100,6 +101,9 @@ function main() {
     );
     const expectedContracts = readJson(FILES.expectedContracts).contracts;
     const packageJson = readJson(FILES.packageJson);
+    const versionMatch = read(FILES.cargoToml).match(/^version\s*=\s*"([^"]+)"/m);
+    assert(versionMatch, `${FILES.cargoToml} is missing the workspace package version`);
+    const currentVersion = versionMatch[1];
 
     function testWhenPresent(keys, name, fn) {
         const missing = keys.filter((key) => docs[key] === null);
@@ -206,7 +210,7 @@ function main() {
         assertAllIncludes(docs.developerHome, [
             'Neo X Integration',
             'rpc-reference.html#neo-x-route-rewards',
-            'genesis-native wNEO, wGAS, and wBTC wrapped markets',
+            'public activation gates for Neo developers',
         ], FILES.developerHome);
         assertAllIncludes(docs.searchIndex, [
             'Neo X Integration',
@@ -247,8 +251,8 @@ function main() {
             'last_attestation_slot',
             'dex_rewards.configure_lp_campaign',
         ], FILES.rpcPortal);
-        assertIncludes(docs.rpcPortal, 'v0.5.197', FILES.rpcPortal);
         assertIncludes(docs.rpcPortal, 'neo-x-route-rewards', FILES.rpcPortal);
+        assertIncludes(docs.rpcPortal, 'visibility alone does not mean incentives are active', FILES.rpcPortal);
     });
 
     testWhenPresent(['rpcMarkdown'], 'canonical RPC docs list Neo route, reserve, rewards, and DEX methods', () => {
@@ -274,8 +278,8 @@ function main() {
 
     test('CLI docs expose route status, governed route payloads, and Neo symbol lookups', () => {
         assertAllIncludes(docs.cliPortal, [
-            'v0.5.197',
-            'lichen 0.5.197',
+            `v${currentVersion}`,
+            `lichen ${currentVersion}`,
             'lichen restriction status bridge-route neox gas',
             'lichen restriction status bridge-route neox neo',
             'lichen restriction build pause-bridge-route neox gas',
@@ -293,7 +297,7 @@ function main() {
             'zk-prove reserve-liability',
             'zk-prove verify-reserve-liability',
         ], FILES.cliPortal);
-        assertAllIncludes(docs.gettingStarted, ['lichen 0.5.197'], FILES.gettingStarted);
+        assertAllIncludes(docs.gettingStarted, [`lichen ${currentVersion}`], FILES.gettingStarted);
         assertNotIncludes(docs.cliPortal, 'lichen 0.5.44', FILES.cliPortal);
         assertNotIncludes(docs.gettingStarted, 'lichen 0.5.44', FILES.gettingStarted);
     });
@@ -313,10 +317,12 @@ function main() {
             }
         });
         assertAllIncludes(docs.contractPortal, [
-            '32 genesis-deployed smart contracts',
-            '82,336',
+            'Source reference for 32 genesis-catalog contracts, two deployable templates, and native LICN',
+            '<div class="num">34</div>',
+            '<div class="num">32</div>',
+            '<div class="num">771</div>',
             'Source Exports',
-            '578',
+            'machine-checked Source Export Matrix is authoritative',
             'Neo GAS Rewards Vault',
             'NEOGASRWD',
             'neo_gas_rewards',

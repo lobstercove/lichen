@@ -26,7 +26,8 @@ const FEE_SPLIT = {
     community: 0.10,
 };
 
-// ZK shielded transaction compute surcharges (spores)
+// Historical scheme 0x01 shielded transaction compute surcharges (spores).
+// Proof acceptance is disabled; retain only for read-only compatibility displays.
 const ZK_COMPUTE_FEE = {
     shield: 100_000,
     unshield: 150_000,
@@ -147,10 +148,10 @@ const ACHIEVEMENT_DEFS = [
     { id: 55, name: 'Unwrapper', icon: 'fa-box-open', desc: 'Unwrapped tokens back to native' },
     { id: 56, name: 'Cross-chain Trader', icon: 'fa-globe', desc: 'Traded cross-chain assets' },
     // Shield/Privacy (57-60)
-    { id: 57, name: 'Privacy Pioneer', icon: 'fa-user-secret', desc: 'Shielded assets for privacy' },
-    { id: 58, name: 'Unshielded', icon: 'fa-eye', desc: 'Unshielded private assets' },
-    { id: 59, name: 'Shadow Sender', icon: 'fa-mask', desc: 'Sent a shielded transfer' },
-    { id: 60, name: 'ZK Privacy User', icon: 'fa-user-shield', desc: 'Used privacy features multiple times' },
+    { id: 57, name: 'Privacy Pioneer', icon: 'fa-user-secret', desc: 'Legacy shield action; unavailable while scheme 0x01 is disabled' },
+    { id: 58, name: 'Unshielded', icon: 'fa-eye', desc: 'Legacy unshield action; unavailable while scheme 0x01 is disabled' },
+    { id: 59, name: 'Shadow Sender', icon: 'fa-mask', desc: 'Legacy shielded transfer; unavailable while scheme 0x01 is disabled' },
+    { id: 60, name: 'ZK Privacy User', icon: 'fa-user-shield', desc: 'Legacy privacy activity; unavailable while scheme 0x01 is disabled' },
     // NFT (63-70)
     { id: 63, name: 'Collection Creator', icon: 'fa-palette', desc: 'Created an NFT collection' },
     { id: 64, name: 'First Mint', icon: 'fa-stamp', desc: 'Minted your first NFT' },

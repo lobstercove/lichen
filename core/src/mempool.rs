@@ -475,7 +475,7 @@ mod tests {
         mempool
             .add_transaction(tx_high_fee.clone(), 100_000, 0)
             .unwrap();
-        // Low fee, Tier 5 reputation — should NOT get express lane priority
+        // Low fee, Tier 5 reputation — reputation must not change ordering.
         mempool.add_transaction(tx_high_rep, 100, 10_000).unwrap();
 
         let top = mempool.get_top_transactions(1);

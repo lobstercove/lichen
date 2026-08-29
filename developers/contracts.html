@@ -573,9 +573,9 @@ pub extern "C" fn read_value() -> u32 {
                         <span class="method-badge get">READ</span>
                     </div>
                     <div class="method-body">
-                        <p>Get the current slot number. Lichen produces ~2.5 slots/second (400ms per slot). Used for
-                            slot-based timing
-                            (e.g., name expiry at ~78.8M slots/year).</p>
+                        <p>Get the current slot number. Consensus targets a 400 ms cadence under healthy quorum; slots
+                            are the deterministic contract clock, while wall-clock equivalence varies with actual block
+                            production. For example, annualized policies use approximately 78.8M target-cadence slots.</p>
                     </div>
                 </div>
 

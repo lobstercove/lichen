@@ -158,11 +158,11 @@ const MIN_LICN_NAME_LEN: usize = 3;
 /// Maximum name length for .lichen domains
 const MAX_LICN_NAME_LEN: usize = 32;
 /// Base registration cost (in spores) for 5+ char names
-const NAME_COST_BASE: u64 = 20_000_000_000; // 20 LICN ($2.00 at $0.10)
+const NAME_COST_BASE: u64 = 20_000_000_000; // 20 LICN
 /// Premium cost for 4-char names
-const NAME_COST_4CHAR: u64 = 100_000_000_000; // 100 LICN ($10.00 at $0.10)
+const NAME_COST_4CHAR: u64 = 100_000_000_000; // 100 LICN
 /// Premium cost for 3-char names
-const NAME_COST_3CHAR: u64 = 500_000_000_000; // 500 LICN ($50.00 at $0.10)
+const NAME_COST_3CHAR: u64 = 500_000_000_000; // 500 LICN
 /// Slots per year (approx: 2.5 slots/sec * 86400 * 365, matching core/consensus.rs)
 const SLOTS_PER_YEAR: u64 = 78_840_000;
 /// Premium names up to this length are auction-only

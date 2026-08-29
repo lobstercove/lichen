@@ -77,7 +77,7 @@
                     <i class="fas fa-wallet"></i> Wallet
                 </a>
                 <select id="websiteNetworkSelect" class="network-select">
-                    <option value="mainnet">Mainnet</option>
+                    <option value="mainnet" disabled>Mainnet (not launched)</option>
                     <option value="testnet">Testnet</option>
                     <option value="local-testnet">Local Testnet</option>
                 </select>
@@ -123,12 +123,12 @@
                     </div>
                     <div class="hero-stats">
                         <div class="stat">
-                            <div class="stat-value">$0.0001</div>
-                            <div class="stat-label">Per Transaction</div>
+                            <div class="stat-value">0.001 LICN</div>
+                            <div class="stat-label">Base Transfer Fee</div>
                         </div>
                         <div class="stat">
-                            <div class="stat-value">400ms</div>
-                            <div class="stat-label">Finality</div>
+                            <div class="stat-value">400ms target</div>
+                            <div class="stat-label">Healthy-Quorum Slot Cadence</div>
                         </div>
                         <div class="stat">
                             <div class="stat-value" id="stat-block">—</div>
@@ -314,8 +314,8 @@
                             <h3>Why Lichen fits</h3>
                             <ul class="category-list">
                                 <li>Predictable low fees make frequent or low-ticket settlement viable.</li>
-                                <li>ML-DSA-65 native accounts and PQ-enabled custody paths suit long-lived financial
-                                    infrastructure.</li>
+                                <li>ML-DSA-65 secures native accounts and custody approvals. External-chain execution
+                                    still inherits each source chain's signature and settlement assumptions.</li>
                                 <li>The same wallet surface works for users, operators, and autonomous systems.</li>
                             </ul>
                         </article>
@@ -324,7 +324,8 @@
                             <h3>How it lands on-chain</h3>
                             <ul class="category-list">
                                 <li>Use SporePay and contract logic for recurring or rule-based settlement.</li>
-                                <li>Route treasury or bridge flows without leaving the native account layer.</li>
+                                <li>Route native treasury actions and configured custody-backed bridge flows through
+                                    explicit, auditable policies.</li>
                                 <li>Integrate through wallet, SDKs, JSON-RPC, and WebSocket events.</li>
                             </ul>
                         </article>
@@ -627,7 +628,8 @@
                             <ul class="category-list">
                                 <li>Frequent player interactions need fees that stay operationally small.</li>
                                 <li>Ownership, payments, and identity share one wallet experience.</li>
-                                <li>Privacy and public settlement can coexist depending on the game flow.</li>
+                                <li>Public settlement is available today; confidential game flows require a future
+                                    constrained proof scheme and are not active.</li>
                             </ul>
                         </article>
                         <article class="category-card">
@@ -866,9 +868,9 @@
                             <div class="agent-feature">
                                 <div class="agent-feature-icon"><i class="fas fa-user-shield"></i></div>
                                 <div class="agent-feature-content">
-                                    <h3>Public or Private Flows</h3>
-                                    <p>Keep actions public when composability matters, or shift value through shielded
-                                        flows when confidentiality is part of the job.</p>
+                                    <h3>Public Flows Today</h3>
+                                    <p>Actions settle publicly for composability and auditability. Historical shielded
+                                        state is read-only and proof scheme 0x01 is rejected fail-closed.</p>
                                 </div>
                             </div>
                         </div>
@@ -948,8 +950,9 @@
                     <div class="vision-card animate-on-scroll">
                         <div class="vision-icon"><i class="fas fa-shield-alt"></i></div>
                         <h3>Cryptography Starts at the Account Layer</h3>
-                        <p>ML-DSA-65 keys are native to the chain, not bolted on at the edge. That matters for
-                            wallets, custody, APIs, and systems expected to survive long upgrade cycles.</p>
+                        <p>ML-DSA-65 keys are native to accounts and chain authorization, not bolted on at the edge.
+                            Custody approvals can use the same PQ boundary while external execution remains scoped to
+                            each source chain.</p>
                     </div>
                     <div class="vision-card animate-on-scroll">
                         <div class="vision-icon"><i class="fas fa-bolt"></i></div>
@@ -959,9 +962,10 @@
                     </div>
                     <div class="vision-card animate-on-scroll">
                         <div class="vision-icon"><i class="fas fa-balance-scale"></i></div>
-                        <h3>Operators Can Join Without Capital Theater</h3>
-                        <p>Validators can start through a bootstrap path instead of a six-figure gate, so the network
-                            can grow around contribution, uptime, and real operations.</p>
+                        <h3>Operators Can Verify Before Participating</h3>
+                        <p>Operators can join as independent full-node observers, verify genesis and replay, and then
+                            enter validator admission only under the network's current on-chain stake and governance
+                            policy.</p>
                     </div>
                 </div>
             </div>
@@ -990,7 +994,7 @@
                             </div>
                             <div class="spec-row">
                                 <span class="spec-label">Finality</span>
-                                <span class="spec-value highlight">400ms (single slot)</span>
+                                <span class="spec-value highlight">400ms target with ≥⅔ quorum</span>
                             </div>
                             <div class="spec-row">
                                 <span class="spec-label">BFT Threshold</span>
@@ -1044,73 +1048,66 @@
                         <div class="spec-metrics">
                             <div class="spec-row">
                                 <span class="spec-label">Tx Processing</span>
-                                <span class="spec-value highlight">~35,000 tx/s (single-thread)</span>
+                                <span class="spec-value highlight">Published per release</span>
                             </div>
                             <div class="spec-row">
                                 <span class="spec-label">ML-DSA-65 Verify</span>
-                                <span class="spec-value highlight">~10,000 /s</span>
+                                <span class="spec-value highlight">Published per release</span>
                             </div>
                             <div class="spec-row">
                                 <span class="spec-label">Block (500 tx)</span>
-                                <span class="spec-value highlight">~15ms</span>
+                                <span class="spec-value highlight">Criterion microbenchmark</span>
                             </div>
                             <div class="spec-row">
                                 <span class="spec-label">Block Propagation</span>
-                                <span class="spec-value">95% in &lt;200ms</span>
+                                <span class="spec-value">Measured from fleet telemetry</span>
                             </div>
                             <div class="spec-row">
                                 <span class="spec-label">Source</span>
-                                <span class="spec-value">Criterion benchmarks</span>
+                                <span class="spec-value">Benchmarks + clean 4-validator gate</span>
                             </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Chain Comparison -->
+                <!-- Evidence policy -->
                 <div class="comparison-section">
-                    <h3 class="comparison-title">How We Compare</h3>
+                    <h3 class="comparison-title">Proof Before Promotion</h3>
                     <div class="comparison-grid">
                         <div class="comparison-card animate-on-scroll">
                             <div class="comparison-header eth">
-                                <i class="fab fa-ethereum"></i>
-                                <h4>Ethereum</h4>
+                                <i class="fas fa-shield-halved"></i>
+                                <h4>Cryptography</h4>
                             </div>
                             <div class="comparison-body">
-                                <div class="comp-row"><span>TX Cost</span><span class="bad">$2–50</span></div>
-                                <div class="comp-row"><span>TPS</span><span>15–30</span></div>
-                                <div class="comp-row"><span>Finality</span><span>12–15 min</span></div>
-                                <div class="comp-row"><span>Deploy Cost</span><span class="bad">$100+</span></div>
-                                <div class="comp-row"><span>Validator Stake</span><span class="bad">32 ETH
-                                        ($100K+)</span></div>
+                                <div class="comp-row"><span>Native signatures</span><span class="good">ML-DSA-65</span></div>
+                                <div class="comp-row"><span>P2P key establishment</span><span class="good">ML-KEM-768</span></div>
+                                <div class="comp-row"><span>P2P frame encryption</span><span>XChaCha20-Poly1305</span></div>
+                                <div class="comp-row"><span>External systems</span><span>Explicitly scoped</span></div>
                             </div>
                         </div>
                         <div class="comparison-card animate-on-scroll">
                             <div class="comparison-header sol">
-                                <i class="fas fa-wind"></i>
-                                <h4>Solana</h4>
+                                <i class="fas fa-vial-circle-check"></i>
+                                <h4>Qualification</h4>
                             </div>
                             <div class="comparison-body">
-                                <div class="comp-row"><span>TX Cost</span><span class="ok">$0.00025</span></div>
-                                <div class="comp-row"><span>TPS</span><span>65,000</span></div>
-                                <div class="comp-row"><span>Finality</span><span>~400ms</span></div>
-                                <div class="comp-row"><span>Deploy Cost</span><span class="ok">$5</span></div>
-                                <div class="comp-row"><span>Validator Stake</span><span class="bad">$50K+ capital</span>
-                                </div>
+                                <div class="comp-row"><span>Consensus topology</span><span class="good">4 validators</span></div>
+                                <div class="comp-row"><span>Outage/restart drills</span><span class="good">Required</span></div>
+                                <div class="comp-row"><span>History parity</span><span class="good">Genesis to tip</span></div>
+                                <div class="comp-row"><span>Release provenance</span><span>Detached PQ signature</span></div>
                             </div>
                         </div>
                         <div class="comparison-card featured animate-on-scroll">
                             <div class="comparison-header lichen">
-                                <i class="fas fa-fire"></i>
-                                <h4>Lichen</h4>
+                                <i class="fas fa-chart-line"></i>
+                                <h4>Performance Claims</h4>
                             </div>
                             <div class="comparison-body">
-                                <div class="comp-row"><span>TX Cost</span><span class="good">$0.0001</span></div>
-                                <div class="comp-row"><span>TPS</span><span class="good">35,000+ (single-thread)</span>
-                                </div>
-                                <div class="comp-row"><span>Finality</span><span class="good">400ms</span></div>
-                                <div class="comp-row"><span>Deploy Cost</span><span class="good">25 LICN</span></div>
-                                <div class="comp-row"><span>Validator Stake</span><span class="good">$0
-                                        (bootstrapped)</span></div>
+                                <div class="comp-row"><span>Microbenchmarks</span><span class="good">Labeled as local</span></div>
+                                <div class="comp-row"><span>Network throughput</span><span class="good">Measured end to end</span></div>
+                                <div class="comp-row"><span>Competitor data</span><span class="good">Source + date required</span></div>
+                                <div class="comp-row"><span>Guarantees</span><span>Never inferred from targets</span></div>
                             </div>
                         </div>
                     </div>
@@ -1204,15 +1201,15 @@
                         <div class="token-body">
                             <div class="token-row">
                                 <span>Base Transfer</span>
-                                <span class="good">0.001 LICN ($0.0001)</span>
+                                <span class="good">0.001 LICN</span>
                             </div>
                             <div class="token-row">
                                 <span>Contract Deploy</span>
-                                <span>$2.50</span>
+                                <span>25 LICN + base fee</span>
                             </div>
                             <div class="token-row">
                                 <span>NFT Mint</span>
-                                <span>0.5 LICN ($0.05)</span>
+                                <span>0.5 LICN</span>
                             </div>
                             <div class="token-row">
                                 <span>40% Burned</span>
@@ -1227,22 +1224,22 @@
                 </div>
 
                 <div class="reputation-discounts animate-on-scroll">
-                    <h3><i class="fas fa-gift"></i> Reputation Fee Discounts</h3>
+                    <h3><i class="fas fa-scale-balanced"></i> Fair Base-Protocol Ordering</h3>
                     <div class="discount-grid">
                         <div class="discount-tier">
-                            <div class="discount-score">500+</div>
-                            <div class="discount-label">Reputation</div>
-                            <div class="discount-value">5% off</div>
+                            <div class="discount-score">Fee</div>
+                            <div class="discount-label">Primary ordering</div>
+                            <div class="discount-value">Highest first</div>
                         </div>
                         <div class="discount-tier">
-                            <div class="discount-score">750+</div>
-                            <div class="discount-label">Reputation</div>
-                            <div class="discount-value">7.5% off</div>
+                            <div class="discount-score">FIFO</div>
+                            <div class="discount-label">Equal-fee ordering</div>
+                            <div class="discount-value">Oldest first</div>
                         </div>
                         <div class="discount-tier">
-                            <div class="discount-score">1000+</div>
-                            <div class="discount-label">Reputation</div>
-                            <div class="discount-value">10% off</div>
+                            <div class="discount-score">LichenID</div>
+                            <div class="discount-label">Application policy</div>
+                            <div class="discount-value">Explicit gates only</div>
                         </div>
                     </div>
                 </div>
@@ -1267,15 +1264,15 @@
                         <p>Every agent gets an on-chain identity with skills, metadata, endpoints, and a reputation
                             score (0–100,000). 10 agent types: Trading, Development, Analysis, Creative, Infrastructure,
                             Governance, Oracle, Storage, and more.</p>
-                        <span class="feature-detail">43 KB WASM · 30+ entry points</span>
+                        <span class="feature-detail">Source + release-WASM gated · Activation separate</span>
                     </div>
                     <div class="feature-card animate-on-scroll">
                         <div class="feature-icon"><i class="fas fa-star"></i></div>
                         <h3>Reputation System</h3>
-                        <p>Earn reputation through on-chain contributions: +10 per successful tx, +50 for governance
-                            votes, +100 for deploying programs, +25 for peer endorsements. Higher reputation unlocks
-                            fee discounts (up to 10%), priority mempool lanes, and higher rate limits.</p>
-                        <span class="feature-detail">7 contribution types · Auto-decay on inactivity</span>
+                        <p>Reputation changes through authenticated contract actions such as vouching, naming, and
+                            skill updates, or through admin-authorized typed contributions. It can be read and used by
+                            application contracts, but does not buy base-protocol fee discounts or mempool priority.</p>
+                        <span class="feature-detail">Bounded scores · 90-day decay periods · Auditable gates</span>
                     </div>
                     <div class="feature-card animate-on-scroll">
                         <div class="feature-icon"><i class="fas fa-at"></i></div>
@@ -1291,8 +1288,8 @@
                         <div class="feature-icon"><i class="fas fa-handshake"></i></div>
                         <h3>Vouching &amp; Attestations</h3>
                         <p>Peer-to-peer trust: vouch for other agents (+10 rep to vouchee, -5 rep cost). Third-party
-                            skill attestations verify agent capabilities. Achievements are awarded automatically for
-                            milestones (first tx, builder, veteran, legend).</p>
+                            skill attestations record attributable capability claims. Achievements are written only by
+                            qualifying contract actions or admin-authorized contribution updates.</p>
                         <span class="feature-detail">Max 64 vouches · 8 achievement types</span>
                     </div>
                     <div class="feature-card animate-on-scroll">
@@ -1419,14 +1416,16 @@
             </div>
         </section>
 
-        <!-- ═══════════════════ ECOSYSTEM — 31 CONTRACTS + NATIVE LICN ═══════════════════ -->
+        <!-- ═══════════════════ ECOSYSTEM — IMPLEMENTED CONTRACT SURFACE ═══════════════════ -->
         <section class="section section-alt" id="ecosystem">
             <div class="container">
                 <div class="section-header">
-                    <h2 class="section-title">Production Protocol Surface</h2>
+                    <h2 class="section-title">Implemented and Release-Gated Source Surface</h2>
                     <p class="section-subtitle">
-                        Identity, liquidity, payments, privacy, marketplaces, bridge assets, and developer-facing
-                        infrastructure are already part of the live stack.
+                        Source, release-WASM, and activation are separate statuses. Identity, liquidity, payments,
+                        marketplaces, bridge adapters, and developer infrastructure are implemented; each live network
+                        surface still depends on its deployment, migration, custody, and health gates. Shielded proof
+                        verification is disabled and historical privacy state is read-only.
                     </p>
                 </div>
 
@@ -1442,34 +1441,34 @@
                         <div class="contract-icon"><i class="fas fa-exchange-alt"></i></div>
                         <h3>LichenSwap</h3>
                         <p>AMM DEX with constant-product liquidity pools, 0.3% swap fees, reentrancy protection.</p>
-                        <span class="contract-size">5.4 KB WASM</span>
+                        <span class="contract-size">Source + release-WASM gated</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-hand-holding-usd"></i></div>
                         <h3>ThallLend</h3>
                         <p>LICN money market: supply LICN, borrow LICN against overcollateralized deposits, earn interest, and support automated liquidations.</p>
-                        <span class="contract-size">12 KB WASM</span>
+                        <span class="contract-size">Source + release-WASM gated</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-rocket"></i></div>
                         <h3>SporePump</h3>
                         <p>Token launchpad with bonding curves. Fair-launch tokens graduate to LichenSwap at market cap
                             threshold.</p>
-                        <span class="contract-size">16.5 KB WASM</span>
+                        <span class="contract-size">Source + release-WASM gated</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-money-bill-wave"></i></div>
                         <h3>SporePay</h3>
                         <p>Sablier-style streaming payments. Create time-windowed streams with proportional withdrawals.
                         </p>
-                        <span class="contract-size">17 KB WASM</span>
+                        <span class="contract-size">Source + release-WASM gated</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-vault"></i></div>
                         <h3>SporeVault</h3>
                         <p>Auto-compounding LICN lending vault backed by real ThallLend custody. 10% performance fee,
                             2% annualized management fee.</p>
-                        <span class="contract-size">17 KB WASM</span>
+                        <span class="contract-size">Source + release-WASM gated</span>
                     </div>
 
                     <!-- Identity & Governance -->
@@ -1477,13 +1476,13 @@
                         <div class="contract-icon"><i class="fas fa-fingerprint"></i></div>
                         <h3>LichenID</h3>
                         <p>Agent identity, reputation, .lichen naming, vouching, skill attestations, achievements.</p>
-                        <span class="contract-size">43 KB WASM · 30+ functions</span>
+                        <span class="contract-size">Source + release-WASM gated</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="identity">
                         <div class="contract-icon"><i class="fas fa-vote-yea"></i></div>
                         <h3>LichenDAO</h3>
                         <p>On-chain governance with token-weighted voting, 3 proposal tiers, treasury management.</p>
-                        <span class="contract-size">18.5 KB WASM</span>
+                        <span class="contract-size">Source + release-WASM gated</span>
                     </div>
 
                     <!-- NFTs -->
@@ -1491,19 +1490,19 @@
                         <div class="contract-icon"><i class="fas fa-image"></i></div>
                         <h3>LichenPunks</h3>
                         <p>MT-721 NFT standard reference. Full ownership, transfers, metadata.</p>
-                        <span class="contract-size">8.9 KB WASM</span>
+                        <span class="contract-size">Source + release-WASM gated</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="nft">
                         <div class="contract-icon"><i class="fas fa-store"></i></div>
                         <h3>LichenMarket</h3>
                         <p>NFT marketplace with listings, purchases, and cross-contract composability.</p>
-                        <span class="contract-size">8.5 KB WASM</span>
+                        <span class="contract-size">Source + release-WASM gated</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="nft">
                         <div class="contract-icon"><i class="fas fa-gavel"></i></div>
                         <h3>LichenAuction</h3>
                         <p>English auctions, offers/bids, creator royalties, collection stats.</p>
-                        <span class="contract-size">35.5 KB WASM</span>
+                        <span class="contract-size">Source + release-WASM gated</span>
                     </div>
 
                     <!-- Infrastructure -->
@@ -1512,40 +1511,42 @@
                         <h3>LichenOracle</h3>
                         <p>Stake-quorum fixed8 price feeds, validator-entropy commit-reveal randomness, and bounded hash-bound attestations.
                         </p>
-                        <span class="contract-size">16.4 KB WASM</span>
+                        <span class="contract-size">Source + release-WASM gated</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="infra">
                         <div class="contract-icon"><i class="fas fa-bridge"></i></div>
                         <h3>LichenBridge</h3>
-                        <p>Cross-chain bridge with lock-and-mint pattern, multi-validator confirmation.</p>
-                        <span class="contract-size">16.2 KB WASM</span>
+                        <p>Lock-and-mint coordination with multi-validator confirmation; external settlement remains a
+                            configured custody and source-chain trust boundary.</p>
+                        <span class="contract-size">Source + release-WASM gated · Custody separate</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="infra">
                         <div class="contract-icon"><i class="fas fa-tasks"></i></div>
                         <h3>BountyBoard</h3>
                         <p>Exact-custody native or token bounties with immutable terms, work proofs, fair cancellation,
                             identity gates, fees, migration, and solvency monitoring.</p>
-                        <span class="contract-size">50.1 KB WASM</span>
+                        <span class="contract-size">Source + release-WASM gated</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="infra">
                         <div class="contract-icon"><i class="fas fa-server"></i></div>
                         <h3>Compute Market</h3>
-                        <p>Decentralized compute marketplace. Providers offer resources, requesters submit jobs.</p>
-                        <span class="contract-size">16.9 KB WASM</span>
+                        <p>Compute coordination and escrow contract. Actual execution capacity requires separately
+                            operated, healthy providers and explicit market activation.</p>
+                        <span class="contract-size">Source + release-WASM gated · Providers separate</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="infra">
                         <div class="contract-icon"><i class="fas fa-database"></i></div>
                         <h3>Moss Storage</h3>
-                        <p>Decentralized storage layer. Register storage requests, providers confirm and earn rewards.
-                            Up to 10× replication.</p>
-                        <span class="contract-size">14.7 KB WASM</span>
+                        <p>Storage coordination contract and content-addressed provider daemon. Capacity and replication
+                            exist only when independently operated providers are deployed, admitted, and healthy.</p>
+                        <span class="contract-size">Source + release-WASM gated · Providers separate</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="infra">
                         <div class="contract-icon"><i class="fas fa-shield-alt"></i></div>
                         <h3>Shielded Pool Compatibility ABI</h3>
                         <p>Read-only historical metadata and a fail-closed compatibility ABI. Native shield,
                             unshield, and transfer operations are disabled pending a constrained verifier.</p>
-                        <span class="contract-size">18.2 KB WASM</span>
+                        <span class="contract-size">Compatibility ABI · Proof writes disabled</span>
                     </div>
 
                     <!-- Lichen DEX Suite (7 contracts) -->
@@ -1554,46 +1555,46 @@
                         <h3>DEX Core</h3>
                         <p>Central Limit Order Book with price-time matching, self-trade prevention, and multi-pair
                             settlement.</p>
-                        <span class="contract-size">820 lines · 41 tests</span>
+                        <span class="contract-size">Source + dispatch tests</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-water"></i></div>
                         <h3>DEX AMM</h3>
                         <p>Concentrated liquidity AMM (Uni V3-style). 4 fee tiers, Q32.32 math, tick-range positions.
                         </p>
-                        <span class="contract-size">720 lines · 35 tests</span>
+                        <span class="contract-size">Source + dispatch tests</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-route"></i></div>
                         <h3>DEX Router</h3>
                         <p>Smart order routing across CLOB and AMM liquidity with multi-hop and split routes.</p>
-                        <span class="contract-size">520 lines · 27 tests</span>
+                        <span class="contract-size">Source + dispatch tests</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-balance-scale"></i></div>
                         <h3>DEX Governance</h3>
                         <p>Pair listing & fee governance via proposals and token-weighted voting. 66% approval, 48h
                             periods.</p>
-                        <span class="contract-size">450 lines · 18 tests</span>
+                        <span class="contract-size">Source + dispatch tests</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-gift"></i></div>
                         <h3>DEX Rewards</h3>
                         <p>Trading rewards, LP mining, and referral program. 4 tiers (Bronze→Diamond), fee mining.</p>
-                        <span class="contract-size">450 lines · 19 tests</span>
+                        <span class="contract-size">Source + dispatch tests</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-chart-area"></i></div>
                         <h3>DEX Margin</h3>
                         <p>Margin trading up to 100× isolated / 3× cross leverage. Liquidation engine, insurance fund.
                         </p>
-                        <span class="contract-size">550 lines · 30 tests</span>
+                        <span class="contract-size">Source + dispatch tests</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-chart-bar"></i></div>
                         <h3>DEX Analytics</h3>
-                        <p>On-chain OHLCV candles (6 intervals), 24h rolling stats, trader leaderboards.</p>
-                        <span class="contract-size">450 lines · 16 tests</span>
+                        <p>On-chain OHLCV candles across nine slot intervals, pair statistics, and trader statistics.</p>
+                        <span class="contract-size">Source + dispatch tests</span>
                     </div>
 
                     <!-- Prediction Market -->
@@ -1601,7 +1602,7 @@
                         <div class="contract-icon"><i class="fas fa-chart-pie"></i></div>
                         <h3>Prediction Market</h3>
                         <p>Binary outcome markets. Create markets, place bets, oracle resolution, automated payouts.</p>
-                        <span class="contract-size">21.5 KB WASM</span>
+                        <span class="contract-size">Source + release-WASM gated</span>
                     </div>
 
                     <!-- ═══ Stablecoin & Wrapped Bridge Tokens ═══ -->
@@ -1610,56 +1611,57 @@
                         <h3>lUSD Stablecoin</h3>
                         <p>Treasury-backed stablecoin. Mint, burn, with reserve attestation and circuit breaker
                             protection.</p>
-                        <span class="contract-size">23.5 KB WASM</span>
+                        <span class="contract-size">Source + release-WASM gated · Reserves separate</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="bridge">
                         <div class="contract-icon"><i class="fas fa-coins"></i></div>
                         <h3>Wrapped ETH</h3>
                         <p>Wrapped ETH bridge token. Epoch rate-limited minting with reserve attestation.</p>
-                        <span class="contract-size">23.5 KB WASM</span>
+                        <span class="contract-size">Source + release-WASM gated · Custody separate</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="bridge">
                         <div class="contract-icon"><i class="fas fa-coins"></i></div>
                         <h3>Wrapped SOL</h3>
                         <p>Wrapped SOL bridge token. Epoch rate-limited minting with reserve attestation.</p>
-                        <span class="contract-size">23.5 KB WASM</span>
+                        <span class="contract-size">Source + release-WASM gated · Custody separate</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="bridge">
                         <div class="contract-icon"><i class="fas fa-coins"></i></div>
                         <h3>Wrapped BNB</h3>
                         <p>Wrapped BNB bridge token. Epoch rate-limited minting with reserve attestation.</p>
-                        <span class="contract-size">23.5 KB WASM</span>
+                        <span class="contract-size">Source + release-WASM gated · Custody separate</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="bridge">
                         <div class="contract-icon"><i class="fas fa-coins"></i></div>
                         <h3>Wrapped GAS</h3>
                         <p>Wrapped Neo X GAS bridge token. Reserve-attested, capped, and route-governed.</p>
-                        <span class="contract-size">23.5 KB WASM</span>
+                        <span class="contract-size">Source + release-WASM gated · Custody separate</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="bridge">
                         <div class="contract-icon"><i class="fas fa-coins"></i></div>
                         <h3>Wrapped NEO</h3>
                         <p>Wrapped Neo X NEO bridge token with whole-NEO lot enforcement.</p>
-                        <span class="contract-size">23.5 KB WASM</span>
+                        <span class="contract-size">Source + release-WASM gated · Custody separate</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="bridge">
                         <div class="contract-icon"><i class="fab fa-bitcoin"></i></div>
                         <h3>Wrapped BTC</h3>
-                        <p>Wrapped Bitcoin bridge token. Reserve-attested BTC custody with native SegWit deposits.</p>
-                        <span class="contract-size">23.5 KB WASM</span>
+                        <p>Wrapped Bitcoin token and SegWit-capable custody adapter. Deposits are available only when the
+                            route, signer policy, reserves, reconciliation, and health gates are active.</p>
+                        <span class="contract-size">Source + release-WASM gated · Custody separate</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-gift"></i></div>
                         <h3>Neo GAS Rewards</h3>
                         <p>Fail-closed GAS rewards vault for governed wNEO principal and backed wGAS rewards.</p>
-                        <span class="contract-size">82.3 KB WASM</span>
+                        <span class="contract-size">Source + release-WASM gated · Reserves separate</span>
                     </div>
                 </div>
 
                 <div class="section-cta">
                     <a href="https://developers.lichen.network/contract-reference.html"
                         class="btn btn-primary btn-large">
-                        <i class="fas fa-book"></i> Browse All 32 Contracts
+                        <i class="fas fa-book"></i> Browse All 34 Contract Crates
                     </a>
                 </div>
             </div>
@@ -1816,7 +1818,7 @@ lichen deploy counter.wasm --rpc-url https://testnet-api.lichen.network
                             </div>
                             <div class="code-content">
                                 <pre><code>const RPC_URL = 'https://testnet-api.lichen.network';
-// Switch to https://rpc.lichen.network only when targeting mainnet.
+                                // Mainnet is not launched. Use a mainnet endpoint only after a signed launch handoff.
 
 const response = await fetch(RPC_URL, {
   method: 'POST',
@@ -1988,11 +1990,10 @@ console.log(`Balance: ${result.licn} LICN`);
                 </div>
 
                 <div class="api-footer">
-                    <p><strong>Base URLs:</strong> <code>https://testnet-api.lichen.network</code> (testnet) ·
-                        <code>https://rpc.lichen.network</code> (mainnet)
-                    </p>
+                    <p><strong>Public base URL:</strong> <code>https://testnet-api.lichen.network</code> (testnet).
+                        Mainnet is not launched; its hostname is a reserved placeholder.</p>
                     <p><strong>Protocol:</strong> JSON-RPC 2.0 · <strong>WebSocket:</strong>
-                        <code>wss://testnet-api.lichen.network/ws</code> · <code>wss://rpc.lichen.network/ws</code>
+                        <code>wss://testnet-api.lichen.network/ws</code>
                     </p>
                     <a href="#" data-lichen-app="developers" data-lichen-path="/rpc-reference.html"
                         class="btn btn-secondary btn-large" target="_blank" style="margin-top: 1rem;">
@@ -2015,7 +2016,7 @@ console.log(`Balance: ${result.licn} LICN`);
                     <div class="roadmap-phase animate-on-scroll">
                         <div class="phase-marker"></div>
                         <div class="phase-content">
-                            <h3><i class="fas fa-check-circle"></i> Phase 1: Live Foundation</h3>
+                            <h3><i class="fas fa-check-circle"></i> Phase 1: Testnet Foundation</h3>
                             <div class="phase-items">
                                 <div class="phase-item done"><i class="fas fa-check-circle"></i> BFT Consensus Engine
                                 </div>
@@ -2024,14 +2025,15 @@ console.log(`Balance: ${result.licn} LICN`);
                                 <div class="phase-item done"><i class="fas fa-check-circle"></i> LichenID Identity
                                     System
                                 </div>
-                                <div class="phase-item done"><i class="fas fa-check-circle"></i> Mainnet + Testnet Live
+                                <div class="phase-item done"><i class="fas fa-check-circle"></i> Public Testnet Live;
+                                    Mainnet Gated
                                 </div>
                                 <div class="phase-item done"><i class="fas fa-check-circle"></i> Historical Shielded
                                     Pool Data Read-only; Scheme 0x01 Disabled</div>
-                                <div class="phase-item done"><i class="fas fa-check-circle"></i> 32 Smart Contracts,
-                                    Wallet, Explorer, DEX, Marketplace, Programs, Dev Portal</div>
+                                <div class="phase-item done"><i class="fas fa-check-circle"></i> Release-Gated Contract
+                                    Sources and Testnet Application Surfaces; Activation Tracked Separately</div>
                                 <div class="phase-item done"><i class="fas fa-check-circle"></i> Solana, Ethereum, and
-                                    BNB Wrapped Asset Support</div>
+                                    BNB Custody Adapters Implemented; Route Activation Separate</div>
                             </div>
                         </div>
                     </div>
@@ -2047,8 +2049,8 @@ console.log(`Balance: ${result.licn} LICN`);
                                     and Bridge UX Across Solana, Ethereum, and BNB Flows</div>
                                 <div class="phase-item progress"><i class="fas fa-spinner fa-spin"></i> Liquidity Growth
                                     for SporeSwap, Wrapped Assets, and Agent-Native Markets</div>
-                                <div class="phase-item progress"><i class="fas fa-spinner fa-spin"></i> Faster Builder
-                                    Onboarding Through SDK, Docs, and One-Minute Validator Installs</div>
+                                <div class="phase-item progress"><i class="fas fa-spinner fa-spin"></i> Hardened Builder
+                                    and Validator Onboarding Through SDKs, Documentation, and Signed Releases</div>
                                 <div class="phase-item progress"><i class="fas fa-spinner fa-spin"></i> Broader
                                     Ecosystem Launches Across Payments, AI Agents, Identity, and Compute</div>
                             </div>
@@ -2146,7 +2148,8 @@ console.log(`Balance: ${result.licn} LICN`);
                         <span class="logo-text">Lichen</span>
                     </div>
                     <p class="footer-desc">
-                        Post-quantum infrastructure for agents, programs, payments, and liquidity. 400ms finality, low
+                        Post-quantum-native infrastructure for agents, programs, payments, and liquidity. A 400ms target
+                        slot cadence under healthy quorum, low
                         fees, dual WASM + EVM execution, and on-chain identity.
                     </p>
                 </div>

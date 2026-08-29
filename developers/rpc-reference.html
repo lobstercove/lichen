@@ -188,10 +188,11 @@
                     <code>8900</code>.
                 </p>
                 <div class="callout callout-info">
-                    <p><strong>Implementation-verified surface for v0.5.203:</strong> the live server exposes native,
-                        Solana-compatible, and EVM-compatible JSON-RPC dispatch, plus REST route families across the
-                        DEX, prediction market, launchpad, shielded APIs, and Neo X route/rewards reads. Neo route RPC
-                        coverage remains compatible with the original v0.5.197 baseline.</p>
+                    <p><strong>Current source surface:</strong> the server implements native, Solana-compatible, and
+                        EVM-compatible JSON-RPC dispatch, plus REST route families across the DEX, prediction market,
+                        launchpad, historical shielded reads, and Neo X route/rewards reads. Method presence in source
+                        does not prove that a public endpoint, contract migration, custody route, or provider is active
+                        or healthy.</p>
                 </div>
             </section>
 
@@ -200,9 +201,10 @@
                 <h2>Endpoint &amp; Format</h2>
                 <div class="callout callout-info">
                     <p><strong>Public testnet endpoint:</strong> <code>https://testnet-api.lichen.network</code></p>
-                    <p><strong>Mainnet endpoint target:</strong> <code>https://rpc.lichen.network</code></p>
-                    <p>The request examples below use public testnet. Swap to the mainnet endpoint only when you are
-                        ready to target mainnet.</p>
+                    <p><strong>Mainnet:</strong> not launched. <code>https://rpc.lichen.network</code> is a reserved launch
+                        placeholder, not a usable production endpoint.</p>
+                    <p>The request examples below use public testnet. Do not substitute a mainnet endpoint until a
+                        signed launch handoff is published.</p>
                     <p>All requests are HTTP POST with <code>Content-Type: application/json</code>.</p>
                 </div>
                 <div class="callout callout-warning">
@@ -2473,8 +2475,8 @@
             <!-- ═══════════════════════════════════════════════════════════ -->
             <section id="live-methods" class="rpc-live-methods">
                 <h2>Additional Implemented Methods</h2>
-                <p>These JSON-RPC methods are implemented in the live server dispatch (`rpc/src/lib.rs`). Some entries
-                    below are compact cross-references to full method cards on this page.</p>
+                <p>These JSON-RPC methods are implemented in the server dispatch (`rpc/src/lib.rs`). Some entries below
+                    are compact cross-references to full method cards on this page.</p>
 
                 <div class="callout callout-info">
                     <p><strong>RPC endpoints:</strong> use <code>POST /</code> for native Lichen JSON-RPC,

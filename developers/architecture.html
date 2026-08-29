@@ -110,8 +110,8 @@
                 <div class="arch-layer layer-consensus">
                     <div class="layer-name"><i class="fas fa-handshake"></i> Consensus Layer (Tendermint BFT)
                     </div>
-                    <div class="layer-desc">Propose → Prevote → Precommit → Commit, 400ms slot cadence, validator
-                        scoring
+                    <div class="layer-desc">Propose → Prevote → Precommit → Commit, 400ms target cadence, stake-weighted
+                        quorum
                     </div>
                 </div>
                 <div class="arch-layer layer-execution">
@@ -131,9 +131,9 @@
 
             <div class="callout callout-info">
                 <div class="callout-title"><i class="fas fa-info-circle"></i> Design Philosophy</div>
-                Lichen is designed for <strong>agent-first</strong> applications. The reputation system (LichenID) is
-                integrated at every layer — influencing mempool priority, gas pricing, rate limits, and validator
-                selection. This makes the chain uniquely suited for autonomous agent economies.
+                Lichen is designed for <strong>agent-first</strong> applications. LichenID provides composable identity,
+                names, vouching, skill attestations, bounded reputation, and recovery to contracts and clients. Base
+                protocol mempool ordering and fees deliberately do not privilege reputation.
             </div>
 
             <!-- ========== 2. TENDERMINT BFT CONSENSUS ========== -->
@@ -147,34 +147,30 @@
                 even when the mempool is empty, and transaction-bearing blocks use the same slot target.</p>
 
             <h3>Leader Selection</h3>
-            <p>Leaders are selected via weighted random sampling where the weight is:</p>
+            <p>Leaders are selected deterministically with stake-weighted proposer priority. Reputation is not part of
+                consensus voting power or proposer selection:</p>
 
             <div class="code-block">
                 <div class="code-block-header">
                     <span class="code-lang">Formula</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>weight = stake_amount × contribution_score
-
-contribution_score = (
-    0.4 × uptime_ratio +        // % of slots online (trailing 1000 epochs)
-    0.3 × attestation_ratio +   // % of votes cast correctly
-    0.2 × block_success_ratio + // % of assigned blocks produced
-    0.1 × community_score       // governance participation, bug reports, tooling
-)</code></pre>
+                <pre><code>voting_power = bonded_stake
+proposer_priority += voting_power
+selected_proposer_priority -= total_voting_power</code></pre>
             </div>
 
-            <p>This means a validator with less stake but excellent uptime and contributions can compete with a larger,
-                less-reliable validator.</p>
+            <p>Operational reputation and contribution telemetry can inform governance and monitoring, but cannot
+                silently change the authenticated stake denominator used by consensus.</p>
 
             <h3>PBFT Finality</h3>
-            <p>After a leader proposes a block, it enters a 3-phase PBFT (Practical Byzantine Fault Tolerance) voting
-                round:</p>
+            <p>After a leader proposes a block, it enters the Tendermint-style voting round:</p>
 
             <ol>
-                <li><strong>Pre-prepare</strong> — Leader broadcasts the proposed block to all validators</li>
-                <li><strong>Prepare</strong> — Validators validate the block and broadcast a prepare vote</li>
-                <li><strong>Commit</strong> — Upon receiving 2/3+ prepare votes, validators broadcast a commit vote</li>
+                <li><strong>Propose</strong> — The selected proposer broadcasts the candidate block.</li>
+                <li><strong>Prevote</strong> — Validators validate the proposal and sign a prevote.</li>
+                <li><strong>Precommit</strong> — A two-thirds prevote quorum permits a signed precommit.</li>
+                <li><strong>Commit</strong> — A two-thirds precommit quorum finalizes the block.</li>
             </ol>
 
             <p>A block is considered <strong>finalized</strong> once 2/3+ of validators (by stake weight) submit commit
@@ -216,9 +212,9 @@ contribution_score = (
                     <div class="step-number">2</div>
                     <div class="step-content">
                         <div class="step-title">Mempool</div>
-                        <div class="step-desc">Valid transactions enter the mempool, a priority queue ordered by fee and
-                            sender reputation. Transactions from LichenID Tier 4+ accounts enter the <strong>express
-                                lane</strong> with higher priority weighting (up to 3× multiplier).</div>
+                        <div class="step-desc">Valid transactions enter the mempool ordered by effective compute-unit
+                            price, then total fee, then FIFO for ties. Sender reputation is accepted only for API
+                            compatibility and is ignored for ordering.</div>
                     </div>
                 </div>
 
@@ -226,9 +222,8 @@ contribution_score = (
                     <div class="step-number">3</div>
                     <div class="step-content">
                         <div class="step-title">Block Assembly</div>
-                        <div class="step-desc">The current slot leader collects transactions from the mempool. Express
-                            lane transactions are included first, then regular queue, up to the block gas limit (50M
-                            gas). The leader orders transactions, computes a state root preview, and constructs the
+                        <div class="step-desc">The current slot leader collects transactions in the deterministic
+                            fee-priority order up to the block limits, computes a state-root preview, and constructs the
                             block header.</div>
                     </div>
                 </div>
@@ -522,9 +517,9 @@ contribution_score = (
             <!-- ========== 6. LICHENID INTEGRATION ========== -->
             <h2 id="lichenid-integration">LichenID Integration</h2>
 
-            <p>LichenID is Lichen's on-chain identity and reputation layer. It is deeply integrated into the protocol
-                — not just an application-level feature. Trust tiers directly affect transaction processing, fees, and
-                rate limits at the consensus and mempool layers.</p>
+            <p>LichenID is Lichen's on-chain identity and reputation contract. Contracts and clients can read its
+                records and apply explicit application policies. It does not change base-protocol transaction ordering,
+                fees, RPC rate limits, consensus voting power, or proposer selection.</p>
 
             <h3>Trust Tiers</h3>
 
@@ -534,9 +529,9 @@ contribution_score = (
                         <th>Tier</th>
                         <th>Name</th>
                         <th>Score Range</th>
-                        <th>Mempool Priority</th>
-                        <th>Fee Discount</th>
-                        <th>Rate Limit (tx/epoch)</th>
+                        <th>Protocol Priority</th>
+                        <th>Protocol Fee Discount</th>
+                        <th>Application Use</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -544,49 +539,49 @@ contribution_score = (
                         <td><strong>0</strong></td>
                         <td>Newcomer</td>
                         <td>0 – 99</td>
-                        <td>1.0×</td>
-                        <td>0%</td>
-                        <td>100</td>
+                        <td>None</td>
+                        <td>None</td>
+                        <td>Explicit contract policy</td>
                     </tr>
                     <tr>
                         <td><strong>1</strong></td>
                         <td>Verified</td>
                         <td>100 – 499</td>
-                        <td>1.1×</td>
-                        <td>0%</td>
-                        <td>100</td>
+                        <td>None</td>
+                        <td>None</td>
+                        <td>Explicit contract policy</td>
                     </tr>
                     <tr>
                         <td><strong>2</strong></td>
                         <td>Trusted</td>
                         <td>500 – 999</td>
-                        <td>1.25×</td>
-                        <td>500–749: 5% · 750–999: 7.5%</td>
-                        <td>200</td>
+                        <td>None</td>
+                        <td>None</td>
+                        <td>Explicit contract policy</td>
                     </tr>
                     <tr>
                         <td><strong>3</strong></td>
                         <td>Established</td>
                         <td>1,000 – 4,999</td>
-                        <td>1.5×</td>
-                        <td>10%</td>
-                        <td>500</td>
+                        <td>None</td>
+                        <td>None</td>
+                        <td>Explicit contract policy</td>
                     </tr>
                     <tr>
                         <td><strong>4</strong></td>
                         <td>Elite</td>
                         <td>5,000 – 9,999</td>
-                        <td>2.0×</td>
-                        <td>10%</td>
-                        <td>500</td>
+                        <td>None</td>
+                        <td>None</td>
+                        <td>Explicit contract policy</td>
                     </tr>
                     <tr>
                         <td><strong>5</strong></td>
                         <td>Legendary</td>
                         <td>10,000+</td>
-                        <td>3.0×</td>
-                        <td>10%</td>
-                        <td>500</td>
+                        <td>None</td>
+                        <td>None</td>
+                        <td>Explicit contract policy</td>
                     </tr>
                 </tbody>
             </table>
@@ -596,21 +591,19 @@ contribution_score = (
             <ul>
                 <li><strong>Mempool:</strong> All transactions are ordered strictly by fee (highest first),
                     then FIFO for equal fees. Reputation does <strong>not</strong> affect queue priority.</li>
-                <li><strong>Gas Pricing:</strong> Higher-tier accounts receive fee discounts applied at the protocol
-                    level. A Tier 5 account paying a 0.001 LICN fee effectively pays 0.0009 LICN.</li>
-                <li><strong>Rate Limiting:</strong> Each account is allowed a maximum number of transactions per epoch
-                    (432 slots ≈ ~173 seconds). Exceeding the limit results in mempool rejection until the next epoch.
-                </li>
-                <li><strong>Validator Selection:</strong> For validators, LichenID score contributes to the
-                    <code>community_score</code> component (10% weight) in leader selection.
-                </li>
+                <li><strong>Fees:</strong> All accounts pay the same base-protocol rates; optional priority fees are
+                    explicit transaction fields.</li>
+                <li><strong>Rate limiting:</strong> RPC rate limits are transport/operation controls, not LichenID
+                    privileges.</li>
+                <li><strong>Consensus:</strong> Voting power and proposer selection are stake-weighted and independent
+                    of LichenID scores.</li>
             </ul>
 
             <div class="callout callout-tip">
                 <div class="callout-title"><i class="fas fa-lightbulb"></i> Building Reputation</div>
-                Reputation increases through consistent on-chain activity: successful transactions, contract
-                deployments, governance voting, staking, and validator operation. It decays slowly during inactivity
-                (–0.1 per epoch of zero activity).
+                Vouching, name registration, and skill changes apply contract-defined reputation effects. Typed or
+                direct reputation updates require the LichenID admin. Decay is bounded and applied in 90-day periods;
+                clients must not imply automatic credit for every transaction or governance action.
             </div>
 
             <!-- ========== 7. PRIVACY & SECURITY ========== -->
@@ -704,8 +697,10 @@ contribution_score = (
             <div id="performance"></div>
             <h2 id="benchmarks">Performance Benchmarks</h2>
 
-            <p>Benchmarks measured with <strong>Criterion.rs</strong> on the reference hardware (Apple M-series,
-                single-threaded). Source: <code>core/benches/processor_bench.rs</code>.</p>
+            <p>The Criterion harness lives at <code>core/benches/processor_bench.rs</code>. Local microbenchmarks measure
+                isolated code paths; they are not end-to-end network TPS, finality, or propagation results. Numeric
+                release claims require a committed result manifest containing the exact revision, toolchain, hardware,
+                command, sample settings, and raw output.</p>
 
             <table class="arch-table">
                 <thead>
@@ -718,47 +713,47 @@ contribution_score = (
                 <tbody>
                     <tr>
                         <td>Single transaction processing</td>
-                        <td>~142 µs</td>
-                        <td>~7,000 tx/s single-threaded</td>
+                        <td>Run per release</td>
+                        <td>Local processor microbenchmark only</td>
                     </tr>
                     <tr>
                         <td>10-tx batch</td>
-                        <td>~1.34 ms</td>
-                        <td>~7,400 tx/s effective throughput</td>
+                        <td>Run per release</td>
+                        <td>Local batch microbenchmark only</td>
                     </tr>
                     <tr>
                         <td>50-tx batch</td>
-                        <td>~6.62 ms</td>
-                        <td>~7,500 tx/s effective throughput</td>
+                        <td>Run per release</td>
+                        <td>Local batch microbenchmark only</td>
                     </tr>
                     <tr>
                         <td>Block creation (100 tx)</td>
-                        <td>~1.07 ms</td>
+                        <td>Run per release</td>
                         <td>Includes Merkle root computation</td>
                     </tr>
                     <tr>
                         <td>Block creation (500 tx)</td>
-                        <td>~5.57 ms</td>
-                        <td>Well within block time budget</td>
+                        <td>Run per release</td>
+                        <td>Does not include network consensus</td>
                     </tr>
                     <tr>
                         <td>ML-DSA-65 signature verify</td>
-                        <td>~115 µs</td>
-                        <td>~8,700 verifies/s</td>
+                        <td>Run per release</td>
+                        <td>Local cryptographic microbenchmark</td>
                     </tr>
                     <tr>
                         <td>Batch verify (100 sigs)</td>
-                        <td>~11.1 ms</td>
-                        <td>~9,000 verifies/s; linear, no aggregation yet</td>
+                        <td>Run per release</td>
+                        <td>Linear verification; no aggregation claim</td>
                     </tr>
                     <tr>
                         <td>Plonky3 shield prove</td>
-                        <td>~120 µs</td>
+                        <td>Not a production metric</td>
                         <td>Legacy microbenchmark only; scheme 0x01 is not accepted</td>
                     </tr>
                     <tr>
                         <td>Plonky3 shield verify</td>
-                        <td>~157 µs</td>
+                        <td>Not a production metric</td>
                         <td>Legacy microbenchmark only; production verifier fails closed</td>
                     </tr>
                 </tbody>
@@ -782,17 +777,22 @@ contribution_score = (
             <p>Lichen's network layer handles peer discovery, data propagation, and client connections.</p>
 
             <h3>Gossip Protocol</h3>
-            <p>Nodes communicate over a structured gossip protocol built on libp2p. Every node maintains connections to
-                8–12 peers. Data propagation uses <strong>eager push with lazy pull fallback</strong>:</p>
+            <p>Nodes communicate over native QUIC with role-based peer limits (20 by default for validators) and a
+                Kademlia routing table. QUIC's anonymous TLS certificate is only a carrier: an application-layer
+                ML-DSA-65 and ML-KEM-768 handshake authenticates the peer and derives the encrypted session before any
+                P2P message is accepted.</p>
 
             <ul>
-                <li><strong>Eager push:</strong> Blocks and high-priority transactions are immediately forwarded to all
-                    connected peers</li>
-                <li><strong>Lazy pull:</strong> Nodes periodically exchange inventory hashes with peers and request any
-                    missing data</li>
+                <li><strong>Typed gossip:</strong> Blocks, transactions, votes, and peer records use bounded message
+                    formats and validation before admission.</li>
+                <li><strong>Discovery:</strong> Configured seeds, durable peer records, peer exchange, and Kademlia
+                    routing provide restart and topology recovery.</li>
+                <li><strong>Abuse resistance:</strong> Connection, subnet, ASN-bucket, frame, and expensive-request
+                    limits fail closed.</li>
             </ul>
 
-            <p>Average block propagation reaches 95% of nodes within 200ms (for a 1,000-node network).</p>
+            <p>No 1,000-node propagation result is claimed without a reproducible distributed benchmark artifact.
+                Operators measure current propagation and consensus cadence from fleet telemetry.</p>
 
             <h3>Peer Discovery</h3>
             <p>New nodes discover peers through three mechanisms:</p>
@@ -811,19 +811,14 @@ contribution_score = (
                     <span class="code-lang">Config</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code># Mainnet bootstrap nodes (QUIC/UDP)
-bootstrap_peers = [
-    "seed-01.lichen.network:8001",
-    "seed-02.lichen.network:8001",
-    "seed-03.lichen.network:8001",
-]
-
-# Testnet bootstrap nodes (QUIC/UDP)
+                <pre><code># Public testnet bootstrap nodes (QUIC/UDP)
 bootstrap_peers = [
     "seed-01.lichen.network:7001",
     "seed-02.lichen.network:7001",
     "seed-03.lichen.network:7001",
-]</code></pre>
+]
+
+# Mainnet has not launched. A signed launch handoff will publish its seed set.</code></pre>
             </div>
 
             <h3>Block Sync</h3>

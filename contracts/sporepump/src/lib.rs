@@ -46,14 +46,14 @@ fn reentrancy_exit() {
 // CONSTANTS
 // ============================================================================
 
-/// Token creation fee: 10 LICN (10,000,000,000 spores — $1.00 at $0.10/LICN)
+/// Token creation fee: 10 LICN (10,000,000,000 spores).
 const CREATION_FEE: u64 = 10_000_000_000;
 
 /// Default initial supply for bonding curve tokens
 const DEFAULT_MAX_SUPPLY: u64 = 1_000_000_000_000_000_000; // 1B tokens * 10^9
 
 /// Graduation threshold: when market cap reaches this, migrate to DEX
-const GRADUATION_MARKET_CAP: u64 = 100_000_000_000_000; // 100K LICN ($10K at $0.10)
+const GRADUATION_MARKET_CAP: u64 = 100_000_000_000_000; // 100K LICN
 
 /// Bonding curve slope factor (controls price steepness)
 /// price = BASE_PRICE + (supply_sold * SLOPE / SLOPE_SCALE)
@@ -80,7 +80,7 @@ const MAX_TOKEN_SYMBOL_LEN: usize = 12;
 /// Slots are the deterministic contract clock (400ms target slot time).
 const DEFAULT_BUY_COOLDOWN_SLOTS: u64 = 5; // ~2 seconds
 /// Maximum LICN that can be spent in a single buy
-const DEFAULT_MAX_BUY_AMOUNT: u64 = 100_000_000_000_000; // 100K LICN ($10K at $0.10)
+const DEFAULT_MAX_BUY_AMOUNT: u64 = 100_000_000_000_000; // 100K LICN
 /// Sell cooldown: minimum slots after buying before selling (anti-dump).
 const DEFAULT_SELL_COOLDOWN_SLOTS: u64 = 13; // ~5.2 seconds
 /// Creator royalty: basis points on each trade (default 50 = 0.5%)

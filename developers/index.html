@@ -94,12 +94,12 @@
         <div class="container">
             <div class="stats-grid">
                 <div class="stat-card">
-                    <div class="stat-value">$0.0001</div>
-                    <div class="stat-label">Per Transaction</div>
+                    <div class="stat-value">0.001 LICN</div>
+                    <div class="stat-label">Base Transfer Fee</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-value">~400ms</div>
-                    <div class="stat-label">BFT Finality</div>
+                    <div class="stat-value">400ms target</div>
+                    <div class="stat-label">Healthy-Quorum Slot Cadence</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-value" id="statBlockHeight">—</div>
@@ -185,8 +185,8 @@
                 <a href="lichenid.html" class="hub-card">
                     <div class="hub-card-icon primary"><i class="fas fa-fingerprint"></i></div>
                     <div class="hub-card-title">LichenID Identity</div>
-                    <div class="hub-card-desc">On-chain reputation and identity layer. Trust tiers, fee discounts, and
-                        priority transaction lanes.</div>
+                    <div class="hub-card-desc">On-chain identity, names, vouching, bounded reputation, skill
+                        attestations, recovery, and application-defined identity gates.</div>
                 </a>
 
                 <a href="contract-reference.html" class="hub-card">
@@ -223,7 +223,13 @@
 
     <section class="hub-section">
         <div class="container">
-            <div class="hub-section-title">Live Network Surfaces</div>
+            <div class="hub-section-title">Public Testnet Application Surfaces</div>
+            <div class="callout callout-warning">
+                <div class="callout-title"><i class="fas fa-triangle-exclamation"></i> Activation and Health</div>
+                These frontends target the public testnet. A visible UI is not proof that every contract, custody route,
+                market, or provider is activated or healthy; clients must inspect the signed registry and live RPC
+                status before enabling a write action. Mainnet has not launched.
+            </div>
             <div class="hub-grid">
 
                 <a href="#" data-lichen-app="wallet" class="hub-card">
@@ -236,15 +242,15 @@
                 <a href="#" data-lichen-app="dex" class="hub-card">
                     <div class="hub-card-icon green"><i class="fas fa-chart-line"></i></div>
                     <div class="hub-card-title">SporeSwap DEX</div>
-                    <div class="hub-card-desc">Trade through the live DEX UI backed by the same RPC, WebSocket, and
-                        contract surfaces documented here, including genesis-native wNEO, wGAS, and wBTC wrapped markets.</div>
+                    <div class="hub-card-desc">Inspect and trade testnet markets through the DEX UI when the signed
+                        contract registry, liquidity, custody route, RPC, and WebSocket health gates are all satisfied.</div>
                 </a>
 
                 <a href="#" data-lichen-app="explorer" class="hub-card">
                     <div class="hub-card-icon purple"><i class="fas fa-cube"></i></div>
                     <div class="hub-card-title">Explorer</div>
-                    <div class="hub-card-desc">Inspect blocks, transactions, accounts, contracts, and live chain state
-                        from the production explorer.</div>
+                    <div class="hub-card-desc">Inspect blocks, transactions, accounts, contracts, and current testnet
+                        state. Treat stale or unavailable RPC data as unavailable, never as healthy.</div>
                 </a>
 
                 <a href="#" data-lichen-app="marketplace" class="hub-card">
@@ -373,9 +379,7 @@ $ lichen --rpc-url https://testnet-api.lichen.network balance
 $ lichen --rpc-url https://testnet-api.lichen.network balance 11111111111111111111111111111112
 42.500000000 LICN
 
-# Switch to mainnet by replacing the endpoint
-$ lichen --rpc-url https://rpc.lichen.network balance 11111111111111111111111111111112
-42.500000000 LICN</code></pre>
+# Mainnet has not launched. Do not substitute a mainnet endpoint until a signed launch handoff is published.</code></pre>
                 </div>
             </div>
         </div>
