@@ -7,12 +7,13 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current installed signed testnet release:** `v0.5.263`. The locally qualified
-`v0.5.264` source becomes an installable release only when protected-branch CI
+**Current installed signed testnet release:** `v0.5.263`. The `v0.5.265`
+candidate becomes an installable release only when protected-branch CI
 passes and its tag workflow publishes detached post-quantum-signed artifacts. It adds the
 fail-closed Archive V2 role-bootstrap path needed for low-space legacy
 retirement without weakening source, replica, headroom, or signed-authorization
-requirements.
+requirements. Immutable tag `v0.5.264` failed closed in its Linux
+four-validator gate and produced no release assets; it must not be deployed.
 
 **Network status:** the public network is testnet. Mainnet has not launched and
 is not approved. The current 200 GB validator fleet is not approved for mainnet

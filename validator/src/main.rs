@@ -274,6 +274,24 @@ fn stable_checkpoint_metadata_retry_jitter_secs(identity: &Pubkey) -> u64 {
     value % (CHECKPOINT_METADATA_RETRY_SECS + 1)
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn host_cpu_pressure_reason(load_one: f64, cpus: usize, local_dev: bool) -> Option<String> {
+    // Accelerated local integration clusters run several validators on one
+    // host. Each process observes the same host-wide load average, so applying
+    // the single-validator production threshold to every process can pause all
+    // cold migrations indefinitely. Local-dev mode already substitutes a
+    // production cadence for the accelerated consensus-latency check; omit the
+    // host-wide CPU check there for the same reason. Disk, memory, consensus,
+    // and Archive V2 capacity guards remain active. Production behavior is
+    // unchanged because deployed validators never enable LICHEN_LOCAL_DEV.
+    if local_dev {
+        return None;
+    }
+
+    let cpus = cpus.max(1);
+    (load_one > cpus as f64).then(|| format!("cpu_pressure:load_one={load_one:.2}:cpus={cpus}"))
+}
+
 fn cold_migration_pressure_reason(
     state: &StateStore,
     data_dir: &Path,
@@ -332,8 +350,10 @@ fn cold_migration_pressure_reason(
                 let cpus = std::thread::available_parallelism()
                     .map(|value| value.get())
                     .unwrap_or(1);
-                if load_one > cpus as f64 {
-                    return Some(format!("cpu_pressure:load_one={load_one:.2}:cpus={cpus}"));
+                if let Some(reason) =
+                    host_cpu_pressure_reason(load_one, cpus, env_flag_enabled("LICHEN_LOCAL_DEV"))
+                {
+                    return Some(reason);
                 }
             }
         }
@@ -33984,6 +34004,24 @@ mod tests {
                 assert!(left.abs_diff(*right) >= Duration::from_millis(100));
             }
         }
+    }
+
+    #[test]
+    fn cold_migration_cpu_pressure_guard_is_production_only() {
+        assert_eq!(host_cpu_pressure_reason(4.0, 4, false), None);
+        assert_eq!(
+            host_cpu_pressure_reason(4.01, 4, false),
+            Some("cpu_pressure:load_one=4.01:cpus=4".to_owned())
+        );
+        assert_eq!(
+            host_cpu_pressure_reason(8.54, 4, false),
+            Some("cpu_pressure:load_one=8.54:cpus=4".to_owned())
+        );
+        assert_eq!(host_cpu_pressure_reason(8.54, 4, true), None);
+        assert_eq!(
+            host_cpu_pressure_reason(1.01, 0, false),
+            Some("cpu_pressure:load_one=1.01:cpus=1".to_owned())
+        );
     }
 
     #[test]

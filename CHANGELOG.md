@@ -5,6 +5,24 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.265] - 2026-08-29
+
+### Fixed
+
+- Include the standalone `mt20_token` workspace in the canonical locked
+  contract builder and enforce complete in-tree builder coverage in release
+  QA, preventing a stale tracked template WASM from entering a contract bundle.
+- Keeps the production host-wide CPU-pressure guard unchanged while exempting
+  accelerated `LICHEN_LOCAL_DEV` multi-validator clusters from applying that
+  single-validator threshold independently in every colocated process. This
+  prevents the Linux release gate from pausing every bounded cold migration
+  indefinitely under its intentional 5 ms test cadence; disk, memory,
+  consensus-latency, Archive V2 capacity, and all non-development CPU guards
+  remain fail-closed.
+- Adds platform-independent regression coverage for the exact hosted failure
+  (`load_one=8.54`, four CPUs), the production threshold boundary, local-dev
+  behavior, and the defensive zero-CPU fallback.
+
 ## [0.5.264] - 2026-08-28
 
 ### Added

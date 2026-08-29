@@ -11,6 +11,7 @@
 #   ./scripts/build-all-contracts.sh           # build all
 #   ./scripts/build-all-contracts.sh --dex     # build only DEX + wrapped tokens
 #   ./scripts/build-all-contracts.sh --neo     # build Neo product contracts only
+#   ./scripts/build-all-contracts.sh --templates # build user-deployable templates only
 #   ./scripts/build-all-contracts.sh --test    # build + run tests
 #
 # Requirements:
@@ -78,6 +79,10 @@ NEO_PRODUCT_CONTRACTS=(
     neo_gas_rewards
 )
 
+TEMPLATE_CONTRACTS=(
+    mt20_token
+)
+
 # Parse args
 BUILD_SCOPE="all"
 RUN_TESTS=false
@@ -87,13 +92,15 @@ for arg in "$@"; do
         --tokens)  BUILD_SCOPE="tokens" ;;
         --core)    BUILD_SCOPE="core" ;;
         --neo|--products) BUILD_SCOPE="neo" ;;
+        --templates) BUILD_SCOPE="templates" ;;
         --test)    RUN_TESTS=true ;;
         --help|-h)
-            echo "Usage: $0 [--dex|--tokens|--core|--neo] [--test]"
+            echo "Usage: $0 [--dex|--tokens|--core|--neo|--templates] [--test]"
             echo "  --dex     Build DEX + wrapped token contracts only"
             echo "  --tokens  Build wrapped token contracts only"
             echo "  --core    Build core contracts only"
             echo "  --neo     Build Neo product contracts only"
+            echo "  --templates Build user-deployable contract templates only"
             echo "  --test    Run cargo test after building"
             exit 0
             ;;
@@ -102,11 +109,12 @@ done
 
 # Select contracts to build
 case "$BUILD_SCOPE" in
-    all)     CONTRACTS=("${CORE_CONTRACTS[@]}" "${DEX_CONTRACTS[@]}" "${WRAPPED_TOKEN_CONTRACTS[@]}" "${NEO_PRODUCT_CONTRACTS[@]}") ;;
+    all)     CONTRACTS=("${CORE_CONTRACTS[@]}" "${DEX_CONTRACTS[@]}" "${WRAPPED_TOKEN_CONTRACTS[@]}" "${NEO_PRODUCT_CONTRACTS[@]}" "${TEMPLATE_CONTRACTS[@]}") ;;
     dex)     CONTRACTS=("${DEX_CONTRACTS[@]}" "${WRAPPED_TOKEN_CONTRACTS[@]}") ;;
     tokens)  CONTRACTS=("${WRAPPED_TOKEN_CONTRACTS[@]}") ;;
     core)    CONTRACTS=("${CORE_CONTRACTS[@]}") ;;
     neo)     CONTRACTS=("${NEO_PRODUCT_CONTRACTS[@]}") ;;
+    templates) CONTRACTS=("${TEMPLATE_CONTRACTS[@]}") ;;
 esac
 
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"

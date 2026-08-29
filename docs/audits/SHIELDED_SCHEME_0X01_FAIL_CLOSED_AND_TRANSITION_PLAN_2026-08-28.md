@@ -70,9 +70,9 @@ The shielded remediation currently passes:
   (9), and frontend asset-integrity checks (380), all with zero failures.
 
 The formerly failing reward-adjustment and contract-ABI fixtures were corrected
-in the same v0.5.264 candidate. The complete workspace all-feature test suite,
+in the same v0.5.265 candidate. The complete workspace all-feature test suite,
 strict workspace Clippy, 336 RPC unit tests, 254 RPC full-coverage tests, all 34
-native contract suites, all 33 release-WASM contract workflows, and the
+native contract suites, all 34 release-WASM contract workflows, and the
 169-case ABI/WASM dispatch gate are green.
 
 The exact clean-build four-validator gate also passed with four independently
