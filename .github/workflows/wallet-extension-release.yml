@@ -19,9 +19,9 @@ jobs:
         name: Package Wallet Extension
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-            - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+            - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
               with:
                   node-version: "22"
 
@@ -51,7 +51,7 @@ jobs:
                   rm -f LichenWallet-extension-store-submission-*.zip latest.json
 
             - name: Upload packaged artifacts
-              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
               with:
                   name: lichen-wallet-extension-release
                   path: |
@@ -68,12 +68,12 @@ jobs:
             contents: write
         steps:
             - name: Download packaged artifacts
-              uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
               with:
                   name: lichen-wallet-extension-release
 
             - name: Create draft release
-              uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+              uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
               with:
                   draft: true
                   generate_release_notes: true
