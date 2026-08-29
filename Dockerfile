@@ -19,25 +19,58 @@ COPY rpc/Cargo.toml rpc/Cargo.toml
 COPY cli/Cargo.toml cli/Cargo.toml
 COPY p2p/Cargo.toml p2p/Cargo.toml
 COPY faucet-service/Cargo.toml faucet-service/Cargo.toml
+COPY moss-provider/Cargo.toml moss-provider/Cargo.toml
+COPY sdk/rust/Cargo.toml sdk/rust/Cargo.toml
 COPY custody/Cargo.toml custody/Cargo.toml
 COPY genesis/Cargo.toml genesis/Cargo.toml
 COPY compiler/Cargo.toml compiler/Cargo.toml
 COPY third_party/arrayref/ third_party/arrayref/
 
+# LTO links several large binaries; serialize both build layers by default so
+# an 8 GiB release builder cannot kill the validator link under parallel load.
+ARG CARGO_BUILD_JOBS=1
+
 # Create dummy source files for dependency caching
-RUN mkdir -p core/src validator/src rpc/src cli/src p2p/src faucet-service/src custody/src genesis/src compiler/src && \
-    echo "fn main() {}" > validator/src/main.rs && \
-    echo "fn main() {}" > cli/src/main.rs && \
-    echo "fn main() {}" > faucet-service/src/main.rs && \
-    echo "fn main() {}" > genesis/src/main.rs && \
-    echo "" > core/src/lib.rs && \
-    echo "" > rpc/src/lib.rs && \
-    echo "" > p2p/src/lib.rs && \
-    echo "" > custody/src/lib.rs && \
-    echo "" > compiler/src/lib.rs
+RUN set -eu; \
+    for target in \
+        core/src/lib.rs \
+        rpc/src/lib.rs \
+        p2p/src/lib.rs \
+        sdk/rust/src/lib.rs \
+        genesis/src/lib.rs \
+        compiler/src/lib.rs; do \
+        mkdir -p "$(dirname "$target")"; \
+        : > "$target"; \
+    done; \
+    for target in \
+        core/src/bin/lichen-archive-v2.rs \
+        validator/src/main.rs \
+        rpc/src/bin/bridge_auth_payload.rs \
+        rpc/src/bin/keypair_from_seed_byte.rs \
+        rpc/src/bin/withdrawal_auth_payload.rs \
+        rpc/src/bin/wrapped_burn.rs \
+        cli/src/main.rs \
+        cli/src/marketplace_demo.rs \
+        cli/src/zk_prove.rs \
+        cli/src/bin/bountyboard_v2_migrate.rs \
+        cli/src/bin/compute_market_v3_migrate.rs \
+        cli/src/bin/dex_margin_v2_migrate.rs \
+        cli/src/bin/lichenauction_v3_migrate.rs \
+        cli/src/bin/lichenmarket_v3_migrate.rs \
+        cli/src/bin/protocol_governance_contract_call.rs \
+        cli/src/bin/sporepay_v3_migrate.rs \
+        cli/src/bin/sporepump_v3_migrate.rs \
+        cli/src/bin/sporevault_v2_migrate.rs \
+        faucet-service/src/main.rs \
+        moss-provider/src/main.rs \
+        custody/src/main.rs \
+        genesis/src/main.rs; do \
+        mkdir -p "$(dirname "$target")"; \
+        printf '%s\n' 'fn main() {}' > "$target"; \
+    done
 
 # Build dependencies only (cached layer)
-RUN cargo build --release --locked 2>/dev/null || true
+RUN cargo build --release --locked --jobs "${CARGO_BUILD_JOBS}"
 
 # Copy real source code
 COPY core/ core/
@@ -46,6 +79,8 @@ COPY rpc/ rpc/
 COPY cli/ cli/
 COPY p2p/ p2p/
 COPY faucet-service/ faucet-service/
+COPY moss-provider/ moss-provider/
+COPY sdk/rust/ sdk/rust/
 COPY custody/ custody/
 COPY genesis/ genesis/
 COPY compiler/ compiler/
@@ -53,10 +88,6 @@ COPY seeds.json ./
 COPY shared/incident-guardian-pause-allowlist.json shared/incident-guardian-pause-allowlist.json
 COPY contracts/lusd_token/abi.json contracts/lusd_token/abi.json
 COPY config.toml .
-
-# LTO links several large binaries; serialize the final build by default so an
-# 8 GiB release builder cannot kill the validator link under parallel pressure.
-ARG CARGO_BUILD_JOBS=1
 
 # Force rebuild with real sources
 RUN touch core/src/lib.rs validator/src/main.rs && \
