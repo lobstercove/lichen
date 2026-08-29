@@ -21,7 +21,7 @@
         ".github/workflows/wallet-extension-release.yml",
         "scripts/qa/test_github_actions_supply_chain.js"
       ],
-      "expected_evidence": "All third-party GitHub Actions refs are pinned to 40-character commit SHAs and default workflow token permissions stay read-only.",
+      "expected_evidence": "All third-party GitHub Actions refs are pinned to reviewed 40-character commit SHAs, each external action is bound to an approved Node 24, composite, or container runtime class, and default workflow token permissions stay read-only.",
       "artifact_policy": "stdout summary only; do not commit workflow logs or downloaded artifacts."
     },
     {
