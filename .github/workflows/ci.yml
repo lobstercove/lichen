@@ -362,6 +362,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22"
+      - name: Install wallet audit dependencies
+        run: npm ci --ignore-scripts
       - name: Build JS SDK
         run: cd sdk/js && npm ci --ignore-scripts && npm run build
       - name: Run wallet audits
