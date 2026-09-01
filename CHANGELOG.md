@@ -5,6 +5,15 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.267] - 2026-09-01
+
+### Fixed
+
+- Build the JavaScript SDK on the clean release runner before wallet security
+  audits import its generated distribution modules. A workflow regression gate
+  now enforces install, build, and audit ordering so a locally retained
+  `sdk/js/dist` directory cannot mask this release-only dependency.
+
 ## [0.5.266] - 2026-09-01
 
 ### Added
