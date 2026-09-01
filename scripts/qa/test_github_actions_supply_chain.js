@@ -150,6 +150,18 @@ for (const filePath of workflowFiles()) {
     }
 }
 
+const releaseWorkflowPath = path.join(workflowsDir, 'release.yml');
+const releaseWorkflow = fs.readFileSync(releaseWorkflowPath, 'utf8');
+const releaseSdkInstall = releaseWorkflow.indexOf('npm --prefix sdk/js ci --ignore-scripts');
+const releaseSdkBuild = releaseWorkflow.indexOf('npm --prefix sdk/js run build');
+const releaseWalletAudit = releaseWorkflow.indexOf('node scripts/qa/test_wallet_audit.js');
+assert(
+    releaseSdkInstall !== -1
+        && releaseSdkBuild > releaseSdkInstall
+        && releaseWalletAudit > releaseSdkBuild,
+    'release workflow installs and builds the JS SDK before wallet audits',
+);
+
 console.log(`\nGitHub Actions supply-chain QA: ${passed} passed, ${failed} failed`);
 if (failed > 0) {
     process.exit(1);
