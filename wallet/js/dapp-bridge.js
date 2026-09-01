@@ -362,7 +362,7 @@
             accounts: activeAddress ? [activeAddress] : [],
             hasWallet: walletExists,
             isLocked,
-            version: '0.1.4',
+            version: '0.1.9',
             providerType: 'web-wallet',
         };
     }

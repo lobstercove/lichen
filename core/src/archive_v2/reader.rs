@@ -283,8 +283,9 @@ impl ArchiveV2Reader {
             return Ok(None);
         };
         self.ensure_deep_history()?;
-        let bytes = self.acquire_object(manifest)?;
-        ArchiveV2SegmentCodec::decode_block_at(&bytes, manifest, &self.identity, slot)
+        self.read_authenticated_point(manifest, |path| {
+            ArchiveV2SegmentCodec::decode_block_at_path(path, manifest, &self.identity, slot)
+        })
     }
 
     pub fn get_block_by_hash(&self, hash: &Hash) -> Result<Option<Block>, ArchiveV2Error> {
@@ -310,13 +311,14 @@ impl ArchiveV2Reader {
             if !manifest.transaction_filter.might_contain(signature) {
                 continue;
             }
-            let bytes = self.acquire_object(manifest)?;
-            if let Some((transaction, _)) = ArchiveV2SegmentCodec::decode_transaction_at(
-                &bytes,
-                manifest,
-                &self.identity,
-                signature,
-            )? {
+            if let Some((transaction, _)) = self.read_authenticated_point(manifest, |path| {
+                ArchiveV2SegmentCodec::decode_transaction_at_path(
+                    path,
+                    manifest,
+                    &self.identity,
+                    signature,
+                )
+            })? {
                 return Ok(Some(transaction));
             }
         }
@@ -332,13 +334,14 @@ impl ArchiveV2Reader {
             if !manifest.transaction_filter.might_contain(signature) {
                 continue;
             }
-            let bytes = self.acquire_object(manifest)?;
-            if let Some((_, slot)) = ArchiveV2SegmentCodec::decode_transaction_at(
-                &bytes,
-                manifest,
-                &self.identity,
-                signature,
-            )? {
+            if let Some((_, slot)) = self.read_authenticated_point(manifest, |path| {
+                ArchiveV2SegmentCodec::decode_transaction_at_path(
+                    path,
+                    manifest,
+                    &self.identity,
+                    signature,
+                )
+            })? {
                 return Ok(Some(slot));
             }
         }
@@ -485,13 +488,16 @@ impl ArchiveV2Reader {
             let manifest = self
                 .catalog
                 .active_manifest(&entry.manifest.segment_object_hash)?;
-            let segment = self.load_segment(manifest)?;
-            let Some(rows) = segment.indexes.categories.get(category) else {
-                continue;
-            };
-            if let Ok(index) = rows.binary_search_by(|row| row.key.as_slice().cmp(key)) {
-                let row = &rows[index];
-                return Ok(Some((row.slot, row.value.clone())));
+            if let Some(value) = self.read_authenticated_point(manifest, |path| {
+                ArchiveV2SegmentCodec::decode_category_value_at_path(
+                    path,
+                    manifest,
+                    &self.identity,
+                    category,
+                    key,
+                )
+            })? {
+                return Ok(Some(value));
             }
         }
         Ok(None)
@@ -560,6 +566,158 @@ impl ArchiveV2Reader {
         }
     }
 
+    fn read_authenticated_point<T, F>(
+        &self,
+        manifest: &ArchiveV2Manifest,
+        decode: F,
+    ) -> Result<T, ArchiveV2Error>
+    where
+        F: Fn(&Path) -> Result<T, ArchiveV2Error>,
+    {
+        let local = object_path(&self.config.root, &manifest.segment_object_hash);
+        if let Some(value) =
+            self.try_authenticated_point_path(&local, &manifest.segment_object_hash, true, &decode)?
+        {
+            return Ok(value);
+        }
+
+        if let Some(cache_root) = self.config.cache_root.as_ref() {
+            let _cache_guard = self
+                .cache_io_lock
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let cached = object_path(cache_root, &manifest.segment_object_hash);
+            if let Some(value) = self.try_authenticated_point_path(
+                &cached,
+                &manifest.segment_object_hash,
+                false,
+                &decode,
+            )? {
+                return Ok(value);
+            }
+        }
+
+        if !self.config.allow_remote_fetch {
+            return Err(ArchiveV2Error::Unavailable(format!(
+                "segment {} is not locally readable",
+                manifest.segment_object_hash
+            )));
+        }
+        let _cache_guard = self
+            .cache_io_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cache_root = self.config.cache_root.as_ref().ok_or_else(|| {
+            ArchiveV2Error::Role("remote Archive V2 point read has no configured cache".to_string())
+        })?;
+        let cached = object_path(cache_root, &manifest.segment_object_hash);
+        // Another reader may have filled the immutable cache while this reader
+        // waited. Recheck under the same lock that protects eviction and
+        // persistence so one miss produces at most one remote materialization.
+        if let Some(value) = self.try_authenticated_point_path(
+            &cached,
+            &manifest.segment_object_hash,
+            false,
+            &decode,
+        )? {
+            return Ok(value);
+        }
+        for source in &self.config.sources {
+            if !source.authenticated() {
+                continue;
+            }
+            let fetched = match source.fetch(&manifest.segment_object_hash) {
+                Ok(Some(bytes)) => bytes,
+                Ok(None) => continue,
+                Err(error) => {
+                    let mut status = self.status_lock();
+                    status.source_failures = status.source_failures.saturating_add(1);
+                    status.last_error = Some(format!("{}: {error}", source.name()));
+                    continue;
+                }
+            };
+            if let Err(error) = self.verify_object_bytes(&fetched, manifest) {
+                self.quarantine_bytes(&manifest.segment_object_hash, &fetched)?;
+                let mut status = self.status_lock();
+                status.source_failures = status.source_failures.saturating_add(1);
+                status.quarantined_objects = status.quarantined_objects.saturating_add(1);
+                status.last_error = Some(format!("{}: {error}", source.name()));
+                continue;
+            }
+            self.persist_cache_locked(&manifest.segment_object_hash, &fetched)?;
+            drop(fetched);
+            {
+                let mut status = self.status_lock();
+                status.remote_fetches = status.remote_fetches.saturating_add(1);
+                status.cache_bytes = self
+                    .config
+                    .cache_root
+                    .as_deref()
+                    .map(cache_size)
+                    .transpose()?
+                    .unwrap_or(0);
+            }
+            if let Some(value) = self.try_authenticated_point_path(
+                &cached,
+                &manifest.segment_object_hash,
+                false,
+                &decode,
+            )? {
+                return Ok(value);
+            }
+        }
+        Err(ArchiveV2Error::Unavailable(format!(
+            "no authenticated source supplied readable segment {}",
+            manifest.segment_object_hash
+        )))
+    }
+
+    fn try_authenticated_point_path<T, F>(
+        &self,
+        path: &Path,
+        expected_hash: &Hash,
+        local: bool,
+        decode: &F,
+    ) -> Result<Option<T>, ArchiveV2Error>
+    where
+        F: Fn(&Path) -> Result<T, ArchiveV2Error>,
+    {
+        match fs::metadata(path) {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => {
+                return Err(ArchiveV2Error::Io(format!(
+                    "Archive V2 object path {} is not a regular file",
+                    path.display()
+                )))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(ArchiveV2Error::Io(format!(
+                    "failed reading Archive V2 object metadata {}: {error}",
+                    path.display()
+                )))
+            }
+        }
+        match decode(path) {
+            Ok(value) => {
+                let mut status = self.status_lock();
+                if local {
+                    status.local_hits = status.local_hits.saturating_add(1);
+                } else {
+                    status.cache_hits = status.cache_hits.saturating_add(1);
+                }
+                Ok(Some(value))
+            }
+            Err(error) => {
+                self.quarantine_path(path, expected_hash)?;
+                let mut status = self.status_lock();
+                status.quarantined_objects = status.quarantined_objects.saturating_add(1);
+                status.last_error = Some(error.to_string());
+                Ok(None)
+            }
+        }
+    }
+
     fn acquire_object(&self, manifest: &ArchiveV2Manifest) -> Result<Vec<u8>, ArchiveV2Error> {
         let local = object_path(&self.config.root, &manifest.segment_object_hash);
         match fs::read(&local) {
@@ -585,6 +743,15 @@ impl ArchiveV2Reader {
             }
         }
 
+        // Hold the cache transaction across lookup, authenticated source fetch,
+        // eviction, and immutable persistence. This bounds concurrent cache
+        // misses and prevents another writer from evicting an object between
+        // admission and use.
+        let _cache_guard = self.config.cache_root.as_ref().map(|_| {
+            self.cache_io_lock
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        });
         if let Some(cache_root) = self.config.cache_root.as_ref() {
             let cached = object_path(cache_root, &manifest.segment_object_hash);
             match fs::read(&cached) {
@@ -639,7 +806,7 @@ impl ArchiveV2Reader {
                 status.last_error = Some(format!("{}: {error}", source.name()));
                 continue;
             }
-            self.persist_cache(&manifest.segment_object_hash, &fetched)?;
+            self.persist_cache_locked(&manifest.segment_object_hash, &fetched)?;
             let mut status = self.status_lock();
             status.remote_fetches = status.remote_fetches.saturating_add(1);
             status.cache_bytes = self
@@ -742,11 +909,9 @@ impl ArchiveV2Reader {
         write_new_synced(&path, bytes)
     }
 
-    fn persist_cache(&self, object_hash: &Hash, bytes: &[u8]) -> Result<(), ArchiveV2Error> {
-        let _guard = self
-            .cache_io_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    /// Persists one verified cache object while the caller holds
+    /// `cache_io_lock` across the complete cache transaction.
+    fn persist_cache_locked(&self, object_hash: &Hash, bytes: &[u8]) -> Result<(), ArchiveV2Error> {
         let cache =
             self.config.cache_root.as_ref().ok_or_else(|| {
                 ArchiveV2Error::Role("verified cache is not configured".to_string())
@@ -1078,6 +1243,17 @@ mod tests {
         )
         .unwrap();
 
+        assert_eq!(
+            reader.category_value("events", b"event-key").unwrap(),
+            Some((0, b"event-value".to_vec()))
+        );
+        assert!(
+            reader.decoded.lock().unwrap().is_empty(),
+            "single category lookup must not inflate the whole segment"
+        );
+        assert_eq!(reader.category_value("events", b"missing").unwrap(), None);
+        assert!(reader.decoded.lock().unwrap().is_empty());
+
         let slots = reader.category_rows("slots", 0, 0).unwrap();
         assert_eq!(slots.len(), 1);
         assert_eq!(slots[0].0, 0u64.to_be_bytes());
@@ -1204,6 +1380,7 @@ mod tests {
             assert_eq!(thread.join().unwrap(), manifest.first_block_hash);
         }
         assert_eq!(reader.status().verified_objects, 1);
+        assert_eq!(reader.status().remote_fetches, 1);
         assert_eq!(
             fs::read(object_path(cache.path(), &manifest.segment_object_hash)).unwrap(),
             bytes

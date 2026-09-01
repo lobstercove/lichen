@@ -517,8 +517,28 @@ impl WsState {
         Arc<DexEventBroadcaster>,
         Arc<PredictionEventBroadcaster>,
     ) {
-        let dex_broadcaster = Arc::new(DexEventBroadcaster::new(2048));
-        let prediction_broadcaster = Arc::new(PredictionEventBroadcaster::new(1024));
+        let (_, dex_broadcaster, prediction_broadcaster) = event_broadcasters();
+        Self::new_with_broadcasters(
+            state,
+            finality,
+            event_tx,
+            dex_broadcaster,
+            prediction_broadcaster,
+        )
+    }
+
+    pub fn new_with_broadcasters(
+        state: StateStore,
+        finality: Option<FinalityTracker>,
+        event_tx: broadcast::Sender<Event>,
+        dex_broadcaster: Arc<DexEventBroadcaster>,
+        prediction_broadcaster: Arc<PredictionEventBroadcaster>,
+    ) -> (
+        Self,
+        broadcast::Sender<Event>,
+        Arc<DexEventBroadcaster>,
+        Arc<PredictionEventBroadcaster>,
+    ) {
         let ws_state = Self {
             state,
             finality,
@@ -537,6 +557,21 @@ impl WsState {
 pub fn event_sender() -> broadcast::Sender<Event> {
     let (event_tx, _) = broadcast::channel(WS_EVENT_CHANNEL_CAPACITY);
     event_tx
+}
+
+/// Create the complete canonical broadcaster set before any block-processing
+/// task starts. This lets local BFT commits and peer-applied canonical blocks
+/// publish through the exact broadcasters later bound to the public listener.
+pub fn event_broadcasters() -> (
+    broadcast::Sender<Event>,
+    Arc<DexEventBroadcaster>,
+    Arc<PredictionEventBroadcaster>,
+) {
+    (
+        event_sender(),
+        Arc::new(DexEventBroadcaster::new(2048)),
+        Arc::new(PredictionEventBroadcaster::new(1024)),
+    )
 }
 
 /// Start WebSocket server
@@ -571,8 +606,45 @@ pub async fn start_ws_server_with_event_sender(
     ),
     Box<dyn std::error::Error>,
 > {
+    let (_, dex_broadcaster, prediction_broadcaster) = event_broadcasters();
+    start_ws_server_with_broadcasters(
+        state,
+        port,
+        finality,
+        event_tx,
+        dex_broadcaster,
+        prediction_broadcaster,
+    )
+    .await
+}
+
+/// Start the WebSocket server with a complete pre-created broadcaster set.
+/// Producers may safely retain clones before the listener is bound; Tokio
+/// broadcast intentionally drops startup events while there are no receivers.
+pub async fn start_ws_server_with_broadcasters(
+    state: StateStore,
+    port: u16,
+    finality: Option<FinalityTracker>,
+    event_tx: broadcast::Sender<Event>,
+    dex_broadcaster: Arc<DexEventBroadcaster>,
+    prediction_broadcaster: Arc<PredictionEventBroadcaster>,
+) -> Result<
+    (
+        broadcast::Sender<Event>,
+        Arc<DexEventBroadcaster>,
+        Arc<PredictionEventBroadcaster>,
+        tokio::task::JoinHandle<()>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let (ws_state, event_tx, dex_broadcaster, prediction_broadcaster) =
-        WsState::new_with_event_sender(state, finality, event_tx);
+        WsState::new_with_broadcasters(
+            state,
+            finality,
+            event_tx,
+            dex_broadcaster,
+            prediction_broadcaster,
+        );
 
     let app = Router::new()
         .route("/", get(ws_handler))

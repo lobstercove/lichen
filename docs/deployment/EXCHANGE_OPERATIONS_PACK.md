@@ -1,20 +1,20 @@
 # Lichen Exchange Operations Pack
 
-**Status:** Published testnet-only exchange package
+**Status:** Testnet-only release candidate; do not distribute yet
 **Created:** 2026-06-29
 **Integration guide:** [../guides/EXCHANGE_INTEGRATION.md](../guides/EXCHANGE_INTEGRATION.md)
 **Metadata sheet:** [../guides/EXCHANGE_CHAIN_METADATA.md](../guides/EXCHANGE_CHAIN_METADATA.md)
 **Tracker:** [../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md](../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md)
-**Current testnet release:** `v0.5.224`
-**Rollback anchor:** `v0.5.223`
-**Exchange package tag:** `exchange-testnet-v0.5.221`
-**Exchange package release:** `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221`
+**Current signed testnet release:** `v0.5.265`
+**Candidate testnet release:** `v0.5.266`
+**Rollback anchor:** `v0.5.265`
+**Exchange package tag:** `exchange-testnet-v0.5.266`
+**Exchange package release:** `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.266`
 
 This pack defines the operational material an exchange expects before listing
-native LICN. The current publication scope is testnet-only integration testing
-until mainnet launch. Operator contact aliases are recorded, the final
-testnet-only exchange package is published under `exchange-testnet-v0.5.221`,
-and the public exchange status page is live at
+native LICN. The intended publication scope is testnet-only integration testing
+until mainnet launch. Operator contact aliases are recorded, the candidate
+package tag is `exchange-testnet-v0.5.266`, and the public exchange status page is live at
 `https://exchanges.lichen.network`. As of 2026-07-05, the active Cloudflare
 zone, Pages custom domain, exchange status page, and default public readiness
 gate are green for the current testnet-only package.
@@ -49,7 +49,7 @@ Do not include this pack in an external listing package until:
 | Explorer | `https://explorer.lichen.network` | Route templates verified | `seeds.json`, `developers/shared-config.js`, `explorer/js/*.js` |
 | Public exchange status page | `https://exchanges.lichen.network` | Active on Cloudflare Pages project `lichen-network-exchanges`; production readiness is green; page uses a same-origin read-only status RPC proxy and the RPC CORS default now includes `exchanges.lichen.network` for validator rollouts | Operator correction on 2026-07-02; production verification on 2026-07-05 |
 | Developer portal exchange page | `https://developers.lichen.network/exchange-integration` | Deployed and verified; public page carries inline testnet-only metadata, address/accounting rules, deposit and withdrawal cookbooks, finality/archive policy, operations contacts, validation gates, mainnet handoff, release-tagged source links, and the exchange status URL without the old planned wording | Cloudflare Pages deployment and tracker verification |
-| GitHub exchange docs | `docs/guides/EXCHANGE_INTEGRATION.md` | Published under package tag `exchange-testnet-v0.5.221` for the current testnet-only package | Phase 1 docs work; final package release |
+| GitHub exchange docs | `docs/guides/EXCHANGE_INTEGRATION.md` | Candidate source for package tag `exchange-testnet-v0.5.266`; publication pending | Source and release workflow |
 
 ## Incident Contacts
 
@@ -111,7 +111,7 @@ Implementation policy:
 - The page must identify the package scope as testnet-only until the mainnet
   launch exchange handoff closes.
 - The page must be verified by
-  `python3 scripts/qa/exchange_public_readiness.py --scope testnet --status-approved --release-tag-selected`
+  `python3 scripts/qa/exchange_public_readiness.py --scope testnet --status-approved --release-stage published`
   before exchange outreach. The readiness gate defaults the status URL to
   `https://exchanges.lichen.network` and rejects the admin monitoring host.
 
@@ -161,7 +161,7 @@ External exchange docs must define:
 Current rollback anchor:
 
 ```text
-v0.5.223
+v0.5.265
 ```
 
 Version drift is a release blocker. Root README, mainnet runbook, RPC docs, and
@@ -181,7 +181,8 @@ Repository sources:
 
 - `.github/workflows/release.yml`
 - `deploy/release-trust-anchor.json`
-- `scripts/sign-release.sh`
+- offline maintainer signing procedure (private-key tooling and material are not
+  shipped in the public repository)
 - `scripts/verify-release-checksums.mjs`
 
 Current trust-anchor signer:
@@ -213,15 +214,17 @@ Historical signed recovery release verified on 2026-07-01:
 
 Published exchange package metadata:
 
-- Package tag: `exchange-testnet-v0.5.221`
+- Package tag: `exchange-testnet-v0.5.266`
 - Package release page:
-  `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221`
-- Package archive asset: `lichen-exchange-testnet-v0.5.221.tar.gz`
-- Package checksum asset: `SHA256SUMS`
+  `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.266`
+- Package archive asset: `lichen-exchange-testnet-v0.5.266.tar.gz`
+- Package checksum and signature assets: `SHA256SUMS`, `SHA256SUMS.sig`
+- GitHub provenance attestation for the package archive and checksums
 - Scope: testnet-only until the mainnet launch exchange handoff closes.
 
-Current testnet release: `v0.5.224`. Current rollback anchor: `v0.5.223`, retained
-until a newer signed rollback point is explicitly recorded.
+Current signed testnet release and rollback anchor: `v0.5.265`. Candidate:
+`v0.5.266`, which does not become current until its signed artifacts and live
+fleet acceptance are recorded.
 
 ## Rollback Policy
 
@@ -237,7 +240,7 @@ Rollback policy must define:
 - Expected effect on deposits and withdrawals.
 - Evidence required before declaring recovery.
 
-Current rule: keep `v0.5.223` as the rollback anchor until a newer signed rollback
+Current rule: keep `v0.5.265` as the rollback anchor until a newer signed rollback
 point is explicitly recorded.
 
 Exchange rollback procedure:
@@ -318,8 +321,9 @@ Observed result:
 - The public testnet readiness checks for RPC health, `getFeeConfig`,
   finalized-slot, latest-block, and WebSocket upgrade passed.
 
-The public exchange package is published for testnet-only integration under
-`exchange-testnet-v0.5.221`. Exchange contact aliases were approved on
+The previous public exchange package remains available for testnet-only
+integration. Candidate `exchange-testnet-v0.5.266` is not published yet.
+Exchange contact aliases were approved on
 2026-07-01 as `security@lichen.network`, `exchange-ops@lichen.network`, and
 `business@lichen.network`. The public exchange status-page gate was reopened on
 2026-07-02 because the previously referenced monitoring surface is admin-only.
@@ -406,8 +410,9 @@ Do not commit private keys or filled production env files as evidence.
 
 ## Open Operations Blockers
 
-No open operations blockers remain for the current testnet-only exchange
-package. Mainnet remains out of scope until the mainnet launch exchange handoff
+The `v0.5.266` validator rollout/live acceptance and the signed
+`exchange-testnet-v0.5.266` pre-publication and post-publication gates remain
+open. Mainnet remains out of scope until the mainnet launch exchange handoff
 gate closes.
 
 ## Resolved Operations Checks
@@ -416,9 +421,9 @@ gate closes.
 | --- | --- | --- |
 | O-01 | Status page URL approval superseded | Superseded on 2026-07-02: internal monitoring is admin-only and must not be used as the public exchange status page |
 | O-02 | Incident aliases approved | Operator approved `security@lichen.network`, `exchange-ops@lichen.network`, and `business@lichen.network` on 2026-07-01; critical acknowledgement, active update, maintenance notice, emergency exception, authenticated outbound, and backup-path policy are recorded above |
-| O-15 | Public exchange status page active | `https://exchanges.lichen.network` is active on Cloudflare Pages, serves the exchange-safe status page, uses a same-origin read-only status RPC proxy, and passed `python3 scripts/qa/exchange_public_readiness.py --scope testnet --status-approved --release-tag-selected --report /tmp/lichen-exchange-public-readiness-exchanges-domain-20260705-post-status-logic-green.json` |
-| O-03 | Current release drift for core docs and Rust SDK pin | Core/CLI `0.5.224`, Rust client SDK `0.1.6`, contract SDK `1.0.3`, and JS SDK `1.0.6` are published; `v0.5.223` is the rollback anchor |
-| O-04 | Final external exchange-package release URLs attached | Package release `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221` contains `lichen-exchange-testnet-v0.5.221.tar.gz` and `SHA256SUMS` |
+| O-15 | Public exchange status page active | `https://exchanges.lichen.network` is active on Cloudflare Pages, serves the exchange-safe status page, uses a same-origin read-only status RPC proxy, and passed the then-current published-release public readiness gate; rerun the current gate with `--release-stage published` after candidate publication |
+| O-03 | Current release drift for core docs and SDK pins | Runtime/CLI `0.5.266`, Rust client SDK `0.1.7`, contract SDK `1.0.4`, JavaScript SDK `1.0.7`, and Python SDK `1.0.1` are source-aligned; `v0.5.265` is the rollback anchor |
+| O-04 | Final external exchange-package release URLs attached | Pending for candidate `exchange-testnet-v0.5.266`; the public release must contain the archive, `SHA256SUMS`, `SHA256SUMS.sig`, `exchange-public-readiness-report.json`, and provenance before this row can close |
 | O-05 | Local archive/history behavior | Core and RPC archive regressions passed after hot-to-cold migration and reopen |
 | O-07 | Local cleanup evidence | Local stack stop/status/process checks passed; generated credentials, state dirs, manifests, and staging dirs were removed after the local exchange simulation |
 | O-09 | Rollback release checksum/signature verification | `v0.5.223` release checksum and detached PQ signature were verified against `deploy/release-trust-anchor.json` |

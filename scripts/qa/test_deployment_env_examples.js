@@ -144,6 +144,7 @@ const validatorUnit = parseSystemdUnit('deploy/lichen-validator.service');
 const custodyUnit = parseSystemdUnit('deploy/lichen-custody.service');
 const custodyMainnetUnit = parseSystemdUnit('deploy/lichen-custody-mainnet.service');
 const faucetUnit = parseSystemdUnit('deploy/lichen-faucet.service');
+const mossUnit = parseSystemdUnit('deploy/lichen-moss-provider.service');
 
 assert(
   validatorUnit.envFiles.includes('/etc/lichen/env'),
@@ -158,6 +159,16 @@ assert(
   'custody mainnet unit must keep /etc/lichen/custody-env-mainnet contract',
 );
 assert(faucetUnit.envFiles.length === 0, 'faucet unit should remain inline-env only');
+assert(
+  mossUnit.envFiles.includes('/etc/lichen/moss-provider.env'),
+  'Moss provider unit must keep /etc/lichen/moss-provider.env contract',
+);
+assert(
+  read('deploy/lichen-moss-provider.service').includes('ReadWritePaths=/var/lib/lichen/moss') &&
+    read('deploy/lichen-moss-provider.service').includes('NoNewPrivileges=true') &&
+    !read('deploy/lichen-moss-provider.service').includes('lichen-validator.service'),
+  'Moss provider unit must remain filesystem-bounded and independent of a nonexistent validator unit',
+);
 assert(
   read('deploy/lichen-validator.service').includes('$LICHEN_EXTRA_ARGS') &&
     !read('deploy/lichen-validator.service').includes('${LICHEN_EXTRA_ARGS}'),
@@ -373,6 +384,38 @@ for (const [relPath, expected] of Object.entries(custodyExpected)) {
   requireNoInlineCustodySeeds(env, relPath);
 }
 
+const mossExample = parseExampleEnv('deploy/moss-provider.env.example');
+const mossRequiredKeys = [
+  'MOSS_PROVIDER_LISTEN',
+  'MOSS_PROVIDER_DATA_DIR',
+  'LICHEN_RPC_URL',
+  'MOSS_STORAGE_CONTRACT',
+  'MOSS_PROVIDER_KEYPAIR',
+  'MOSS_PROVIDER_PUBLIC_BASE_URL',
+  'MOSS_PROVIDER_ALLOWED_ORIGINS',
+  'MOSS_PROVIDER_REQUIRE_SIGNATURE',
+  'LICHEN_KEYPAIR_PASSWORD',
+  'MOSS_PROVIDER_MAX_OBJECT_BYTES',
+  'MOSS_PROVIDER_MAX_TOTAL_BYTES',
+  'MOSS_PROVIDER_OWNER_HOURLY_BYTES',
+  'MOSS_PROVIDER_STAGED_TTL_SECS',
+  'MOSS_PROVIDER_RECONCILE_SECS',
+  'RUST_LOG',
+];
+requireActiveKeys(mossExample, mossRequiredKeys, 'deploy/moss-provider.env.example');
+requireValues(mossExample, {
+  MOSS_PROVIDER_LISTEN: '127.0.0.1:9120',
+  MOSS_PROVIDER_DATA_DIR: '/var/lib/lichen/moss',
+  LICHEN_RPC_URL: 'http://127.0.0.1:8899',
+  MOSS_STORAGE_CONTRACT: 'REPLACE_WITH_GENESIS_MOSS_STORAGE_ADDRESS',
+  MOSS_PROVIDER_KEYPAIR: '/var/lib/lichen/moss/provider-keypair.json',
+  MOSS_PROVIDER_PUBLIC_BASE_URL: 'https://testnet-moss-us.lichen.network',
+  MOSS_PROVIDER_REQUIRE_SIGNATURE: 'true',
+  MOSS_PROVIDER_MAX_OBJECT_BYTES: '268435456',
+  MOSS_PROVIDER_MAX_TOTAL_BYTES: '53687091200',
+}, 'deploy/moss-provider.env.example');
+requireRedactedSecrets(mossExample, 'deploy/moss-provider.env.example');
+
 const genesisSource = read('genesis/src/lib.rs');
 assert(
   genesisSource.includes('let pairs: [(&str, [u8; 32], [u8; 32], u64); 13]') &&
@@ -420,7 +463,7 @@ const mainnetRunbook = read('deploy/mainnet-launch-runbook.md');
 const mainnetRunbookDoc = read('docs/deployment/MAINNET_LAUNCH_RUNBOOK.md');
 const productionDeployment = read('docs/deployment/PRODUCTION_DEPLOYMENT.md');
 const productionReleasePair = productionDeployment.match(
-  /Current testnet release candidate for this runbook is `(v\d+\.\d+\.\d+)`;\s+keep signed\s+`(v\d+\.\d+\.\d+)` as the immediate restart-safe anchor/,
+  /The target testnet release for this runbook is `(v\d+\.\d+\.\d+)`; the current signed\s+fleet release and immediate restart-safe anchor is `(v\d+\.\d+\.\d+)`\./,
 );
 const validatorVersion = read('validator/Cargo.toml').match(/^version = "(\d+\.\d+\.\d+)"/m)?.[1];
 const dexLiquidityStrategy = read('docs/strategy/DEX_LIQUIDITY_STRATEGY.md');
@@ -462,8 +505,8 @@ assert(
 assert(
   productionReleasePair &&
     productionReleasePair[1] === `v${validatorVersion}` &&
-    productionReleasePair[2] === 'v0.5.263' &&
-    /Preserve signed\s+`v0\.5\.225` as\s+pre-change evidence/.test(productionDeployment) &&
+    productionReleasePair[2] === 'v0.5.265' &&
+    /Historical\s+tags and audit records remain in Git/.test(productionDeployment) &&
     productionDeployment.includes('This destructive checklist does not apply to the current July testnet') &&
     productionDeployment.includes('in-place archive repair and coordinated resume') &&
     productionDeployment.includes('LICHEN_RUN_LAUNCHPAD_E2E=1') &&
@@ -569,4 +612,4 @@ assert(
   'npm test-deployment-docs must include deployment env example QA',
 );
 
-console.log('deployment env examples match systemd and setup contracts');
+console.log('deployment env examples match tracked systemd contracts');

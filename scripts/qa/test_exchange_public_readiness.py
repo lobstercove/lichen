@@ -8,8 +8,10 @@ These tests intentionally avoid network calls; the live gate itself remains
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import os
 import struct
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -32,9 +34,9 @@ readiness = load_readiness_module()
 
 class ExchangePublicReadinessTests(unittest.TestCase):
     def test_rollback_release_uses_current_signed_anchor(self) -> None:
-        self.assertEqual("v0.5.223", readiness.ROLLBACK_TAG)
-        self.assertTrue(readiness.ROLLBACK_RELEASE_API.endswith("/releases/tags/v0.5.223"))
-        self.assertTrue(readiness.ROLLBACK_RELEASE_PAGE.endswith("/releases/tag/v0.5.223"))
+        self.assertEqual("v0.5.265", readiness.ROLLBACK_TAG)
+        self.assertTrue(readiness.ROLLBACK_RELEASE_API.endswith("/releases/tags/v0.5.265"))
+        self.assertTrue(readiness.ROLLBACK_RELEASE_PAGE.endswith("/releases/tag/v0.5.265"))
 
     def test_rpc_health_ready_requires_ok_and_fresh_tip(self) -> None:
         self.assertTrue(
@@ -251,7 +253,7 @@ class ExchangePublicReadinessTests(unittest.TestCase):
             readiness.check_exchange_package_release(gate)
             self.assertFalse(gate.checks[0]["ok"])
             self.assertIn(
-                "lichen-exchange-testnet-v0.5.221.tar.gz",
+                "lichen-exchange-testnet-v0.5.266.tar.gz",
                 gate.checks[0]["detail"]["required_assets"],
             )
         finally:
@@ -265,7 +267,10 @@ class ExchangePublicReadinessTests(unittest.TestCase):
                 "tag_name": readiness.EXCHANGE_PACKAGE_TAG,
                 "draft": False,
                 "prerelease": False,
-                "assets": [{"name": name} for name in readiness.EXCHANGE_PACKAGE_REQUIRED_ASSETS],
+                "assets": [
+                    {"name": name}
+                    for name in readiness.EXCHANGE_PACKAGE_PUBLISHED_REQUIRED_ASSETS
+                ],
             }
 
         readiness.request_json = fake_release
@@ -274,11 +279,27 @@ class ExchangePublicReadinessTests(unittest.TestCase):
             readiness.check_exchange_package_release(gate)
             self.assertTrue(gate.checks[0]["ok"])
             self.assertEqual(
-                sorted(readiness.EXCHANGE_PACKAGE_REQUIRED_ASSETS),
+                sorted(readiness.EXCHANGE_PACKAGE_PUBLISHED_REQUIRED_ASSETS),
                 gate.checks[0]["detail"]["required_assets"],
             )
         finally:
             readiness.request_json = original_request_json
+
+    def test_exchange_package_candidate_rejects_missing_signature(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            candidate = Path(temporary)
+            archive = candidate / readiness.EXCHANGE_PACKAGE_ARCHIVE
+            archive.write_bytes(b"candidate")
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            (candidate / "SHA256SUMS").write_text(
+                f"{digest}  {readiness.EXCHANGE_PACKAGE_ARCHIVE}\n", encoding="utf-8"
+            )
+            gate = readiness.Gate()
+            readiness.check_exchange_package_candidate(gate, candidate)
+            self.assertFalse(gate.checks[0]["ok"])
+            self.assertEqual(
+                ["SHA256SUMS.sig"], gate.checks[0]["detail"]["missing_assets"]
+            )
 
 
 if __name__ == "__main__":

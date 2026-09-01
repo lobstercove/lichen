@@ -30,6 +30,13 @@ const LICHEN_CONFIG = (() => {
             rpc: 'https://rpc.lichen.network',
             ws: 'wss://rpc.lichen.network/ws',
             moss: 'https://moss.lichen.network',
+            mossProviders: [
+                'https://moss.lichen.network',
+                'https://moss-us.lichen.network',
+                'https://moss-eu.lichen.network',
+                'https://moss-sea.lichen.network',
+                'https://moss-in.lichen.network',
+            ],
             slotDurationMs: 400,
             local: false,
         },
@@ -38,6 +45,13 @@ const LICHEN_CONFIG = (() => {
             rpc: testnetRpc,
             ws: testnetWs,
             moss: 'https://testnet-moss.lichen.network',
+            mossProviders: [
+                'https://testnet-moss.lichen.network',
+                'https://testnet-moss-us.lichen.network',
+                'https://testnet-moss-eu.lichen.network',
+                'https://testnet-moss-sea.lichen.network',
+                'https://testnet-moss-in.lichen.network',
+            ],
             slotDurationMs: 400,
             local: false,
         },
@@ -46,6 +60,7 @@ const LICHEN_CONFIG = (() => {
             rpc: 'http://localhost:8899',
             ws: 'ws://localhost:8900',
             moss: 'http://localhost:9120',
+            mossProviders: ['http://localhost:9120'],
             slotDurationMs: 400,
             local: true,
         },
@@ -54,6 +69,7 @@ const LICHEN_CONFIG = (() => {
             rpc: 'http://localhost:9899',
             ws: 'ws://localhost:9900',
             moss: 'http://localhost:9121',
+            mossProviders: ['http://localhost:9121'],
             slotDurationMs: 400,
             local: true,
         },
@@ -167,6 +183,12 @@ const LICHEN_CONFIG = (() => {
     function moss(networkKey) {
         const key = resolveNetwork(networkKey || currentNetwork());
         return networks[key].moss;
+    }
+
+    /** Get the distinct Moss upload providers for the selected network. */
+    function mossProviders(networkKey) {
+        const key = resolveNetwork(networkKey || currentNetwork());
+        return [...new Set(networks[key].mossProviders || [networks[key].moss])];
     }
 
     /** Read the current network from a given localStorage key, with fallback. */
@@ -504,6 +526,7 @@ const LICHEN_CONFIG = (() => {
         rpc,
         ws,
         moss,
+        mossProviders,
 
         // Network selection
         currentNetwork,

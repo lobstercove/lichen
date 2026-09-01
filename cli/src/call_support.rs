@@ -10,6 +10,7 @@ pub(super) async fn handle_call(
     contract: String,
     function: String,
     args: String,
+    value_spores: u64,
     keypair: Option<PathBuf>,
 ) -> Result<()> {
     let path = keypair.unwrap_or_else(|| keypair_mgr.default_keypair_path());
@@ -24,10 +25,17 @@ pub(super) async fn handle_call(
     println!("🦞 Calling contract: {}", contract);
     println!("📞 Function: {}", function);
     println!("📋 Args: {}", args);
+    println!("💰 Attached value: {} spores", value_spores);
     println!();
 
     let signature = client
-        .call_contract(&caller, &contract_addr, function.clone(), args_bytes, 0)
+        .call_contract(
+            &caller,
+            &contract_addr,
+            function.clone(),
+            args_bytes,
+            value_spores,
+        )
         .await?;
 
     println!("✅ Contract called!");

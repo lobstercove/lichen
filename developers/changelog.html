@@ -79,6 +79,79 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.266 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.266</span>
+                    <span class="changelog-date">August 30, 2026</span>
+                </div>
+                <h3 class="changelog-title">Deterministic Archive V2 Checkpoints and Complete Release Surface</h3>
+
+                <div class="changelog-section" data-type="improved">
+                    <h4><i class="fas fa-database" style="color: var(--primary)"></i> Archive V2</h4>
+                    <ul>
+                        <li><strong>Coherent checkpoint history</strong> &mdash; release checkpoints materialize every
+                            bounded public-history category from the coherent hot/cold view into hot-only staging before
+                            Archive V2 segment construction.</li>
+                        <li><strong>Deterministic block bodies</strong> &mdash; node-local commit-certificate
+                            presentation is normalized so validators produce identical segment and catalog bytes for
+                            the same canonical history.</li>
+                        <li><strong>Safe catalog handoff</strong> &mdash; checkpoint profiles choose the earliest
+                            source-backed tail required after the admitted catalog, bounded by the configured extension
+                            window.</li>
+                        <li><strong>Node-local telemetry isolation</strong> &mdash; cold migration cursors no longer
+                            enter network snapshot statistics.</li>
+                        <li><strong>Physical bounded checkpoints</strong> &mdash; hot-repair checkpoints rewrite and
+                            compact public history to the advertised window, remove non-portable operational metadata,
+                            and reserve the temporary rewrite allocation before construction. Their physical cadence is
+                            10,000 slots; legacy profiles retain the existing 1,000-slot cadence.</li>
+                        <li><strong>Concurrent publication guard</strong> &mdash; dual-R2 catalog replacement is bound
+                            to a stable authenticated preflight ETag with <code>If-Match</code>, so a concurrent writer
+                            causes an abort instead of a lost catalog update.</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="new">
+                    <h4><i class="fas fa-hard-drive" style="color: var(--primary)"></i> Moss Storage</h4>
+                    <ul>
+                        <li><strong>Provider-signed receipts</strong> &mdash; providers sign the canonical upload
+                            owner, owner-scoped storage ID, request nonce, content commitment, size, price, gateway, and staging state
+                            with their ML-DSA identity; clients verify every field before submitting a storage request.</li>
+                        <li><strong>Roster-bound assignment</strong> &mdash; <code>store_data_v3</code> binds initial
+                            confirmations to the exact unique providers whose receipts the owner accepted. A slashed
+                            assigned provider opens permissionless replacement so replication can heal.</li>
+                        <li><strong>Copied-hash front-run protection</strong> &mdash; V3 derives each request ID as
+                            <code>SHA-256("lichen-moss-storage-id-v1" || owner || content_root || request_nonce)</code>.
+                            Content URIs remain portable while identical or repeated content has independent custody,
+                            payment, challenge, and close state.</li>
+                        <li><strong>Deduplicated retention safety</strong> &mdash; providers persist a separate durable
+                            association and marker set for each request, so closing one owner's assignment cannot delete
+                            a shared immutable object that another live request still needs.</li>
+                        <li><strong>Logical capacity reservations</strong> &mdash; signed, unconfirmed associations reserve
+                            their full logical size locally and survive restart. Providers refuse receipts that would
+                            overbook registered capacity even when object bytes deduplicate.</li>
+                        <li><strong>Replay-safe quotas</strong> &mdash; failed and idempotent uploads refund their
+                            temporary owner quota charge, preventing receipt replay from consuming allowance without a
+                            newly stored object.</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-shield-halved" style="color: var(--warning)"></i> Security and releases</h4>
+                    <ul>
+                        <li><strong>Historical shielded scheme</strong> &mdash; unconstrained scheme 0x01 proof
+                            acceptance remains disabled and all shielded mutations fail closed pending a sound,
+                            versioned successor and custody decision.</li>
+                        <li><strong>Complete Linux service bundle</strong> &mdash; signed Linux archives now include
+                            <code>lichen-moss-provider</code> alongside validator, custody, faucet, archive, CLI, proof,
+                            genesis, migration, and contract artifacts.</li>
+                        <li><strong>Developer surface parity</strong> &mdash; source checks now require every native RPC
+                            method, contract ABI function, service binary, and current SDK version to appear in the
+                            developer portal.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.203 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

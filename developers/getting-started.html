@@ -210,13 +210,13 @@ cp target/release/lichen ~/.cargo/bin/</code></pre>
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code>$ lichen --version
-		lichen 0.5.265</code></pre>
+		lichen 0.5.266</code></pre>
             </div>
 
-            <p>The output above describes the current source candidate. Public-network operators must install only a
-                signed release artifact and verify its detached post-quantum checksum signature; the currently signed
-                testnet release remains <code>v0.5.263</code> until <code>v0.5.265</code> completes the release gates.
-                Immutable tag <code>v0.5.264</code> failed closed and produced no installable release assets.</p>
+            <p>The output above identifies this source release line. Public-network operators install only a published
+                GitHub release artifact after verifying its checksum, detached ML-DSA checksum signature, release
+                trust anchor, and provenance attestation. A tag or local build without those assets is not an
+                installable network release.</p>
 
             <h3>Make <code>lichen</code> discoverable in new spores</h3>
 

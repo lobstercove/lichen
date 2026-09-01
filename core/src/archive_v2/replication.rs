@@ -318,6 +318,35 @@ impl ArchiveV2Replicator {
             store_mirror_journal(journal_path, &journal)?;
             journal
         };
+        if journal.catalog_published {
+            // A journal proves that the configured destinations acknowledged
+            // this catalog at an earlier point in time; it cannot prove they
+            // still retain those bytes. Revalidate the complete destination
+            // inventory before accepting a completed cursor. If durability
+            // has regressed, resume from the earliest object that no longer
+            // satisfies policy (or republish only the catalog when all object
+            // copies remain valid).
+            let inventory =
+                inspect_archive_v2_replica_inventory(catalog, &self.destinations, self.policy)?;
+            if !inventory.policy_satisfied {
+                let resume_index = inventory
+                    .objects
+                    .iter()
+                    .position(|object| {
+                        object.verified_replicas.len() < self.policy.required_replicas
+                            || object.verified_failure_domains.len()
+                                < self.policy.required_failure_domains
+                    })
+                    .unwrap_or(manifests.len());
+                journal.next_object_index = resume_index as u64;
+                journal.last_object_hash = resume_index
+                    .checked_sub(1)
+                    .and_then(|index| manifests.get(index))
+                    .map(|manifest| manifest.segment_object_hash);
+                journal.catalog_published = false;
+                store_mirror_journal(journal_path, &journal)?;
+            }
+        }
         let mut report = ArchiveV2MirrorReport {
             catalog_root: catalog.catalog_root,
             next_object_index: journal.next_object_index,
@@ -1063,6 +1092,55 @@ mod tests {
             ),
             Err(ArchiveV2Error::WrongRoot)
         ));
+    }
+
+    #[test]
+    fn completed_mirror_journal_revalidates_and_repairs_lost_destination_object() {
+        let (catalog, bytes, source) = fixture();
+        let manifest = &catalog.entries[0].manifest;
+        let destination_root = tempdir().unwrap();
+        let destination: Arc<dyn ArchiveV2ReplicaTransport> = Arc::new(
+            ArchiveV2DirectoryReplica::new(
+                "destination",
+                "region-a",
+                destination_root.path(),
+                true,
+            )
+            .unwrap(),
+        );
+        let policy = ArchiveV2ReplicaPolicy {
+            required_replicas: 1,
+            required_failure_domains: 1,
+            require_authenticated: true,
+        };
+        let replicator =
+            ArchiveV2Replicator::new(vec![source], vec![destination.clone()], policy).unwrap();
+        let journal_root = tempdir().unwrap();
+        let journal = journal_root.path().join("completed-repair.journal");
+        let limits = ArchiveV2MirrorLimits {
+            max_objects: 1,
+            max_bytes: 1024 * 1024,
+        };
+
+        let first = replicator.mirror_pass(&catalog, &journal, limits).unwrap();
+        assert!(first.complete);
+        fs::remove_file(replica_object_path(
+            destination_root.path(),
+            &manifest.segment_object_hash,
+        ))
+        .unwrap();
+
+        let repaired = replicator.mirror_pass(&catalog, &journal, limits).unwrap();
+        assert!(repaired.complete);
+        assert_eq!(repaired.mirrored_objects, 1);
+        assert_eq!(repaired.next_object_index, 1);
+        assert_eq!(
+            destination
+                .fetch_object(&manifest.segment_object_hash)
+                .unwrap()
+                .unwrap(),
+            bytes
+        );
     }
 
     #[test]

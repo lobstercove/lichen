@@ -1666,7 +1666,12 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                     <p>On-chain coordination layer for decentralized data storage. Data owners submit storage requests
                         with a data hash, desired replication factor, and payment. <strong>Storage providers</strong>
                         register capacity and confirm storage. Providers earn rewards proportional to duration &times;
-                        data size. Up to 10&times; replication across 16 providers.</p>
+                        data size. <code>store_data_v3</code> binds initial confirmations to the exact unique provider
+                        roster whose signed upload receipts the owner accepted and derives an owner-scoped request ID as
+                        SHA-256(domain || owner || content root || fresh request nonce). This prevents copied-hash request
+                        front-running, permits repeat requests, and keeps <code>moss://</code> URIs content-addressed.
+                        Permissionless replacement opens only after
+                        an assigned provider is slashed. Up to 10&times; replication across 16 providers.</p>
                     <div class="sub-heading">Configuration</div>
                     <table class="const-table">
                         <tr>
@@ -1692,7 +1697,9 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                     </table>
                     <div class="sub-heading">Selected source functions</div>
                     <div class="fn-list"><span class="fn-chip">store_data</span><span
+                            class="fn-chip">store_data_v2</span><span class="fn-chip">store_data_v3</span><span
                             class="fn-chip">confirm_storage</span><span class="fn-chip">get_storage_info</span><span
+                            class="fn-chip">get_storage_content_hash</span><span
                             class="fn-chip">register_provider</span><span
                             class="fn-chip">claim_storage_rewards</span><span class="fn-chip">initialize</span><span
                             class="fn-chip">set_challenge_window</span><span
@@ -2885,7 +2892,7 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                         probe_canonical_royalty, migrate_v3_auction, migrate_v3_offer, complete_v3_migration, ma_pause,
                         ma_unpause, claim_unpaid_payout, get_unpaid_payout, set_fee_treasury, set_platform_fee,
                         withdraw_platform_fees, get_platform_fees, get_offer_info, get_auction_info, get_auction_stats,
-                        get_marketplace_config, get_v3_migration_status</td>
+                        get_marketplace_config, get_v3_migration_status, get_collection_stats</td>
                 </tr>
                 <tr>
                     <td>lichenoracle</td>
@@ -2935,13 +2942,14 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                 </tr>
                 <tr>
                     <td>moss_storage</td>
-                    <td>store_data, store_data_v2, quote_storage_v2, get_storage_pricing_v2_config, confirm_storage,
-                        get_storage_info, register_provider, claim_storage_rewards, claim_storage_rewards_page,
+                    <td>store_data, store_data_v2, store_data_v3, quote_storage_v2, get_storage_pricing_v2_config, confirm_storage,
+                        get_storage_info, get_storage_content_hash, register_provider, claim_storage_rewards, claim_storage_rewards_page,
                         get_provider_reward_entry_count, initialize, set_licn_token, set_challenge_window,
                         set_slash_percent, stake_collateral, set_storage_price, get_storage_price,
                         get_storage_max_price, get_confirmed_storage_price, get_provider_stake, get_provider_info,
                         close_storage, is_storage_closed, deactivate_provider, withdraw_collateral, issue_challenge,
-                        get_challenge, slash_provider, claim_unpaid_payout, get_unpaid_payout, get_platform_stats</td>
+                        respond_challenge, respond_challenge_merkle, get_challenge, slash_provider,
+                        claim_unpaid_payout, get_unpaid_payout, get_platform_stats</td>
                 </tr>
                 <tr>
                     <td>dex_core</td>
@@ -3052,6 +3060,43 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                     <td>shielded_pool</td>
                     <td>initialize, pause, unpause, get_pool_stats, get_merkle_root, check_nullifier, get_commitments,
                         shield, unshield, transfer, get_execution_model</td>
+                </tr>
+            </table>
+
+            <h3>Opcode-dispatched ABI completion</h3>
+            <p>Several DEX-family contracts export a compact <code>call</code> entry point and dispatch the public
+                functions below by ABI opcode. These names are part of the callable contract surface even though they
+                are not separate WASM exports. The release gate checks every name and opcode against both the ABI and
+                the built WASM dispatcher.</p>
+            <table class="const-table">
+                <tr><th>Contract</th><th>ABI functions completing the cards and export matrix</th></tr>
+                <tr>
+                    <td>dex_amm</td>
+                    <td>swap_exact_out, get_position_count, get_amm_stats, collect_protocol_fees,
+                        sync_lp_rewards</td>
+                </tr>
+                <tr>
+                    <td>dex_analytics</td>
+                    <td>get_global_stats</td>
+                </tr>
+                <tr>
+                    <td>dex_core</td>
+                    <td>get_fee_treasury, execute_unpause, get_user_orders, get_open_order_count, claim_rebate,
+                        set_governance_address</td>
+                </tr>
+                <tr>
+                    <td>dex_governance</td>
+                    <td>get_governance_stats, get_voter_count, set_core_address</td>
+                </tr>
+                <tr>
+                    <td>dex_margin</td>
+                    <td>get_margin_stats, set_oracle_contract, update_mark_price_from_oracle,
+                        set_collateral_token_address, deposit_insurance, set_oracle_market, activate_funding_v2,
+                        finalize_funding_v2_migration, finalize_cross_v2_migration, activate_cross_v2</td>
+                </tr>
+                <tr>
+                    <td>dex_router</td>
+                    <td>get_total_volume_routed, get_router_stats</td>
                 </tr>
             </table>
         </div>

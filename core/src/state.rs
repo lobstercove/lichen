@@ -63,7 +63,7 @@ pub use metrics_state::{Metrics, MetricsStore};
 pub use shielded_state::ShieldedStateRebuildReport;
 pub use snapshot_io::{
     AccountTxsRebuildReport, AccountTxsSlotInspection, AccountTxsSourceInspection, CheckpointMeta,
-    GovernedProposalTxBackfillReport,
+    CheckpointSnapshotProfile, GovernedProposalTxBackfillReport,
 };
 
 #[cfg(test)]
@@ -278,8 +278,9 @@ const CF_RESTRICTION_INDEX_CODE_HASH: &str = "restriction_index_code_hash"; // c
 ///
 /// Each entry maps to one RocksDB column family in `snapshot_io`. This includes
 /// both state-rooted data and public history/index families so a checkpoint-
-/// joined RPC origin serves the same historical views as long-running nodes.
-/// Validator, stake-pool, and MossStake pool snapshots are special validator-
+/// joined RPC origin receives either complete legacy history or the exact
+/// recent window bound to its independently admitted Archive V2 catalog.
+/// Validator, stake-pool, and MossStake pool snapshots are special validator
 /// level categories because they deserialize through their domain APIs.
 pub const STATE_SNAPSHOT_CATEGORIES: &[&str] = &[
     "accounts",
@@ -516,6 +517,12 @@ pub struct StateStore {
     /// Optional Archive V2 reader. This is an operational public-history
     /// source only and never participates in consensus state transitions.
     archive_v2_reader: Arc<std::sync::RwLock<Option<Arc<crate::archive_v2::ArchiveV2Reader>>>>,
+    /// Verified configured catalog used only to authorize a catalog-bound
+    /// checkpoint during a fresh join. Keeping this separate from the reader
+    /// prevents an unadmitted node from serving Archive V2 history before the
+    /// restored hot suffix and catalog handoff have been proved.
+    archive_v2_deferred_checkpoint_catalog:
+        Arc<std::sync::RwLock<Option<Arc<crate::archive_v2::ArchiveV2Catalog>>>>,
     /// Genesis-only MossStake mode declaration captured before a non-archive
     /// Archive V2 role hides legacy deep history. This is process-local and is
     /// restored from the checksummed Archive V2 role marker on later starts.
@@ -853,6 +860,9 @@ mod tests {
         let pk = Pubkey([0x7A; 32]);
         let acct = Account::new(3, pk);
         state.put_account(&pk, &acct).unwrap();
+        state
+            .put_block_atomic(&make_test_block(7), Some(7), Some(7))
+            .unwrap();
         let expected_root = state.compute_state_root_cached();
 
         let meta = state
@@ -915,6 +925,7 @@ mod tests {
                 state_root: [slot as u8; 32],
                 created_at: slot,
                 total_accounts: 0,
+                snapshot_profile: CheckpointSnapshotProfile::default(),
             };
             std::fs::write(
                 checkpoint_dir.join("checkpoint_meta.json"),
@@ -977,6 +988,7 @@ mod tests {
                 state_root: [slot as u8; 32],
                 created_at: slot,
                 total_accounts: 0,
+                snapshot_profile: CheckpointSnapshotProfile::default(),
             };
             std::fs::write(
                 checkpoint_dir.join("checkpoint_meta.json"),
@@ -1057,6 +1069,7 @@ mod tests {
                 state_root: [slot as u8; 32],
                 created_at: slot,
                 total_accounts: 0,
+                snapshot_profile: CheckpointSnapshotProfile::default(),
             };
             std::fs::write(
                 path.join("checkpoint_meta.json"),
@@ -1117,6 +1130,9 @@ mod tests {
         }
         state.rebuild_sparse_state_commitment(true).unwrap();
         assert!(state.uses_sparse_state_commitment());
+        state
+            .put_block_atomic(&make_test_block(11), Some(11), Some(11))
+            .unwrap();
         let expected_root = state.compute_state_root_cached();
 
         let meta = state
@@ -6856,11 +6872,35 @@ mod tests {
                     observed.saturating_sub(1),
                     checkpoint_number
                 ));
-                if let Err(error) = checkpoint_state
-                    .create_checkpoint(checkpoint_dir.to_str().unwrap(), observed.saturating_sub(1))
+                let requested_slot = observed.saturating_sub(1);
+                match checkpoint_state
+                    .create_checkpoint(checkpoint_dir.to_str().unwrap(), requested_slot)
                 {
-                    checkpoint_errors.lock().unwrap().push(error);
-                    break;
+                    Ok(meta) => {
+                        if meta.slot != requested_slot {
+                            checkpoint_errors.lock().unwrap().push(format!(
+                                "checkpoint metadata slot {} differs from requested slot {}",
+                                meta.slot, requested_slot
+                            ));
+                            break;
+                        }
+                    }
+                    Err(error) if error.starts_with("Checkpoint source advanced while slot ") => {
+                        if checkpoint_dir.exists() {
+                            checkpoint_errors.lock().unwrap().push(format!(
+                                "racing checkpoint published a mismatched source at {}: {}",
+                                checkpoint_dir.display(),
+                                error
+                            ));
+                            break;
+                        }
+                        thread::yield_now();
+                        continue;
+                    }
+                    Err(error) => {
+                        checkpoint_errors.lock().unwrap().push(error);
+                        break;
+                    }
                 }
                 checkpoint_number = checkpoint_number.saturating_add(1);
                 thread::sleep(Duration::from_millis(4));
@@ -8504,6 +8544,9 @@ mod tests {
             state.get_program_calls(&program, 10, None).unwrap().len(),
             1
         );
+        state
+            .put_block_atomic(&make_test_block(10), Some(10), Some(10))
+            .unwrap();
 
         state
             .create_checkpoint(checkpoint_path.to_str().unwrap(), 10)

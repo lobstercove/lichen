@@ -167,6 +167,7 @@ docs/audits/*
 !docs/audits/MAINNET_READINESS_DEEP_AUDIT_2026-07-10.md
 !docs/audits/SHIELDED_SCHEME_0X01_FAIL_CLOSED_AND_TRANSITION_PLAN_2026-08-28.md
 !docs/audits/V0.5.264_PRODUCTION_READINESS_2026-08-28.md
+!docs/audits/V0.5.266_PRODUCTION_READINESS_2026-09-01.md
 !docs/deployment/
 docs/deployment/*
 !docs/deployment/ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md

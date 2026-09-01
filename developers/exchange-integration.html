@@ -94,14 +94,15 @@
             <section id="status">
                 <h1>Exchange Integration</h1>
                 <p class="lead">
-                    Native LICN exchange integration is published for testnet-only integration testing under
-                    exchange-testnet-v0.5.221. This page is the exchange-facing portal version of the package: metadata,
+                    Native LICN exchange integration is preparing the testnet-only candidate
+                    exchange-testnet-v0.5.266. This page is the exchange-facing portal source for the package: metadata,
                     address handling, deposits, withdrawals, finality, archive expectations, operations contacts, and
                     validation gates are documented here directly. GitHub remains the immutable source and audit trail.
                 </p>
                 <div class="callout callout-warning">
                     <div class="callout-title">Testnet package status</div>
-                    The current package is published for testnet-only integration under exchange-testnet-v0.5.221.
+                    The package is not published yet. Candidate exchange-testnet-v0.5.266 remains blocked on the signed
+                    validator rollout, Archive V2 parity, package signature, provenance, and final public readiness gate.
                     Do not present it as mainnet-ready or accept mainnet LICN deposits until the mainnet launch
                     exchange handoff passes, the readiness gate is rerun with full scope, and a signed
                     mainnet-inclusive package is published.
@@ -125,16 +126,16 @@
                     <tbody>
                         <tr>
                             <td>Package tag</td>
-                            <td><code>exchange-testnet-v0.5.221</code></td>
+                            <td><code>exchange-testnet-v0.5.266</code></td>
                         </tr>
                         <tr>
                             <td>Package release</td>
-                            <td><a href="https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221"
+                            <td><a href="https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.266"
                                     target="_blank" rel="noopener">GitHub release</a></td>
                         </tr>
                         <tr>
                             <td>Current rollback anchor</td>
-                            <td><code>v0.5.223</code></td>
+                            <td><code>v0.5.265</code></td>
                         </tr>
                         <tr>
                             <td>Scope</td>
@@ -143,7 +144,7 @@
                         </tr>
                         <tr>
                             <td>Final readiness gate</td>
-                            <td><code>python3 scripts/qa/exchange_public_readiness.py --scope testnet --status-approved --release-tag-selected</code></td>
+                            <td><code>python3 scripts/qa/exchange_public_readiness.py --scope testnet --status-approved --release-stage published</code></td>
                         </tr>
                     </tbody>
                 </table>
@@ -482,7 +483,7 @@ valid_native_address(address):
                 </p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Shell</span></div>
-                    <pre><code>python3 scripts/qa/exchange_public_readiness.py --scope full --status-approved --release-tag-selected</code></pre>
+                    <pre><code>python3 scripts/qa/exchange_public_readiness.py --scope full --status-approved --release-stage published</code></pre>
                 </div>
             </section>
 
@@ -495,33 +496,33 @@ valid_native_address(address):
                 <div>
                     <div class="method-card">
                         <h3><a
-                                href="https://github.com/lobstercove/lichen/blob/exchange-testnet-v0.5.221/docs/guides/EXCHANGE_INTEGRATION.md"
+                                href="https://github.com/lobstercove/lichen/blob/exchange-testnet-v0.5.266/docs/guides/EXCHANGE_INTEGRATION.md"
                                 target="_blank" rel="noopener">Exchange Integration Guide</a></h3>
                         <p>Full source guide for deposit, withdrawal, polling, retry, finality, archive, and
                             reconciliation.</p>
                     </div>
                     <div class="method-card">
                         <h3><a
-                                href="https://github.com/lobstercove/lichen/blob/exchange-testnet-v0.5.221/docs/guides/EXCHANGE_CHAIN_METADATA.md"
+                                href="https://github.com/lobstercove/lichen/blob/exchange-testnet-v0.5.266/docs/guides/EXCHANGE_CHAIN_METADATA.md"
                                 target="_blank" rel="noopener">Exchange Chain Metadata</a></h3>
                         <p>Exchange metadata sheet with source mapping and deferred mainnet rows.</p>
                     </div>
                     <div class="method-card">
                         <h3><a
-                                href="https://github.com/lobstercove/lichen/blob/exchange-testnet-v0.5.221/docs/guides/EXCHANGE_ADDRESS_VALIDATION_VECTORS.md"
+                                href="https://github.com/lobstercove/lichen/blob/exchange-testnet-v0.5.266/docs/guides/EXCHANGE_ADDRESS_VALIDATION_VECTORS.md"
                                 target="_blank" rel="noopener">Address Validation Vectors</a></h3>
                         <p>Native Base58 validation vectors and invalid cases.</p>
                     </div>
                     <div class="method-card">
                         <h3><a
-                                href="https://github.com/lobstercove/lichen/blob/exchange-testnet-v0.5.221/docs/deployment/EXCHANGE_OPERATIONS_PACK.md"
+                                href="https://github.com/lobstercove/lichen/blob/exchange-testnet-v0.5.266/docs/deployment/EXCHANGE_OPERATIONS_PACK.md"
                                 target="_blank" rel="noopener">Exchange Operations Pack</a></h3>
                         <p>Status page, contacts, upgrade policy, rollback policy, release signatures, and archive
                             policy.</p>
                     </div>
                     <div class="method-card">
                         <h3><a
-                                href="https://github.com/lobstercove/lichen/blob/exchange-testnet-v0.5.221/docs/strategy/EXCHANGE_LISTING_READINESS_TRACKER.md"
+                                href="https://github.com/lobstercove/lichen/blob/exchange-testnet-v0.5.266/docs/strategy/EXCHANGE_LISTING_READINESS_TRACKER.md"
                                 target="_blank" rel="noopener">Readiness Tracker</a></h3>
                         <p>Gate status, source map, evidence, and execution record.</p>
                     </div>

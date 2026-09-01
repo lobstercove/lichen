@@ -643,6 +643,79 @@
           0
         ]
       }
+    },
+    {
+      "name": "store_data_v3",
+      "opcode": 33,
+      "description": "Registers pricing-v2 storage against an exact, unique, owner-approved provider roster obtained from provider-signed upload receipts. The contract derives a request-unique owner-scoped storage ID as SHA-256(lichen-moss-storage-id-v1 || owner || content Merkle root || request nonce), preventing copied-hash front-running and permitting repeat storage while moss:// URIs remain content-addressed. Confirmations are roster-bound until a selected provider is slashed, after which permissionless replacement restores replication liveness.",
+      "params": [
+        {
+          "name": "owner_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "data_hash_ptr",
+          "type": "Pubkey",
+          "description": "Original 32-byte SHA-256/Merkle content commitment; the stored request key is owner-scoped."
+        },
+        {
+          "name": "request_nonce_ptr",
+          "type": "Pubkey",
+          "description": "Fresh nonzero 32-byte request nonce retained by the client and bound into every upload authorization and receipt."
+        },
+        {
+          "name": "size",
+          "type": "u64"
+        },
+        {
+          "name": "replication_factor",
+          "type": "u8"
+        },
+        {
+          "name": "duration_slots",
+          "type": "u64"
+        },
+        {
+          "name": "max_price_per_byte_per_slot",
+          "type": "u64"
+        },
+        {
+          "name": "providers_ptr",
+          "type": "bytes",
+          "description": "Concatenated 32-byte provider addresses; exactly replication_factor entries."
+        },
+        {
+          "name": "providers_len",
+          "type": "u32"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_storage_content_hash",
+      "opcode": 34,
+      "description": "Returns the original 32-byte content commitment for an owner-scoped V3 storage ID. Legacy and V2 requests return their identifier because it is already the content commitment.",
+      "params": [
+        {
+          "name": "storage_id_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "returns": {
+        "type": "bytes",
+        "description": "Original 32-byte content commitment in return data."
+      },
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     }
   ]
 }

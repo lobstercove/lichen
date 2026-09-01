@@ -85,28 +85,76 @@
         return '';
     }
 
+    function contentUrls(uri) {
+        var value = String(uri || '').trim();
+        if (value.indexOf('moss://') === 0 && typeof window.resolveMossUris === 'function') {
+            return window.resolveMossUris(value);
+        }
+        var single = contentUrl(value);
+        return single ? [single] : [];
+    }
+
+    async function readBoundedResponseText(response, maxBytes) {
+        var declared = response.headers.get('content-length');
+        if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > maxBytes)) {
+            throw new Error('metadata exceeds 1 MiB');
+        }
+        if (!response.body || typeof response.body.getReader !== 'function') {
+            throw new Error('bounded metadata streaming is unavailable');
+        }
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder('utf-8', { fatal: true });
+        var text = '';
+        var total = 0;
+        while (true) {
+            var chunk = await reader.read();
+            if (chunk.done) break;
+            total += chunk.value.byteLength;
+            if (total > maxBytes) {
+                await reader.cancel().catch(function () {});
+                throw new Error('metadata exceeds 1 MiB');
+            }
+            text += decoder.decode(chunk.value, { stream: true });
+        }
+        return text + decoder.decode();
+    }
+
+    async function fetchBoundedMetadata(url) {
+        var controller = new AbortController();
+        var timeout = setTimeout(function () { controller.abort(); }, 10000);
+        try {
+            var response = await fetch(url, {
+                method: 'GET',
+                credentials: 'omit',
+                signal: controller.signal,
+            });
+            if (!response.ok) throw new Error('metadata HTTP ' + response.status);
+            return JSON.parse(await readBoundedResponseText(response, 1048576));
+        } finally {
+            clearTimeout(timeout);
+        }
+    }
+
     async function resolveMetadataImage(metadataUri, fallback) {
         var uri = String(metadataUri || '').trim();
         if (!uri) return fallback;
         if (metadataImageCache[uri]) return metadataImageCache[uri];
-        var url = contentUrl(uri);
-        if (!url) return fallback;
-        try {
-            var response = await fetch(url, { method: 'GET', credentials: 'omit' });
-            if (!response.ok) throw new Error('metadata HTTP ' + response.status);
-            var declaredLength = Number(response.headers.get('content-length') || 0);
-            if (declaredLength > 1048576) throw new Error('metadata exceeds 1 MiB');
-            var text = await response.text();
-            if (text.length > 1048576) throw new Error('metadata exceeds 1 MiB');
-            var metadata = JSON.parse(text);
-            var image = contentUrl(metadata && (metadata.image || metadata.media_uri));
-            if (!image) throw new Error('metadata has no supported image URI');
-            metadataImageCache[uri] = image;
-            return image;
-        } catch (error) {
-            console.warn('marketplace-data: could not resolve NFT metadata:', error.message || error);
-            return fallback;
+        var urls = contentUrls(uri);
+        if (!urls.length) return fallback;
+        var failures = [];
+        for (var urlIndex = 0; urlIndex < urls.length; urlIndex++) {
+            try {
+                var metadata = await fetchBoundedMetadata(urls[urlIndex]);
+                var image = contentUrl(metadata && (metadata.image || metadata.media_uri));
+                if (!image) throw new Error('metadata has no supported image URI');
+                metadataImageCache[uri] = image;
+                return image;
+            } catch (error) {
+                failures.push(error && error.message ? error.message : String(error));
+            }
         }
+        console.warn('marketplace-data: could not resolve NFT metadata:', failures.join(' | '));
+        return fallback;
     }
 
     async function hydrateNftMetadata(nft) {

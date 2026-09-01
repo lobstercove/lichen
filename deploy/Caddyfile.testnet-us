@@ -1,4 +1,4 @@
 # Reserved for US/genesis-host-only testnet overrides that are not generated
-# from host detection. setup.sh installs the custody route from either
+# from host detection. Approved host provisioning installs the custody route from either
 # deploy/Caddyfile.testnet-custody-local or
 # deploy/Caddyfile.testnet-custody-forwarder.

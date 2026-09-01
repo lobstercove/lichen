@@ -6,7 +6,8 @@ Use this document as the canonical workflow for:
 
 - local validator development via `scripts/start-local-3validators.sh`
 - local production-parity stack validation via `scripts/start-local-stack.sh`
-- VPS validator deployment via `deploy/setup.sh`
+- VPS validator deployment from verified signed-release artifacts via
+  `scripts/rolling-release-deploy.sh`
 - local full-stack extension when custody, faucet, and browser flows are needed
 - genesis DB creation and post-genesis bootstrap
 - signed release and signed metadata generation
@@ -14,17 +15,17 @@ Use this document as the canonical workflow for:
 
 This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
 
-Current testnet release candidate for this runbook is `v0.5.265`; keep signed
-`v0.5.263` as the immediate restart-safe anchor and rollback. Keep `v0.5.262`,
-`v0.5.260`, and `v0.5.258` as prior signed restart-safe evidence, and retain
-`v0.5.240` as
-the Archive V2 recovery anchor. The candidate must not be
-installed until its exact tag workflow, attestations, checksum, and detached
-PQ signature pass. Both releases are Archive V2 dual-reader capable. Preserve signed
-`v0.5.225` as pre-change evidence, but do not restart it on the mature activated
-testnet because it contains the initial post-effects replay-boundary defect.
-Neither `v0.5.229` nor any pre-schema-3 anchor can be used after required legacy
-rows are retired.
+The target testnet release for this runbook is `v0.5.266`; the current signed
+fleet release and immediate restart-safe anchor is `v0.5.265`. Install
+`v0.5.266` only after
+its exact tag workflow, attestations, checksums, detached PQ signature, and
+four-validator Archive V2 gate pass. Once the fleet is proven on `v0.5.266`,
+keep only those two signed release installations on each validator. Historical
+tags and audit records remain in Git; they are not live rollback binaries.
+`v0.5.265` remains Archive V2 dual-reader capable and must be retained until the
+new release, four-way V2 parity, and rollback rehearsal are recorded. Neither
+`v0.5.229` nor any pre-schema-3 anchor can be used after required legacy rows
+are retired.
 
 Mainnet launch must use the gated checklist in [MAINNET_LAUNCH_RUNBOOK.md](MAINNET_LAUNCH_RUNBOOK.md). That runbook is the owner-facing package for launching the 4-validator mainnet first, then enabling custody only after post-genesis verification and route-specific dust tests pass.
 
@@ -37,8 +38,8 @@ transparent historical reads, validator archive roles, migration, replication,
 capacity policy, and the temporary testnet-only 5 GiB / 50,000-slot response.
 The exact live-fleet completion and cadence plan is
 [ARCHIVE_V2_ACTIVATION_CADENCE_AND_VALIDATOR_LIVENESS_PLAN_2026-08-18.md](ARCHIVE_V2_ACTIVATION_CADENCE_AND_VALIDATOR_LIVENESS_PLAN_2026-08-18.md).
-It records the bounded US/EU verified-cache plus SEA/IN consensus-role
-transition, stable tail-building procedure, dual-R2 publication order, storage
+It records the bounded four-validator equal-policy verified-cache transition,
+stable tail-building procedure, dual-R2 publication order, storage
 gates, and the separate future offline-validator consensus design.
 
 Restriction schema activation policy: [RESTRICTION_SCHEMA_ACTIVATION.md](RESTRICTION_SCHEMA_ACTIVATION.md). RG-804 activation is testnet-only, uses `scripts/activate-restriction-schema-testnet.sh`, requires explicit owner approval for that exact activation, stops validators only long enough to set the shipped state-root schema flag, and records per-host sync evidence. It is not a reset path and must not copy chain state.
@@ -48,16 +49,17 @@ Restriction schema activation policy: [RESTRICTION_SCHEMA_ACTIVATION.md](RESTRIC
 | Workflow | Supported entrypoint |
 | --- | --- |
 | **VPS rolling signed-release update** | Non-destructive default for code-only upgrades: `LICHEN_RELEASE_TAG=vX.Y.Z scripts/rolling-release-deploy.sh testnet` |
+| **VPS coordinated signed-release update** | Required for consensus/storage-critical upgrades: `LICHEN_RELEASE_TAG=vX.Y.Z LICHEN_COORDINATED_RELEASE=1 scripts/rolling-release-deploy.sh testnet` |
 | **VPS clean-slate redeploy** | Owner-approved only: `LICHEN_RELEASE_TAG=vX.Y.Z LICHEN_OWNER_APPROVED_RESET='owner-approved:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247' LICHEN_CLEAN_SLATE_REDEPLOY_CONFIRM='clean-slate:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247' scripts/clean-slate-redeploy.sh testnet` |
 | **Testnet restriction schema activation** | Owner-approved only: `LICHEN_OWNER_APPROVED_RESTRICTION_SCHEMA_ACTIVATION='owner-approved:restriction-schema:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247' LICHEN_RESTRICTION_SCHEMA_ACTIVATION_CONFIRM='activate-restriction-schema:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247' scripts/activate-restriction-schema-testnet.sh` |
 | Local validator development | `scripts/start-local-3validators.sh` |
 | **Local production-parity stack** | `scripts/start-local-stack.sh testnet` |
-| VPS initial provisioning | `deploy/setup.sh` |
+| VPS initial provisioning | Exact signed-release unit/env/Caddy templates plus approved host-local secret provisioning |
 
-`deploy/setup.sh` is responsible for origin ingress as well: it installs the
-checked-in Caddy config from `deploy/Caddyfile.*`, enables `caddy`, and keeps raw
-RPC, WebSocket, faucet, and custody ports off the public firewall surface. On
-testnet, `LICHEN_EDGE_ORIGIN_HOST` and the host-specific root-owned token file
+Approved host-local provisioning installs the checked-in Caddy fragments from
+the exact signed release, enables `caddy`, and keeps raw RPC, WebSocket, faucet,
+custody, and Moss ports off the public firewall surface. On testnet, the
+host-specific origin name and root-owned token file
 append an authenticated public-CA origin used only by the four-origin
 Cloudflare Worker. Do not store that token in a systemd environment file.
 
@@ -71,7 +73,7 @@ Choose the least destructive path that matches the evidence:
 | Stalled BFT height after evidence capture, with a verified liveness fix that does not change genesis or state format | Coordinated signed-release recovery: install the signed release on every validator, stop all validator services, then start all validators from their preserved local state | Do not flush state, do not copy RocksDB, do not delete WAL, do not regenerate validator keys, and do not use clean-slate unless owner-approved evidence proves state is unrecoverable. |
 | One node is stale because of local disk/log pressure, bad service state, or a host rebuild | Fix disk/log pressure first, then rejoin only that node from its own preserved validator identity | Do not wipe the whole network. Do not copy RocksDB state from another validator. Delete that node's local `state-<net>` only when the operator explicitly approves that single-node rejoin. |
 | Genesis contents must change, launch rehearsal must start from block 0, or every node has provably inconsistent chain state | Owner-approved `LICHEN_RELEASE_TAG=vX.Y.Z scripts/clean-slate-redeploy.sh <testnet|mainnet>` | Destructive. Stop services, preserve and verify each validator keypair, install the signed release archive, flush chain state, create genesis on the seed, then start joiners from empty chain state so they sync from peers. |
-| Contract metadata, custody, faucet, Caddy, firewall, or secret ownership issue while the chain is healthy | Fix the affected service/run `deploy/setup.sh` or `scripts/first-boot-deploy.sh` as documented | Do not touch validator state. |
+| Contract metadata, custody, faucet, Moss, Caddy, firewall, or secret ownership issue while the chain is healthy | Fix only the affected service from the exact signed templates and approved host-local secret provisioning | Do not touch validator state. |
 
 Analytics v2 in `v0.5.224` is not a code-only rolling update. It changes the
 deterministic post-block state projection and must use a coordinated
@@ -106,7 +108,14 @@ Rolling-release rules:
   `state-<network>/genesis.json` consensus timing. Mixed active timing
   descriptors are an incident finding and must be included in the release
   analysis; they cannot be ignored because the chain is currently producing.
-- `scripts/rolling-release-deploy.sh` performs the VPS disk/log preflight, refuses non-live state backup directories under `/var/lib/lichen`, installs release binaries and `seeds.json`, restarts one validator at a time, proves the service PID/start timestamp changed, verifies every running validator process in the service executes the expected release binary hash, waits for local health, then checks the public RPC edge.
+- `scripts/rolling-release-deploy.sh` performs the VPS disk/log preflight,
+  refuses non-live state backup directories under `/var/lib/lichen`, installs
+  release binaries and `seeds.json`, proves installed/running hashes for the
+  validator, Archive V2 utility, custody, faucet, and Moss provider, waits for
+  local health, then checks the public RPC edge. Default mode restarts one
+  validator at a time. `LICHEN_COORDINATED_RELEASE=1` stops and stages every
+  host before it starts any new validator and is mandatory for
+  consensus/storage-critical releases.
 - Rolling release is the default for cadence, WebSocket, RPC indexing, and consensus performance fixes because those fixes do not require a new genesis.
 - Any release that changes replay, block import, post-block effects, fees, staking, oracle, or validator-set handling must include deterministic-state coverage for local-observer differences, including commit-certificate subsets.
 - Any release that changes genesis bootstrap, public-history indexes, archive/cold
@@ -296,7 +305,7 @@ Worker custom domain for both HTTPS and WSS; it has no separate public WS alias.
 | Post-genesis bootstrap | `scripts/first-boot-deploy.sh` |
 | VPS post-genesis keypair copy | `scripts/vps-post-genesis.sh` |
 | Manual single-node debugging | `lichen-start.sh` |
-| Release signing | `scripts/generate-release-keys.sh`, `scripts/sign-release.sh` |
+| Release signing | Offline maintainer procedure; the public repository contains only the trust anchor and verifier |
 | Signed metadata manifest | `scripts/generate-signed-metadata-manifest.js` |
 | Health check | `scripts/health-check.sh` |
 | Cloudflare Pages deploy | `scripts/deploy-cloudflare-pages.sh` |
@@ -454,7 +463,7 @@ Operational rules:
   the missing key/value bytes plus a 10 GiB reserve. Environment overrides may
   raise these floors; they must never lower them below the operation's measured
   write/compaction peak.
-- `deploy/setup.sh` installs persistent journald limits and, when sudo I/O logging already exists, installs compression and two-day tmpfiles retention for `/var/log/sudo-io`. Re-run `deploy/setup.sh` on old hosts before using them for a reset or launch.
+- The approved host baseline installs persistent journald limits and, when sudo I/O logging already exists, compression and two-day tmpfiles retention for `/var/log/sudo-io`. Re-apply that audited baseline on old hosts before using them for a reset or launch.
 - A node with `getHealth.result.disk.critical=true`, an HTTP 503 `stale_tip`, or an archive filesystem above the critical threshold is not eligible for Cloudflare/public RPC routing.
 - Below 20 GiB free the validator skips new checkpoints. Below 10 GiB it exits with status 78; the checked-in systemd unit and built-in supervisor both refuse to restart that persistent safety failure.
 
@@ -479,7 +488,7 @@ curl -s http://127.0.0.1:<rpc-port> -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}'
 ```
 
-Validators create RocksDB checkpoints every 1,000 slots for state snapshot sync and fork-repair. `LICHEN_CHECKPOINT_KEEP_COUNT` defaults to `2`; raise it only on hosts with enough disk headroom. `LICHEN_CHECKPOINT_MAX_BYTES` defaults to 8 GiB total logical checkpoint size, clamps at 128 GiB, and can be set to `0` only when an operator intentionally disables the size cap. Size pruning preserves the newest checkpoint even when one logical checkpoint exceeds the cap, so peers keep at least one snapshot source. Checkpoints are hard-linked to live RocksDB files, so `du` can attribute live DB bytes to `checkpoints/`; disk cleanup must remove only old `slot-*` checkpoint directories and never active state files. Checkpoint creation is fail-closed when filesystem capacity cannot be read or less than 20 GiB remains.
+Validators create legacy full-archive RocksDB checkpoints every 1,000 slots. Archive V2 hot-repair checkpoints physically compact public history to their advertised bounded window and therefore use a 10,000-slot cadence; this keeps fresh-join recovery practical without forcing a full bounded-history compaction every few minutes. An existing validator may publish this profile only after either a fresh Archive V2 sync or the stopped-validator `role-bootstrap` has proved exact catalog/state/WAL/identity/source parity and durably persisted its chain-and-role-bound state admission fingerprint. The role marker alone is insufficient. `LICHEN_CHECKPOINT_KEEP_COUNT` defaults to `2`; raise it only on hosts with enough disk headroom. `LICHEN_CHECKPOINT_MAX_BYTES` defaults to 8 GiB total logical checkpoint size, clamps at 128 GiB, and can be set to `0` only when an operator intentionally disables the size cap. Size pruning preserves the newest checkpoint even when one logical checkpoint exceeds the cap, so peers keep at least one snapshot source. Checkpoints are hard-linked to live RocksDB files, so `du` can attribute live DB bytes to `checkpoints/`; disk cleanup must remove only old `slot-*` checkpoint directories and never active state files. Hot-repair creation additionally reserves twice the measured public-history CF allocation for physical rebuild/compaction and skips safely when that headroom is unavailable. Legacy checkpoint creation remains fail-closed when filesystem capacity cannot be read or less than 20 GiB remains.
 
 Sparse Merkle node and leaf column families are derived current-state caches.
 They are rebuilt from canonical accounts and contract storage and are not a
@@ -511,7 +520,7 @@ checkpoint boundary and verify normal retention removes the prior hard-linked
 checkpoint and that sparse-node SST size remains bounded. Any root mismatch,
 RocksDB error, or approach to the runtime floor is a stop condition.
 
-If the backup `find` command returns non-live state backups, remove them only after confirming they are not the active `state-<net>` path and any required archive has been moved off-host. If `/var/log/sudo-io` or `/var/log/journal` is large, run `sudo journalctl --vacuum-size=512M` and `sudo systemd-tmpfiles --clean /etc/tmpfiles.d/sudo-io-retention.conf` after `deploy/setup.sh` has installed the retention files.
+If the backup `find` command returns non-live state backups, remove them only after confirming they are not the active `state-<net>` path and any required archive has been moved off-host. If `/var/log/sudo-io` or `/var/log/journal` is large, run `sudo journalctl --vacuum-size=512M` and `sudo systemd-tmpfiles --clean /etc/tmpfiles.d/sudo-io-retention.conf` after the approved host baseline has installed the retention files.
 
 ## Keypair password policy
 
@@ -939,10 +948,10 @@ Critical contract artifact invariant:
 - Genesis replay reads the top-level tracked files `contracts/<name>/<name>.wasm`.
 - `./scripts/build-all-contracts.sh` rewrites those top-level files.
 - Never rebuild contracts on only the genesis host after staging the repo to joining validators. That changes deterministic program addresses and guarantees a genesis state-root mismatch.
-- Choose one path per rollout and keep it consistent across every validator:
-  - stage one identical prebuilt repo bundle to every host and do not rebuild contracts on any host, or
-  - run `./scripts/build-all-contracts.sh` on every host before `deploy/setup.sh`.
-- `deploy/setup.sh` now prints the installed top-level contract bundle hash. Verify that hash matches on every VPS before creating genesis or starting joining validators.
+- Install the one identical contract WASM bundle from the verified signed
+  release on every validator. Never rebuild contracts on a validator VPS.
+- Verify the installed top-level contract bundle hash matches on every VPS
+  before creating genesis or starting joining validators.
 
 Example verification command:
 
@@ -956,19 +965,16 @@ Why the explicit `cargo` env load matters:
 
 ### Step 3: install services and env files
 
-On each VPS:
+Provision the base host once from the exact signed-release unit, env, and Caddy
+templates plus the approved secret manager. Release upgrades then use the
+coordinated signed-artifact deployer from the operator machine:
 
 ```bash
-sudo bash deploy/setup.sh testnet
+LICHEN_RELEASE_TAG=v0.5.266 LICHEN_COORDINATED_RELEASE=1 \
+  bash scripts/rolling-release-deploy.sh testnet
 ```
 
-Or for mainnet:
-
-```bash
-sudo bash deploy/setup.sh mainnet
-```
-
-This creates:
+The provisioned host layout contains:
 
 - system user `lichen`
 - `/etc/lichen`
@@ -980,7 +986,7 @@ This creates:
 Redacted deployment env templates live at `deploy/env-testnet.example`,
 `deploy/env-mainnet.example`, `deploy/custody-env.example`,
 `deploy/custody-env-mainnet.example`, and `deploy/faucet-env.example`. They are
-checked in CI against the systemd and `deploy/setup.sh` contracts. Use them only
+checked in CI against the systemd service contracts. Use them only
 as templates for secret-manager provisioning; never commit filled copies.
 
 Service names:
@@ -995,7 +1001,11 @@ Service names:
 
 Run these steps on the first validator only.
 
-`deploy/setup.sh` auto-generates `LICHEN_KEYPAIR_PASSWORD` in `/etc/lichen/env-<net>` and writes the same password into `/etc/lichen/custody-env[-mainnet]`. The validator, genesis builder, custody service, and threshold signer share the canonical encrypted keypair format, so the same password must be present anywhere those files are loaded.
+The approved secret manager provisions `LICHEN_KEYPAIR_PASSWORD` in
+`/etc/lichen/env-<net>` and the matching custody environment without printing
+it. The validator, genesis builder, custody service, and threshold signer share
+the canonical encrypted keypair format, so the same password must be present
+anywhere those files are loaded.
 
 To inspect or export your validator keypair at any time:
 
@@ -1076,6 +1086,11 @@ sudo systemctl start lichen-validator-testnet
 
 Preserve the generated `validator-keypair.json` across the state wipe and verify the preserved copy before deletion. Do not restore from `/var/lib/lichen/validator-keypair-testnet.json` unless you first prove that file's `publicKeyBase58` matches the expected host identity; stale fallback key files can silently replace a real validator identity.
 
+Each joining validator may start from an empty chain database but keeps its own
+encrypted validator identity, node identity, WAL continuity evidence when
+applicable, and pinned expected public key. Never copy another validator's key
+or RocksDB directory to make a join appear healthy.
+
 `lichen-genesis` fetches live genesis market prices from Binance first, then CoinGecko. Testnet may fall back to compiled defaults if both sources are unavailable; mainnet refuses that fallback. For mainnet or an audited reset, pass `--genesis-prices-file <path>` with `licn_usd_8dec`, `wsol_usd_8dec`, `weth_usd_8dec`, `wbnb_usd_8dec`, `wneo_usd_8dec`, `wgas_usd_8dec`, and `wbtc_usd_8dec` fields, or export `GENESIS_SOL_USD`, `GENESIS_ETH_USD`, `GENESIS_BNB_USD`, `GENESIS_NEO_USD`, `GENESIS_GAS_USD`, and `GENESIS_BTC_USD` from a trusted snapshot.
 
 ### Step 5: run post-genesis deploy on the genesis VPS (MANDATORY)
@@ -1149,7 +1164,10 @@ cmp /var/lib/lichen/state-testnet/seeds.json /etc/lichen/seeds.json
 
 For mainnet, compare `/var/lib/lichen/state-mainnet/seeds.json` instead.
 
-`deploy/setup.sh` installs the checked-in `seeds.json` to both `/etc/lichen/seeds.json` and `/var/lib/lichen/state-<net>/seeds.json`. Joining validators use that seed file directly; no bootstrap flags or env overrides are required.
+The signed release deployer installs the release's `seeds.json` to both
+`/etc/lichen/seeds.json` and `/var/lib/lichen/state-<net>/seeds.json`. Joining
+validators use that seed file directly; no bootstrap flags or env overrides are
+required.
 
 Copy the signed metadata manifest from the genesis VPS to each joining VPS, so all nodes serve the same contract address data to frontends:
 
@@ -1178,7 +1196,8 @@ sudo systemctl start lichen-validator-testnet
 
 ### Step 7: custody and faucet
 
-`deploy/setup.sh` creates the custody env files, but you still need to provision the secret material.
+Provision custody env files and secret material through the approved host-local
+secret workflow before enabling custody.
 
 Run `scripts/vps-post-genesis.sh` after genesis creation so `/etc/lichen/custody-treasury-<net>.json` is populated from the encrypted `genesis-primary-*.json` artifact with secure permissions. Despite the historical path name, this file is now the wrapped-token operational minter key used by custody for `mint()` flows; wrapped-token admin and contract ownership move to governance during genesis.
 
@@ -1356,7 +1375,7 @@ Firewall minimums:
 - testnet P2P: `7001/tcp`
 - mainnet P2P: `8001/tcp`
 
-Expose RPC, WS, faucet, and custody only through the reverse proxy layout you actually operate. The supported repo-managed layout lives in `deploy/Caddyfile.common`, `deploy/Caddyfile.testnet`, `deploy/Caddyfile.testnet-custody-local`, `deploy/Caddyfile.testnet-custody-forwarder`, `deploy/Caddyfile.testnet-us`, `deploy/Caddyfile.mainnet`, and `deploy/Caddyfile.mainnet-us`; `deploy/setup.sh` composes those fragments and validates the final Caddyfile before install. On testnet, only the US custody origin at `15.204.229.189` proxies `custody-testnet.lichen.network` to local `127.0.0.1:9105`; the other validator origins install the custody forwarder so Cloudflare cannot route custody traffic to an empty local port. Mainnet custody is defined in `deploy/Caddyfile.mainnet-us` on `127.0.0.1:9106`.
+Expose RPC, WS, faucet, custody, and Moss only through the reverse proxy layout you actually operate. The supported repo-managed layout lives in `deploy/Caddyfile.common`, the network/custody fragments, and the regional `deploy/Caddyfile.*-moss-*` fragments. Approved host-local automation composes those exact signed fragments and validates the final Caddyfile before install. On testnet, only the US custody origin at `15.204.229.189` proxies `custody-testnet.lichen.network` to local `127.0.0.1:9105`; the other validator origins install the custody forwarder so Cloudflare cannot route custody traffic to an empty local port. Mainnet custody is defined in `deploy/Caddyfile.mainnet-us` on `127.0.0.1:9106`.
 
 ### Step 10: backup, restore, and disaster recovery
 
@@ -1391,7 +1410,7 @@ Do not leave those keys only on the genesis host. Public RPC proxies bridge-depo
 
 `keypairs/deployer.json` is repo-local/private material and must not be synced to VPSes. If a previous deployment left an old root-owned copy on a host, an rsync warning about that path is not a chain-state issue; the fix is to exclude the file from code sync and keep the canonical deployer key in the approved operator secret path. Do not chmod, overwrite, or copy that old file to make rsync quiet.
 
-`deploy/setup.sh` can recreate `/var/lib/lichen/contracts` and the checked-in systemd units from the correct repo release, but include them in the backup if you want a faster single-archive restore and an easier offline drill.
+The exact signed release can recreate `/var/lib/lichen/contracts` and the checked-in systemd units, but include them in the backup if you want a faster single-archive restore and an easier offline drill.
 
 Create an offline snapshot with services stopped. Start from the repo release that is actually running on the host.
 
@@ -1468,8 +1487,8 @@ if [ "$NET" = "mainnet" ]; then
   OPTIONAL_SERVICE=
 fi
 
-cd ~/lichen
-sudo bash deploy/setup.sh "$NET"
+# Re-establish the base filesystem/unit layout from the exact signed release
+# and approved host provisioning before restoring preserved state.
 
 if [ -n "$OPTIONAL_SERVICE" ]; then
   sudo systemctl stop "$OPTIONAL_SERVICE"
@@ -1534,24 +1553,23 @@ Notes:
 
 ## Release signing and signed metadata
 
-### Generate an offline release signing key
-
-```bash
-./scripts/generate-release-keys.sh ./offline-release
-```
-
-This prints the trusted signer address. Embed that address in `validator/src/updater.rs` before relying on signed release verification.
-
-Keep the generated keypair offline.
-
 ### Sign a release artifact set
 
+The tag workflow creates the canonical `SHA256SUMS` and draft release. A
+maintainer signs those exact bytes with the offline release signer and attaches
+the resulting JSON-encoded native PQ `SHA256SUMS.sig` to the draft. Release
+private-key generation, storage, and signing tooling are deliberately outside
+the public repository. The signer address must remain identical to
+`deploy/release-trust-anchor.json` and `validator/src/updater.rs`.
+
+Before publication, verify the detached signature from a clean checkout:
+
 ```bash
-sha256sum <files...> > SHA256SUMS
-./scripts/sign-release.sh SHA256SUMS ./offline-release/release-signing-keypair.json
+node scripts/verify-release-checksums.mjs /path/to/downloaded-release-assets
 ```
 
-This writes `SHA256SUMS.sig` next to `SHA256SUMS`.
+Never regenerate `SHA256SUMS` after signing, and never publish a draft that is
+missing the signature or whose signer differs from the pinned trust anchor.
 
 ### Generate a signed metadata manifest
 
@@ -1701,7 +1719,9 @@ LICHEN_ORACLE_WS_URL=wss://stream.binance.us:9443/ws/solusdt@aggTrade/ethusdt@ag
 LICHEN_ORACLE_REST_URL=https://api.binance.us/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT","NEOUSDT","GASUSDT","BTCUSDT"]
 ```
 
-`deploy/setup.sh` auto-detects OVH US hosts (IP prefix `15.204.*`) and writes these overrides automatically. For other US hosting providers, manually uncomment or add the env vars in `/etc/lichen/env-<net>`.
+The approved host baseline sets these overrides on the current OVH US host. For
+other US hosting providers, explicitly set and verify the env vars in
+`/etc/lichen/env-<net>`.
 
 ### Diagnosing silent oracle failures
 
@@ -1746,7 +1766,9 @@ The deployer machine must have access to the release signing keypair, normally t
 
 ### The fatal mistake: generating keys on VPS
 
-**NEVER run `scripts/generate-release-keys.sh` on a VPS.** That script creates a brand-new keypair with a different public key. If you use the VPS-generated key to sign metadata, every frontend portal will reject the manifest because the signer doesn't match the hardcoded expected signer.
+**NEVER generate or rotate a release-signing key on a VPS.** A newly generated
+key has a different public identity. Metadata signed with it will be rejected by
+every frontend portal because the signer does not match the pinned trust anchor.
 
 ### Correct signing key use
 
@@ -1916,343 +1938,16 @@ Use this to map symptoms to action quickly:
 
 Prerequisites:
 - SSH access to all 4 VPSes (port 2222, user `ubuntu`, key-based auth)
-- `deploy/setup.sh` already run on all VPSes (systemd units, users, dirs exist)
+- the audited base host layout already exists on every VPS (systemd units,
+  users, directories, root-owned env files, and Caddy ingress)
 - release signing key available only on the deployer machine
 - Code committed and pushed to main
 
-### Manual phase-by-phase procedure (for debugging)
+### Retired historical manual reset procedure
 
-If the automated script fails or you need to debug, follow these phases manually:
+The former rsync/build-on-VPS/setup procedure was removed because it violated the current signed-release boundary and encouraged destructive state handling. Do not reconstruct it from old commits or handovers.
 
-### Prerequisites
-
-- Latest code committed and pushed
-- All CI checks green
-- SSH access to all 4 VPSes (port 2222, user `ubuntu`)
-- release signing key available only on the deployer machine
-- `LICHEN_KEYPAIR_PASSWORD` known (or will be auto-generated by setup.sh)
-
-### Phase 1: Stop everything (all 4 VPSes)
-
-```bash
-for VPS in 15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247; do
-  echo "=== Stopping $VPS ==="
-  ssh -p 2222 ubuntu@$VPS '
-    sudo systemctl stop lichen-faucet 2>/dev/null || true
-    sudo systemctl stop lichen-custody 2>/dev/null || true
-    sudo systemctl stop lichen-validator-testnet 2>/dev/null || true
-    echo "Services stopped"
-  '
-done
-```
-
-### Phase 2: Flush state (all 4 VPSes)
-
-```bash
-for VPS in 15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247; do
-  echo "=== Flushing $VPS ==="
-  ssh -p 2222 ubuntu@$VPS '
-    case "$(hostname -I | awk "{print \$1}")" in
-      15.204.229.189) EXPECTED_VALIDATOR_PUBKEY="7LFPJ8gqmAtjbhfRg1P4VXmTQJV4AeZxzws3UsA6SVq" ;;
-      37.59.97.61) EXPECTED_VALIDATOR_PUBKEY="6RMeoigHdJWB47pEZEMSj5gvT7nbJPYSfPqjcur9vMJ" ;;
-      15.235.142.253) EXPECTED_VALIDATOR_PUBKEY="6TghL7ioQz5R8pfrX1Qcfy8rNMzRP5F2pndmmRQ2sPm" ;;
-      148.113.43.247) EXPECTED_VALIDATOR_PUBKEY="6XhsGituXoWSd1wLtutZgdJve6gLrdSi7YhEx1ZDFHW" ;;
-      *) EXPECTED_VALIDATOR_PUBKEY="" ;;
-    esac
-    if [ -n "$EXPECTED_VALIDATOR_PUBKEY" ]; then
-      ACTUAL_VALIDATOR_PUBKEY=$(sudo python3 -c "import json; print(json.load(open(\"/var/lib/lichen/state-testnet/validator-keypair.json\"))[\"publicKeyBase58\"])")
-      test "$ACTUAL_VALIDATOR_PUBKEY" = "$EXPECTED_VALIDATOR_PUBKEY"
-    fi
-    PRESERVE="/var/lib/lichen/identity-preserve-state-testnet-$(date -u +%Y%m%dT%H%M%SZ)"
-    sudo install -d -m 700 -o root -g root "$PRESERVE/state-testnet"
-    sudo install -m 600 -o lichen -g lichen \
-      /var/lib/lichen/state-testnet/validator-keypair.json \
-      "$PRESERVE/state-testnet/validator-keypair.json"
-    sudo rm -rf /var/lib/lichen/state-testnet
-    sudo rm -rf /var/lib/lichen/.lichen
-    sudo rm -rf /var/lib/lichen/custody-db
-    sudo rm -f /etc/lichen/signed-metadata-manifest-testnet.json
-    sudo rm -f /var/lib/lichen/faucet-keypair-testnet.json
-    sudo rm -f /var/lib/lichen/airdrops.json
-    sudo install -d -m 750 -o lichen -g lichen /var/lib/lichen/state-testnet
-    sudo install -m 600 -o lichen -g lichen \
-      "$PRESERVE/state-testnet/validator-keypair.json" \
-      /var/lib/lichen/state-testnet/validator-keypair.json
-    echo "State flushed"
-  '
-done
-```
-
-### Phase 3: Rsync code to all VPSes
-
-```bash
-for VPS in 15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247; do
-  echo "=== Syncing to $VPS ==="
-  rsync -az --delete \
-    --exclude '.git' \
-    --exclude 'target' \
-    --exclude 'compiler/target' \
-    --exclude 'data' \
-    --exclude 'logs' \
-    --exclude 'node_modules' \
-    --exclude 'dist' \
-    -e 'ssh -p 2222' \
-    ./ ubuntu@$VPS:~/lichen/
-done
-```
-
-### Phase 4: Build on all VPSes
-
-```bash
-for VPS in 15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247; do
-  echo "=== Building on $VPS ==="
-  ssh -p 2222 ubuntu@$VPS '
-    cd ~/lichen
-    source ~/.cargo/env
-    # Touch source files so cargo sees them as newer than stale remote artifacts
-    find . \( -path ./target -o -path ./compiler/target -o -path ./node_modules \) -prune -o \
-      -type f \( -name "*.rs" -o -name "Cargo.toml" -o -name "Cargo.lock" \) -exec touch {} +
-    cargo build --release --bin lichen-validator --bin lichen-genesis --bin lichen-faucet --bin lichen-custody --bin lichen --bin zk-prove
-    ./scripts/build-all-contracts.sh
-    echo "Build complete"
-  '
-done
-```
-
-### Phase 5: Run setup.sh on all VPSes
-
-```bash
-for VPS in 15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247; do
-  echo "=== Setup on $VPS ==="
-  ssh -p 2222 ubuntu@$VPS '
-    cd ~/lichen
-    sudo bash deploy/setup.sh testnet
-  '
-done
-```
-
-This auto-detects the US VPS and configures Binance US oracle endpoints.
-
-### Phase 6: Keep release signing key local
-
-Do not copy `keypairs/release-signing-key.json` or any `*signing*` private key to VPSes. The clean-slate script excludes those paths from repo sync and service-secret bundles. After genesis is live, generate the signed metadata manifest on the deployer machine through an SSH tunnel and upload only `signed-metadata-manifest-<net>.json` to the seed checkout.
-
-### Phase 7: Genesis on US VPS (primary validator)
-
-```bash
-ssh -p 2222 ubuntu@15.204.229.189 '
-  cd ~/lichen
-  source ~/.cargo/env
-
-  # Start once to generate validator keypair
-  sudo systemctl start lichen-validator-testnet
-  sleep 3
-  VALIDATOR_PUBKEY=$(sudo python3 -c "import json; print(json.load(open(\"/var/lib/lichen/state-testnet/validator-keypair.json\"))[\"publicKeyBase58\"])")
-  echo "Validator pubkey: $VALIDATOR_PUBKEY"
-  sudo systemctl stop lichen-validator-testnet
-
-  # Preserve validator keypair, verify it, then wipe state
-  EXPECTED_VALIDATOR_PUBKEY="$VALIDATOR_PUBKEY"
-  PRESERVE="/var/lib/lichen/identity-preserve-state-testnet-$(date -u +%Y%m%dT%H%M%SZ)"
-  sudo install -d -m 700 -o root -g root "$PRESERVE/state-testnet"
-  sudo install -m 600 -o lichen -g lichen \
-    /var/lib/lichen/state-testnet/validator-keypair.json \
-    "$PRESERVE/state-testnet/validator-keypair.json"
-  PRESERVED_VALIDATOR_PUBKEY=$(sudo python3 -c "import json; print(json.load(open(\"$PRESERVE/state-testnet/validator-keypair.json\"))[\"publicKeyBase58\"])")
-  test "$PRESERVED_VALIDATOR_PUBKEY" = "$EXPECTED_VALIDATOR_PUBKEY"
-  sudo rm -rf /var/lib/lichen/state-testnet
-  sudo rm -rf /var/lib/lichen/.lichen
-  sudo install -d -m 750 -o lichen -g lichen /var/lib/lichen/state-testnet
-  sudo install -m 600 -o lichen -g lichen \
-    "$PRESERVE/state-testnet/validator-keypair.json" \
-    /var/lib/lichen/state-testnet/validator-keypair.json
-
-  # Prepare wallet
-  LICHEN_KEYPAIR_PASSWORD=$(grep LICHEN_KEYPAIR_PASSWORD /etc/lichen/env-testnet | cut -d= -f2-)
-  export LICHEN_KEYPAIR_PASSWORD
-  cd ~/lichen
-  sudo -u lichen HOME=/var/lib/lichen LICHEN_HOME=/var/lib/lichen LICHEN_CONTRACTS_DIR=/var/lib/lichen/contracts \
-    LICHEN_KEYPAIR_PASSWORD="$LICHEN_KEYPAIR_PASSWORD" \
-    LICHEN_GENESIS_BIN=/usr/local/bin/lichen-genesis \
-    ./scripts/generate-genesis.sh \
-    --network testnet --prepare-wallet --output-dir /var/lib/lichen/genesis-keys-testnet
-
-  # Create genesis DB. For mainnet, pass --genesis-prices-file or ensure
-  # Binance/CoinGecko live price access is available; compiled market defaults
-  # are testnet/dev fallback only.
-  sudo -u lichen HOME=/var/lib/lichen LICHEN_HOME=/var/lib/lichen LICHEN_CONTRACTS_DIR=/var/lib/lichen/contracts \
-    LICHEN_KEYPAIR_PASSWORD="$LICHEN_KEYPAIR_PASSWORD" \
-    LICHEN_GENESIS_BIN=/usr/local/bin/lichen-genesis \
-    ./scripts/generate-genesis.sh \
-    --network testnet \
-    --db-path /var/lib/lichen/state-testnet \
-    --wallet-file /var/lib/lichen/genesis-keys-testnet/genesis-wallet.json \
-    --initial-validator "$VALIDATOR_PUBKEY" \
-    --bridge-validator "$US_VALIDATOR_PUBKEY" --oracle-operator "$US_VALIDATOR_PUBKEY" \
-    --bridge-validator "$EU_VALIDATOR_PUBKEY" --oracle-operator "$EU_VALIDATOR_PUBKEY" \
-    --bridge-validator "$SEA_VALIDATOR_PUBKEY" --oracle-operator "$SEA_VALIDATOR_PUBKEY" \
-    --bridge-validator "$IN_VALIDATOR_PUBKEY" --oracle-operator "$IN_VALIDATOR_PUBKEY"
-
-  # Start the genesis validator
-  sudo systemctl start lichen-validator-testnet
-  sleep 5
-  curl -s http://127.0.0.1:8899 -X POST -H "Content-Type: application/json" \
-    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\",\"params\":[]}"
-'
-```
-
-### Phase 8: Post-genesis on US VPS
-
-```bash
-ssh -p 2222 ubuntu@15.204.229.189 '
-  cd ~/lichen
-
-  # Run vps-post-genesis to copy keypairs to system paths
-  sudo bash scripts/vps-post-genesis.sh testnet
-
-  # Run first-boot-deploy with the deployer-generated signed metadata artifact.
-  # The private release signer stays on the deployer machine.
-  SIGNED_METADATA_MANIFEST=$HOME/lichen/signed-metadata-manifest-testnet.json \
-    DEPLOY_NETWORK=testnet ./scripts/first-boot-deploy.sh --rpc http://127.0.0.1:8899 --skip-build
-
-  # Install the signed metadata manifest
-  sudo install -m 640 -o root -g lichen \
-    ~/lichen/signed-metadata-manifest-testnet.json \
-    /etc/lichen/signed-metadata-manifest-testnet.json
-
-  # Restart validator to pick up manifest
-  sudo systemctl restart lichen-validator-testnet
-  sleep 3
-
-  # Verify
-  curl -s http://127.0.0.1:8899 -H "Content-Type: application/json" \
-    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getSignedMetadataManifest\",\"params\":[]}" \
-    | python3 -c "import sys,json; d=json.load(sys.stdin); r=d[\"result\"]; p=r[\"payload\"]; print(f\"Signer: {r['signer']}, Symbols: {len(p.get('symbol_registry',[]))}\")"
-
-  # Provision custody seeds
-  sudo bash -c "openssl rand -hex 32 > /etc/lichen/secrets/custody-master-seed-testnet.txt"
-  sudo bash -c "openssl rand -hex 32 > /etc/lichen/secrets/custody-deposit-seed-testnet.txt"
-  sudo chown root:lichen /etc/lichen/secrets/custody-*-seed-testnet.txt
-  sudo chmod 640 /etc/lichen/secrets/custody-*-seed-testnet.txt
-
-  # Start custody and faucet
-  sudo systemctl start lichen-custody
-  sudo systemctl start lichen-faucet
-'
-```
-
-### Phase 9: Distribute secrets to joining VPSes
-
-Joining validators sync the blockchain from the genesis seed node via P2P — **do NOT copy state**.
-Each joining validator starts with an empty chain database but keeps its own
-`validator-keypair.json`, then catches up by requesting blocks from the seed
-node(s) listed in `seeds.json`. This is the production-correct flow because
-future agent-operated validators join the same way.
-
-Only secrets and the signed metadata manifest need to be distributed:
-
-```bash
-for VPS in 37.59.97.61 15.235.142.253 148.113.43.247; do
-  echo "=== Distributing secrets to $VPS ==="
-
-  # Ensure the state directory contains only this host's preserved validator keypair.
-  # Do not copy RocksDB state from another validator.
-  ssh -p 2222 ubuntu@$VPS '
-    PRESERVE="/var/lib/lichen/identity-preserve-state-testnet-$(date -u +%Y%m%dT%H%M%SZ)"
-    sudo install -d -m 700 -o root -g root "$PRESERVE/state-testnet"
-    sudo install -m 600 -o lichen -g lichen \
-      /var/lib/lichen/state-testnet/validator-keypair.json \
-      "$PRESERVE/state-testnet/validator-keypair.json"
-    sudo rm -rf /var/lib/lichen/state-testnet
-    sudo mkdir -p /var/lib/lichen/state-testnet
-    sudo chown -R lichen:lichen /var/lib/lichen/state-testnet
-    sudo install -m 600 -o lichen -g lichen \
-      "$PRESERVE/state-testnet/validator-keypair.json" \
-      /var/lib/lichen/state-testnet/validator-keypair.json
-  '
-
-  # Copy custody secrets
-  ssh -p 2222 ubuntu@15.204.229.189 "sudo cat /etc/lichen/secrets/custody-master-seed-testnet.txt" \
-    | ssh -p 2222 ubuntu@$VPS "sudo bash -c 'cat > /etc/lichen/secrets/custody-master-seed-testnet.txt && chown root:lichen /etc/lichen/secrets/custody-master-seed-testnet.txt && chmod 640 /etc/lichen/secrets/custody-master-seed-testnet.txt'"
-
-  ssh -p 2222 ubuntu@15.204.229.189 "sudo cat /etc/lichen/secrets/custody-deposit-seed-testnet.txt" \
-    | ssh -p 2222 ubuntu@$VPS "sudo bash -c 'cat > /etc/lichen/secrets/custody-deposit-seed-testnet.txt && chown root:lichen /etc/lichen/secrets/custody-deposit-seed-testnet.txt && chmod 640 /etc/lichen/secrets/custody-deposit-seed-testnet.txt'"
-
-  # Copy signed metadata manifest
-  ssh -p 2222 ubuntu@15.204.229.189 "sudo cat /etc/lichen/signed-metadata-manifest-testnet.json" \
-    | ssh -p 2222 ubuntu@$VPS "sudo bash -c 'cat > /etc/lichen/signed-metadata-manifest-testnet.json && chown root:lichen /etc/lichen/signed-metadata-manifest-testnet.json && chmod 640 /etc/lichen/signed-metadata-manifest-testnet.json'"
-
-  # Copy custody treasury keypair
-  ssh -p 2222 ubuntu@15.204.229.189 "sudo cat /etc/lichen/custody-treasury-testnet.json" \
-    | ssh -p 2222 ubuntu@$VPS "sudo bash -c 'cat > /etc/lichen/custody-treasury-testnet.json && chown lichen:lichen /etc/lichen/custody-treasury-testnet.json && chmod 600 /etc/lichen/custody-treasury-testnet.json'"
-
-  # Copy faucet keypair
-  ssh -p 2222 ubuntu@15.204.229.189 "sudo cat /var/lib/lichen/faucet-keypair-testnet.json" \
-    | ssh -p 2222 ubuntu@$VPS "sudo bash -c 'cat > /var/lib/lichen/faucet-keypair-testnet.json && chown lichen:lichen /var/lib/lichen/faucet-keypair-testnet.json && chmod 600 /var/lib/lichen/faucet-keypair-testnet.json'"
-
-  echo "Done: $VPS"
-done
-```
-
-### Phase 10: Start joining VPSes
-
-```bash
-for VPS in 37.59.97.61 15.235.142.253 148.113.43.247; do
-  echo "=== Starting $VPS ==="
-  ssh -p 2222 ubuntu@$VPS '
-    sudo systemctl start lichen-validator-testnet
-    sleep 5
-    curl -s http://127.0.0.1:8899 -X POST -H "Content-Type: application/json" \
-      -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\",\"params\":[]}"
-    echo ""
-    sudo systemctl start lichen-custody
-    sudo systemctl start lichen-faucet
-    echo "Services started"
-  '
-done
-```
-
-### Phase 11: Verify everything
-
-```bash
-for VPS in 15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247; do
-  echo "=== Verifying $VPS ==="
-  ssh -p 2222 ubuntu@$VPS '
-    echo "--- Health ---"
-    curl -s http://127.0.0.1:8899 -X POST -H "Content-Type: application/json" \
-      -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\",\"params\":[]}"
-    echo ""
-    echo "--- Signed Metadata ---"
-    curl -s http://127.0.0.1:8899 -H "Content-Type: application/json" \
-      -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getSignedMetadataManifest\",\"params\":[]}" \
-      | python3 -c "import sys,json; d=json.load(sys.stdin); r=d[\"result\"]; p=r[\"payload\"]; print(f\"Signer: {r['signer']}, Symbols: {len(p.get('symbol_registry',[]))}\")" 2>/dev/null || echo "MANIFEST MISSING"
-    echo ""
-    echo "--- Pairs ---"
-    curl -s http://127.0.0.1:8899/api/v1/pairs | python3 -c "import sys,json; d=json.load(sys.stdin); print(f\"{len(d)} pairs\")" 2>/dev/null || echo "PAIRS MISSING"
-    echo ""
-    echo "--- Oracle Prices ---"
-    curl -s http://127.0.0.1:8899 -H "Content-Type: application/json" \
-      -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getOraclePrices\",\"params\":[]}" 2>/dev/null | head -c 200
-    echo ""
-  '
-  echo ""
-done
-```
-
-Also verify external endpoints:
-
-```bash
-for HOST in testnet-rpc.lichen.network; do
-  echo "=== External: $HOST ==="
-  curl -s "https://$HOST/" -H 'Content-Type: application/json' \
-    -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}'
-  echo ""
-  curl -s "https://$HOST/" -H 'Content-Type: application/json' \
-    -d '{"jsonrpc":"2.0","id":1,"method":"getSignedMetadataManifest","params":[]}' \
-    | python3 -c "import sys,json; d=json.load(sys.stdin); r=d['result']; print(f\"Signer: {r['signer']}\")" 2>/dev/null || echo "MANIFEST MISSING"
-  echo ""
-done
-```
+Normal upgrades use `scripts/rolling-release-deploy.sh` with exact signed tag artifacts; consensus/storage changes use coordinated mode. A clean-slate reset is exceptional, destructive, separately owner-approved, and must still install only signed release artifacts while preserving validator identities and required evidence.
 
 ---
 
@@ -2299,8 +1994,9 @@ curl -fsSI "$DEX_URL/shared/utils.js?v=$DEX_ASSET_VERSION" | grep -i '^cache-con
 
 If the custom domain applies a positive JavaScript TTL, configure/purge the
 Cloudflare zone cache rule or bump every metadata-critical asset token and
-record the evidence. The operator must still provision the canonical release
-key manually; `deploy/setup.sh` must not generate signing keys.
+record the evidence. The operator must provision the canonical release key
+through the approved secret workflow; host provisioning must never generate a
+replacement signing key.
 
 ### Pitfall 2: US VPS oracle geo-block
 
@@ -2310,7 +2006,8 @@ key manually; `deploy/setup.sh` must not generate signing keys.
 
 **Fix**: Set `LICHEN_ORACLE_WS_URL` and `LICHEN_ORACLE_REST_URL` to binance.us endpoints in `/etc/lichen/env-testnet`.
 
-**Prevention**: `deploy/setup.sh` now auto-detects US hosts and writes binance.us overrides.
+**Prevention**: The approved host baseline pins and verifies the US host's
+`binance.us` overrides.
 
 ### Pitfall 3: Stale deploy-manifest.json
 
@@ -2348,9 +2045,11 @@ key manually; `deploy/setup.sh` must not generate signing keys.
 
 **Symptom**: Custody service can't read the encrypted treasury keypair.
 
-**Root cause**: `deploy/setup.sh` writes the password to both `env-testnet` and `custody-env`, but if setup.sh is re-run without preserving the original password, the custody env gets a new password that doesn't match the encrypted keypair.
+**Root cause**: A provisioning rerun replaced the password in `env-testnet` or
+`custody-env`, leaving it inconsistent with the encrypted keypair.
 
-**Fix**: Setup.sh preserves existing passwords. If you need to change the password, you must re-encrypt all keypair files.
+**Fix**: Restore the matching secret. A planned password rotation must
+atomically re-encrypt every dependent keypair before any service restarts.
 
 ### Pitfall 8: Contract WASM binary mismatch across validators
 
@@ -2372,7 +2071,10 @@ command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs
 
 **Fix**: Remove non-live state backups from the root filesystem, vacuum bounded logs, restart the affected validator, and verify `getHealth` reports `status:"ok"` with `disk.critical:false`.
 
-**Prevention**: Re-run `deploy/setup.sh` on every VPS before a reset or launch, then complete the "VPS disk and log guardrails" preflight. Do not route public traffic to a node whose readiness endpoint reports `stale_tip` or critical disk.
+**Prevention**: Re-apply the audited host baseline on every VPS before a reset
+or launch, then complete the "VPS disk and log guardrails" preflight. Do not
+route public traffic to a node whose readiness endpoint reports `stale_tip` or
+critical disk.
 
 ### Pitfall 10: Rolling release leaves validators on different committed tips
 
@@ -2414,7 +2116,9 @@ testnet or replace one validator's state with another's.
 
 **Root cause**: The origin Caddyfile drifted from the checked-in repo-managed ingress and still proxied `/ws` to another validator's raw `:8900` listener. Raw RPC/WS ports are intentionally not public ingress, so cross-origin proxy attempts can hang even while each validator is locally healthy.
 
-**Fix**: Reinstall the checked-in Caddy fragments with `deploy/setup.sh <net>` or rerun the clean-slate redeploy script version that installs repo-managed Caddy ingress after syncing code, then restart Caddy.
+**Fix**: Recompose Caddy from the exact signed release fragments with approved
+host-local origin-auth provisioning, run `caddy validate`, install atomically,
+and reload Caddy. Do not reset validator state.
 
 **Prevention**: Treat Caddy as deployment state, not hand-edited host state. After every reset or launch, compare `/etc/caddy/Caddyfile` against `deploy/Caddyfile.common` plus the network fragment and run the public `subscribeSlots` WebSocket smoke test 10/10.
 

@@ -41,7 +41,7 @@ def extract_source_exports(repo_root: str):
         functions = [
             m.group(1)
             for m in re.finditer(
-                r"#\[no_mangle\]\s*\n\s*pub extern \"C\" fn\s+([a-zA-Z0-9_]+)\s*\(",
+                r"#\[no_mangle\](?:\s*#\[[^\]]+\][^\n]*)*\s*pub extern \"C\" fn\s+([a-zA-Z0-9_]+)\s*\(",
                 text,
             )
         ]
@@ -62,6 +62,11 @@ def extract_html_live_matrix(html_path: str):
         raise RuntimeError("Could not find #live-exports authoritative matrix block in contract-reference.html")
 
     block = block_match.group(1)
+    # The live-export table is followed in the same visual section by a
+    # separate ABI-opcode completion table. Contracts can appear in both; do
+    # not let the later documentation-only row overwrite the authoritative
+    # named-WASM-export row.
+    block = block.split("<h3>Opcode-dispatched", 1)[0]
     rows = re.findall(
         r"<tr>\s*<td>\s*([^<]+?)\s*</td>\s*<td>\s*(.*?)\s*</td>\s*</tr>",
         block,

@@ -564,7 +564,7 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 
             <!-- [history] -->
             <h3><span class="config-section-label">[history]</span></h3>
-            <p>Required public-validator archival settings for complete genesis-to-tip history.</p>
+            <p>Required public-validator storage layers for complete genesis-to-tip history.</p>
 
             <table class="config-table">
                 <thead>
@@ -577,19 +577,28 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
                 </thead>
                 <tbody>
                     <tr>
-                        <td>Public cold store</td>
+                        <td>Recent hot history</td>
                         <td>Path</td>
-                        <td><code>archive-&lt;network&gt;</code> beside <code>state-&lt;network&gt;</code></td>
-                        <td>Non-development testnet and mainnet validators automatically attach a secondary RocksDB
-                            for archival block, transaction, index, event, trade, and account-snapshot retention.
+                        <td><code>state-&lt;network&gt;</code></td>
+                        <td>Consensus state plus the configured recent block, transaction, index, event, trade, and
+                            account-snapshot window. The production release profile retains at least 50,000 recent
+                            slots before Archive V2 becomes the historical source.
                         </td>
                     </tr>
                     <tr>
-                        <td>Public archive mode</td>
-                        <td>Boolean</td>
-                        <td><code>true</code></td>
-                        <td>Mandatory and automatic for non-development testnet and mainnet. Explicit archive-mode or
-                            cold-store runtime flags fail startup instead of creating a state-only or partial-history validator.</td>
+                        <td>Archive V2 objects</td>
+                        <td>Path + signed catalog</td>
+                        <td><code>archive-v2-&lt;network&gt;</code></td>
+                        <td>Immutable canonical segments for older public history. Activation requires deterministic
+                            catalog/segment hashes, source and replica equivalence, a valid release/signer anchor, and
+                            complete admitted ranges.</td>
+                    </tr>
+                    <tr>
+                        <td>Legacy cold store</td>
+                        <td>Migration-only path</td>
+                        <td><code>archive-&lt;network&gt;</code> while converting an existing chain</td>
+                        <td>Not part of the final V2 layout. Retire it only through signed exact-range Archive V2
+                            authorization after parity, then compact and remove the empty legacy database.</td>
                     </tr>
                 </tbody>
             </table>
@@ -1366,8 +1375,10 @@ docker-compose down</code></pre>
             <!-- ========== 7. SYSTEMD DEPLOYMENT ========== -->
             <h2 id="systemd-deployment">Systemd Deployment</h2>
 
-            <p>For bare-metal Linux servers, install the release binary under the checked-in systemd service.
-                <code>deploy/setup.sh</code> provisions the supported host layout.</p>
+            <p>For bare-metal Linux servers, install only the verified signed-release binary and the exact checked-in
+                systemd unit from that release. Provision root-owned environment files from the redacted templates;
+                secret-bearing infrastructure automation is deliberately host-local and is not a public release
+                artifact.</p>
 
             <h3>Systemd Unit</h3>
 
@@ -1860,8 +1871,8 @@ curl -s https://testnet-api.lichen.network \
             </div>
 
             <h3>Disk Full</h3>
-            <p>Every public validator retains the complete hot plus cold archive. Size storage from measured retained
-                data, the next operation's bounded write and compaction peak, and the runtime reserve. Normal rollout
+            <p>Every public validator serves complete history from bounded recent hot data plus Archive V2 segments.
+                Size storage from measured retained data, the next operation's bounded write and compaction peak, and the runtime reserve. Normal rollout
                 requires at least 20 GiB free and less than 90% use by default. History repair requires 150% of the
                 dry-run's missing key/value bytes plus 10 GiB free. The validator skips checkpoint creation below 20
                 GiB and exits with status 78 below 10 GiB so systemd leaves it stopped instead of repeatedly reopening
@@ -1878,7 +1889,12 @@ du -sh /var/lib/lichen/
 # Check available disk
 df -h /var/lib/lichen/
 
-# Rolling release preflight enforces measured free-space and use thresholds
+# Archive V2 catalog and role health are visible in getHealth
+curl -s https://testnet-api.lichen.network \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' | jq '.result.archive_v2'
+
+# Release preflight enforces measured free-space and use thresholds
 LICHEN_RELEASE_TAG=vX.Y.Z bash scripts/rolling-release-deploy.sh testnet</code></pre>
             </div>
 

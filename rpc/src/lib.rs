@@ -143,8 +143,8 @@ use tracing::{info, warn};
 
 // Re-export WebSocket types
 pub use ws::{
-    event_sender as ws_event_sender, start_ws_server, start_ws_server_with_event_sender,
-    Event as WsEvent,
+    event_broadcasters as ws_event_broadcasters, event_sender as ws_event_sender, start_ws_server,
+    start_ws_server_with_broadcasters, start_ws_server_with_event_sender, Event as WsEvent,
 };
 
 pub(crate) fn pq_signature_json(signature: &PqSignature) -> serde_json::Value {

@@ -58,8 +58,20 @@ pub(super) async fn handle_write_command(
             contract,
             function,
             args,
+            value_spores,
             keypair,
-        } => handle_call(client, keypair_mgr, contract, function, args, keypair).await?,
+        } => {
+            handle_call(
+                client,
+                keypair_mgr,
+                contract,
+                function,
+                args,
+                value_spores,
+                keypair,
+            )
+            .await?
+        }
         _ => bail!("unsupported write command"),
     }
 

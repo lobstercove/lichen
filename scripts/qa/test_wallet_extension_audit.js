@@ -33,6 +33,7 @@ const extensionManifestSrc = fs.readFileSync(path.join(extensionRoot, 'manifest.
 const permissionsJustificationSrc = fs.readFileSync(path.join(extensionRoot, 'store', 'permissions-justification.md'), 'utf8');
 const submissionChecklistSrc = fs.readFileSync(path.join(extensionRoot, 'store', 'submission-checklist.md'), 'utf8');
 const packageScriptSrc = fs.readFileSync(path.join(repoRoot, 'scripts', 'package-wallet-extension.mjs'), 'utf8');
+const releaseWorkflowSrc = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'wallet-extension-release.yml'), 'utf8');
 const nftsSrc = fs.readFileSync(path.join(extRoot, 'pages', 'nfts.js'), 'utf8');
 const fullSrc = fs.readFileSync(path.join(extRoot, 'pages', 'full.js'), 'utf8');
 const popupSrc = fs.readFileSync(path.join(extRoot, 'popup', 'popup.js'), 'utf8');
@@ -1285,6 +1286,36 @@ test('CC-30 extension password prompts report failures and clear for retry', () 
     'full page inline password modals should clear password fields after failed decrypt');
   assert.ok(!fullSrc.includes("prompt('Enter wallet password to claim unstake:')"),
     'full page claim should not use a native prompt');
+});
+
+test('CC-31 extension release version and supply-chain evidence stay aligned', () => {
+  const manifest = JSON.parse(extensionManifestSrc);
+  for (const [label, src] of [
+    ['popup about page', popupHtmlSrc],
+    ['full-page settings', fullHtmlSrc],
+    ['service worker fallback', serviceWorkerSrc],
+    ['provider response fallback', providerRouterSrc],
+  ]) {
+    assert.ok(src.includes(manifest.version),
+      `${label} should match manifest version ${manifest.version}`);
+  }
+  assert.ok(releaseWorkflowSrc.includes('name: Attest wallet runtime archive'),
+    'wallet release should attest the runtime archive');
+  assert.ok(releaseWorkflowSrc.includes('name: Attest wallet checksums'),
+    'wallet release should attest SHA256SUMS');
+  assert.ok(releaseWorkflowSrc.includes('SHA256SUMS.sig'),
+    'wallet release should require a detached ML-DSA checksum signature before publication');
+  assert.ok(releaseWorkflowSrc.includes('gh attestation verify'),
+    'wallet release instructions should verify GitHub artifact provenance');
+  assert.ok(packageScriptSrc.includes("fs.rmSync(distRoot, { recursive: true, force: true })"),
+    'wallet packaging should remove stale release output before rebuilding');
+  assert.ok(packageScriptSrc.includes("execFileSync('zip', ['-X', '-q', outputFile, ...files]"),
+    'wallet runtime ZIP should omit host-specific extra fields and use a sorted file list');
+  assert.ok(packageScriptSrc.includes("new Date('1980-01-01T00:00:00.000Z')"),
+    'wallet release inputs should have deterministic ZIP-compatible timestamps');
+  assert.ok(packageScriptSrc.includes('fs.lstatSync(sourcePath)') &&
+    packageScriptSrc.includes('Refusing to package symbolic link'),
+    'wallet packaging should reject symbolic links');
 });
 
 // ============================================================================

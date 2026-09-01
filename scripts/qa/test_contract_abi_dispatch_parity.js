@@ -6,6 +6,10 @@ const path = require('path');
 
 const root = path.join(__dirname, '..', '..');
 const contractsRoot = path.join(root, 'contracts');
+const abiTypes = new Set([
+    'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64', 'f32', 'f64', 'bool',
+    'string', 'bytes', 'Pubkey', 'bytes_with_len',
+]);
 let passed = 0;
 let failed = 0;
 
@@ -62,6 +66,15 @@ for (const contract of fs.readdirSync(contractsRoot).sort()) {
     const opcodes = opcodeFunctions.map((entry) => entry.opcode);
     check(new Set(names).size === names.length, `${contract} has unique ABI function names`);
     check(new Set(opcodes).size === opcodes.length, `${contract} has unique ABI opcodes`);
+    const malformedReturns = functions
+        .filter((entry) => entry.returns !== undefined && entry.returns !== null)
+        .filter((entry) => typeof entry.returns !== 'object' || Array.isArray(entry.returns)
+            || !abiTypes.has(entry.returns.type))
+        .map((entry) => entry.name);
+    check(
+        malformedReturns.length === 0,
+        `${contract} return descriptors match the runtime ABI schema${malformedReturns.length ? ` (invalid ${malformedReturns.join(', ')})` : ''}`,
+    );
 
     const source = fs.readFileSync(sourcePath, 'utf8');
     const callMarker = 'pub extern "C" fn call()';
@@ -85,7 +98,7 @@ for (const contract of fs.readdirSync(contractsRoot).sort()) {
         }
     } else {
         const sourceExports = new Set(
-            [...source.matchAll(/#\[no_mangle\]\s*pub\s+extern\s+"C"\s+fn\s+(\w+)\s*\(/g)]
+            [...source.matchAll(/#\[no_mangle\](?:\s*#\[[^\]]+\][^\n]*)*\s*pub\s+extern\s+"C"\s+fn\s+(\w+)\s*\(/g)]
                 .map((match) => match[1]),
         );
         const missingExports = names.filter((name) => {

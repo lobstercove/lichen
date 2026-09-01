@@ -751,6 +751,19 @@ impl StateStore {
         if !self.legacy_cold_history_reads_enabled() {
             return Ok(None);
         }
+        self.get_legacy_cold_block_for_checkpoint(hash)
+    }
+
+    /// Read a legacy-cold block only for construction of a bounded checkpoint.
+    ///
+    /// Admitted consensus and verified-cache roles must never expose this
+    /// fallback through public reads. Hot-repair checkpoint materialization is
+    /// different: it runs under the archive-maintenance lock and must copy the
+    /// catalog's unpublished local tail before legacy retirement can proceed.
+    pub(super) fn get_legacy_cold_block_for_checkpoint(
+        &self,
+        hash: &Hash,
+    ) -> Result<Option<Block>, String> {
         let Some(cold) = self.cold_db.as_ref() else {
             return Ok(None);
         };
@@ -768,6 +781,67 @@ impl StateStore {
             serde_json::from_slice(&data)
                 .map_err(|error| format!("Failed to deserialize cold block (json): {error}"))?
         };
+        Ok(Some(block))
+    }
+
+    pub(super) fn get_hot_or_legacy_cold_block_for_checkpoint(
+        &self,
+        hash: &Hash,
+    ) -> Result<Option<Block>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_BLOCKS)
+            .ok_or_else(|| "Blocks CF not found".to_string())?;
+        if let Some(data) = self
+            .db
+            .get_cf(&cf, hash.0)
+            .map_err(|error| format!("Database error: {error}"))?
+        {
+            let block = if data.first() == Some(&0xBC) {
+                deserialize_legacy_bincode(&data[1..], "checkpoint hot block").map_err(|error| {
+                    format!("Failed to deserialize checkpoint hot block: {error}")
+                })?
+            } else {
+                serde_json::from_slice(&data).map_err(|error| {
+                    format!("Failed to deserialize checkpoint hot block: {error}")
+                })?
+            };
+            return Ok(Some(block));
+        }
+        self.get_legacy_cold_block_for_checkpoint(hash)
+    }
+
+    pub(super) fn get_hot_or_legacy_cold_block_by_slot_for_checkpoint(
+        &self,
+        slot: u64,
+    ) -> Result<Option<Block>, String> {
+        let slot_cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+        let Some(hash_bytes) = self
+            .db
+            .get_cf(&slot_cf, slot.to_be_bytes())
+            .map_err(|error| format!("checkpoint slot {slot} lookup failed: {error}"))?
+        else {
+            return Ok(None);
+        };
+        if hash_bytes.len() != 32 {
+            return Err(format!(
+                "checkpoint slot {slot} has invalid hash length {}",
+                hash_bytes.len()
+            ));
+        }
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&hash_bytes);
+        let Some(block) = self.get_hot_or_legacy_cold_block_for_checkpoint(&Hash(hash))? else {
+            return Ok(None);
+        };
+        if block.header.slot != slot || block.hash().0.as_slice() != hash_bytes.as_slice() {
+            return Err(format!(
+                "checkpoint source block {slot} conflicts with its canonical slot index"
+            ));
+        }
         Ok(Some(block))
     }
 
@@ -828,12 +902,11 @@ impl StateStore {
     pub fn get_block_by_slot(&self, slot: u64) -> Result<Option<Block>, String> {
         // A freshly synchronized Archive V2 node can retain bootstrap-only hot
         // history until an independently authorized retirement removes it.
-        // Catalog-covered slots belong exclusively to an admitted non-full
-        // role's verified path, so bootstrap bytes cannot bypass a verified-
-        // cache source failure or a consensus role's deep-history denial. Full
-        // archives retain the documented hot -> cold -> V2 order until legacy
-        // retirement removes those canonical fallback rows.
-        if self.archive_v2_exclusively_covers_slot(slot) {
+        // Once admitted, catalog-covered slots belong exclusively to the
+        // authenticated V2 path for every role. This prevents bootstrap bytes
+        // from bypassing verified-cache source failures, consensus deep-
+        // history denial, or a full archive's missing/corrupt-object alarm.
+        if self.archive_v2_admitted_covers_slot(slot) {
             return self.archive_v2_block_by_slot(slot);
         }
 
@@ -899,6 +972,7 @@ impl StateStore {
             .cf_handle(CF_BLOCKS)
             .ok_or_else(|| "Blocks CF not found".to_string())?;
 
+        let mut previous_hash = None;
         for slot in start_slot..=end_slot {
             let hash_bytes = self
                 .db
@@ -928,6 +1002,15 @@ impl StateStore {
                     "canonical hot block {slot} conflicts with its slot index"
                 ));
             }
+            if let Some(expected_parent) = previous_hash {
+                if block.header.parent_hash != expected_parent {
+                    return Err(format!(
+                        "canonical hot block {slot} does not extend local block {}",
+                        slot.saturating_sub(1)
+                    ));
+                }
+            }
+            previous_hash = Some(block.hash());
         }
         Ok(())
     }
@@ -1205,6 +1288,38 @@ impl StateStore {
             }
             Err(e) => Err(format!("Database error: {}", e)),
         }
+    }
+
+    pub(super) fn get_hot_or_legacy_cold_transaction_for_checkpoint(
+        &self,
+        sig: &Hash,
+    ) -> Result<Option<Transaction>, String> {
+        let hot_cf = self
+            .db
+            .cf_handle(CF_TRANSACTIONS)
+            .ok_or_else(|| "Transactions CF not found".to_string())?;
+        let encoded = match self
+            .db
+            .get_cf(&hot_cf, sig.0)
+            .map_err(|error| format!("Database error: {error}"))?
+        {
+            Some(encoded) => Some(encoded),
+            None => self.cold_db.as_ref().and_then(|cold| {
+                cold.cf_handle(COLD_CF_TRANSACTIONS)
+                    .and_then(|cold_cf| cold.get_cf(&cold_cf, sig.0).ok().flatten())
+            }),
+        };
+        let Some(encoded) = encoded else {
+            return Ok(None);
+        };
+        let transaction = if encoded.first() == Some(&0xBC) {
+            deserialize_legacy_bincode(&encoded[1..], "checkpoint transaction")
+                .map_err(|error| format!("Failed to deserialize checkpoint transaction: {error}"))?
+        } else {
+            serde_json::from_slice(&encoded)
+                .map_err(|error| format!("Failed to deserialize checkpoint transaction: {error}"))?
+        };
+        Ok(Some(transaction))
     }
 
     /// Delete transaction record (used during fork choice to allow re-replay)

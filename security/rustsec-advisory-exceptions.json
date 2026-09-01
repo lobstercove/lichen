@@ -3,24 +3,6 @@
   "policy": "RustSec advisory exceptions must be owned, time-bound, and mirrored by .cargo/audit.toml and deny.toml.",
   "exceptions": [
     {
-      "id": "RUSTSEC-2023-0089",
-      "crate": "atomic-polyfill",
-      "owner": "Custody Security",
-      "tools": ["cargo-audit"],
-      "expires": "2026-08-31",
-      "reason": "Transitive through frost-core in the threshold custody path; Lichen does not expose atomic-polyfill APIs directly.",
-      "mitigation": "Keep custody runtime isolated and monitored while validating an upstream threshold-signing dependency update."
-    },
-    {
-      "id": "RUSTSEC-2024-0370",
-      "crate": "proc-macro-error",
-      "owner": "Developer Tooling",
-      "tools": ["cargo-audit", "cargo-deny"],
-      "expires": "2026-09-30",
-      "reason": "Unmaintained proc-macro helper used at build time only, with no runtime consensus, custody, or wallet execution surface.",
-      "mitigation": "Replace the dependent macro stack or remove the transitive dependency during the next tooling dependency refresh."
-    },
-    {
       "id": "RUSTSEC-2024-0388",
       "crate": "derivative",
       "owner": "Core Runtime",
@@ -43,18 +25,9 @@
       "crate": "tracing-subscriber",
       "owner": "Observability",
       "tools": ["cargo-audit", "cargo-deny"],
-      "expires": "2026-08-31",
-      "reason": "ANSI log poisoning risk is mitigated by non-TTY structured production logs and existing log sanitization controls.",
-      "mitigation": "Upgrade tracing-subscriber once the dependent logging stack accepts the patched release without changing operator logs."
-    },
-    {
-      "id": "RUSTSEC-2025-0057",
-      "crate": "fxhash",
-      "owner": "Core Runtime",
-      "tools": ["cargo-audit", "cargo-deny"],
-      "expires": "2026-08-31",
-      "reason": "Unmaintained non-cryptographic hash map dependency retained only for internal maps where collision resistance is not a security boundary.",
-      "mitigation": "Replace with maintained hashers in shared runtime dependencies after measuring consensus and validator performance impact."
+      "expires": "2026-09-30",
+      "reason": "Arkworks 0.4 pins tracing-subscriber 0.2.25 with default features disabled; the locked package contains only tracing-core and does not compile the vulnerable ANSI formatting path. Every Lichen production logger uses patched tracing-subscriber 0.3.23.",
+      "mitigation": "Keep the no-default-feature dependency shape locked and audited, reject any tracing-subscriber 0.2 formatting feature, and remove the exception with the reviewed Arkworks upgrade."
     },
     {
       "id": "RUSTSEC-2025-0141",
