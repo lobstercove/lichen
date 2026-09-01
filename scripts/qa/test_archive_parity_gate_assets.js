@@ -565,6 +565,21 @@ for (const dependency of Array.from(allDependencies).sort()) {
     verifySource(dependency);
 }
 
+const volumeE2e = fs.readFileSync(repoPath('tests/e2e-volume.js'), 'utf8');
+const dexSetupHelper = fs.readFileSync(repoPath('tests/helpers/dex-setup.js'), 'utf8');
+const marginRefreshOffset = volumeE2e.indexOf('await refreshMarginMarkPrice(');
+const marginOpenOffset = volumeE2e.indexOf('const args = buildOpenPosition(');
+assert(
+    volumeE2e.includes("require('./helpers/dex-setup')")
+        && marginRefreshOffset >= 0
+        && marginOpenOffset > marginRefreshOffset
+        && dexSetupHelper.includes("buildOracleAttestationData('LICN', oraclePrice, 8)")
+        && dexSetupHelper.includes("'validator-keypair.json'")
+        && dexSetupHelper.includes("rpcCall(rpcUrl, 'getValidators')")
+        && dexSetupHelper.includes('waitForFreshMarginMark('),
+    'strict volume E2E advances the canonical validator-oracle quorum before opening margin positions',
+);
+
 const packageJson = JSON.parse(fs.readFileSync(repoPath('package.json'), 'utf8'));
 const packageLock = JSON.parse(fs.readFileSync(repoPath('package-lock.json'), 'utf8'));
 const declaredPackages = {

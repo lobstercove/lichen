@@ -38,6 +38,7 @@ const SPORES_PER_LICN = 1_000_000_000;
 const AIRDROP_AMOUNT = 10; // LICN per round
 const AIRDROP_COOLDOWN_MS = 61_000;
 const TARGET_BALANCE_LICN = 100; // Minimum LICN each wallet needs
+const SYSTEM_PID = bs58encode(new Uint8Array(32));
 
 function loadFirstGenesisKeypairByPrefix(keysDir, prefix) {
     if (!keysDir || !fs.existsSync(keysDir)) return null;
@@ -185,6 +186,24 @@ function buildDepositMarginInsuranceArgs(callerAddr, amountSpores) {
     writePubkey(a, 1, callerAddr);
     writeU64LE(v, 33, amountSpores);
     return a;
+}
+
+/**
+ * Build a native consensus-oracle attestation.
+ * Layout: opcode(30) + asset_len(1) + asset(N) + price(8) + decimals(1).
+ */
+function buildOracleAttestationData(asset, priceRaw, decimals = 8) {
+    const assetBytes = new TextEncoder().encode(asset);
+    if (assetBytes.length < 1 || assetBytes.length > 32) {
+        throw new RangeError('oracle asset name must be 1..32 bytes');
+    }
+    const data = new Uint8Array(2 + assetBytes.length + 8 + 1);
+    data[0] = 30;
+    data[1] = assetBytes.length;
+    data.set(assetBytes, 2);
+    writeU64LE(new DataView(data.buffer), 2 + assetBytes.length, priceRaw);
+    data[data.length - 1] = decimals;
+    return data;
 }
 
 /**
@@ -432,16 +451,6 @@ function u64FromHex(value) {
     return Buffer.from(value.slice(0, 16), 'hex').readBigUInt64LE(0);
 }
 
-function pubkeyFromStorageHex(value) {
-    if (!value || typeof value !== 'string' || value.length < 64) return null;
-    return bs58encode(Buffer.from(value.slice(0, 64), 'hex'));
-}
-
-function findLoadedKeypairByAddress(address) {
-    if (!address) return null;
-    return loadFundedWallets(64).find((wallet) => wallet.address === address) || null;
-}
-
 async function getMarginInsuranceRaw(rpcUrl, dexMarginAddr) {
     const storage = await rpcCall(rpcUrl, 'getProgramStorage', [dexMarginAddr, { limit: 1000 }]);
     const entry = (storage.entries || []).find((row) => row.key_decoded === 'mrg_insurance');
@@ -460,18 +469,130 @@ async function waitForMarginInsurance(rpcUrl, dexMarginAddr, minInsurance, timeo
     throw new Error(`margin insurance did not reach ${min}; current=${last}`);
 }
 
-async function findMarginAdminKeypair(rpcUrl, contracts, fallbackKeypair = null) {
-    const dexMarginAddr = contracts.dex_margin;
-    if (!dexMarginAddr) return fallbackKeypair;
+function loadLocalValidatorKeypairs() {
+    const validators = [];
+    const seen = new Set();
+    for (const root of [process.cwd(), path.resolve(process.cwd(), '..')]) {
+        const dataDir = path.join(root, 'data');
+        if (!fs.existsSync(dataDir)) continue;
+        for (const stateDir of fs.readdirSync(dataDir).filter((name) => /^state-\d+$/.test(name)).sort()) {
+            const keypairPath = path.join(dataDir, stateDir, 'validator-keypair.json');
+            if (!fs.existsSync(keypairPath)) continue;
+            try {
+                const keypair = loadKeypairFile(keypairPath);
+                if (!seen.has(keypair.address)) {
+                    seen.add(keypair.address);
+                    validators.push(keypair);
+                }
+            } catch (_) { }
+        }
+    }
+    return validators;
+}
+
+function validatorStake(validator) {
     try {
-        const storage = await rpcCall(rpcUrl, 'getProgramStorage', [dexMarginAddr, { limit: 500 }]);
-        const adminEntry = (storage.entries || []).find((row) => row.key_decoded === 'mrg_admin');
-        const adminAddress = pubkeyFromStorageHex(adminEntry?.value_hex || adminEntry?.value || '');
-        const loaded = findLoadedKeypairByAddress(adminAddress);
-        if (loaded) return loaded;
-        if (fallbackKeypair?.address === adminAddress) return fallbackKeypair;
-    } catch (_) { }
-    return findGenesisKeypairByPrefix('community_treasury', fallbackKeypair) || fallbackKeypair;
+        return BigInt(validator?.stake ?? validator?.total_stake ?? 0);
+    } catch (_) {
+        return 0n;
+    }
+}
+
+async function activeLocalValidatorKeypairs(rpcUrl) {
+    const result = await rpcCall(rpcUrl, 'getValidators');
+    const active = (result?.validators || [])
+        .filter((validator) => validatorStake(validator) > 0n)
+        .map((validator) => validator.pubkey)
+        .filter(Boolean);
+    if (active.length < 2) {
+        throw new Error(`consensus oracle refresh requires at least two active validators; found ${active.length}`);
+    }
+
+    const byAddress = new Map(loadLocalValidatorKeypairs().map((keypair) => [keypair.address, keypair]));
+    const matched = active.map((address) => byAddress.get(address)).filter(Boolean);
+    if (matched.length !== active.length) {
+        throw new Error(`consensus oracle refresh found ${matched.length}/${active.length} active validator keypairs`);
+    }
+    return matched;
+}
+
+async function readMarginMarkState(rpcUrl, dexMarginAddr, pairId) {
+    const storage = await rpcCall(rpcUrl, 'getProgramStorage', [dexMarginAddr, { limit: 1000 }]);
+    const entry = (storage.entries || []).find((row) => row.key_decoded === `mrg_mark_${pairId}`);
+    const value = entry?.value_hex || entry?.value || '';
+    const bytes = typeof value === 'string' && /^[0-9a-fA-F]{32,}$/.test(value)
+        ? Buffer.from(value, 'hex')
+        : Buffer.alloc(0);
+    return {
+        price: bytes.length >= 8 ? bytes.readBigUInt64LE(0) : 0n,
+        sourceSlot: bytes.length >= 16 ? bytes.readBigUInt64LE(8) : 0n,
+    };
+}
+
+async function waitForFreshMarginMark(rpcUrl, dexMarginAddr, pairId, minimumSourceSlot, timeoutMs = 30_000) {
+    const deadline = Date.now() + timeoutMs;
+    let last = { price: 0n, sourceSlot: 0n };
+    while (Date.now() < deadline) {
+        last = await readMarginMarkState(rpcUrl, dexMarginAddr, pairId);
+        const currentSlot = BigInt(await rpcCall(rpcUrl, 'getSlot'));
+        if (
+            last.price > 0n
+            && last.sourceSlot >= minimumSourceSlot
+            && last.sourceSlot <= currentSlot
+            && currentSlot - last.sourceSlot <= 750n
+        ) {
+            return { ...last, currentSlot };
+        }
+        await sleep(250);
+    }
+    throw new Error(
+        `margin mark did not become fresh from controlled consensus attestations; `
+        + `price=${last.price} source_slot=${last.sourceSlot} minimum=${minimumSourceSlot}`,
+    );
+}
+
+async function refreshMarginMarkPrice(rpcUrl, contracts, _fallbackKeypair, pairId, price) {
+    const dexMarginAddr = contracts.dex_margin;
+    if (!dexMarginAddr) throw new Error('dex_margin contract missing');
+    if (pairId !== 1) throw new Error('controlled consensus oracle refresh currently supports pair 1 only');
+
+    const marginPrice = typeof price === 'bigint' ? price : BigInt(price);
+    if (marginPrice <= 0n || marginPrice % 10n !== 0n) {
+        throw new Error('pair-1 margin price must be a positive fixed9 value divisible by 10');
+    }
+
+    // Pair 1 is LICN/USD. The native consensus oracle stores USD prices with
+    // eight decimals and the deterministic post-block mirror converts them to
+    // dex_margin's fixed9 representation. Submit the same controlled quote
+    // from every active local validator so the canonical stake quorum—not an
+    // admin-only storage override—advances the source slot.
+    const validators = await activeLocalValidatorKeypairs(rpcUrl);
+    await fundWalletsWithLicn(rpcUrl, validators, 1);
+    const minimumSourceSlot = BigInt(await rpcCall(rpcUrl, 'getSlot'));
+    const oraclePrice = marginPrice / 10n;
+    const data = buildOracleAttestationData('LICN', oraclePrice, 8);
+    const signatures = [];
+    for (const validator of validators) {
+        signatures.push(await sendSetupTx(rpcUrl, validator, [{
+            program_id: SYSTEM_PID,
+            accounts: [validator.address],
+            data,
+        }]));
+    }
+
+    const mark = await waitForFreshMarginMark(
+        rpcUrl,
+        dexMarginAddr,
+        pairId,
+        minimumSourceSlot,
+    );
+    return {
+        signature: signatures[signatures.length - 1],
+        signatures,
+        validatorCount: validators.length,
+        price: mark.price,
+        sourceSlot: mark.sourceSlot,
+    };
 }
 
 async function bootstrapMarginInsurance(rpcUrl, adminKeypair, contracts, amountLusd, options = {}) {
@@ -1000,7 +1121,9 @@ module.exports = {
     buildRegisterIdentityArgs,
     buildUpdateReputationArgs,
     buildDepositMarginInsuranceArgs,
+    buildOracleAttestationData,
     bootstrapMarginInsurance,
+    refreshMarginMarkPrice,
     buildCreateMarketArgs,
     getTokenBalanceRaw,
     getTokenAllowanceRaw,

@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Candidate release line:** `v0.5.267`; the current signed testnet release is
+**Candidate release line:** `v0.5.268`; the current signed testnet release is
 `v0.5.265`. Official installable artifacts are the published
 GitHub release archives whose checksums, detached ML-DSA signature, release
 trust anchor, and provenance attestations all verify. The candidate adds the
