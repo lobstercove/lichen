@@ -7,11 +7,11 @@ const path = require('path');
 
 const repoRoot = path.join(__dirname, '..', '..');
 
-function definePortal(name, excludedRoots = [], requiredStagePaths = []) {
+function definePortal(name, excludedRoots = [], externalStagePaths = []) {
     return {
         name,
         excludedRoots: new Set(excludedRoots),
-        requiredStagePaths: new Set(requiredStagePaths),
+        externalStagePaths: new Set(externalStagePaths),
     };
 }
 
@@ -87,6 +87,19 @@ function isGitIgnored(absolutePath) {
     const ignored = result.status === 0;
     gitIgnoreCache.set(relative, ignored);
     return ignored;
+}
+
+function isCoveredByGitIgnoreRule(absolutePath) {
+    const relative = toPosix(path.relative(repoRoot, absolutePath));
+    if (!relative || relative.startsWith('..')) {
+        return false;
+    }
+
+    const result = spawnSync('git', ['check-ignore', '--no-index', relative], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+    });
+    return result.status === 0;
 }
 
 function stripQueryAndHash(ref) {
@@ -223,8 +236,8 @@ function getPortalRelativeAssetPath(portalRoot, absolutePath) {
     return toPosix(relative);
 }
 
-function isCoveredByRequiredStagePath(portal, relativeAsset) {
-    for (const stagePath of portal.requiredStagePaths) {
+function isCoveredByExternalStagePath(portal, relativeAsset) {
+    for (const stagePath of portal.externalStagePaths) {
         const normalized = toPosix(stagePath);
         if (normalized.endsWith('/')) {
             if (relativeAsset.startsWith(normalized)) {
@@ -241,21 +254,27 @@ function isCoveredByRequiredStagePath(portal, relativeAsset) {
     return false;
 }
 
-function validateRequiredStagePaths(portal) {
-    if (portal.requiredStagePaths.size === 0) {
+function validateExternalStagePaths(portal) {
+    if (portal.externalStagePaths.size === 0) {
         return;
     }
 
     const portalRoot = path.join(repoRoot, portal.name);
-    const missing = [];
+    const notIgnored = [];
 
-    for (const requiredPath of portal.requiredStagePaths) {
-        if (!fs.existsSync(path.join(portalRoot, requiredPath))) {
-            missing.push(requiredPath);
+    for (const stagePath of portal.externalStagePaths) {
+        const ignoreProbe = stagePath.endsWith('/')
+            ? path.join(portalRoot, stagePath, '.external-stage-probe')
+            : path.join(portalRoot, stagePath);
+        if (!isCoveredByGitIgnoreRule(ignoreProbe)) {
+            notIgnored.push(stagePath);
         }
     }
 
-    assert(missing.length === 0, `${portal.name} staged Pages assets exist locally`);
+    assert(
+        notIgnored.length === 0,
+        `${portal.name} external Pages assets are explicitly declared and gitignored`
+    );
 }
 
 function validateProductionHeaders(portal) {
@@ -357,11 +376,14 @@ function analyzeAssetRefs(portal, pagePath, refs, kind) {
         const pointsToDeployableRoot = staysInsidePortal && !portal.excludedRoots.has(topLevel);
         const assetExists = fs.existsSync(resolved);
 
-        if (!pointsToDeployableRoot || !assetExists) {
+        const externallyStaged = pointsToDeployableRoot
+            && isCoveredByExternalStagePath(portal, relativeAsset);
+
+        if (!pointsToDeployableRoot || (!assetExists && !externallyStaged)) {
             invalidAssets.push(ref);
         }
 
-        if (pointsToDeployableRoot && assetExists && isGitIgnored(resolved) && !isCoveredByRequiredStagePath(portal, relativeAsset)) {
+        if (pointsToDeployableRoot && assetExists && isGitIgnored(resolved) && !externallyStaged) {
             uncoveredIgnoredAssets.push(relativeAsset);
         }
 
@@ -381,7 +403,10 @@ function analyzeAssetRefs(portal, pagePath, refs, kind) {
     }
 
     assert(duplicates.length === 0, `${relativePage} has no duplicate local ${kind} references`);
-    assert(invalidAssets.length === 0, `${relativePage} local ${kind} references resolve to deployable assets`);
+    assert(
+        invalidAssets.length === 0,
+        `${relativePage} local ${kind} references resolve to deployable or declared external assets`
+    );
     assert(uncoveredIgnoredAssets.length === 0, `${relativePage} has no undeclared gitignored local ${kind} refs`);
 }
 
@@ -1447,7 +1472,7 @@ console.log('\n── Frontend Asset Integrity ──');
 for (const portal of portals) {
     const htmlFiles = getPortalHtmlFiles(portal);
     assert(htmlFiles.length > 0, `${portal.name} contributes deployed HTML pages to the asset scan`);
-    validateRequiredStagePaths(portal);
+    validateExternalStagePaths(portal);
     validateProductionHeaders(portal);
 
     for (const pagePath of htmlFiles) {
