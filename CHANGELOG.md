@@ -5,6 +5,25 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.268] - 2026-09-02
+
+### Fixed
+
+- Refresh the controlled LICN/USD margin mark through signed native
+  attestations from the active validator quorum immediately before the strict
+  volume E2E opens positions. This advances the canonical consensus-oracle
+  source slot and deterministic margin mirror while keeping the contract's
+  750-slot stale-price rejection intact after the intentionally long Archive
+  V2 and validator-restart matrix.
+
+### Verified
+
+- Passed the exact clean-build four-validator release gate through slot 30,000.
+  Volume passed 141/141 checks, launchpad/governance passed 104/104 checks,
+  fresh full/cache/consensus joins passed, and all four final logical history
+  manifests matched
+  `b83b9a31280ca546b6c45d89a36342df65792e64b840985961196f35be95279c`.
+
 ## [0.5.267] - 2026-09-01
 
 ### Fixed

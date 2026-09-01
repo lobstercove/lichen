@@ -27,7 +27,7 @@ const pq = require('./helpers/pq-node');
 const { loadFundedWallets, findGenesisAdminKeypair } = require('./helpers/funded-wallets');
 const { waitForSuccessfulTransaction } = require('./helpers/tx-receipt');
 const { encodeNativeTransactionBase64, signNativeTransaction } = require('./helpers/tx-wire');
-const { setupDexEnvironment } = require('./helpers/dex-setup');
+const { setupDexEnvironment, refreshMarginMarkPrice } = require('./helpers/dex-setup');
 
 let WebSocket;
 try { WebSocket = require('ws'); }
@@ -777,6 +777,28 @@ async function runTests() {
     // ══════════════════════════════════════════════════════════════════════
     section('Phase 5: Margin Trading');
     {
+        // The complete release gate intentionally runs a long Archive V2 and
+        // restart matrix before this suite. Advance the controlled pair price
+        // through a native active-validator oracle quorum so the deterministic
+        // post-block mirror refreshes dex_margin without bypassing the
+        // stale-oracle fail-closed rule (ABI code 6 after 750 slots).
+        try {
+            const refreshed = await refreshMarginMarkPrice(
+                RPC_URL,
+                CONTRACTS,
+                findGenesisAdminKeypair(),
+                1,
+                PRICE_SCALE,
+            );
+            assert(
+                typeof refreshed.signature === 'string' && refreshed.validatorCount >= 2,
+                `Margin pair 1 mark price refreshed by ${refreshed.validatorCount} validator attestations at slot ${refreshed.sourceSlot}`,
+            );
+        } catch (e) {
+            assert(false, `Margin mark price refresh failed: ${e.message}`);
+        }
+        await sleep(2000);
+
         // Bob opens a 5x long on LICN/lUSD
         const trader = bob;
         const pairId = 1;
