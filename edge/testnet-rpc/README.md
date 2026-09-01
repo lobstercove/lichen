@@ -12,8 +12,9 @@ documentation must not use it.
 ## Invariants
 
 - Every origin uses a distinct `ORIGIN_AUTH_TOKEN_<REGION>` Wrangler secret.
-- The matching origin token is stored in a root-owned file before
-  `deploy/setup.sh` composes `/etc/caddy/Caddyfile` as `root:caddy` mode `0640`.
+- The matching origin token is stored in a root-owned file before approved
+  host-local automation composes `/etc/caddy/Caddyfile` from the signed release
+  fragments as `root:caddy` mode `0640`.
 - Do not expose an origin token through a systemd environment. Caddy startup
   diagnostics enumerate environment variables.
 - Raw RPC `8899` and WebSocket `8900` listeners remain loopback-only.
@@ -25,17 +26,18 @@ documentation must not use it.
 
 ## Validator Origin Setup
 
-Run this independently on each validator with that host's own token file and
-public OVH hostname:
+Run the approved host-local provisioning workflow independently on each
+validator with that host's own token file and public OVH hostname. It must
+compose `deploy/Caddyfile.common` plus the matching signed network fragment,
+insert the token without logging it, and pass `caddy validate` before install.
+The public repository intentionally does not carry secret-bearing provisioning
+automation.
 
 ```bash
 sudo install -o root -g root -m 600 /secure/input/token \
   /etc/lichen/secrets/edge-origin-auth
-sudo env \
-  LICHEN_EDGE_ORIGIN_REQUIRED=1 \
-  LICHEN_EDGE_ORIGIN_HOST=vps-example.vps.ovh.example \
-  LICHEN_EDGE_ORIGIN_AUTH_FILE=/etc/lichen/secrets/edge-origin-auth \
-  bash deploy/setup.sh testnet
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy
 ```
 
 Upload the same host-specific value directly to the corresponding Wrangler

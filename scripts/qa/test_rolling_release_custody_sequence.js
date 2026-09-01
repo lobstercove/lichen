@@ -7,6 +7,7 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..', '..');
 const script = fs.readFileSync(path.join(ROOT, 'scripts/rolling-release-deploy.sh'), 'utf8');
 const r2Script = fs.readFileSync(path.join(ROOT, 'scripts/archive-v2-r2-put.sh'), 'utf8');
+const dualR2Script = fs.readFileSync(path.join(ROOT, 'scripts/archive-v2-r2-dual-publish.sh'), 'utf8');
 
 function assert(condition, message) {
   if (!condition) {
@@ -24,6 +25,7 @@ const installCall = indexOfOrThrow('install_host "$host"');
 const healthCall = indexOfOrThrow('wait_healthy "$host"');
 const custodyCall = indexOfOrThrow('restart_custody_if_local "$host"');
 const faucetCall = indexOfOrThrow('restart_faucet_if_local "$host"');
+const mossCall = indexOfOrThrow('restart_moss_if_local "$host"');
 const signatureVerify = indexOfOrThrow('SHA256SUMS PQ signature verified by');
 const checksumVerify = indexOfOrThrow('sha256sum -c SHA256SUMS --ignore-missing');
 
@@ -32,14 +34,27 @@ assert(checksumVerify < installCall, 'release artifacts must be verified before 
 assert(installCall < healthCall, 'validator install must happen before health wait');
 assert(healthCall < custodyCall, 'custody restart must happen only after validator health');
 assert(custodyCall < faucetCall, 'faucet restart must happen after custody refresh');
+assert(faucetCall < mossCall, 'Moss provider restart must happen after faucet refresh');
 assert(script.includes('expected_custody_sha="$(require_archive_bin_sha "$archive" "$root" lichen-custody)"'),
   'custody release hash must be required before install');
 assert(script.includes('require_archive_bin_sha "$archive" "$root" lichen-custody'),
   'custody release binary must be required before install');
 assert(script.includes('require_archive_bin_sha "$archive" "$root" lichen-faucet'),
   'faucet release binary must be required before install');
+assert(script.includes('require_archive_bin_sha "$archive" "$root" lichen-moss-provider'),
+  'Moss provider release binary must be required before install');
+assert(script.includes('require_archive_file_sha "$archive" "$root" deploy/lichen-moss-provider.service'),
+  'Moss provider systemd unit must be required from the signed release archive');
 assert(script.includes('validate_release_archive "$archive" "$(archive_root "$archive")"'),
   'release archive contents must be validated before deploy');
+assert(script.includes('validate_archive_members()'),
+  'release archives must reject unsafe local member paths and types');
+assert(script.includes('validate_remote_archive_members()'),
+  'release archives must be revalidated on the target before extraction');
+assert(script.includes('member.isdir() or member.isreg()'),
+  'release archives must reject symlinks, hardlinks, devices, and FIFOs');
+assert(indexOfOrThrow('archive_root="$(validate_remote_archive_members)"') < indexOfOrThrow('tar xzf "$ARCHIVE" -C "$tmp"'),
+  'target archive validation must complete before extraction');
 assert(script.includes('REMOTE_RELEASE_DOWNLOAD="${LICHEN_REMOTE_RELEASE_DOWNLOAD:-auto}"'),
   'remote release download mode must default to auto');
 assert(script.includes('Release ${RELEASE_TAG} is draft; using local SCP transfer for verified artifacts.'),
@@ -84,16 +99,29 @@ assert(script.includes('check_staged_bin_hash lichen-custody "$EXPECTED_CUSTODY_
   'custody staged binary hash must be verified before live install');
 assert(script.includes('check_staged_bin_hash lichen-faucet "$EXPECTED_FAUCET_SHA"'),
   'faucet staged binary hash must be verified before live install');
+assert(script.includes('check_staged_bin_hash lichen-moss-provider "$EXPECTED_MOSS_SHA"'),
+  'Moss provider staged binary hash must be verified before live install');
 assert(script.includes('sudo -n mv -f "/usr/local/bin/$bin.new" "/usr/local/bin/$bin"'),
   'release binaries must be committed atomically with temp+rename');
 assert(script.includes('install_optional_service_bin lichen-custody "$EXPECTED_CUSTODY_SHA"'),
   'custody binary must be installed when expected in the archive');
 assert(script.includes('install_optional_service_bin lichen-faucet "$EXPECTED_FAUCET_SHA"'),
   'faucet binary must be installed when expected in the archive');
+assert(script.includes('install_optional_service_bin lichen-moss-provider "$EXPECTED_MOSS_SHA"'),
+  'Moss provider binary must be installed when expected in the archive');
 assert(script.includes('install_staged_bin lichen-custody "$EXPECTED_CUSTODY_SHA"'),
   'custody live install must be gated by the expected release hash');
 assert(script.includes('install_staged_bin lichen-faucet "$EXPECTED_FAUCET_SHA"'),
   'faucet live install must be gated by the expected release hash');
+assert(script.includes('install_staged_bin lichen-moss-provider "$EXPECTED_MOSS_SHA"'),
+  'Moss provider live install must be gated by the expected release hash');
+assert(script.includes('sudo -n mv -f "/etc/systemd/system/${MOSS_SERVICE}.new" "/etc/systemd/system/$MOSS_SERVICE"'),
+  'Moss provider unit must be installed atomically from the signed release archive');
+assert(script.includes('check_regular_file_hash "/etc/systemd/system/$MOSS_SERVICE" "$EXPECTED_MOSS_UNIT_SHA"'),
+  'installed Moss provider unit must match the signed release archive');
+assert(script.includes('if [ -f /etc/lichen/moss-provider.env ]; then') &&
+  script.includes('sudo -n systemctl enable "$MOSS_SERVICE"'),
+  'Moss provider must remain disabled until host-local configuration exists');
 assert(!script.includes('for bin in lichen-custody lichen-faucet; do\n  if [ -x "$root/$bin" ]; then'),
   'optional service install must not depend on temp extract executable checks');
 assert(script.includes('systemctl list-unit-files --no-legend "$CUSTODY_SERVICE"'), 'custody refresh must be conditional on network-aware service presence');
@@ -103,6 +131,18 @@ assert(script.includes('sudo -n systemctl start "$CUSTODY_SERVICE"'), 'custody s
 assert(script.includes('curl -fsS "$CUSTODY_HEALTH_URL"'), 'custody health must be verified after restart through network-aware URL');
 assert(script.includes('sudo -n systemctl start lichen-faucet.service'), 'faucet service must be started after RPC is healthy');
 assert(script.includes('http://127.0.0.1:9100/health'), 'faucet health must be verified after restart');
+assert(script.includes('MOSS_HEALTH_URL="${LICHEN_MOSS_HEALTH_URL:-http://127.0.0.1:9120/readyz}"'),
+  'Moss provider health endpoint must be configurable and fail closed');
+assert(script.includes('check_service_tree_hash "$MOSS_SERVICE" "$EXPECTED_MOSS_SHA" "$MOSS_SERVICE"'),
+  'Moss provider running process must match the signed release hash');
+assert(script.includes('COORDINATED_RELEASE="${LICHEN_COORDINATED_RELEASE:-0}"'),
+  'consensus-critical deployment must expose an explicit coordinated mode');
+assert(script.includes('all hosts staged and stopped; starting the complete fleet'),
+  'coordinated mode must finish the stopped install phase before any validator starts');
+assert(indexOfOrThrow('stop_service_unit "$SERVICE"') < indexOfOrThrow('install_staged_bin "$bin"'),
+  'validator service must stop before staged binaries replace live paths');
+assert(script.includes('if [ "$DEFER_START" = "1" ]; then'),
+  'coordinated install must defer validator start on every host');
 assert(script.includes('unit is enabled but inactive'), 'release verification must fail enabled inactive optional services');
 assert(r2Script.includes('"$ARCHIVE_V2_BINARY" verify'),
   'R2 publication must verify the exact catalog segment before upload');
@@ -118,5 +158,27 @@ assert(r2Script.includes('curl --config "$curl_config" "$endpoint/$R2_BUCKET/$pr
   'R2 publication must read every object back through the authenticated endpoint');
 assert(r2Script.includes('R2 read-after-write hash mismatch'),
   'R2 publication must fail closed on remote hash mismatch');
+assert(dualR2Script.includes('R2_PRIMARY_ACCESS_KEY_ID') &&
+  dualR2Script.includes('R2_PRIMARY_SECRET_ACCESS_KEY') &&
+  dualR2Script.includes('R2_PRIMARY_SESSION_TOKEN'),
+'dual R2 publication must require an independent primary temporary credential');
+assert(dualR2Script.includes('R2_REPLICA_ACCESS_KEY_ID') &&
+  dualR2Script.includes('R2_REPLICA_SECRET_ACCESS_KEY') &&
+  dualR2Script.includes('R2_REPLICA_SESSION_TOKEN'),
+'dual R2 publication must require an independent replica temporary credential');
+assert(dualR2Script.includes('primary_curl_config=') &&
+  dualR2Script.includes('replica_curl_config='),
+'dual R2 publication must isolate bucket-scoped credentials in separate configs');
+assert(dualR2Script.includes('remote_sha "$primary_curl_config" "$R2_PRIMARY_BUCKET"') &&
+  dualR2Script.includes('remote_sha "$replica_curl_config" "$R2_REPLICA_BUCKET"'),
+'dual R2 publication must read back each bucket with its own credential');
+assert(dualR2Script.includes('remote_etag "$primary_curl_config" "$R2_PRIMARY_BUCKET"') &&
+  dualR2Script.includes('remote_etag "$replica_curl_config" "$R2_REPLICA_BUCKET"') &&
+  dualR2Script.includes('--header "If-Match: $expected_etag"'),
+'dual R2 catalog replacement must fail closed on concurrent publication');
+assert(!dualR2Script.includes('${AWS_ACCESS_KEY_ID') &&
+  !dualR2Script.includes('${AWS_SECRET_ACCESS_KEY') &&
+  !dualR2Script.includes('${AWS_SESSION_TOKEN'),
+'dual R2 publication must not silently reuse one credential across both buckets');
 
 console.log('rolling release custody sequencing QA passed');

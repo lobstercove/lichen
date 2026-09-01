@@ -21,6 +21,7 @@ if (releaseTag !== expectedReleaseTag) {
     throw new Error(`Manifest version ${version} does not match release tag ${releaseTag}`);
 }
 
+fs.rmSync(distRoot, { recursive: true, force: true });
 fs.mkdirSync(distRoot, { recursive: true });
 
 const runtimeArchiveName = `LichenWallet-extension-v${version}.zip`;
@@ -40,9 +41,11 @@ try {
     fs.mkdirSync(storeBundleDir, { recursive: true });
 
     copyRuntimeTree(runtimeDir);
+    normalizeTimes(runtimeDir);
     zipDirectory(runtimeDir, runtimeArchivePath);
 
     copyStoreBundleTree(storeBundleDir);
+    normalizeTimes(storeBundleDir);
     zipDirectory(storeBundleDir, storeBundlePath);
 
     const runtimeSha256 = sha256(runtimeArchivePath);
@@ -128,7 +131,10 @@ function copyStoreBundleTree(targetDir) {
 }
 
 function copyEntry(sourcePath, destPath) {
-    const stat = fs.statSync(sourcePath);
+    const stat = fs.lstatSync(sourcePath);
+    if (stat.isSymbolicLink()) {
+        throw new Error(`Refusing to package symbolic link: ${sourcePath}`);
+    }
     if (stat.isDirectory()) {
         fs.mkdirSync(destPath, { recursive: true });
         for (const child of fs.readdirSync(sourcePath, { withFileTypes: true })) {
@@ -137,6 +143,9 @@ function copyEntry(sourcePath, destPath) {
         }
         return;
     }
+    if (!stat.isFile()) {
+        throw new Error(`Refusing to package non-regular file: ${sourcePath}`);
+    }
 
     fs.mkdirSync(path.dirname(destPath), { recursive: true });
     fs.copyFileSync(sourcePath, destPath);
@@ -144,11 +153,34 @@ function copyEntry(sourcePath, destPath) {
 
 function zipDirectory(sourceDir, outputFile) {
     fs.rmSync(outputFile, { force: true });
+    const files = listFiles(sourceDir);
+    if (files.length === 0) throw new Error(`Refusing to create an empty wallet archive from ${sourceDir}`);
     try {
-        execFileSync('zip', ['-qr', outputFile, '.'], { cwd: sourceDir, stdio: 'inherit' });
+        execFileSync('zip', ['-X', '-q', outputFile, ...files], { cwd: sourceDir, stdio: 'inherit' });
     } catch (error) {
         throw new Error('The `zip` command is required to package the wallet extension');
     }
+}
+
+function listFiles(root, relative = '') {
+    const files = [];
+    for (const entry of fs.readdirSync(path.join(root, relative), { withFileTypes: true })) {
+        const child = path.join(relative, entry.name);
+        if (entry.isDirectory()) files.push(...listFiles(root, child));
+        else if (entry.isFile()) files.push(child.split(path.sep).join('/'));
+        else throw new Error(`Refusing to package non-regular directory entry: ${child}`);
+    }
+    return files.sort();
+}
+
+function normalizeTimes(root) {
+    const zipEpoch = new Date('1980-01-01T00:00:00.000Z');
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        const target = path.join(root, entry.name);
+        if (entry.isDirectory()) normalizeTimes(target);
+        fs.utimesSync(target, zipEpoch, zipEpoch);
+    }
+    fs.utimesSync(root, zipEpoch, zipEpoch);
 }
 
 function sha256(filePath) {

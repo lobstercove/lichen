@@ -276,6 +276,65 @@ impl ArchiveV2Catalog {
         Ok(required_end <= previous.end_slot)
     }
 
+    /// Commit to the immutable catalog prefix required before a hot-repair
+    /// checkpoint's retained history window. Unlike `catalog_root`, this root
+    /// is intentionally stable when later segments are appended. A checkpoint
+    /// therefore remains a valid recovery anchor as Archive V2 advances while
+    /// still failing closed on identity, manifest, loss-declaration, or handoff
+    /// boundary drift.
+    pub fn checkpoint_handoff_root(&self, history_start_slot: u64) -> Result<Hash, ArchiveV2Error> {
+        self.validate()?;
+        let required_end = history_start_slot.checked_sub(1);
+        if let Some(required_end) = required_end {
+            if !self.covers_genesis_through(required_end)? {
+                return Err(ArchiveV2Error::Continuity(format!(
+                    "catalog does not cover genesis through checkpoint predecessor {required_end}"
+                )));
+            }
+        }
+        let required_entries = self
+            .entries
+            .iter()
+            .take_while(|entry| required_end.is_some_and(|slot| entry.manifest.start_slot <= slot))
+            .collect::<Vec<_>>();
+        let required_declarations = self
+            .legacy_loss_declarations
+            .iter()
+            .take_while(|declaration| {
+                required_end.is_some_and(|slot| declaration.start_slot <= slot)
+            })
+            .collect::<Vec<_>>();
+
+        let mut hasher = Sha256::new();
+        hasher.update(ARCHIVE_V2_ROOT_DOMAIN);
+        hasher.update(b"checkpoint-handoff-v1");
+        hasher.update(self.format_version.to_le_bytes());
+        hasher.update((self.identity.network_id.len() as u64).to_le_bytes());
+        hasher.update(self.identity.network_id.as_bytes());
+        hasher.update(self.identity.genesis_hash.0);
+        hasher.update(history_start_slot.to_le_bytes());
+        hasher.update((required_entries.len() as u64).to_le_bytes());
+        for entry in required_entries {
+            hasher.update(entry.manifest_hash.0);
+            hasher.update(entry.manifest.segment_object_hash.0);
+            hasher.update(entry.manifest.segment_content_root.0);
+            hasher.update(entry.manifest.start_slot.to_le_bytes());
+            hasher.update(entry.manifest.end_slot.to_le_bytes());
+        }
+        hasher.update((required_declarations.len() as u64).to_le_bytes());
+        for declaration in required_declarations {
+            hasher.update(declaration.sequence.to_le_bytes());
+            hasher.update((declaration.waiver_id.len() as u64).to_le_bytes());
+            hasher.update(declaration.waiver_id.as_bytes());
+            hasher.update(declaration.start_slot.to_le_bytes());
+            hasher.update(declaration.end_slot.to_le_bytes());
+            hasher.update(declaration.preceding_block_hash.0);
+            hasher.update(declaration.missing_tip_block_hash.0);
+            hasher.update(declaration.following_block_hash.0);
+        }
+        Ok(Hash(hasher.finalize().into()))
+    }
+
     pub fn trailing_loss_declaration(
         &self,
     ) -> Result<Option<&ArchiveV2LegacyLossDeclaration>, ArchiveV2Error> {
@@ -972,6 +1031,35 @@ mod tests {
         let path = root.path().join("catalog.av2");
         catalog.store_atomic(&path).unwrap();
         assert_eq!(ArchiveV2Catalog::load(&path).unwrap(), catalog);
+    }
+
+    #[test]
+    fn checkpoint_handoff_root_is_stable_across_later_catalog_appends() {
+        let identity = ArchiveV2Identity {
+            network_id: "catalog-handoff-testnet".to_string(),
+            genesis_hash: Hash::hash(b"catalog-handoff-genesis"),
+        };
+        let mut catalog = ArchiveV2Catalog::empty(identity.clone()).unwrap();
+        let empty_handoff = catalog.checkpoint_handoff_root(0).unwrap();
+        let first = manifest(&identity, 0, Hash::default(), None);
+        let first_object = first.segment_object_hash;
+        let first_block = first.last_block_hash;
+        catalog.append(first).unwrap();
+        let genesis_handoff = catalog.checkpoint_handoff_root(1).unwrap();
+        assert_eq!(catalog.checkpoint_handoff_root(0).unwrap(), empty_handoff);
+
+        catalog
+            .append(manifest(&identity, 1, first_block, Some(first_object)))
+            .unwrap();
+        assert_eq!(catalog.checkpoint_handoff_root(1).unwrap(), genesis_handoff);
+        assert_ne!(catalog.checkpoint_handoff_root(2).unwrap(), genesis_handoff);
+
+        let wrong_identity = ArchiveV2Identity {
+            network_id: identity.network_id,
+            genesis_hash: Hash::hash(b"wrong-catalog-handoff-genesis"),
+        };
+        let wrong = ArchiveV2Catalog::empty(wrong_identity).unwrap();
+        assert_ne!(wrong.checkpoint_handoff_root(0).unwrap(), empty_handoff);
     }
 
     #[test]

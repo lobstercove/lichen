@@ -6,26 +6,29 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use lichen_core::archive_v2::{
-    benchmark_archive_v2_range, discover_archive_v2_catalog, load_archive_v2_role_marker,
+    archive_v2_state_admission_fingerprint, benchmark_archive_v2_range,
+    discover_archive_v2_catalog, load_archive_v2_role_marker,
     store_archive_v2_role_marker_create_new, ArchiveV2AdaptiveReservePolicy,
     ArchiveV2BenchmarkCandidate, ArchiveV2BenchmarkPlan, ArchiveV2BuildOptions, ArchiveV2Builder,
-    ArchiveV2CapacityDecision, ArchiveV2CapacityGuard, ArchiveV2CapacityInputs,
-    ArchiveV2CapacityThresholds, ArchiveV2CapacityTotals, ArchiveV2Catalog, ArchiveV2CodecConfig,
-    ArchiveV2DictionaryKind, ArchiveV2DirectoryReplica, ArchiveV2Identity,
-    ArchiveV2LegacyLossDeclaration, ArchiveV2Manifest, ArchiveV2MirrorLimits,
-    ArchiveV2PressureAction, ArchiveV2Reader, ArchiveV2ReaderConfig, ArchiveV2ReplicaEvidence,
-    ArchiveV2ReplicaPolicy, ArchiveV2ReplicaTransport, ArchiveV2Replicator,
-    ArchiveV2RetirementManifest, ArchiveV2Role, ArchiveV2RoleAdmission, ArchiveV2RoleConfig,
-    ArchiveV2RoleMarker, ArchiveV2RoleRequirements, ArchiveV2RollbackAnchor, ArchiveV2SegmentCodec,
-    ARCHIVE_V2_CATALOG_VERSION, ARCHIVE_V2_FORMAT_VERSION, ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS,
-    ARCHIVE_V2_ROLE_CONFIG_VERSION, ARCHIVE_V2_ROLE_MARKER_FILENAME,
+    ArchiveV2CapabilityAdvertisement, ArchiveV2CapacityDecision, ArchiveV2CapacityGuard,
+    ArchiveV2CapacityInputs, ArchiveV2CapacityThresholds, ArchiveV2CapacityTotals,
+    ArchiveV2Catalog, ArchiveV2CodecConfig, ArchiveV2DictionaryKind, ArchiveV2DirectoryReplica,
+    ArchiveV2DirectorySource, ArchiveV2Identity, ArchiveV2LegacyLossDeclaration, ArchiveV2Manifest,
+    ArchiveV2MirrorLimits, ArchiveV2ObjectSource, ArchiveV2PressureAction, ArchiveV2Reader,
+    ArchiveV2ReaderConfig, ArchiveV2ReplicaEvidence, ArchiveV2ReplicaPolicy,
+    ArchiveV2ReplicaTransport, ArchiveV2Replicator, ArchiveV2RetirementManifest, ArchiveV2Role,
+    ArchiveV2RoleAdmission, ArchiveV2RoleConfig, ArchiveV2RoleMarker, ArchiveV2RoleRequirements,
+    ArchiveV2RollbackAnchor, ArchiveV2SegmentCodec, ARCHIVE_V2_CATALOG_VERSION,
+    ARCHIVE_V2_FORMAT_VERSION, ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS, ARCHIVE_V2_ROLE_CONFIG_VERSION,
+    ARCHIVE_V2_ROLE_MARKER_FILENAME, ARCHIVE_V2_STATE_ADMISSION_METADATA_KEY,
 };
 use lichen_core::codec::serialized_size_legacy_bincode;
 use lichen_core::{
     genesis_block_declares_mossstake_slot_only, keypair_password_from_env,
     plaintext_keypair_allowed_for_local_dev, ArchiveV2RetirementLimits,
     ArchiveV2RetirementPassReport, ArchiveV2RetirementPhase, ArchiveV2RetirementReclaimLimits,
-    Hash, KeypairFile, StateStore,
+    CheckpointMeta, CheckpointSnapshotProfile, Hash, KeypairFile, StateStore,
+    PUBLIC_HISTORY_SNAPSHOT_CATEGORIES,
 };
 use serde_json::json;
 
@@ -55,6 +58,7 @@ fn run(raw: Vec<String>) -> Result<(), String> {
     let (command, args) = CommandArgs::parse(raw)?;
     match command.as_str() {
         "status" => run_status(&args),
+        "catalog-extension-check" => run_catalog_extension_check(&args),
         "role-preflight" => run_role_preflight(&args),
         "role-bootstrap" => run_role_bootstrap(&args),
         "snapshot-hot" => run_snapshot_hot(&args),
@@ -67,6 +71,7 @@ fn run(raw: Vec<String>) -> Result<(), String> {
         "build" => run_build(&args),
         "mirror" => run_mirror(&args),
         "restore" => run_restore(&args),
+        "public-history-manifest" => run_public_history_manifest(&args),
         "profile-source" => run_profile_source(&args),
         "benchmark" => run_benchmark(&args),
         "help" | "--help" | "-h" => {
@@ -74,7 +79,7 @@ fn run(raw: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         _ => Err(format!(
-            "unknown command {command:?}; expected status, role-preflight, role-bootstrap, snapshot-hot, verify, repair, declare-legacy-loss, build, mirror, restore, retirement-authorize, retirement-pass, retirement-reclaim, profile-source, or benchmark"
+            "unknown command {command:?}; expected status, catalog-extension-check, role-preflight, role-bootstrap, snapshot-hot, verify, repair, declare-legacy-loss, build, mirror, restore, retirement-authorize, retirement-pass, retirement-reclaim, public-history-manifest, profile-source, or benchmark"
         )),
     }
 }
@@ -167,10 +172,21 @@ impl CommandArgs {
 }
 
 fn run_status(args: &CommandArgs) -> Result<(), String> {
-    args.ensure_only(&["root"], &[])?;
+    args.ensure_only(&["root", "history-start-slot"], &[])?;
     let root = PathBuf::from(args.required("root")?);
     let catalog =
         ArchiveV2Catalog::load(&root.join("catalog.av2")).map_err(|error| error.to_string())?;
+    let checkpoint_handoff_root = args
+        .optional("history-start-slot")?
+        .map(|value| parse_u64(value, "history-start-slot"))
+        .transpose()?
+        .map(|history_start_slot| {
+            catalog
+                .checkpoint_handoff_root(history_start_slot)
+                .map(|root| root.to_hex())
+                .map_err(|error| error.to_string())
+        })
+        .transpose()?;
     let manifests = active_manifests(&catalog)?;
     let mut object_bytes = 0u64;
     let mut manifest_bytes = 0u64;
@@ -209,6 +225,7 @@ fn run_status(args: &CommandArgs) -> Result<(), String> {
         "network_id": catalog.identity.network_id,
         "genesis_hash": catalog.identity.genesis_hash.to_hex(),
         "catalog_root": catalog.catalog_root.to_hex(),
+        "checkpoint_handoff_root": checkpoint_handoff_root,
         "segments": manifests.len(),
         "supersessions": catalog.supersessions.len(),
         "legacy_loss_declarations": catalog.legacy_loss_declarations,
@@ -220,6 +237,34 @@ fn run_status(args: &CommandArgs) -> Result<(), String> {
         "missing_objects_first_100": missing_objects,
         "missing_manifests_first_100": missing_manifests,
         "complete_local_inventory": missing_object_count == 0 && missing_manifest_count == 0,
+    }))
+}
+
+fn run_catalog_extension_check(args: &CommandArgs) -> Result<(), String> {
+    args.ensure_only(&["base-root", "incoming-root"], &[])?;
+    let base_root = PathBuf::from(args.required("base-root")?);
+    let incoming_root = PathBuf::from(args.required("incoming-root")?);
+    let base = ArchiveV2Catalog::load(&base_root.join("catalog.av2"))
+        .map_err(|error| error.to_string())?;
+    let incoming = ArchiveV2Catalog::load(&incoming_root.join("catalog.av2"))
+        .map_err(|error| error.to_string())?;
+    let base_catalog_root = base.catalog_root;
+    let incoming_catalog_root = incoming.catalog_root;
+    let mut merged = base;
+    let changed = merged
+        .merge_verified_extension(&incoming)
+        .map_err(|error| error.to_string())?;
+    if merged != incoming {
+        return Err("catalog extension check did not converge on incoming catalog".to_string());
+    }
+    print_json(&json!({
+        "operation": "catalog-extension-check",
+        "base_root": base_root,
+        "incoming_root": incoming_root,
+        "base_catalog_root": base_catalog_root.to_hex(),
+        "incoming_catalog_root": incoming_catalog_root.to_hex(),
+        "changed": changed,
+        "exact_append_only_extension": true,
     }))
 }
 
@@ -345,6 +390,7 @@ struct RolePreflightAssessment {
     role: ArchiveV2Role,
     role_config: ArchiveV2RoleConfig,
     admission: ArchiveV2RoleAdmission,
+    capability: Option<ArchiveV2CapabilityAdvertisement>,
     capacity: ArchiveV2CapacityDecision,
     identity: ArchiveV2Identity,
     catalog_root: Hash,
@@ -381,7 +427,61 @@ const ROLE_PREFLIGHT_VALUES: &[&str] = &[
     "recovery-file",
 ];
 
-fn evaluate_role_preflight(args: &CommandArgs) -> Result<RolePreflightAssessment, String> {
+fn role_preflight_policy_config(
+    role_config: &ArchiveV2RoleConfig,
+    allow_local_dev_short_history: bool,
+    local_dev_mode: bool,
+) -> Result<ArchiveV2RoleConfig, String> {
+    if role_config.recent_history_slots >= ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS {
+        return Ok(role_config.clone());
+    }
+    if !allow_local_dev_short_history || !local_dev_mode {
+        return Err(format!(
+            "--recent-history-slots must be at least {ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS}"
+        ));
+    }
+
+    // Match the validator's accelerated local-gate admission path: evaluate
+    // every semantic requirement against the public-network policy while
+    // retaining the explicit short window in the dev-only runtime marker.
+    // A production validator still rejects that marker because it does not
+    // enter the corresponding --dev-mode admission path.
+    let mut policy_config = role_config.clone();
+    policy_config.recent_history_slots = ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS;
+    Ok(policy_config)
+}
+
+fn verify_full_archive_preflight_local_range(
+    state: &StateStore,
+    start_slot: u64,
+    end_slot: u64,
+) -> Result<(), String> {
+    if end_slot < start_slot {
+        return Ok(());
+    }
+    let mut previous_hash = None;
+    for slot in start_slot..=end_slot {
+        let block = state.get_block_by_slot(slot)?.ok_or_else(|| {
+            format!("canonical block {slot} is missing from local hot/cold storage")
+        })?;
+        if let Some(expected_parent) = previous_hash {
+            if block.header.parent_hash != expected_parent {
+                return Err(format!(
+                    "canonical block {slot} does not extend local block {}",
+                    slot.saturating_sub(1)
+                ));
+            }
+        }
+        previous_hash = Some(block.hash());
+    }
+    Ok(())
+}
+
+fn evaluate_role_preflight(
+    args: &CommandArgs,
+    allow_local_dev_short_history: bool,
+    local_dev_mode: bool,
+) -> Result<RolePreflightAssessment, String> {
     let state_dir = PathBuf::from(args.required("state-dir")?);
     let root = PathBuf::from(args.required("root")?);
     let role = args
@@ -392,11 +492,6 @@ fn evaluate_role_preflight(args: &CommandArgs) -> Result<RolePreflightAssessment
         args.optional("recent-history-slots")?.unwrap_or("50000"),
         "recent-history-slots",
     )?;
-    if recent_history_slots < ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS {
-        return Err(format!(
-            "--recent-history-slots must be at least {ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS}"
-        ));
-    }
     let cache_root = args.optional("cache-root")?.map(PathBuf::from);
     let cache_quota_bytes = parse_u64(
         args.optional("cache-quota-bytes")?.unwrap_or("0"),
@@ -477,9 +572,17 @@ fn evaluate_role_preflight(args: &CommandArgs) -> Result<RolePreflightAssessment
     }
     let genesis_mossstake_slot_only = genesis_block_declares_mossstake_slot_only(&local_genesis)?;
     let hot_start = finalized_slot.saturating_sub(recent_history_slots.saturating_sub(1));
-    let complete_hot_window = state
-        .verify_hot_canonical_block_range(hot_start, finalized_slot)
-        .is_ok();
+    // Full-archive migration owns both hot and legacy-cold local storage until
+    // signed retirement. Match runtime admission by accepting that physically
+    // verified unpublished tail; cache/consensus roles must keep it hot.
+    let complete_hot_window = match role {
+        ArchiveV2Role::FullArchive => {
+            verify_full_archive_preflight_local_range(&state, hot_start, finalized_slot).is_ok()
+        }
+        ArchiveV2Role::VerifiedCache | ArchiveV2Role::Consensus => state
+            .verify_hot_canonical_block_range(hot_start, finalized_slot)
+            .is_ok(),
+    };
     let required_archive_end = finalized_slot.checked_sub(recent_history_slots);
     let complete_catalog_verified = match required_archive_end {
         Some(end) => catalog
@@ -553,6 +656,8 @@ fn evaluate_role_preflight(args: &CommandArgs) -> Result<RolePreflightAssessment
         verified_cache_quota_bytes: cache_quota_bytes,
         advertise_deep_history: role != ArchiveV2Role::Consensus,
     };
+    let policy_config =
+        role_preflight_policy_config(&role_config, allow_local_dev_short_history, local_dev_mode)?;
     let requirements = ArchiveV2RoleRequirements {
         independent_consensus_state,
         consensus_wal_and_identity,
@@ -572,13 +677,33 @@ fn evaluate_role_preflight(args: &CommandArgs) -> Result<RolePreflightAssessment
         network_archive_policy_satisfied: false,
         no_archive_operation_in_progress: true,
     };
-    let admission = role_config
+    let admission = policy_config
         .admit(&requirements)
         .map_err(|error| error.to_string())?;
+    let catalog_range = catalog
+        .entries
+        .first()
+        .zip(catalog.entries.last())
+        .map(|(first, last)| (first.manifest.start_slot, last.manifest.end_slot));
+    let capability = if admission.admitted {
+        Some(
+            role_config
+                .capability(
+                    catalog.identity.clone(),
+                    catalog.catalog_root,
+                    catalog_range,
+                    &admission,
+                )
+                .map_err(|error| error.to_string())?,
+        )
+    } else {
+        None
+    };
     Ok(RolePreflightAssessment {
         role,
         role_config,
         admission,
+        capability,
         capacity,
         identity: catalog.identity,
         catalog_root: catalog.catalog_root,
@@ -601,21 +726,27 @@ fn evaluate_role_preflight(args: &CommandArgs) -> Result<RolePreflightAssessment
     })
 }
 
-fn print_role_preflight_assessment(
-    operation: &str,
-    assessment: &RolePreflightAssessment,
+struct RolePreflightReport<'a> {
+    operation: &'a str,
     runtime_admitted: bool,
     bootstrap_authorized: Option<bool>,
-    marker_path: Option<&Path>,
+    marker_path: Option<&'a Path>,
     marker_created: Option<bool>,
+    state_admission_persisted: Option<bool>,
+    state_admission_created: Option<bool>,
     dry_run: bool,
+}
+
+fn print_role_preflight_assessment(
+    assessment: &RolePreflightAssessment,
+    report: RolePreflightReport<'_>,
 ) -> Result<(), String> {
     print_json(&json!({
-        "operation": operation,
+        "operation": report.operation,
         "role": assessment.role,
-        "admitted": runtime_admitted,
-        "runtime_admitted": runtime_admitted,
-        "bootstrap_authorized": bootstrap_authorized,
+        "admitted": report.runtime_admitted,
+        "runtime_admitted": report.runtime_admitted,
+        "bootstrap_authorized": report.bootstrap_authorized,
         "role_admission": assessment.admission,
         "capacity": assessment.capacity,
         "network_id": assessment.identity.network_id,
@@ -637,9 +768,11 @@ fn print_role_preflight_assessment(
         "source_catalogs_match": assessment.source_catalogs_match,
         "source_complete_inventories": assessment.source_complete_inventories,
         "genesis_mossstake_slot_only": assessment.genesis_mossstake_slot_only,
-        "marker_path": marker_path,
-        "marker_created": marker_created,
-        "dry_run": dry_run,
+        "marker_path": report.marker_path,
+        "marker_created": report.marker_created,
+        "state_admission_persisted": report.state_admission_persisted,
+        "state_admission_created": report.state_admission_created,
+        "dry_run": report.dry_run,
     }))
 }
 
@@ -648,17 +781,21 @@ fn print_role_preflight_assessment(
 /// and source roots that it will place in the validator service configuration.
 fn run_role_preflight(args: &CommandArgs) -> Result<(), String> {
     args.ensure_only(ROLE_PREFLIGHT_VALUES, &[])?;
-    let assessment = evaluate_role_preflight(args)?;
+    let assessment = evaluate_role_preflight(args, false, false)?;
     let admitted = assessment.admission.admitted
         && assessment.capacity.action == ArchiveV2PressureAction::Normal;
     print_role_preflight_assessment(
-        "role_preflight",
         &assessment,
-        admitted,
-        None,
-        None,
-        None,
-        false,
+        RolePreflightReport {
+            operation: "role_preflight",
+            runtime_admitted: admitted,
+            bootstrap_authorized: None,
+            marker_path: None,
+            marker_created: None,
+            state_admission_persisted: None,
+            state_admission_created: None,
+            dry_run: false,
+        },
     )?;
     if !admitted {
         return Err(
@@ -668,16 +805,18 @@ fn run_role_preflight(args: &CommandArgs) -> Result<(), String> {
     Ok(())
 }
 
-/// Creates the exact runtime role marker needed to retire legacy cold history
-/// while a validator is stopped. This command permits a non-Normal capacity
-/// result only for the circular low-space transition; it never admits runtime
-/// startup and never weakens the network's absolute mutable-storage floor.
+/// Creates the exact runtime role marker and state-bound admission fingerprint
+/// needed to retire legacy cold history while a validator is stopped. This
+/// command permits a non-Normal capacity result only for the circular low-space
+/// transition; it never overrides runtime capacity admission and never weakens
+/// the network's absolute mutable-storage floor.
 fn run_role_bootstrap(args: &CommandArgs) -> Result<(), String> {
     args.ensure_only(
         ROLE_PREFLIGHT_VALUES,
         &[
             "acknowledge-stopped-validator",
             "acknowledge-low-space-legacy-retirement",
+            "allow-local-dev-short-history",
             "dry-run",
         ],
     )?;
@@ -693,34 +832,68 @@ fn run_role_bootstrap(args: &CommandArgs) -> Result<(), String> {
         return Err("role bootstrap requires --cold-store to prove canonical slot 0".to_string());
     }
 
-    let assessment = evaluate_role_preflight(args)?;
+    let allow_local_dev_short_history = args.flag("allow-local-dev-short-history");
+    let local_dev_mode = std::env::var("LICHEN_LOCAL_DEV").ok().as_deref() == Some("1");
+    let assessment = evaluate_role_preflight(args, allow_local_dev_short_history, local_dev_mode)?;
     if !assessment.admission.admitted {
         print_role_preflight_assessment(
-            "role_bootstrap",
             &assessment,
-            false,
-            Some(false),
-            None,
-            None,
-            args.flag("dry-run"),
+            RolePreflightReport {
+                operation: "role_bootstrap",
+                runtime_admitted: false,
+                bootstrap_authorized: Some(false),
+                marker_path: None,
+                marker_created: None,
+                state_admission_persisted: None,
+                state_admission_created: None,
+                dry_run: args.flag("dry-run"),
+            },
         )?;
         return Err("Archive V2 role bootstrap semantic admission failed".to_string());
     }
     if assessment.capacity.hot_available_bytes < assessment.capacity.absolute_reserve_bytes {
         print_role_preflight_assessment(
-            "role_bootstrap",
             &assessment,
-            false,
-            Some(false),
-            None,
-            None,
-            args.flag("dry-run"),
+            RolePreflightReport {
+                operation: "role_bootstrap",
+                runtime_admitted: false,
+                bootstrap_authorized: Some(false),
+                marker_path: None,
+                marker_created: None,
+                state_admission_persisted: None,
+                state_admission_created: None,
+                dry_run: args.flag("dry-run"),
+            },
         )?;
         return Err(format!(
             "Archive V2 role bootstrap refuses to cross the {} byte network storage floor",
             assessment.capacity.absolute_reserve_bytes
         ));
     }
+
+    let capability = assessment
+        .capability
+        .as_ref()
+        .ok_or_else(|| "Archive V2 role bootstrap has no admitted capability".to_string())?;
+    let state_admission_fingerprint = archive_v2_state_admission_fingerprint(capability)?;
+    let state_dir = PathBuf::from(args.required("state-dir")?);
+    let existing_state_admission = {
+        let state = StateStore::open_read_only_with_cache_mb(&state_dir, Some(64))?;
+        state.get_metadata(ARCHIVE_V2_STATE_ADMISSION_METADATA_KEY)?
+    };
+    let mut state_admission_persisted = match existing_state_admission.as_deref() {
+        None => false,
+        Some(stored) if stored == state_admission_fingerprint.0.as_slice() => true,
+        Some(stored) if stored.len() != 32 => {
+            return Err("existing Archive V2 state admission marker is malformed".to_string());
+        }
+        Some(_) => {
+            return Err(
+                "existing Archive V2 state admission marker conflicts with the verified bootstrap authorization"
+                    .to_string(),
+            );
+        }
+    };
 
     let marker = ArchiveV2RoleMarker {
         marker_version: 1,
@@ -730,6 +903,7 @@ fn run_role_bootstrap(args: &CommandArgs) -> Result<(), String> {
     };
     let marker_path = PathBuf::from(args.required("root")?).join(ARCHIVE_V2_ROLE_MARKER_FILENAME);
     let mut marker_created = false;
+    let mut state_admission_created = false;
     match fs::symlink_metadata(&marker_path) {
         Ok(_) => {
             let existing = load_archive_v2_role_marker(&marker_path)?;
@@ -759,14 +933,57 @@ fn run_role_bootstrap(args: &CommandArgs) -> Result<(), String> {
             ));
         }
     }
+    if !args.flag("dry-run") && !state_admission_persisted {
+        let state = StateStore::open_with_cache_mb(&state_dir, Some(64))?;
+        match state.get_metadata(ARCHIVE_V2_STATE_ADMISSION_METADATA_KEY)? {
+            None => {
+                state.put_metadata(
+                    ARCHIVE_V2_STATE_ADMISSION_METADATA_KEY,
+                    &state_admission_fingerprint.0,
+                )?;
+                state.sync_hot_wal()?;
+                state_admission_created = true;
+            }
+            Some(stored) if stored.as_slice() == state_admission_fingerprint.0.as_slice() => {}
+            Some(stored) if stored.len() != 32 => {
+                return Err(
+                    "Archive V2 state admission marker became malformed during bootstrap"
+                        .to_string(),
+                );
+            }
+            Some(_) => {
+                return Err(
+                    "Archive V2 state admission marker changed during stopped-validator bootstrap"
+                        .to_string(),
+                );
+            }
+        }
+        let stored = state
+            .get_metadata(ARCHIVE_V2_STATE_ADMISSION_METADATA_KEY)?
+            .ok_or_else(|| {
+                "published Archive V2 state admission marker disappeared before read-back"
+                    .to_string()
+            })?;
+        if stored.as_slice() != state_admission_fingerprint.0.as_slice() {
+            return Err(
+                "published Archive V2 state admission marker failed read-back verification"
+                    .to_string(),
+            );
+        }
+        state_admission_persisted = true;
+    }
     print_role_preflight_assessment(
-        "role_bootstrap",
         &assessment,
-        assessment.capacity.action == ArchiveV2PressureAction::Normal,
-        Some(true),
-        Some(&marker_path),
-        Some(marker_created),
-        args.flag("dry-run"),
+        RolePreflightReport {
+            operation: "role_bootstrap",
+            runtime_admitted: assessment.capacity.action == ArchiveV2PressureAction::Normal,
+            bootstrap_authorized: Some(true),
+            marker_path: Some(&marker_path),
+            marker_created: Some(marker_created),
+            state_admission_persisted: Some(state_admission_persisted),
+            state_admission_created: Some(state_admission_created),
+            dry_run: args.flag("dry-run"),
+        },
     )
 }
 
@@ -2163,6 +2380,154 @@ fn parse_benchmark_candidate(spec: &str) -> Result<ArchiveV2BenchmarkCandidate, 
     })
 }
 
+fn run_public_history_manifest(args: &CommandArgs) -> Result<(), String> {
+    args.ensure_only(
+        &[
+            "state-dir",
+            "root",
+            "source-dir",
+            "cache-root",
+            "cache-quota-bytes",
+            "chunk-size",
+        ],
+        &[],
+    )?;
+    let state_dir = PathBuf::from(args.required("state-dir")?);
+    let root = PathBuf::from(args.required("root")?);
+    let checkpoint_meta_path = state_dir.join("checkpoint_meta.json");
+    let checkpoint_meta: CheckpointMeta =
+        serde_json::from_slice(&fs::read(&checkpoint_meta_path).map_err(|error| {
+            format!(
+                "failed reading checkpoint metadata {}: {error}",
+                checkpoint_meta_path.display()
+            )
+        })?)
+        .map_err(|error| {
+            format!(
+                "failed decoding checkpoint metadata {}: {error}",
+                checkpoint_meta_path.display()
+            )
+        })?;
+    let CheckpointSnapshotProfile::HotRepairV1 {
+        history_start_slot,
+        archive_v2_catalog_root: Some(bound_handoff_root),
+    } = checkpoint_meta.snapshot_profile
+    else {
+        return Err(
+            "public-history-manifest requires a catalog-bound hot_repair_v1 checkpoint".to_string(),
+        );
+    };
+
+    let catalog_path = root.join("catalog.av2");
+    let catalog = ArchiveV2Catalog::load(&catalog_path).map_err(|error| error.to_string())?;
+    let actual_handoff_root = catalog
+        .checkpoint_handoff_root(history_start_slot)
+        .map_err(|error| error.to_string())?;
+    if actual_handoff_root.0 != bound_handoff_root {
+        return Err(format!(
+            "checkpoint handoff {} differs from catalog handoff {}",
+            hex::encode(bound_handoff_root),
+            actual_handoff_root
+        ));
+    }
+
+    let source_dirs = args
+        .repeated("source-dir")
+        .into_iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    let cache_root = args.optional("cache-root")?.map(PathBuf::from);
+    let cache_quota_bytes = match args.optional("cache-quota-bytes")? {
+        Some(value) => parse_u64(value, "cache-quota-bytes")?,
+        None if source_dirs.is_empty() => 0,
+        None => 8 * 1024 * 1024 * 1024,
+    };
+    if source_dirs.is_empty() {
+        if cache_root.is_some() || cache_quota_bytes != 0 {
+            return Err(
+                "--cache-root and --cache-quota-bytes require at least one --source-dir"
+                    .to_string(),
+            );
+        }
+    } else if cache_root.is_none() || cache_quota_bytes == 0 {
+        return Err(
+            "authenticated source verification requires --cache-root and a non-zero --cache-quota-bytes"
+                .to_string(),
+        );
+    }
+    for source in &source_dirs {
+        let source_catalog = ArchiveV2Catalog::load(&source.join("catalog.av2"))
+            .map_err(|error| format!("invalid Archive V2 source {}: {error}", source.display()))?;
+        if source_catalog.identity != catalog.identity {
+            return Err(format!(
+                "Archive V2 source {} has a different network or genesis identity",
+                source.display()
+            ));
+        }
+    }
+    let sources = source_dirs
+        .iter()
+        .enumerate()
+        .map(|(index, source)| {
+            Arc::new(ArchiveV2DirectorySource::new(
+                format!("logical-manifest-source-{index}"),
+                source,
+                true,
+            )) as Arc<dyn ArchiveV2ObjectSource>
+        })
+        .collect::<Vec<_>>();
+    let reader = ArchiveV2Reader::open(
+        catalog.identity.clone(),
+        &catalog_path,
+        ArchiveV2ReaderConfig {
+            role: if sources.is_empty() {
+                ArchiveV2Role::FullArchive
+            } else {
+                ArchiveV2Role::VerifiedCache
+            },
+            root: root.clone(),
+            cache_root: cache_root.clone(),
+            cache_quota_bytes,
+            max_decoded_segments: catalog.entries.len().clamp(1, 8),
+            allow_remote_fetch: !sources.is_empty(),
+            sources,
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    let state = StateStore::open_read_only_with_cache_mb(&state_dir, Some(256))?;
+    let last_slot = state.get_last_slot()?;
+    if last_slot != checkpoint_meta.slot {
+        return Err(format!(
+            "checkpoint metadata slot {} differs from stored last slot {last_slot}",
+            checkpoint_meta.slot
+        ));
+    }
+    let chunk_size = match args.optional("chunk-size")? {
+        Some(value) => parse_u64(value, "chunk-size")?.clamp(1, 50_000),
+        None => 1_000,
+    };
+    let manifest = state.compute_archive_v2_checkpoint_public_history_manifest(
+        &reader,
+        checkpoint_meta.slot,
+        checkpoint_meta.snapshot_profile,
+        PUBLIC_HISTORY_SNAPSHOT_CATEGORIES,
+        chunk_size,
+    )?;
+    print_json(&json!({
+        "operation": "public_history_manifest",
+        "state_dir": state_dir,
+        "archive_v2_root": root,
+        "archive_v2_catalog_root": catalog.catalog_root.to_hex(),
+        "archive_v2_handoff_root": actual_handoff_root.to_hex(),
+        "history_start_slot": history_start_slot,
+        "last_slot": last_slot,
+        "state_root": state.compute_state_root_read_only().to_hex(),
+        "chunk_size": chunk_size,
+        "manifest_root": hex::encode(manifest.root),
+        "manifest": manifest,
+    }))
+}
+
 fn run_profile_source(args: &CommandArgs) -> Result<(), String> {
     args.ensure_only(
         &[
@@ -2529,7 +2894,7 @@ fn write_bytes_create_new(path: &Path, encoded: &[u8]) -> Result<(), String> {
 
 fn print_usage() {
     println!(
-        "lichen-archive-v2 <status|role-preflight|role-bootstrap|snapshot-hot|verify|repair|declare-legacy-loss|build|mirror|restore|retirement-authorize|retirement-pass|retirement-reclaim|profile-source|benchmark> [options]\n\
+        "lichen-archive-v2 <status|catalog-extension-check|role-preflight|role-bootstrap|snapshot-hot|verify|repair|declare-legacy-loss|build|mirror|restore|retirement-authorize|retirement-pass|retirement-reclaim|public-history-manifest|profile-source|benchmark> [options]\n\
          Run `lichen-archive-v2 <command> --help` is intentionally unsupported; unknown options fail closed.\n\
          Retirement authorization accepts paired --start-slot/--end-slot bounds inside one verified segment; omitting both authorizes the full segment.\n\
          Replica specifications use name:failure-domain:path. Retirement evidence uses destination,failure-domain,verified-unix-seconds. Verify and mirror default to one object per pass."
@@ -2539,6 +2904,27 @@ fn print_usage() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_role_preflight_policy_is_explicit_local_dev_only() {
+        let short = ArchiveV2RoleConfig {
+            recent_history_slots: 20,
+            ..ArchiveV2RoleConfig::default()
+        };
+        assert!(role_preflight_policy_config(&short, false, true)
+            .unwrap_err()
+            .contains("at least 50000"));
+        assert!(role_preflight_policy_config(&short, true, false)
+            .unwrap_err()
+            .contains("at least 50000"));
+
+        let policy = role_preflight_policy_config(&short, true, true).unwrap();
+        assert_eq!(
+            policy.recent_history_slots,
+            ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS
+        );
+        assert_eq!(short.recent_history_slots, 20);
+    }
 
     #[cfg(unix)]
     #[test]
@@ -2859,8 +3245,16 @@ mod tests {
     fn role_bootstrap_dry_run_never_writes_and_publish_is_idempotent() {
         let temporary = tempfile::tempdir().unwrap();
         let (dry_run, marker_path) = role_bootstrap_fixture_args(&temporary, true);
+        let state_dir = PathBuf::from(dry_run.required("state-dir").unwrap());
         run_role_bootstrap(&dry_run).unwrap();
         assert!(!marker_path.exists());
+        assert_eq!(
+            StateStore::open_read_only_with_cache_mb(&state_dir, Some(8))
+                .unwrap()
+                .get_metadata(ARCHIVE_V2_STATE_ADMISSION_METADATA_KEY)
+                .unwrap(),
+            None
+        );
 
         let (_, mut publish) = CommandArgs::parse(vec!["role-bootstrap".to_string()]).unwrap();
         publish.values = dry_run.values;
@@ -2868,8 +3262,21 @@ mod tests {
         publish.flags.remove("dry-run");
         run_role_bootstrap(&publish).unwrap();
         let first = fs::read(&marker_path).unwrap();
+        let first_state_admission = StateStore::open_read_only_with_cache_mb(&state_dir, Some(8))
+            .unwrap()
+            .get_metadata(ARCHIVE_V2_STATE_ADMISSION_METADATA_KEY)
+            .unwrap()
+            .expect("published state admission marker");
+        assert_eq!(first_state_admission.len(), 32);
         run_role_bootstrap(&publish).unwrap();
         assert_eq!(fs::read(&marker_path).unwrap(), first);
+        assert_eq!(
+            StateStore::open_read_only_with_cache_mb(&state_dir, Some(8))
+                .unwrap()
+                .get_metadata(ARCHIVE_V2_STATE_ADMISSION_METADATA_KEY)
+                .unwrap(),
+            Some(first_state_admission.clone())
+        );
         assert_eq!(
             load_archive_v2_role_marker(&marker_path)
                 .unwrap()
@@ -2887,6 +3294,31 @@ mod tests {
             .unwrap_err()
             .contains("conflicts"));
         assert_eq!(fs::read(&marker_path).unwrap(), first);
+        assert_eq!(
+            StateStore::open_read_only_with_cache_mb(&state_dir, Some(8))
+                .unwrap()
+                .get_metadata(ARCHIVE_V2_STATE_ADMISSION_METADATA_KEY)
+                .unwrap(),
+            Some(first_state_admission)
+        );
+    }
+
+    #[test]
+    fn role_bootstrap_rejects_conflicting_state_admission_before_role_marker_write() {
+        let temporary = tempfile::tempdir().unwrap();
+        let (publish, marker_path) = role_bootstrap_fixture_args(&temporary, false);
+        let state_dir = PathBuf::from(publish.required("state-dir").unwrap());
+        let state = StateStore::open(&state_dir).unwrap();
+        state
+            .put_metadata(ARCHIVE_V2_STATE_ADMISSION_METADATA_KEY, &[0xA5; 32])
+            .unwrap();
+        state.sync_hot_wal().unwrap();
+        drop(state);
+
+        assert!(run_role_bootstrap(&publish)
+            .unwrap_err()
+            .contains("state admission marker conflicts"));
+        assert!(!marker_path.exists());
     }
 
     #[test]

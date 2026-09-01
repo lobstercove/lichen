@@ -25,14 +25,15 @@ pub mod wal;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use futures_util::{SinkExt, StreamExt};
 use lichen_core::archive_v2::{
-    load_archive_v2_role_marker, store_archive_v2_role_marker_create_new,
-    ArchiveV2AdaptiveReservePolicy, ArchiveV2CapabilityAdvertisement, ArchiveV2CapacityDecision,
-    ArchiveV2CapacityGuard, ArchiveV2CapacityInputs, ArchiveV2CapacityThresholds,
-    ArchiveV2CapacityTotals, ArchiveV2Catalog, ArchiveV2DirectorySource, ArchiveV2ObjectSource,
-    ArchiveV2PressureAction, ArchiveV2Reader, ArchiveV2ReaderConfig, ArchiveV2Role,
-    ArchiveV2RoleAdmission, ArchiveV2RoleConfig, ArchiveV2RoleMarker, ArchiveV2RoleRequirements,
+    archive_v2_state_admission_fingerprint, load_archive_v2_role_marker,
+    store_archive_v2_role_marker_create_new, ArchiveV2AdaptiveReservePolicy,
+    ArchiveV2CapabilityAdvertisement, ArchiveV2CapacityDecision, ArchiveV2CapacityGuard,
+    ArchiveV2CapacityInputs, ArchiveV2CapacityThresholds, ArchiveV2CapacityTotals,
+    ArchiveV2Catalog, ArchiveV2DirectorySource, ArchiveV2ObjectSource, ArchiveV2PressureAction,
+    ArchiveV2Reader, ArchiveV2ReaderConfig, ArchiveV2Role, ArchiveV2RoleAdmission,
+    ArchiveV2RoleConfig, ArchiveV2RoleMarker, ArchiveV2RoleRequirements,
     ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS, ARCHIVE_V2_ROLE_CONFIG_VERSION,
-    ARCHIVE_V2_ROLE_MARKER_FILENAME,
+    ARCHIVE_V2_ROLE_MARKER_FILENAME, ARCHIVE_V2_STATE_ADMISSION_METADATA_KEY,
 };
 use lichen_core::codec::{
     deserialize_legacy_bincode_from, deserialize_legacy_bincode_strict, serialize_legacy_bincode,
@@ -61,10 +62,10 @@ use lichen_core::{
     compute_validators_hash, current_active_oracle_attestations, evm_tx_hash,
     extract_genesis_state_bundle, genesis_block_declares_mossstake_slot_only,
     oracle_stake_quorum_reached, Account, AccountTxsRebuildReport, AccountTxsSourceInspection,
-    Block, CanonicalCommitCertificate, ContractAbi, ContractAccount, ContractInstruction,
-    FeeConfig, FinalityTracker, ForkChoice, GenesisConfig, GenesisPrices, GenesisStateBundle,
-    GenesisWallet, GovernedProposalTxBackfillReport, Hash, Keypair, MarketActivity,
-    MarketActivityKind, Mempool, PqSignature, Precommit, Prevote, Proposal, Pubkey,
+    Block, CanonicalCommitCertificate, CheckpointSnapshotProfile, ContractAbi, ContractAccount,
+    ContractInstruction, FeeConfig, FinalityTracker, ForkChoice, GenesisConfig, GenesisPrices,
+    GenesisStateBundle, GenesisWallet, GovernedProposalTxBackfillReport, Hash, Keypair,
+    MarketActivity, MarketActivityKind, Mempool, PqSignature, Precommit, Prevote, Proposal, Pubkey,
     PublicHistoryImportReport, PublicHistoryManifest, RoundStep, SlashingEvidence, SlashingOffense,
     SparseStateCommitmentReport, StakePool, StateBatch, StateRootComponentReport, StateStore,
     Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote, VoteAggregator, VoteAuthority,
@@ -127,6 +128,9 @@ const DEFAULT_MIN_RUNTIME_AVAILABLE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 const MIN_CHECKPOINT_AVAILABLE_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 static CHECKPOINT_MAINTENANCE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static CHECKPOINT_CREATION_TERMINALLY_PAUSED: AtomicBool = AtomicBool::new(false);
+static CHECKPOINT_CREATION_ACTIVE: AtomicBool = AtomicBool::new(false);
+static RUNTIME_MINIMUM_CHECKPOINT_AVAILABLE_BYTES: AtomicU64 =
+    AtomicU64::new(DEFAULT_MIN_RUNTIME_AVAILABLE_BYTES);
 static ACTIVE_CHECKPOINT_EXPORT_PINS: LazyLock<std::sync::Mutex<HashMap<u64, usize>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 static ARCHIVE_V2_CAPACITY_ACTION: AtomicU64 =
@@ -416,6 +420,13 @@ fn compact_block_full_block_fallback_request(slot: u64, local_addr: SocketAddr) 
 /// The watchdog tracks canonical or verified snapshot progress. Pending or
 /// unchainable network blocks do not suppress it.
 const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 120;
+// Periodic hot-repair checkpoints can legitimately hold canonical commit at
+// the checkpoint boundary while RocksDB publishes and compacts the bounded
+// snapshot. Keep the ordinary stall detector at 120 seconds, but give an
+// explicitly active checkpoint a finite maintenance window before the same
+// confirmed-restart path applies. This must remain bounded: a wedged
+// checkpoint may not suppress the watchdog indefinitely.
+const MAX_ACTIVE_CHECKPOINT_WATCHDOG_SECS: u64 = 15 * 60;
 const WATCHDOG_STALE_CONFIRMATION_CHECKS: u32 = 6;
 const BACKGROUND_HISTORY_REPAIR_START_DELAY_SECS: u64 = 120;
 const GOVERNED_TX_BACKFILL_THROTTLE_EVERY_ROWS: u64 = 25_000;
@@ -458,6 +469,7 @@ const MERGE_PUBLIC_HISTORY_FROM_SOURCE_FLAG: &str = "--merge-public-history-from
 const MERGE_PUBLIC_HISTORY_INDEXES_FROM_SOURCE_FLAG: &str =
     "--merge-public-history-indexes-from-source";
 const PUBLIC_HISTORY_MANIFEST_FLAG: &str = "--public-history-manifest";
+const CHECKPOINT_SNAPSHOT_MANIFEST_FLAG: &str = "--checkpoint-snapshot-manifest";
 const VERIFY_PUBLIC_HISTORY_PARITY_WITH_SOURCE_FLAG: &str =
     "--verify-public-history-parity-with-source";
 const REPAIR_PUBLIC_HISTORY_FROM_SOURCE_FLAG: &str = "--repair-public-history-from-source";
@@ -1075,6 +1087,77 @@ type SnapshotEntry = (Vec<u8>, Vec<u8>);
 type SnapshotEntries = Vec<SnapshotEntry>;
 type ShieldedStateBundle = Vec<(String, SnapshotEntries)>;
 
+/// Materialize the self-contained commit certificate required by historical
+/// block sync. Canonical consensus stores a parent's finality certificate in
+/// the first transaction of its child so the certificate can bind the
+/// parent's post-state root. RPC already resolves that representation for
+/// clients; P2P range serving must do the same or a fresh validator will reject
+/// the first canonical-child-era block as unsigned.
+///
+/// The block hash excludes commit metadata, so replacing the legacy/local
+/// fields with the verified canonical certificate does not alter chain
+/// identity. If neither representation is available, serving fails closed.
+fn materialize_block_commit_for_sync(
+    state: &StateStore,
+    mut block: Block,
+    chain_id: &str,
+    min_validator_stake: u64,
+) -> Result<Block, String> {
+    if block.header.slot == 0 {
+        return Ok(block);
+    }
+
+    let child_slot = block
+        .header
+        .slot
+        .checked_add(1)
+        .ok_or_else(|| "block slot overflow while resolving sync certificate".to_string())?;
+    if let Some(child) = state.get_block_by_slot(child_slot)? {
+        if child.header.parent_hash != block.hash() {
+            return Err(format!(
+                "canonical child {} does not extend block {}",
+                child_slot, block.header.slot
+            ));
+        }
+        validate_block_payload_commitments(&child)?;
+        let consensus_transactions: Vec<_> = child
+            .transactions
+            .iter()
+            .enumerate()
+            .filter(|(_, transaction)| transaction.is_consensus())
+            .collect();
+        if !consensus_transactions.is_empty() {
+            if consensus_transactions.len() != 1 || consensus_transactions[0].0 != 0 {
+                return Err(format!(
+                    "canonical child {} does not contain exactly one parent commit certificate at index 0",
+                    child_slot
+                ));
+            }
+            let certificate =
+                CanonicalCommitCertificate::from_transaction(consensus_transactions[0].1)?
+                    .ok_or_else(|| {
+                        format!(
+                            "canonical child {} parent commit certificate is missing",
+                            child_slot
+                        )
+                    })?;
+            certificate.verify_child_metadata(&child.tx_fees_paid, &child.oracle_prices)?;
+            certificate.verify_parent(&block, chain_id, min_validator_stake)?;
+            block.commit_round = certificate.round;
+            block.commit_signatures = certificate.signatures;
+            return Ok(block);
+        }
+    }
+
+    if block.commit_signatures.is_empty() {
+        return Err(format!(
+            "block {} has neither a local nor canonical-child commit certificate",
+            block.header.slot
+        ));
+    }
+    Ok(block)
+}
+
 /// Build the fewest block-range responses that fit the exact P2P wire codec.
 ///
 /// A count-only batch can exceed the 16 MiB envelope when blocks are large,
@@ -1555,7 +1638,7 @@ fn cleanup_snapshot_staging(staging: &mut Option<(u64, String, StateStore)>) {
     }
 }
 
-const SNAPSHOT_LIVE_ROLLBACK_MARKER_VERSION: u8 = 1;
+const SNAPSHOT_LIVE_ROLLBACK_MARKER_VERSION: u8 = 2;
 const SNAPSHOT_LIVE_ROLLBACK_MARKER_SUFFIX: &str = "snapshot-live-rollback.json";
 const SNAPSHOT_LIVE_ROLLBACK_CHECKPOINT_SUFFIX: &str = "snapshot-live-rollback";
 
@@ -1567,6 +1650,8 @@ struct SnapshotLiveRollbackMarker {
     rollback_checkpoint_dir: String,
     target_snapshot_slot: u64,
     target_snapshot_state_root: String,
+    #[serde(default)]
+    target_snapshot_profile: CheckpointSnapshotProfile,
     created_at: u64,
 }
 
@@ -1691,7 +1776,7 @@ fn read_snapshot_live_rollback_marker(
             err
         )
     })?;
-    if marker.version != SNAPSHOT_LIVE_ROLLBACK_MARKER_VERSION {
+    if !matches!(marker.version, 1 | SNAPSHOT_LIVE_ROLLBACK_MARKER_VERSION) {
         return Err(format!(
             "unsupported snapshot rollback marker version {}",
             marker.version
@@ -1742,6 +1827,7 @@ fn prepare_snapshot_live_rollback(
     data_dir: &str,
     target_snapshot_slot: u64,
     target_snapshot_state_root: Hash,
+    target_snapshot_profile: CheckpointSnapshotProfile,
 ) -> Result<SnapshotLiveRollbackMarker, String> {
     let marker_path = snapshot_live_rollback_marker_path(data_dir);
     if marker_path.exists() {
@@ -1777,6 +1863,7 @@ fn prepare_snapshot_live_rollback(
         rollback_checkpoint_dir: rollback_dir_str,
         target_snapshot_slot,
         target_snapshot_state_root: snapshot_hash_hex(target_snapshot_state_root),
+        target_snapshot_profile,
         created_at: current_unix_timestamp_secs(),
     };
     write_durable_snapshot_live_rollback_marker(&marker_path, &marker)?;
@@ -1868,7 +1955,14 @@ fn commit_snapshot_categories_from_store(
         .copied()
         .filter(|category| !STATE_SNAPSHOT_SPECIAL_CATEGORIES.contains(category))
     {
-        target.clear_snapshot_category(category_name)?;
+        match export_mode {
+            SnapshotCategoryExportMode::Canonical => {
+                target.clear_snapshot_category_preserving_node_local(category_name)?;
+            }
+            SnapshotCategoryExportMode::HotRollback => {
+                target.clear_snapshot_category(category_name)?;
+            }
+        }
     }
 
     let mut report = SnapshotCategoryCommitReport {
@@ -2009,7 +2103,11 @@ fn recover_incomplete_snapshot_live_apply(
         )
         .is_ok();
     let target_archive_complete = if target_root_valid {
-        match validate_snapshot_archive_completeness(&state, marker.target_snapshot_slot) {
+        match validate_snapshot_history_for_profile(
+            &state,
+            marker.target_snapshot_slot,
+            marker.target_snapshot_profile,
+        ) {
             Ok(()) => true,
             Err(err) => {
                 warn!(
@@ -2104,6 +2202,8 @@ fn compute_snapshot_category_digest(
     state: &StateStore,
     category: &str,
     chunk_size: u64,
+    snapshot_slot: u64,
+    profile: CheckpointSnapshotProfile,
 ) -> Result<SnapshotCategoryDigest, String> {
     let mut hasher = Sha256::new();
     hasher.update(b"lichen-checkpoint-snapshot-category-v1");
@@ -2120,10 +2220,12 @@ fn compute_snapshot_category_digest(
         _ => {
             let mut cursor: Option<Vec<u8>> = None;
             loop {
-                let page = state.export_snapshot_category_cursor_untracked(
+                let page = state.export_checkpoint_snapshot_category_cursor_untracked(
                     category,
                     cursor.as_deref(),
                     chunk_size,
+                    snapshot_slot,
+                    profile,
                 )?;
                 for (key, value) in page.entries {
                     update_snapshot_digest_entry(&mut hasher, &key, &value);
@@ -2158,18 +2260,60 @@ fn compute_snapshot_manifest_for_categories(
     state: &StateStore,
     chunk_size: u64,
     categories: &[&str],
+    snapshot_slot: u64,
+    profile: CheckpointSnapshotProfile,
 ) -> Result<Vec<SnapshotCategoryDigest>, String> {
     categories
         .iter()
-        .map(|category| compute_snapshot_category_digest(state, category, chunk_size))
+        .map(|category| {
+            compute_snapshot_category_digest(state, category, chunk_size, snapshot_slot, profile)
+        })
         .collect()
+}
+
+fn checkpoint_snapshot_profile_digest(
+    profile: CheckpointSnapshotProfile,
+) -> Option<SnapshotCategoryDigest> {
+    match profile {
+        CheckpointSnapshotProfile::FullArchiveV1 => None,
+        CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot,
+            archive_v2_catalog_root,
+        } => Some(SnapshotCategoryDigest {
+            category: HOT_REPAIR_CHECKPOINT_PROFILE_CATEGORY.to_string(),
+            entry_count: history_start_slot,
+            sha256: archive_v2_catalog_root.unwrap_or([0u8; 32]),
+        }),
+    }
 }
 
 fn compute_checkpoint_snapshot_manifest(
     state: &StateStore,
     chunk_size: u64,
+    profile: CheckpointSnapshotProfile,
 ) -> Result<Vec<SnapshotCategoryDigest>, String> {
-    compute_snapshot_manifest_for_categories(state, chunk_size, CHECKPOINT_SNAPSHOT_CATEGORIES)
+    let snapshot_slot = match profile {
+        CheckpointSnapshotProfile::FullArchiveV1 => 0,
+        CheckpointSnapshotProfile::HotRepairV1 { .. } => state.get_last_slot()?,
+    };
+    let mut manifest = Vec::with_capacity(
+        CHECKPOINT_SNAPSHOT_CATEGORIES.len()
+            + usize::from(matches!(
+                profile,
+                CheckpointSnapshotProfile::HotRepairV1 { .. }
+            )),
+    );
+    if let Some(profile_digest) = checkpoint_snapshot_profile_digest(profile) {
+        manifest.push(profile_digest);
+    }
+    manifest.extend(compute_snapshot_manifest_for_categories(
+        state,
+        chunk_size,
+        CHECKPOINT_SNAPSHOT_CATEGORIES,
+        snapshot_slot,
+        profile,
+    )?);
+    Ok(manifest)
 }
 
 fn snapshot_manifest_root(manifest: &[SnapshotCategoryDigest]) -> [u8; 32] {
@@ -2225,8 +2369,45 @@ fn validate_snapshot_manifest_shape(manifest: &[SnapshotCategoryDigest]) -> Resu
 fn advertised_snapshot_manifest_categories(
     manifest: &[SnapshotCategoryDigest],
 ) -> Result<&'static [&'static str], String> {
-    validate_snapshot_manifest_shape_for(manifest, CHECKPOINT_SNAPSHOT_CATEGORIES, "checkpoint")?;
+    advertised_snapshot_profile(manifest)?;
     Ok(CHECKPOINT_SNAPSHOT_CATEGORIES)
+}
+
+fn advertised_snapshot_profile(
+    manifest: &[SnapshotCategoryDigest],
+) -> Result<CheckpointSnapshotProfile, String> {
+    if manifest.len() == CHECKPOINT_SNAPSHOT_CATEGORIES.len() {
+        validate_snapshot_manifest_shape_for(
+            manifest,
+            CHECKPOINT_SNAPSHOT_CATEGORIES,
+            "full checkpoint",
+        )?;
+        return Ok(CheckpointSnapshotProfile::FullArchiveV1);
+    }
+    if manifest.len() != CHECKPOINT_SNAPSHOT_CATEGORIES.len().saturating_add(1) {
+        return Err(format!(
+            "checkpoint snapshot manifest has {} categories, expected {} or {}",
+            manifest.len(),
+            CHECKPOINT_SNAPSHOT_CATEGORIES.len(),
+            CHECKPOINT_SNAPSHOT_CATEGORIES.len().saturating_add(1)
+        ));
+    }
+    let profile = &manifest[0];
+    if profile.category != HOT_REPAIR_CHECKPOINT_PROFILE_CATEGORY {
+        return Err(format!(
+            "checkpoint snapshot profile marker mismatch: expected {}, got {}",
+            HOT_REPAIR_CHECKPOINT_PROFILE_CATEGORY, profile.category
+        ));
+    }
+    validate_snapshot_manifest_shape_for(
+        &manifest[1..],
+        CHECKPOINT_SNAPSHOT_CATEGORIES,
+        "hot-repair checkpoint",
+    )?;
+    Ok(CheckpointSnapshotProfile::HotRepairV1 {
+        history_start_slot: profile.entry_count,
+        archive_v2_catalog_root: (profile.sha256 != [0u8; 32]).then_some(profile.sha256),
+    })
 }
 
 fn validate_advertised_snapshot_manifest_shape(
@@ -2241,7 +2422,12 @@ fn validate_snapshot_manifest_matches(
 ) -> Result<(), String> {
     let categories = advertised_snapshot_manifest_categories(expected)?;
     validate_snapshot_manifest_shape_for(actual, categories, "actual")?;
-    for (expected_digest, actual_digest) in expected.iter().zip(actual.iter()) {
+    let expected_categories = if expected.len() == categories.len() {
+        expected
+    } else {
+        &expected[1..]
+    };
+    for (expected_digest, actual_digest) in expected_categories.iter().zip(actual.iter()) {
         if expected_digest != actual_digest {
             return Err(format!(
                 "snapshot manifest mismatch for {}: expected count={} sha={}, got count={} sha={}",
@@ -2289,8 +2475,22 @@ fn validate_snapshot_archive_completeness(
         );
     }
 
+    validate_snapshot_archive_range(state, 0, snapshot_slot)
+}
+
+fn validate_snapshot_archive_range(
+    state: &StateStore,
+    start_slot: u64,
+    snapshot_slot: u64,
+) -> Result<(), String> {
+    if start_slot > snapshot_slot {
+        return Err(format!(
+            "snapshot history start {} exceeds checkpoint slot {}",
+            start_slot, snapshot_slot
+        ));
+    }
     let mut parent_hash = None;
-    for slot in 0..=snapshot_slot {
+    for slot in start_slot..=snapshot_slot {
         let Some(block) = state.get_block_by_slot(slot)? else {
             return Err(format!(
                 "snapshot archive is missing required contiguous block at slot {}",
@@ -2370,6 +2570,168 @@ fn validate_snapshot_archive_completeness(
         parent_hash = Some(block.hash());
     }
 
+    Ok(())
+}
+
+fn validate_checkpoint_snapshot_profile(
+    snapshot_slot: u64,
+    profile: CheckpointSnapshotProfile,
+) -> Result<(), String> {
+    let CheckpointSnapshotProfile::HotRepairV1 {
+        history_start_slot,
+        archive_v2_catalog_root: archive_v2_handoff_root,
+    } = profile
+    else {
+        return Ok(());
+    };
+    if archive_v2_handoff_root.is_some_and(|root| root == [0u8; 32]) {
+        return Err("hot-repair checkpoint has a zero Archive V2 handoff root".to_string());
+    }
+    if history_start_slot > snapshot_slot {
+        return Err(format!(
+            "hot-repair checkpoint history start {} exceeds checkpoint slot {}",
+            history_start_slot, snapshot_slot
+        ));
+    }
+    let retained_slots = snapshot_slot
+        .saturating_sub(history_start_slot)
+        .saturating_add(1);
+    let minimum_retention = if env::var("LICHEN_LOCAL_DEV").ok().as_deref() == Some("1") {
+        1
+    } else {
+        ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS
+    };
+    let required_slots = minimum_retention.min(snapshot_slot.saturating_add(1));
+    if retained_slots < required_slots {
+        return Err(format!(
+            "hot-repair checkpoint retains {} slots, below required {}",
+            retained_slots, required_slots
+        ));
+    }
+    Ok(())
+}
+
+fn validate_snapshot_history_for_profile(
+    state: &StateStore,
+    snapshot_slot: u64,
+    profile: CheckpointSnapshotProfile,
+) -> Result<(), String> {
+    validate_checkpoint_snapshot_profile(snapshot_slot, profile)?;
+    match profile {
+        CheckpointSnapshotProfile::FullArchiveV1 => {
+            validate_snapshot_archive_completeness(state, snapshot_slot)
+        }
+        CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot, ..
+        } => {
+            state.verify_hot_canonical_block_range(history_start_slot, snapshot_slot)?;
+            validate_snapshot_archive_range(state, history_start_slot, snapshot_slot)
+        }
+    }
+}
+
+fn validate_hot_repair_checkpoint_target(
+    state: &StateStore,
+    snapshot_slot: u64,
+    profile: CheckpointSnapshotProfile,
+) -> Result<(), String> {
+    validate_checkpoint_snapshot_profile(snapshot_slot, profile)?;
+    let CheckpointSnapshotProfile::HotRepairV1 {
+        history_start_slot,
+        archive_v2_catalog_root: archive_v2_handoff_root,
+    } = profile
+    else {
+        return Ok(());
+    };
+    if let Some(archive_v2_handoff_root) = archive_v2_handoff_root {
+        let local_handoff_root = state
+            .archive_v2_checkpoint_catalog_root(history_start_slot)?
+            .or(state.archive_v2_deferred_checkpoint_catalog_root(history_start_slot)?)
+            .ok_or_else(|| {
+                "catalog-bound hot-repair checkpoint requires an admitted or exact configured deferred Archive V2 handoff".to_string()
+            })?;
+        if local_handoff_root.0 != archive_v2_handoff_root {
+            return Err(format!(
+                "hot-repair checkpoint Archive V2 handoff mismatch: checkpoint={} local={}",
+                hex::encode(archive_v2_handoff_root),
+                local_handoff_root.to_hex()
+            ));
+        }
+    } else {
+        if !preactivation_hot_repair_enabled() {
+            return Err(
+                "pre-activation hot-repair checkpoint is not explicitly enabled".to_string(),
+            );
+        }
+        let local_tip = state.get_last_slot()?.min(snapshot_slot);
+        let required_start = history_start_slot.saturating_sub(1);
+        if local_tip < required_start {
+            return Err(format!(
+                "pre-activation hot-repair checkpoint requires local overlap from slot {}, but local tip is {}",
+                required_start, local_tip
+            ));
+        }
+        state.verify_hot_canonical_block_range(required_start, required_start)?;
+        if local_tip > required_start {
+            state.verify_hot_canonical_block_range(local_tip, local_tip)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_preactivation_hot_repair_overlap(
+    local: &StateStore,
+    checkpoint: &StateStore,
+    snapshot_slot: u64,
+    profile: CheckpointSnapshotProfile,
+) -> Result<(), String> {
+    let CheckpointSnapshotProfile::HotRepairV1 {
+        history_start_slot,
+        archive_v2_catalog_root: None,
+    } = profile
+    else {
+        return Ok(());
+    };
+    let local_tip = local.get_last_slot()?.min(snapshot_slot);
+    if history_start_slot > 0 {
+        let boundary_slot = history_start_slot - 1;
+        let local_boundary = local.get_block_by_slot(boundary_slot)?.ok_or_else(|| {
+            format!("local pre-activation boundary block {boundary_slot} is missing")
+        })?;
+        let checkpoint_first = checkpoint
+            .get_block_by_slot(history_start_slot)?
+            .ok_or_else(|| {
+                format!(
+                    "checkpoint pre-activation first block {} is missing",
+                    history_start_slot
+                )
+            })?;
+        if checkpoint_first.header.parent_hash != local_boundary.hash() {
+            return Err(format!(
+                "pre-activation checkpoint boundary mismatch at slot {}",
+                history_start_slot
+            ));
+        }
+    }
+    if local_tip < history_start_slot {
+        return Ok(());
+    }
+    for slot in history_start_slot..=local_tip {
+        let local_block = local
+            .get_block_by_slot(slot)?
+            .ok_or_else(|| format!("local overlap block {slot} is missing"))?;
+        let checkpoint_block = checkpoint
+            .get_block_by_slot(slot)?
+            .ok_or_else(|| format!("checkpoint overlap block {slot} is missing"))?;
+        if local_block.hash() != checkpoint_block.hash() {
+            return Err(format!(
+                "pre-activation checkpoint canonical overlap mismatch at slot {}: local={} checkpoint={}",
+                slot,
+                local_block.hash().to_hex(),
+                checkpoint_block.hash().to_hex()
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -3307,6 +3669,14 @@ fn pre_consensus_genesis_is_ready(
     !is_joining_network || public_genesis_probe()
 }
 
+fn should_activate_deferred_archive_v2_before_genesis_gate(
+    deferred_configured: bool,
+    current_slot: u64,
+    hot_genesis_present: bool,
+) -> bool {
+    deferred_configured && current_slot > 0 && !hot_genesis_present
+}
+
 fn needs_pre_consensus_tip_catch_up(current_slot: u64, network_slot: u64, tolerance: u64) -> bool {
     needs_bootstrap_slot_catch_up(current_slot, network_slot, tolerance)
 }
@@ -3802,6 +4172,17 @@ fn block_may_mutate_stake_pool(block: &Block) -> bool {
 
 fn block_receiver_may_vote(is_sync_block: bool) -> bool {
     !is_sync_block
+}
+
+async fn acquire_network_genesis_apply_guard(
+    block_slot: u64,
+    block_apply_lock: &Mutex<()>,
+) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+    if block_slot == 0 {
+        Some(block_apply_lock.lock().await)
+    } else {
+        None
+    }
 }
 
 fn reconcile_live_stake_pool_from_state(live_pool: &mut StakePool, loaded_pool: StakePool) -> bool {
@@ -4463,12 +4844,11 @@ fn emit_dex_events(
     dex_broadcaster: &lichen_rpc::dex_ws::DexEventBroadcaster,
     from_trade: u64,
     to_trade: u64,
-    slot: u64,
 ) {
     const PRICE_SCALE: f64 = 1_000_000_000.0;
 
     // Emit events for each new trade
-    let mut affected_pairs = std::collections::HashSet::new();
+    let mut affected_pairs = BTreeMap::new();
     for trade_id in (from_trade + 1)..=to_trade {
         let key = format!("dex_trade_{}", trade_id);
         if let Some(data) = state.get_program_storage("DEX", key.as_bytes()) {
@@ -4479,6 +4859,7 @@ fn emit_dex_events(
                 let price_raw = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
                 let quantity = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8]));
                 let maker_order_id = u64::from_le_bytes(data[64..72].try_into().unwrap_or([0; 8]));
+                let trade_slot = u64::from_le_bytes(data[72..80].try_into().unwrap_or([0; 8]));
                 let price = price_raw as f64 / PRICE_SCALE;
 
                 // Infer side from maker order
@@ -4501,14 +4882,17 @@ fn emit_dex_events(
                     }
                 };
 
-                dex_broadcaster.emit_trade(trade_id, pair_id, price, quantity, side, slot);
-                affected_pairs.insert(pair_id);
+                dex_broadcaster.emit_trade(trade_id, pair_id, price, quantity, side, trade_slot);
+                affected_pairs
+                    .entry(pair_id)
+                    .and_modify(|slot: &mut u64| *slot = (*slot).max(trade_slot))
+                    .or_insert(trade_slot);
             }
         }
     }
 
     // Emit orderbook + ticker updates for affected pairs
-    for pair_id in &affected_pairs {
+    for (pair_id, latest_trade_slot) in &affected_pairs {
         // P9-VAL-06: Read per-pair last price (ana_lp_{pair_id}) instead of global last trade
         let lp_key = format!("ana_lp_{}", pair_id);
         if let Some(data) = state.get_program_storage("ANALYTICS", lp_key.as_bytes()) {
@@ -4564,7 +4948,12 @@ fn emit_dex_events(
                         orders: level.orders.min(u32::MAX as u64) as u32,
                     })
                     .collect();
-                dex_broadcaster.emit_orderbook(*pair_id, bid_levels, ask_levels, slot);
+                dex_broadcaster.emit_orderbook(
+                    *pair_id,
+                    bid_levels,
+                    ask_levels,
+                    *latest_trade_slot,
+                );
             }
             Err(err) => warn!(
                 "⚠️  Failed to read indexed DEX orderbook for pair {}: {}",
@@ -4579,6 +4968,7 @@ fn emit_dex_events(
         if let Some(data) = state.get_program_storage("DEX", key.as_bytes()) {
             if data.len() >= 80 {
                 let maker_order_id = u64::from_le_bytes(data[64..72].try_into().unwrap_or([0; 8]));
+                let trade_slot = u64::from_le_bytes(data[72..80].try_into().unwrap_or([0; 8]));
                 let maker_key = format!("dex_order_{}", maker_order_id);
                 if let Some(od) = state.get_program_storage("DEX", maker_key.as_bytes()) {
                     if od.len() >= 128 {
@@ -4598,11 +4988,48 @@ fn emit_dex_events(
                             status,
                             filled,
                             qty.saturating_sub(filled),
-                            slot,
+                            trade_slot,
                         );
                     }
                 }
             }
+        }
+    }
+}
+
+/// Emit each canonical DEX trade range at most once per validator process.
+/// The cursor is shared by local BFT and peer-apply paths, so subscribers see
+/// identical live events regardless of which path made the block canonical.
+fn emit_new_canonical_dex_events(
+    state: &StateStore,
+    dex_broadcaster: &lichen_rpc::dex_ws::DexEventBroadcaster,
+    event_cursor: &AtomicU64,
+) {
+    let current = state.get_program_storage_u64("DEX", b"dex_trade_count");
+    let mut observed = event_cursor.load(Ordering::Acquire);
+    loop {
+        if current == observed {
+            return;
+        }
+        if current < observed {
+            match event_cursor.compare_exchange(
+                observed,
+                current,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(actual) => observed = actual,
+            }
+            continue;
+        }
+        match event_cursor.compare_exchange(observed, current, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => {
+                emit_dex_events(state, dex_broadcaster, observed, current);
+                return;
+            }
+            Err(actual) => observed = actual,
         }
     }
 }
@@ -5898,23 +6325,6 @@ fn emit_program_and_nft_events(
                                     message: format!("call:{}", function),
                                 }));
 
-                                // Emit contract events from DB if stored during processing
-                                if let Ok(events) = state.get_contract_logs(program, 50, None) {
-                                    for event in &events {
-                                        if event.slot == block.header.slot {
-                                            drop(ws_event_tx.send(lichen_rpc::ws::Event::Log {
-                                                contract: event.program,
-                                                message: format!(
-                                                    "event:{}:{}",
-                                                    event.name,
-                                                    serde_json::to_string(&event.data)
-                                                        .unwrap_or_default()
-                                                ),
-                                            }));
-                                        }
-                                    }
-                                }
-
                                 let kind = match function.as_str() {
                                     "list_nft" => Some(MarketActivityKind::Listing),
                                     "buy_nft" => Some(MarketActivityKind::Sale),
@@ -6040,6 +6450,29 @@ fn emit_program_and_nft_events(
             }
         }
     }
+
+    // Contract events are indexed by canonical slot. Read that exact bounded
+    // slot once per block and emit every event once. The former per-call
+    // program-history query merged Archive V2 history and repeated the same
+    // scan for every contract instruction, delaying live fanout by seconds.
+    match state.get_events_by_slot(block.header.slot, usize::MAX) {
+        Ok(events) => {
+            for event in events {
+                drop(ws_event_tx.send(lichen_rpc::ws::Event::Log {
+                    contract: event.program,
+                    message: format!(
+                        "event:{}:{}",
+                        event.name,
+                        serde_json::to_string(&event.data).unwrap_or_default()
+                    ),
+                }));
+            }
+        }
+        Err(err) => warn!(
+            "⚠️  Failed to read canonical contract events for WebSocket slot {}: {}",
+            block.header.slot, err
+        ),
+    }
 }
 
 /// Publish the complete canonical-block WebSocket fanout after the block and
@@ -6049,11 +6482,17 @@ fn emit_program_and_nft_events(
 fn emit_canonical_block_websocket_events(
     state: &StateStore,
     ws_event_tx: &tokio::sync::broadcast::Sender<lichen_rpc::ws::Event>,
+    dex_broadcaster: &lichen_rpc::dex_ws::DexEventBroadcaster,
+    dex_event_cursor: &AtomicU64,
     block: &Block,
-) -> (u64, u64) {
+) -> (u64, u64, u64) {
     let program_events_started = Instant::now();
     emit_program_and_nft_events(state, ws_event_tx, block);
     let program_events_ms = duration_millis_u64(program_events_started.elapsed());
+
+    let dex_events_started = Instant::now();
+    emit_new_canonical_dex_events(state, dex_broadcaster, dex_event_cursor);
+    let dex_events_ms = duration_millis_u64(dex_events_started.elapsed());
 
     let block_events_started = Instant::now();
     drop(ws_event_tx.send(lichen_rpc::ws::Event::Block(
@@ -6062,7 +6501,7 @@ fn emit_canonical_block_websocket_events(
     drop(ws_event_tx.send(lichen_rpc::ws::Event::Slot(block.header.slot)));
     let block_events_ms = duration_millis_u64(block_events_started.elapsed());
 
-    (program_events_ms, block_events_ms)
+    (program_events_ms, dex_events_ms, block_events_ms)
 }
 
 fn emit_signature_status_events(
@@ -6279,10 +6718,12 @@ const WARP_SNAPSHOT_CATEGORIES: &[&str] = &[
     "mossstake_pool",
 ];
 
-// Network checkpoints are complete archive snapshots. A validator must never
-// advertise a checkpoint that can restore current state but leave historical
-// RPC data missing.
+// Network checkpoints are either complete legacy archive snapshots or
+// catalog-bound hot-repair snapshots. A validator must never advertise a
+// checkpoint that can restore current state without an exact recovery contract
+// for every older public-history slot.
 const CHECKPOINT_SNAPSHOT_CATEGORIES: &[&str] = WARP_SNAPSHOT_CATEGORIES;
+const HOT_REPAIR_CHECKPOINT_PROFILE_CATEGORY: &str = "checkpoint_profile_hot_repair_v1";
 
 fn snapshot_request_chunk_size(category: &str) -> u64 {
     match category {
@@ -8987,6 +9428,28 @@ fn genesis_bundle_declares_mossstake_slot_only(state: &StateStore) -> Result<boo
     Ok(declared)
 }
 
+fn cache_deferred_archive_v2_genesis_mossstake_mode(
+    state: &StateStore,
+    block: &Block,
+) -> Result<bool, String> {
+    if block.header.slot != 0 {
+        return Ok(false);
+    }
+    let Some(expected_genesis_hash) = state.archive_v2_deferred_genesis_hash() else {
+        return Ok(false);
+    };
+    let received_genesis_hash = block.hash();
+    if received_genesis_hash != expected_genesis_hash {
+        return Err(format!(
+            "fresh Archive V2 genesis hash {} does not match deferred catalog identity {}",
+            received_genesis_hash.to_hex(),
+            expected_genesis_hash.to_hex()
+        ));
+    }
+    state.cache_genesis_mossstake_slot_only(genesis_block_declares_mossstake_slot_only(block)?)?;
+    Ok(true)
+}
+
 fn uses_legacy_testnet_mossstake_history(state: &StateStore) -> Result<bool, String> {
     let Some(chain_id) = state_chain_id_metadata(state) else {
         return Ok(false);
@@ -10637,6 +11100,11 @@ const DEFAULT_CHECKPOINT_KEEP_COUNT: usize = 2;
 const MAX_CHECKPOINT_KEEP_COUNT: usize = 16;
 const DEFAULT_CHECKPOINT_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_CHECKPOINT_MAX_BYTES: u64 = 128 * 1024 * 1024 * 1024;
+/// A bounded Archive V2 checkpoint physically rewrites its public-history
+/// column families so that retained checkpoints cannot pin superseded legacy
+/// SSTs. Keep that work frequent enough for practical joins without running a
+/// full bounded-history compaction at the legacy 1,000-slot cadence.
+const HOT_REPAIR_CHECKPOINT_INTERVAL_SLOTS: u64 = 10_000;
 
 #[cfg(all(unix, target_os = "linux"))]
 fn statvfs_block_count(value: libc::fsblkcnt_t) -> u64 {
@@ -11163,6 +11631,36 @@ fn checkpoint_max_bytes_from_env() -> Option<u64> {
     parse_checkpoint_max_bytes(env::var("LICHEN_CHECKPOINT_MAX_BYTES").ok().as_deref())
 }
 
+struct ActiveCheckpointGuard;
+
+impl ActiveCheckpointGuard {
+    fn try_begin() -> Option<Self> {
+        CHECKPOINT_CREATION_ACTIVE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for ActiveCheckpointGuard {
+    fn drop(&mut self) {
+        CHECKPOINT_CREATION_ACTIVE.store(false, Ordering::Release);
+    }
+}
+
+fn watchdog_stall_is_actionable(
+    elapsed: Duration,
+    watchdog_timeout: Duration,
+    current_slot: u64,
+    last_known_slot: u64,
+    checkpoint_active: bool,
+) -> bool {
+    elapsed > watchdog_timeout
+        && current_slot == last_known_slot
+        && (!checkpoint_active
+            || elapsed > Duration::from_secs(MAX_ACTIVE_CHECKPOINT_WATCHDOG_SECS))
+}
+
 fn prune_state_checkpoints(data_dir: &str, context: &str) {
     let keep_count = checkpoint_keep_count_from_env();
     let max_bytes = checkpoint_max_bytes_from_env();
@@ -11200,8 +11698,84 @@ fn prune_state_checkpoints(data_dir: &str, context: &str) {
 
 /// Periodic checkpoint creation — called after every block to check if
 /// the current slot should trigger a RocksDB checkpoint.
-/// Checkpoints are created every CHECKPOINT_INTERVAL (1,000) slots and
-/// provide O(1) state snapshots for new validator catch-up.
+/// Legacy checkpoints are created every CHECKPOINT_INTERVAL (1,000) slots.
+/// Archive V2 hot-repair checkpoints physically bound public history and are
+/// therefore created every HOT_REPAIR_CHECKPOINT_INTERVAL_SLOTS (10,000)
+/// slots. Both provide state snapshots for new validator catch-up.
+fn preactivation_hot_repair_enabled() -> bool {
+    matches!(
+        env::var("LICHEN_CHECKPOINT_HOT_REPAIR_PREACTIVATION")
+            .ok()
+            .as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    )
+}
+
+fn checkpoint_profile_is_due(slot: u64, profile: CheckpointSnapshotProfile) -> bool {
+    !matches!(profile, CheckpointSnapshotProfile::HotRepairV1 { .. })
+        || slot.is_multiple_of(HOT_REPAIR_CHECKPOINT_INTERVAL_SLOTS)
+}
+
+fn checkpoint_minimum_available_bytes(
+    profile: CheckpointSnapshotProfile,
+    runtime_minimum_available_bytes: u64,
+) -> u64 {
+    match profile {
+        CheckpointSnapshotProfile::FullArchiveV1 => MIN_CHECKPOINT_AVAILABLE_BYTES,
+        CheckpointSnapshotProfile::HotRepairV1 { .. } => runtime_minimum_available_bytes,
+    }
+}
+
+fn hot_repair_checkpoint_peak_reserve(estimated_peak_bytes: u64) -> u64 {
+    // The physical estimate is derived from current hot SST allocation. A
+    // catalog handoff may additionally materialize a bounded unpublished tail
+    // from the legacy cold source, so never reserve less than the same 8 GiB
+    // checkpoint envelope used by the adaptive Archive V2 capacity guard.
+    estimated_peak_bytes.max(ARCHIVE_V2_DEFAULT_CHECKPOINT_PEAK_BYTES)
+}
+
+fn periodic_checkpoint_snapshot_profile(
+    state: &StateStore,
+    slot: u64,
+) -> Result<CheckpointSnapshotProfile, String> {
+    if !state.has_archive_v2_reader() && !preactivation_hot_repair_enabled() {
+        return Ok(CheckpointSnapshotProfile::FullArchiveV1);
+    }
+    let retention_slots = runtime_cold_retention_slots()?;
+    let minimum_retention = if env::var("LICHEN_LOCAL_DEV").ok().as_deref() == Some("1") {
+        1
+    } else {
+        ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS
+    };
+    if retention_slots < minimum_retention {
+        return Err(format!(
+            "Archive V2 checkpoint retention {} is below required minimum {}",
+            retention_slots, minimum_retention
+        ));
+    }
+    let nominal_history_start_slot = slot.saturating_sub(retention_slots.saturating_sub(1));
+    // Archive V2 catalogs are immutable for a running process and are advanced
+    // by the separately verified publication workflow. The checkpoint binds
+    // only the append-stable prefix needed before its hot window, so later
+    // publication does not invalidate recovery. Preserve at most one
+    // production catalog segment (50,000 slots) of unpublished history before
+    // failing closed and requiring a catalog refresh/restart.
+    let (history_start_slot, archive_v2_catalog_root) = match state.archive_v2_checkpoint_handoff(
+        nominal_history_start_slot,
+        ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS,
+    )? {
+        Some((history_start_slot, catalog_root)) => (history_start_slot, Some(catalog_root.0)),
+        None => (nominal_history_start_slot, None),
+    };
+    if state.has_archive_v2_reader() && archive_v2_catalog_root.is_none() {
+        return Err("Archive V2 reader disappeared during checkpoint admission".to_string());
+    }
+    Ok(CheckpointSnapshotProfile::HotRepairV1 {
+        history_start_slot,
+        archive_v2_catalog_root,
+    })
+}
+
 async fn maybe_create_checkpoint(
     state: &StateStore,
     slot: u64,
@@ -11223,7 +11797,49 @@ async fn maybe_create_checkpoint(
         );
         return;
     }
-    let _checkpoint_guard = CHECKPOINT_MAINTENANCE_LOCK.lock().await;
+    let snapshot_profile = match periodic_checkpoint_snapshot_profile(state, slot) {
+        Ok(profile) => profile,
+        Err(err) => {
+            warn!(
+                "Skipping checkpoint at slot {} because its recovery profile cannot be admitted: {}",
+                slot, err
+            );
+            return;
+        }
+    };
+    if !checkpoint_profile_is_due(slot, snapshot_profile) {
+        return;
+    }
+    let required_checkpoint_headroom = checkpoint_minimum_available_bytes(
+        snapshot_profile,
+        RUNTIME_MINIMUM_CHECKPOINT_AVAILABLE_BYTES.load(Ordering::Acquire),
+    );
+    let required_checkpoint_headroom = if matches!(
+        snapshot_profile,
+        CheckpointSnapshotProfile::HotRepairV1 { .. }
+    ) {
+        match state.estimated_hot_repair_checkpoint_compaction_peak_bytes() {
+            Ok(peak_bytes) => required_checkpoint_headroom
+                .saturating_add(hot_repair_checkpoint_peak_reserve(peak_bytes)),
+            Err(err) => {
+                warn!(
+                    "Skipping checkpoint at slot {} because bounded-history compaction headroom cannot be estimated: {}",
+                    slot, err
+                );
+                return;
+            }
+        }
+    } else {
+        required_checkpoint_headroom
+    };
+    let Some(active_checkpoint_guard) = ActiveCheckpointGuard::try_begin() else {
+        debug!(
+            "Skipping checkpoint at slot {} because another checkpoint build is active",
+            slot
+        );
+        return;
+    };
+    let checkpoint_guard = CHECKPOINT_MAINTENANCE_LOCK.lock().await;
     let checkpoint_path = format!("{}/checkpoints/slot-{}", data_dir, slot);
     if Path::new(&checkpoint_path).is_dir() {
         return;
@@ -11233,7 +11849,7 @@ async fn maybe_create_checkpoint(
         Ok(available) => match reclaim_checkpoints_under_disk_pressure(
             checkpoint_root,
             available,
-            MIN_CHECKPOINT_AVAILABLE_BYTES,
+            required_checkpoint_headroom,
             "periodic checkpoint replacement",
             CheckpointReclaimPolicy::ImproveHeadroom,
         ) {
@@ -11254,36 +11870,92 @@ async fn maybe_create_checkpoint(
             return;
         }
     };
-    if !has_required_disk_headroom(available, MIN_CHECKPOINT_AVAILABLE_BYTES) {
+    if !has_required_disk_headroom(available, required_checkpoint_headroom) {
         warn!(
                 "Skipping checkpoint at slot {}: {} available bytes is below the {} byte checkpoint safety floor",
-                slot, available, MIN_CHECKPOINT_AVAILABLE_BYTES
-            );
+                slot, available, required_checkpoint_headroom
+        );
         return;
     }
-    match state.create_checkpoint(&checkpoint_path, slot) {
-        Ok(meta) => {
-            info!(
-                "📸 Checkpoint created at slot {} ({} accounts, interval: every {} slots)",
-                meta.slot,
-                meta.total_accounts,
-                SyncManager::checkpoint_interval()
+    let state_for_checkpoint = state.clone();
+    let checkpoint_path_for_build = checkpoint_path.clone();
+    let data_dir_for_checkpoint = data_dir.to_string();
+    let sync_manager_for_checkpoint = sync_manager.clone();
+    let (raw_capture_tx, raw_capture_rx) = tokio::sync::oneshot::channel();
+
+    tokio::spawn(async move {
+        let build_result = tokio::task::spawn_blocking(move || {
+            // Keep disk reclamation and checkpoint publication mutually
+            // exclusive for the complete build, but run the expensive bounded
+            // history materialization outside every consensus task.
+            let _checkpoint_guard = checkpoint_guard;
+            let _active_checkpoint_guard = active_checkpoint_guard;
+            let result = state_for_checkpoint.create_checkpoint_with_profile_and_raw_capture(
+                &checkpoint_path_for_build,
+                slot,
+                snapshot_profile,
+                move || {
+                    let _ = raw_capture_tx.send(());
+                },
             );
-            // Record the checkpoint in SyncManager for fast bootstrapping
-            sync_manager.set_checkpoint(slot).await;
-            prune_state_checkpoints(data_dir, "periodic checkpoint");
-        }
-        Err(e) => {
-            if let Some(reason) = terminal_checkpoint_creation_pause_reason(&e) {
-                CHECKPOINT_CREATION_TERMINALLY_PAUSED.store(true, Ordering::Release);
-                error!(
-                    "📸 Periodic checkpoint creation terminally paused until restart/storage placement change: slot={} reason={} error={}",
-                    slot, reason, e
+            if result.is_ok() {
+                prune_state_checkpoints(&data_dir_for_checkpoint, "periodic checkpoint");
+            }
+            result
+        })
+        .await;
+
+        match build_result {
+            Ok(Ok(meta)) => {
+                let interval_slots = if matches!(
+                    meta.snapshot_profile,
+                    CheckpointSnapshotProfile::HotRepairV1 { .. }
+                ) {
+                    HOT_REPAIR_CHECKPOINT_INTERVAL_SLOTS
+                } else {
+                    SyncManager::checkpoint_interval()
+                };
+                info!(
+                    "📸 Checkpoint created at slot {} ({} accounts, profile={:?}, interval: every {} slots)",
+                    meta.slot,
+                    meta.total_accounts,
+                    meta.snapshot_profile,
+                    interval_slots
                 );
-            } else {
-                warn!("⚠️  Failed to create checkpoint at slot {}: {}", slot, e);
+                sync_manager_for_checkpoint.set_checkpoint(slot).await;
+            }
+            Ok(Err(error)) => {
+                if let Some(reason) = terminal_checkpoint_creation_pause_reason(&error) {
+                    CHECKPOINT_CREATION_TERMINALLY_PAUSED.store(true, Ordering::Release);
+                    error!(
+                        "📸 Periodic checkpoint creation terminally paused until restart/storage placement change: slot={} reason={} error={}",
+                        slot, reason, error
+                    );
+                } else {
+                    warn!(
+                        "⚠️  Failed to create checkpoint at slot {}: {}",
+                        slot, error
+                    );
+                }
+            }
+            Err(error) => {
+                error!(
+                    "📸 Periodic checkpoint background task failed at slot {}: {}",
+                    slot, error
+                );
             }
         }
+    });
+
+    match raw_capture_rx.await {
+        Ok(()) => info!(
+            "📸 Captured exact raw checkpoint at slot {}; bounded history materialization continues in the background",
+            slot
+        ),
+        Err(_) => debug!(
+            "Checkpoint build at slot {} ended before the raw capture boundary",
+            slot
+        ),
     }
 }
 
@@ -11513,11 +12185,25 @@ fn recent_verified_checkpoints(
             continue;
         }
         let snapshot_manifest = if verified.len() < manifest_limit {
-            if let Err(err) = validate_snapshot_archive_completeness(&checkpoint_store, meta.slot) {
+            if let Err(err) =
+                validate_hot_repair_checkpoint_target(ctx.state, meta.slot, meta.snapshot_profile)
+            {
                 warn!("⚠️  Rejecting checkpoint at slot {}: {}", meta.slot, err);
                 continue;
             }
-            match compute_checkpoint_snapshot_manifest(&checkpoint_store, MAX_SNAPSHOT_CHUNK_SIZE) {
+            if let Err(err) = validate_snapshot_history_for_profile(
+                &checkpoint_store,
+                meta.slot,
+                meta.snapshot_profile,
+            ) {
+                warn!("⚠️  Rejecting checkpoint at slot {}: {}", meta.slot, err);
+                continue;
+            }
+            match compute_checkpoint_snapshot_manifest(
+                &checkpoint_store,
+                MAX_SNAPSHOT_CHUNK_SIZE,
+                meta.snapshot_profile,
+            ) {
                 Ok(manifest) => manifest,
                 Err(err) => {
                     warn!(
@@ -11648,7 +12334,20 @@ fn verified_checkpoint_for_anchor(
             continue;
         }
         let manifest_started = Instant::now();
-        if let Err(err) = validate_snapshot_archive_completeness(&checkpoint_store, meta.slot) {
+        if let Err(err) =
+            validate_hot_repair_checkpoint_target(state, meta.slot, meta.snapshot_profile)
+        {
+            warn!(
+                "⚠️  Rejecting requested checkpoint at slot {}: {}",
+                meta.slot, err
+            );
+            continue;
+        }
+        if let Err(err) = validate_snapshot_history_for_profile(
+            &checkpoint_store,
+            meta.slot,
+            meta.snapshot_profile,
+        ) {
             warn!(
                 "⚠️  Rejecting requested checkpoint at slot {}: {}",
                 meta.slot, err
@@ -11658,6 +12357,7 @@ fn verified_checkpoint_for_anchor(
         let snapshot_manifest = match compute_checkpoint_snapshot_manifest(
             &checkpoint_store,
             MAX_SNAPSHOT_CHUNK_SIZE,
+            meta.snapshot_profile,
         ) {
             Ok(manifest) => manifest,
             Err(err) => {
@@ -11787,6 +12487,8 @@ async fn latest_verified_checkpoint_cached(
         debug!("Refreshing verified checkpoint cache in background");
         *refresh = Some(tokio::task::spawn_blocking(move || {
             let started = Instant::now();
+            let checkpoint_generation_at_start =
+                StateStore::list_checkpoints(&data_dir).last().cloned();
             let ctx = CheckpointVerificationContext {
                 data_dir: &data_dir,
                 state: &state,
@@ -11807,10 +12509,17 @@ async fn latest_verified_checkpoint_cached(
             if verified.is_empty() {
                 None
             } else {
+                let checkpoint_generation_changed = checkpoint_generation_at_start
+                    != StateStore::list_checkpoints(&data_dir).last().cloned();
                 let mut entry = VerifiedCheckpointCacheEntry {
                     checkpoints: verified,
                     verified_at: Instant::now(),
-                    invalidated: false,
+                    // Complete hot-repair manifest generation can take minutes.
+                    // If a newer checkpoint appeared during that scan, publish
+                    // the verified fallback for this response but force the
+                    // next request to refresh immediately instead of granting
+                    // the stale result a new five-minute TTL.
+                    invalidated: checkpoint_generation_changed,
                 };
                 if let Some(previous) = reusable_cache.as_ref() {
                     entry.reuse_snapshot_manifests_from(previous);
@@ -12532,7 +13241,7 @@ fn verified_checkpoint_snapshot_needed(
     local_root: Hash,
     checkpoint_root: Hash,
 ) -> bool {
-    checkpoint_slot > local_slot + 100
+    checkpoint_slot > local_slot.saturating_add(100)
         || same_slot_checkpoint_root_mismatch(
             local_slot,
             checkpoint_slot,
@@ -12868,7 +13577,13 @@ fn build_oracle_attestation_tx(
 
     let tip = state.get_last_slot().unwrap_or(0);
     let recent_blockhash = state
-        .get_block_by_slot(tip)?
+        // Transaction freshness is a consensus-hot-state concern. Routing this
+        // lookup through the public historical reader can make a joining
+        // consensus role ask Archive V2 for genesis while its checkpoint is
+        // still activating, producing policy errors (and pointless remote
+        // reads for cache roles). A voting-ready tip is always in the retained
+        // hot window; absence here means the node is not ready to attest.
+        .get_hot_block_by_slot(tip)?
         .map(|block| block.hash())
         .ok_or_else(|| "oracle attestation requires a recent blockhash".to_string())?;
 
@@ -17147,6 +17862,15 @@ struct PublicHistoryManifestCliReport {
 }
 
 #[derive(Debug, Serialize)]
+struct CheckpointSnapshotManifestCliReport {
+    data_dir: String,
+    slot: u64,
+    snapshot_profile: CheckpointSnapshotProfile,
+    manifest_root: String,
+    manifest: Vec<SnapshotCategoryDigest>,
+}
+
+#[derive(Debug, Serialize)]
 struct ContiguousBlockRangeCliReport {
     data_dir: String,
     cold_store: Option<String>,
@@ -17572,6 +18296,68 @@ fn print_json_report<T: Serialize>(report: &T) -> Result<(), String> {
         .map_err(|err| format!("Failed to serialize JSON report: {}", err))?;
     println!("{json}");
     Ok(())
+}
+
+fn maybe_run_checkpoint_snapshot_manifest_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, CHECKPOINT_SNAPSHOT_MANIFEST_FLAG) {
+        return None;
+    }
+    let data_dir = restriction_schema_data_dir(args);
+    let meta_path = data_dir.join("checkpoint_meta.json");
+    let meta = match fs::read(&meta_path)
+        .map_err(|error| format!("Failed to read {}: {error}", meta_path.display()))
+        .and_then(|bytes| {
+            serde_json::from_slice::<lichen_core::CheckpointMeta>(&bytes)
+                .map_err(|error| format!("Failed to decode {}: {error}", meta_path.display()))
+        }) {
+        Ok(meta) => meta,
+        Err(error) => {
+            eprintln!("{error}");
+            return Some(2);
+        }
+    };
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let state = match StateStore::open_read_only_with_cache_mb(&data_dir, cache_size_mb) {
+        Ok(state) => state,
+        Err(error) => {
+            eprintln!(
+                "Failed to open checkpoint state at {}: {error}",
+                data_dir.display()
+            );
+            return Some(1);
+        }
+    };
+    let result = (|| {
+        let last_slot = state.get_last_slot()?;
+        if last_slot != meta.slot {
+            return Err(format!(
+                "Checkpoint metadata slot {} does not match stored tip {}",
+                meta.slot, last_slot
+            ));
+        }
+        validate_snapshot_history_for_profile(&state, meta.slot, meta.snapshot_profile)?;
+        let manifest = compute_checkpoint_snapshot_manifest(
+            &state,
+            MAX_SNAPSHOT_CHUNK_SIZE,
+            meta.snapshot_profile,
+        )?;
+        validate_advertised_snapshot_manifest_shape(&manifest)?;
+        let report = CheckpointSnapshotManifestCliReport {
+            data_dir: data_dir.display().to_string(),
+            slot: meta.slot,
+            snapshot_profile: meta.snapshot_profile,
+            manifest_root: hex::encode(snapshot_manifest_root(&manifest)),
+            manifest,
+        };
+        print_json_report(&report)
+    })();
+    match result {
+        Ok(()) => Some(0),
+        Err(error) => {
+            eprintln!("{error}");
+            Some(1)
+        }
+    }
 }
 
 fn compare_public_history_manifests(
@@ -20330,41 +21116,43 @@ impl ArchiveV2ObjectSource for CapacityGatedArchiveV2Source {
     }
 }
 
-const ARCHIVE_V2_FRESH_SYNC_ADMISSION_METADATA_KEY: &str = "archive_v2_fresh_sync_admission_v1";
-
-fn archive_v2_fresh_sync_admission_fingerprint(
-    capability: &ArchiveV2CapabilityAdvertisement,
-) -> Result<Hash, String> {
-    let payload = serialize_legacy_bincode(
-        &(1u16, &capability.identity, capability.role),
-        "Archive V2 fresh-sync admission fingerprint",
-    )?;
-    Ok(Hash::hash(&payload))
-}
-
 fn persist_archive_v2_fresh_sync_admission(
     state: &StateStore,
     capability: &ArchiveV2CapabilityAdvertisement,
 ) -> Result<(), String> {
-    let fingerprint = archive_v2_fresh_sync_admission_fingerprint(capability)?;
-    state.put_metadata(ARCHIVE_V2_FRESH_SYNC_ADMISSION_METADATA_KEY, &fingerprint.0)
+    let fingerprint = archive_v2_state_admission_fingerprint(capability)?;
+    state.put_metadata(ARCHIVE_V2_STATE_ADMISSION_METADATA_KEY, &fingerprint.0)
 }
 
 fn restore_archive_v2_fresh_sync_admission(
     state: &StateStore,
     capability: &ArchiveV2CapabilityAdvertisement,
 ) -> Result<bool, String> {
-    let Some(stored) = state.get_metadata(ARCHIVE_V2_FRESH_SYNC_ADMISSION_METADATA_KEY)? else {
+    let Some(stored) = state.get_metadata(ARCHIVE_V2_STATE_ADMISSION_METADATA_KEY)? else {
         return Ok(false);
     };
     if stored.len() != 32 {
         return Err("Archive V2 fresh-sync admission marker is malformed".to_string());
     }
-    let expected = archive_v2_fresh_sync_admission_fingerprint(capability)?;
+    let expected = archive_v2_state_admission_fingerprint(capability)?;
     if stored.as_slice() != expected.0.as_slice() {
         return Ok(false);
     }
     Ok(true)
+}
+
+fn activate_deferred_archive_v2_after_fresh_sync(
+    state: &StateStore,
+    config: RuntimeArchiveV2Config,
+    chain_id: &str,
+    data_dir: &Path,
+    local_dev_mode: bool,
+) -> Result<ArchiveV2CapabilityAdvertisement, String> {
+    let capability =
+        activate_runtime_archive_v2(state, config, chain_id, data_dir, local_dev_mode)?;
+    persist_archive_v2_fresh_sync_admission(state, &capability)?;
+    state.mark_archive_v2_admitted_after_fresh_sync()?;
+    Ok(capability)
 }
 
 fn resolve_runtime_archive_v2_config(
@@ -20536,22 +21324,38 @@ fn activate_runtime_archive_v2(
             .to_string()
     })?;
     let finalized_slot = state.get_last_finalized_slot()?;
+    let catalog_coverage_end = match catalog.trailing_loss_declaration() {
+        Ok(Some(declaration)) => Some(declaration.end_slot),
+        Ok(None) => catalog.entries.last().map(|entry| entry.manifest.end_slot),
+        Err(error) => return Err(error.to_string()),
+    };
+    let local_history_start = archive_v2_local_history_start(
+        finalized_slot,
+        config.role_config.recent_history_slots,
+        catalog_coverage_end,
+    )?;
     if matches!(
         config.role_config.role,
         ArchiveV2Role::VerifiedCache | ArchiveV2Role::Consensus
     ) {
-        let hot_start = finalized_slot
-            .saturating_sub(config.role_config.recent_history_slots.saturating_sub(1));
         state
-            .verify_hot_canonical_block_range(hot_start, finalized_slot)
+            .verify_hot_canonical_block_range(local_history_start, finalized_slot)
             .map_err(|error| {
                 format!(
-                    "Archive V2 {} role requires a complete local hot window {hot_start}..={finalized_slot}: {error}",
+                    "Archive V2 {} role requires a complete local hot handoff {local_history_start}..={finalized_slot}: {error}",
                     config.role_config.role
                 )
             })?;
+    } else {
+        verify_local_archive_v2_block_range(state, local_history_start, finalized_slot).map_err(
+            |error| {
+                format!(
+                    "Archive V2 full-archive role requires a complete local hot/cold handoff {local_history_start}..={finalized_slot}: {error}"
+                )
+            },
+        )?;
     }
-    let required_archive_end = finalized_slot.checked_sub(config.role_config.recent_history_slots);
+    let required_archive_end = local_history_start.checked_sub(1);
     match required_archive_end {
         Some(required_end)
             if catalog
@@ -20573,18 +21377,71 @@ fn activate_runtime_archive_v2(
         }
     }
     if let Some(last) = catalog.entries.last() {
-        let canonical = state
-            .get_block_by_slot(last.manifest.end_slot)?
-            .ok_or_else(|| {
-                format!(
-                    "Archive V2 catalog tip block {} is missing from local canonical history",
-                    last.manifest.end_slot
-                )
+        let local_catalog_tip =
+            runtime_archive_v2_local_block(state, config.role_config.role, last.manifest.end_slot)?;
+        if let Some(canonical) = local_catalog_tip.as_ref() {
+            if canonical.hash() != last.manifest.last_block_hash {
+                return Err(
+                    "Archive V2 catalog tip hash conflicts with local canonical history"
+                        .to_string(),
+                );
+            }
+        }
+        if let Some(declaration) = catalog
+            .trailing_loss_declaration()
+            .map_err(|error| error.to_string())?
+        {
+            let following_slot = declaration
+                .following_slot()
+                .map_err(|error| error.to_string())?;
+            let following =
+                runtime_archive_v2_local_block(state, config.role_config.role, following_slot)?
+                    .ok_or_else(|| {
+                        format!(
+                            "Archive V2 trailing loss handoff block {} is missing from {}",
+                            following_slot,
+                            runtime_archive_v2_local_storage_label(config.role_config.role)
+                        )
+                    })?;
+            if following.hash() != declaration.following_block_hash
+                || following.header.parent_hash != declaration.missing_tip_block_hash
+            {
+                return Err(
+                    "Archive V2 trailing loss declaration conflicts with the local role handoff"
+                        .to_string(),
+                );
+            }
+        } else {
+            let following_slot = last.manifest.end_slot.checked_add(1).ok_or_else(|| {
+                "Archive V2 catalog tip cannot advance to a local handoff slot".to_string()
             })?;
-        if canonical.hash() != last.manifest.last_block_hash {
-            return Err(
-                "Archive V2 catalog tip hash conflicts with local canonical history".to_string(),
-            );
+            let following = if following_slot <= finalized_slot || local_catalog_tip.is_none() {
+                Some(
+                    runtime_archive_v2_local_block(
+                        state,
+                        config.role_config.role,
+                        following_slot,
+                    )?
+                    .ok_or_else(|| {
+                        format!(
+                            "Archive V2 catalog tip block {} and handoff block {} are both missing from {}",
+                            last.manifest.end_slot,
+                            following_slot,
+                            runtime_archive_v2_local_storage_label(config.role_config.role)
+                        )
+                    })?,
+                )
+            } else {
+                None
+            };
+            if following.as_ref().is_some_and(|following| {
+                following.header.parent_hash != last.manifest.last_block_hash
+            }) {
+                return Err(
+                    "Archive V2 catalog tip hash conflicts with the local role handoff parent"
+                        .to_string(),
+                );
+            }
         }
     }
     let every_segment_local = catalog.entries.iter().all(|entry| {
@@ -20731,6 +21588,89 @@ fn activate_runtime_archive_v2(
     Ok(capability)
 }
 
+fn archive_v2_local_history_start(
+    finalized_slot: u64,
+    recent_history_slots: u64,
+    catalog_coverage_end: Option<u64>,
+) -> Result<u64, String> {
+    if recent_history_slots == 0 {
+        return Err("Archive V2 recent-history retention must be non-zero".to_string());
+    }
+    let nominal_hot_start = finalized_slot.saturating_sub(recent_history_slots.saturating_sub(1));
+    let catalog_handoff_start = catalog_coverage_end
+        .map(|slot| {
+            slot.checked_add(1).ok_or_else(|| {
+                "Archive V2 catalog coverage end cannot advance to a local handoff slot".to_string()
+            })
+        })
+        .transpose()?
+        .unwrap_or(0);
+    // A catalog-bound hot checkpoint deliberately retains the unpublished
+    // tail between the immutable catalog and its nominal recent-history
+    // window. That physical tail remains valid after the node catches up and
+    // restarts; deriving coverage from the newer tip alone would invent a gap
+    // that is still present locally. Keep the same one-segment bound used by
+    // checkpoint construction so a stale catalog cannot silently turn into
+    // indefinitely growing local history.
+    let local_history_start = nominal_hot_start.min(catalog_handoff_start);
+    let unpublished_extension_slots = nominal_hot_start
+        .checked_sub(local_history_start)
+        .ok_or_else(|| "Archive V2 local handoff arithmetic failed".to_string())?;
+    if unpublished_extension_slots > ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS {
+        return Err(format!(
+            "Archive V2 catalog trails the configured hot window by {unpublished_extension_slots} slots, above the {}-slot unpublished-tail bound",
+            ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS
+        ));
+    }
+    Ok(local_history_start)
+}
+
+fn verify_local_archive_v2_block_range(
+    state: &StateStore,
+    start_slot: u64,
+    end_slot: u64,
+) -> Result<(), String> {
+    if end_slot < start_slot {
+        return Ok(());
+    }
+    let mut previous_hash = None;
+    for slot in start_slot..=end_slot {
+        let block = state.get_block_by_slot(slot)?.ok_or_else(|| {
+            format!("canonical block {slot} is missing from local hot/cold storage")
+        })?;
+        if let Some(expected_parent) = previous_hash {
+            if block.header.parent_hash != expected_parent {
+                return Err(format!(
+                    "canonical block {slot} does not extend local block {}",
+                    slot.saturating_sub(1)
+                ));
+            }
+        }
+        previous_hash = Some(block.hash());
+    }
+    Ok(())
+}
+
+fn runtime_archive_v2_local_block(
+    state: &StateStore,
+    role: ArchiveV2Role,
+    slot: u64,
+) -> Result<Option<Block>, String> {
+    if role == ArchiveV2Role::FullArchive {
+        state.get_block_by_slot(slot)
+    } else {
+        state.get_hot_block_by_slot(slot)
+    }
+}
+
+fn runtime_archive_v2_local_storage_label(role: ArchiveV2Role) -> &'static str {
+    if role == ArchiveV2Role::FullArchive {
+        "local hot/cold canonical history"
+    } else {
+        "local hot canonical history"
+    }
+}
+
 fn admit_runtime_archive_v2_role(
     role_config: &ArchiveV2RoleConfig,
     requirements: &ArchiveV2RoleRequirements,
@@ -20757,7 +21697,7 @@ fn admit_runtime_archive_v2_role(
 fn validate_deferred_runtime_archive_v2(
     config: &RuntimeArchiveV2Config,
     chain_id: &str,
-) -> Result<(), String> {
+) -> Result<ArchiveV2Catalog, String> {
     let catalog = ArchiveV2Catalog::load(&config.root.join("catalog.av2"))
         .map_err(|error| error.to_string())?;
     if catalog.identity.network_id != chain_id {
@@ -20766,7 +21706,7 @@ fn validate_deferred_runtime_archive_v2(
             catalog.identity.network_id
         ));
     }
-    Ok(())
+    Ok(catalog)
 }
 
 fn archive_v2_role_marker_authorizes_no_genesis_start(
@@ -20975,6 +21915,9 @@ fn main() {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_public_history_page_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_checkpoint_snapshot_manifest_admin(&args) {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_public_history_archive_admin(&args) {
@@ -21329,6 +22272,8 @@ async fn run_validator() {
 
     let public_archive = public_archive_network(network_arg.as_deref(), dev_mode);
     let runtime_minimum_available_bytes = minimum_runtime_available_bytes(network_arg.as_deref());
+    RUNTIME_MINIMUM_CHECKPOINT_AVAILABLE_BYTES
+        .store(runtime_minimum_available_bytes, Ordering::Release);
     let resolved_cold_store_path: Option<String> = match resolve_runtime_cold_store_path(
         &args,
         network_arg.as_deref(),
@@ -21723,15 +22668,18 @@ async fn run_validator() {
             false
         };
         if startup_genesis_block.is_none() && !marker_authorizes_no_genesis_start {
-            if let Err(error) =
-                validate_deferred_runtime_archive_v2(&config, &genesis_config.chain_id)
-            {
-                error!(
-                    "FATAL: deferred Archive V2 role configuration failed: {}",
-                    error
-                );
-                return;
-            }
+            let deferred_catalog =
+                match validate_deferred_runtime_archive_v2(&config, &genesis_config.chain_id) {
+                    Ok(catalog) => catalog,
+                    Err(error) => {
+                        error!(
+                            "FATAL: deferred Archive V2 role configuration failed: {}",
+                            error
+                        );
+                        return;
+                    }
+                };
+            state.attach_archive_v2_deferred_checkpoint_catalog(deferred_catalog);
             info!(
                 "🗄️  Deferring Archive V2 {} role admission until fresh state sync is complete",
                 config.role_config.role
@@ -23308,9 +24256,14 @@ async fn run_validator() {
     let block_apply_lock = Arc::new(Mutex::new(()));
     let genesis_sync_in_progress = Arc::new(AtomicBool::new(false));
 
-    // Create one canonical event broadcaster before the receiver starts. The
-    // public listener still binds at its normal startup point below.
-    let canonical_ws_event_tx = lichen_rpc::ws::event_sender();
+    // Create one canonical broadcaster set before the receiver starts. The
+    // public listener still binds at its normal startup point below, while
+    // every canonical apply path shares one DEX event cursor.
+    let (canonical_ws_event_tx, canonical_ws_dex_broadcaster, canonical_ws_prediction_broadcaster) =
+        lichen_rpc::ws_event_broadcasters();
+    let canonical_dex_event_cursor = Arc::new(AtomicU64::new(
+        state.get_program_storage_u64("DEX", b"dex_trade_count"),
+    ));
 
     // Start incoming block handler with voting
     if let Some(ref p2p_pm) = p2p_peer_manager {
@@ -23346,6 +24299,8 @@ async fn run_validator() {
         let block_apply_lock_for_blocks = block_apply_lock.clone();
         let genesis_sync_in_progress_for_blocks = genesis_sync_in_progress.clone();
         let ws_event_tx_for_blocks = canonical_ws_event_tx.clone();
+        let ws_dex_broadcaster_for_blocks = canonical_ws_dex_broadcaster.clone();
+        let dex_event_cursor_for_blocks = canonical_dex_event_cursor.clone();
         let block_receiver_handle = tokio::spawn(async move {
             info!("🔄 Block receiver started");
             // Track only signature-verified headers. The full pair is required
@@ -23503,6 +24458,8 @@ async fn run_validator() {
                             emit_canonical_block_websocket_events(
                                 &state_for_blocks,
                                 &ws_event_tx_for_blocks,
+                                &ws_dex_broadcaster_for_blocks,
+                                &dex_event_cursor_for_blocks,
                                 &pending_block,
                             );
                             tip_notify_for_blocks.notify_waiters();
@@ -23676,6 +24633,18 @@ async fn run_validator() {
                 }
                 if let Err(e) = block.validate_structure() {
                     warn!("⚠️  Rejecting block {} — {}", block_slot, e);
+                    continue;
+                }
+                // A bounded hot-repair snapshot can replace local slot 0 while
+                // this block is in flight. Cache the genesis-only replay mode
+                // as soon as the signed, structurally valid block is bound to
+                // the already validated deferred Archive V2 catalog. The
+                // subsequent tip-dependent genesis reconstruction may then be
+                // skipped safely if the snapshot wins the race.
+                if let Err(error) =
+                    cache_deferred_archive_v2_genesis_mossstake_mode(&state_for_blocks, &block)
+                {
+                    warn!("⚠️  Rejecting block {} — {}", block_slot, error);
                     continue;
                 }
 
@@ -23913,6 +24882,14 @@ async fn run_validator() {
                         rns.retain(|&s| s + 200 >= block_slot);
                     }
                 }
+                // Snapshot activation replaces the slot index while holding the
+                // canonical apply lock. Slot 0 can therefore be temporarily
+                // absent even though the chain is not empty. Genesis import is
+                // a canonical state mutation and must cross the same boundary
+                // before it observes the tip or reconstructs any accounts.
+                let _genesis_apply_guard =
+                    acquire_network_genesis_apply_guard(block_slot, &block_apply_lock_for_blocks)
+                        .await;
                 let current_slot = state_for_blocks.get_last_slot().unwrap_or(0);
 
                 // Diagnostic: trace every block entering the receiver
@@ -24819,6 +25796,11 @@ async fn run_validator() {
                         sync_mgr.record_progress(0).await;
                         tip_notify_for_blocks.notify_waiters();
 
+                        // Pending descendants take the canonical apply lock one
+                        // at a time below. Release the genesis mutation boundary
+                        // first instead of attempting to acquire it recursively.
+                        drop(_genesis_apply_guard);
+
                         // Try to apply any pending blocks now that we have genesis
                         let genesis_hash = block.hash();
                         let pending = sync_mgr.try_apply_pending(0, genesis_hash).await;
@@ -25387,6 +26369,8 @@ async fn run_validator() {
                             emit_canonical_block_websocket_events(
                                 &state_for_blocks,
                                 &ws_event_tx_for_blocks,
+                                &ws_dex_broadcaster_for_blocks,
+                                &dex_event_cursor_for_blocks,
                                 &block,
                             );
                             // Wake BFT only after deterministic post-block effects
@@ -25997,6 +26981,8 @@ async fn run_validator() {
                                     emit_canonical_block_websocket_events(
                                         &state_for_blocks,
                                         &ws_event_tx_for_blocks,
+                                        &ws_dex_broadcaster_for_blocks,
+                                        &dex_event_cursor_for_blocks,
                                         &block,
                                     );
                                     maybe_create_checkpoint(
@@ -26487,6 +27473,14 @@ async fn run_validator() {
         let local_addr_for_responses = p2p_config.listen_addr;
         tokio::spawn(async move {
             info!("🔄 Block range request handler started");
+            let Some(chain_id_for_block_requests) =
+                state_chain_id_metadata(&state_for_block_requests)
+            else {
+                error!(
+                    "Block range request handler cannot serve without canonical chain-id metadata"
+                );
+                return;
+            };
             const RATE_LIMIT_WINDOW_SECS: u64 = 10;
             const MAX_REQUESTS_PER_WINDOW: u64 = 30;
             let mut rate_limits: HashMap<std::net::SocketAddr, (u64, std::time::Instant)> =
@@ -26610,7 +27604,21 @@ async fn run_validator() {
                 let mut blocks = Vec::new();
                 for slot in request.start_slot..=request.end_slot {
                     if let Ok(Some(block)) = state_for_block_requests.get_block_by_slot(slot) {
-                        blocks.push(block);
+                        match materialize_block_commit_for_sync(
+                            &state_for_block_requests,
+                            block,
+                            &chain_id_for_block_requests,
+                            MIN_VALIDATOR_STAKE,
+                        ) {
+                            Ok(block) => blocks.push(block),
+                            Err(error) => {
+                                warn!(
+                                    "Refusing to serve unverifiable canonical block {} to {}: {}",
+                                    slot, request.requester, error
+                                );
+                                break;
+                            }
+                        }
                     }
 
                     // Limit response size to prevent memory issues
@@ -27181,10 +28189,12 @@ async fn run_validator() {
                                 let mut replay_export_failed = false;
                                 while replay_index < chunk_index {
                                     let replay_page = match store
-                                        .export_snapshot_category_cursor_untracked(
+                                        .export_checkpoint_snapshot_category_cursor_untracked(
                                             category,
                                             replay_cursor.as_deref(),
                                             chunk_sz,
+                                            meta.slot,
+                                            meta.snapshot_profile,
                                         ) {
                                         Ok(page) => page,
                                         Err(e) => {
@@ -27213,11 +28223,14 @@ async fn run_validator() {
                                 entry.1 = replay_cursor;
                             }
 
-                            let page = match store.export_snapshot_category_cursor_untracked(
-                                category,
-                                entry.1.as_deref(),
-                                chunk_sz,
-                            ) {
+                            let page = match store
+                                .export_checkpoint_snapshot_category_cursor_untracked(
+                                    category,
+                                    entry.1.as_deref(),
+                                    chunk_sz,
+                                    meta.slot,
+                                    meta.snapshot_profile,
+                                ) {
                                 Ok(page) => page,
                                 Err(e) => {
                                     warn!(
@@ -27605,15 +28618,28 @@ async fn run_validator() {
                         } = checkpoint_meta;
                         if slot > 0 && total_accounts > 0 {
                             if !snapshot_manifest.is_empty() {
-                                if let Err(err) =
-                                    validate_advertised_snapshot_manifest_shape(&snapshot_manifest)
-                                {
+                                let snapshot_profile =
+                                    match advertised_snapshot_profile(&snapshot_manifest) {
+                                        Ok(profile) => profile,
+                                        Err(err) => {
+                                            warn!(
+                                                "⚠️  Rejecting checkpoint metadata from {}: {}",
+                                                response.requester, err
+                                            );
+                                            peer_mgr_for_snapshot_apply
+                                                .record_violation(&response.requester);
+                                            continue;
+                                        }
+                                    };
+                                if let Err(err) = validate_hot_repair_checkpoint_target(
+                                    &state_for_snapshot_apply,
+                                    slot,
+                                    snapshot_profile,
+                                ) {
                                     warn!(
                                         "⚠️  Rejecting checkpoint metadata from {}: {}",
                                         response.requester, err
                                     );
-                                    peer_mgr_for_snapshot_apply
-                                        .record_violation(&response.requester);
                                     continue;
                                 }
                             }
@@ -27723,6 +28749,10 @@ async fn run_validator() {
                                 local_root.to_hex(),
                                 checkpoint_root.to_hex(),
                             );
+                                snapshot_sync_for_apply
+                                    .lock()
+                                    .await
+                                    .mark_checkpoint_repair_pending();
                             }
                             if verified_checkpoint_snapshot_needed(
                                 local_slot,
@@ -27730,10 +28760,6 @@ async fn run_validator() {
                                 local_root,
                                 checkpoint_root,
                             ) {
-                                snapshot_sync_for_apply
-                                    .lock()
-                                    .await
-                                    .mark_checkpoint_repair_pending();
                                 let Some((
                                     best_anchor_key,
                                     best_anchor,
@@ -27758,6 +28784,36 @@ async fn run_validator() {
                                     }
                                     continue;
                                 };
+
+                                // A metadata response can advertise a newer
+                                // checkpoint whose snapshot manifest is still
+                                // warming while an older, fully corroborated
+                                // anchor remains in the response cache. Recheck
+                                // the selected anchor against the current live
+                                // slot before opening staging: block replay may
+                                // have already crossed that older checkpoint.
+                                // Downloading it again would mark warp sync
+                                // active and strand otherwise valid replay.
+                                let selection_local_slot =
+                                    state_for_snapshot_apply.get_last_slot().unwrap_or(0);
+                                let selection_local_root = checkpoint_root_for_same_slot_repair(
+                                    &state_for_snapshot_apply,
+                                    selection_local_slot,
+                                    best_anchor.slot,
+                                )
+                                .unwrap_or_default();
+                                if !verified_checkpoint_snapshot_needed(
+                                    selection_local_slot,
+                                    best_anchor.slot,
+                                    selection_local_root,
+                                    Hash(best_anchor.state_root),
+                                ) {
+                                    info!(
+                                        "⏩ Ignoring stale ready checkpoint snapshot at slot {} after live replay reached {}; continuing bounded replay while newer checkpoint metadata warms",
+                                        best_anchor.slot, selection_local_slot
+                                    );
+                                    continue;
+                                }
 
                                 let snapshot_source_key = (
                                     best_anchor_key.source,
@@ -28346,6 +29402,29 @@ async fn run_validator() {
                     if all_categories_done {
                         info!("✅ All snapshot categories received — verifying on staging DB");
 
+                        let active_snapshot_profile =
+                            match advertised_snapshot_profile(&active_anchor.snapshot_manifest) {
+                                Ok(profile) => profile,
+                                Err(err) => {
+                                    warn!(
+                                    "⚠️  Snapshot completed with an invalid checkpoint profile: {}",
+                                    err
+                                );
+                                    cleanup_snapshot_staging(&mut active_snapshot_staging);
+                                    state_snap_progress.clear();
+                                    state_snap_digests.clear();
+                                    active_snapshot_anchor = None;
+                                    active_snapshot_source_peer = None;
+                                    active_snapshot_source = None;
+                                    active_snapshot_source_node_id = None;
+                                    snapshot_sync_for_apply
+                                        .lock()
+                                        .await
+                                        .mark_warp_snapshot_idle();
+                                    continue;
+                                }
+                            };
+
                         // ── Staged Verification ─────────────────────────────
                         // Chunks have already been streamed into this staging
                         // StateStore. Verify the checkpoint-aligned state root
@@ -28384,6 +29463,7 @@ async fn run_validator() {
                             staging_dir
                         );
 
+                        let mut verified_staging_root_components = None;
                         let staging_ok = 'staging: {
                             if let Err(e) = staging_state.reconcile_account_count() {
                                 warn!("⚠️  Staging account reconciliation failed: {}", e);
@@ -28437,11 +29517,21 @@ async fn run_validator() {
                                 hex::encode(snapshot_manifest_root(&received_manifest))
                             );
 
-                            if let Err(e) = validate_snapshot_archive_completeness(
+                            if let Err(e) = validate_snapshot_history_for_profile(
                                 &staging_state,
                                 snapshot_slot,
+                                active_snapshot_profile,
                             ) {
                                 warn!("⚠️  Staging archive completeness failed: {}", e);
+                                break 'staging false;
+                            }
+                            if let Err(e) = validate_preactivation_hot_repair_overlap(
+                                &state_for_snapshot_apply,
+                                &staging_state,
+                                snapshot_slot,
+                                active_snapshot_profile,
+                            ) {
+                                warn!("⚠️  Staging canonical overlap failed: {}", e);
                                 break 'staging false;
                             }
 
@@ -28477,6 +29567,8 @@ async fn run_validator() {
                             ) {
                                 Ok(()) => {
                                     let computed_root = staging_state.compute_state_root();
+                                    verified_staging_root_components =
+                                        Some(staging_state.state_root_component_report());
                                     info!(
                                         "✅ State root verified on staging: {} (matches snapshot)",
                                         hex::encode(&computed_root.0[..8])
@@ -28622,6 +29714,53 @@ async fn run_validator() {
                                 snapshot_root.to_hex(),
                             );
                         }
+                        if let Err(e) = validate_hot_repair_checkpoint_target(
+                            &state_for_snapshot_apply,
+                            snapshot_slot,
+                            active_snapshot_profile,
+                        ) {
+                            warn!(
+                                "⚠️  Refusing verified snapshot live apply at slot {} because its Archive V2 recovery binding is no longer valid: {}",
+                                snapshot_slot, e
+                            );
+                            drop(staging_state);
+                            cleanup_snapshot_staging(&mut active_snapshot_staging);
+                            state_snap_progress.clear();
+                            state_snap_digests.clear();
+                            active_snapshot_anchor = None;
+                            active_snapshot_source_peer = None;
+                            active_snapshot_source = None;
+                            active_snapshot_source_node_id = None;
+                            snapshot_sync_for_apply
+                                .lock()
+                                .await
+                                .mark_warp_snapshot_idle();
+                            continue;
+                        }
+                        if let Err(e) = validate_preactivation_hot_repair_overlap(
+                            &state_for_snapshot_apply,
+                            &staging_state,
+                            snapshot_slot,
+                            active_snapshot_profile,
+                        ) {
+                            warn!(
+                                "⚠️  Refusing verified snapshot live apply at slot {} because its pre-activation canonical overlap changed: {}",
+                                snapshot_slot, e
+                            );
+                            drop(staging_state);
+                            cleanup_snapshot_staging(&mut active_snapshot_staging);
+                            state_snap_progress.clear();
+                            state_snap_digests.clear();
+                            active_snapshot_anchor = None;
+                            active_snapshot_source_peer = None;
+                            active_snapshot_source = None;
+                            active_snapshot_source_node_id = None;
+                            snapshot_sync_for_apply
+                                .lock()
+                                .await
+                                .mark_warp_snapshot_idle();
+                            continue;
+                        }
 
                         // ── Commit verified entries to live DB ──────────────
                         // Live snapshot import is intentionally guarded by a
@@ -28662,6 +29801,7 @@ async fn run_validator() {
                             &data_dir_for_snapshot_apply,
                             snapshot_slot,
                             snapshot_root,
+                            active_snapshot_profile,
                         ) {
                             Ok(marker) => marker,
                             Err(e) => {
@@ -28744,12 +29884,41 @@ async fn run_validator() {
                             match state_for_snapshot_apply.rebuild_sparse_state_commitment(false) {
                                 Ok(report) => {
                                     if report.current_state_root != Hash(state_root) {
+                                        let live_components =
+                                            state_for_snapshot_apply.state_root_component_report();
                                         error!(
-                                            "FATAL: verified snapshot live sparse rebuild root mismatch at slot {}: rebuilt={} expected={}",
+                                            "FATAL: verified snapshot live sparse rebuild root mismatch at slot {}: rebuilt={} expected={} live_prefix=0x{:02x} live_commitment_schema={} live_restrictions={} live_accounts={} live_contracts={} live_stake={} live_moss={} live_restrictions_root={} live_shielded={}",
                                             snapshot_slot,
                                             report.current_state_root.to_hex(),
-                                            Hash(state_root).to_hex()
+                                            Hash(state_root).to_hex(),
+                                            live_components.prefix,
+                                            live_components.commitment_schema,
+                                            live_components.include_restrictions,
+                                            live_components.accounts_root.to_hex(),
+                                            live_components.contract_root.to_hex(),
+                                            live_components.stake_pool_hash.to_hex(),
+                                            live_components.mossstake_pool_hash.to_hex(),
+                                            hash_option_text(live_components.restrictions_root),
+                                            hash_option_text(live_components.shielded_root),
                                         );
+                                        if let Some(staging_components) =
+                                            verified_staging_root_components
+                                        {
+                                            error!(
+                                                "FATAL: verified snapshot staging components at slot {}: root={} prefix=0x{:02x} commitment_schema={} restrictions={} accounts={} contracts={} stake={} moss={} restrictions_root={} shielded={}",
+                                                snapshot_slot,
+                                                staging_components.root.to_hex(),
+                                                staging_components.prefix,
+                                                staging_components.commitment_schema,
+                                                staging_components.include_restrictions,
+                                                staging_components.accounts_root.to_hex(),
+                                                staging_components.contract_root.to_hex(),
+                                                staging_components.stake_pool_hash.to_hex(),
+                                                staging_components.mossstake_pool_hash.to_hex(),
+                                                hash_option_text(staging_components.restrictions_root),
+                                                hash_option_text(staging_components.shielded_root),
+                                            );
+                                        }
                                         std::process::exit(1);
                                     }
                                     info!(
@@ -28833,14 +30002,17 @@ async fn run_validator() {
                             );
                             std::process::exit(1);
                         }
-                        if let Err(e) = state_for_snapshot_apply
-                            .set_archive_contiguous_tip(snapshot_slot, snapshot_anchor.block.hash())
-                        {
-                            error!(
-                                "FATAL: failed to persist verified archive contiguity proof at slot {}: {}",
-                                snapshot_slot, e
-                            );
-                            std::process::exit(1);
+                        if active_snapshot_profile == CheckpointSnapshotProfile::FullArchiveV1 {
+                            if let Err(e) = state_for_snapshot_apply.set_archive_contiguous_tip(
+                                snapshot_slot,
+                                snapshot_anchor.block.hash(),
+                            ) {
+                                error!(
+                                    "FATAL: failed to persist verified archive contiguity proof at slot {}: {}",
+                                    snapshot_slot, e
+                                );
+                                std::process::exit(1);
+                            }
                         }
                         {
                             let pool = stake_pool_for_snapshot_apply.read().await.clone();
@@ -28858,9 +30030,11 @@ async fn run_validator() {
                             "{}/checkpoints/slot-{}",
                             data_dir_for_snapshot_apply, snapshot_slot
                         );
-                        match state_for_snapshot_apply
-                            .create_checkpoint(&checkpoint_path, snapshot_slot)
-                        {
+                        match state_for_snapshot_apply.create_checkpoint_with_profile(
+                            &checkpoint_path,
+                            snapshot_slot,
+                            active_snapshot_profile,
+                        ) {
                             Ok(meta) => {
                                 info!(
                                     "✅ Created local checkpoint at slot {} ({} accounts)",
@@ -29107,11 +30281,13 @@ async fn run_validator() {
     // Start WebSocket server FIRST so we can share its broadcasters with RPC.
     // The pre-created event sender is also shared with canonical sync applies.
     let (ws_event_tx, ws_dex_broadcaster, ws_prediction_broadcaster, _ws_handle) =
-        match lichen_rpc::start_ws_server_with_event_sender(
+        match lichen_rpc::start_ws_server_with_broadcasters(
             state_for_ws,
             ws_port,
             Some(finality_tracker.clone()),
             canonical_ws_event_tx.clone(),
+            canonical_ws_dex_broadcaster.clone(),
+            canonical_ws_prediction_broadcaster.clone(),
         )
         .await
         {
@@ -29124,15 +30300,11 @@ async fn run_validator() {
                     "Failed to start WebSocket server: {} — continuing without WebSocket",
                     e
                 );
-                let dummy_broadcaster =
-                    std::sync::Arc::new(lichen_rpc::dex_ws::DexEventBroadcaster::new(1));
-                let dummy_pred =
-                    std::sync::Arc::new(lichen_rpc::ws::PredictionEventBroadcaster::new(1));
                 let dummy_handle = tokio::spawn(async {});
                 (
                     canonical_ws_event_tx,
-                    dummy_broadcaster,
-                    dummy_pred,
+                    canonical_ws_dex_broadcaster,
+                    canonical_ws_prediction_broadcaster,
                     dummy_handle,
                 )
             }
@@ -30153,6 +31325,8 @@ async fn run_validator() {
         let mut stale_checks: u32 = 0;
         let threshold = WATCHDOG_STALE_CONFIRMATION_CHECKS;
         let mut last_known_slot: u64 = 0;
+        let watchdog_timeout = Duration::from_secs(watchdog_timeout_secs);
+        let mut checkpoint_grace_logged = false;
         loop {
             interval.tick().await;
             let elapsed = last_block_time_for_watchdog.lock().await.elapsed();
@@ -30164,21 +31338,53 @@ async fn run_validator() {
             // any blocks — this is normal, not a stall.
             if joining_sync_for_watchdog.load(std::sync::atomic::Ordering::Relaxed) {
                 stale_checks = 0;
+                checkpoint_grace_logged = false;
                 continue;
             }
 
-            if elapsed > Duration::from_secs(watchdog_timeout_secs)
-                && current_slot == last_known_slot
-            {
+            let checkpoint_active = CHECKPOINT_CREATION_ACTIVE.load(Ordering::Acquire);
+            let ordinary_stall = elapsed > watchdog_timeout && current_slot == last_known_slot;
+            let actionable_stall = watchdog_stall_is_actionable(
+                elapsed,
+                watchdog_timeout,
+                current_slot,
+                last_known_slot,
+                checkpoint_active,
+            );
+
+            if ordinary_stall && checkpoint_active && !actionable_stall {
+                stale_checks = 0;
+                if !checkpoint_grace_logged {
+                    warn!(
+                        "🐺 Watchdog: canonical progress is paused by an active checkpoint at slot {}; allowing up to {}s before confirmed restart",
+                        current_slot, MAX_ACTIVE_CHECKPOINT_WATCHDOG_SECS
+                    );
+                    checkpoint_grace_logged = true;
+                }
+                continue;
+            }
+
+            if actionable_stall {
                 stale_checks += 1;
-                warn!(
-                    "🐺 Watchdog: no canonical or verified snapshot progress for {:.0}s (slot {}, pending {}, stale {}/{})",
-                    elapsed.as_secs_f64(),
-                    current_slot,
-                    pending,
-                    stale_checks,
-                    threshold
-                );
+                if checkpoint_active {
+                    warn!(
+                        "🐺 Watchdog: active checkpoint exceeded its {}s maintenance bound (slot {}, pending {}, stale {}/{})",
+                        MAX_ACTIVE_CHECKPOINT_WATCHDOG_SECS,
+                        current_slot,
+                        pending,
+                        stale_checks,
+                        threshold
+                    );
+                } else {
+                    warn!(
+                        "🐺 Watchdog: no canonical or verified snapshot progress for {:.0}s (slot {}, pending {}, stale {}/{})",
+                        elapsed.as_secs_f64(),
+                        current_slot,
+                        pending,
+                        stale_checks,
+                        threshold
+                    );
+                }
                 if stale_checks >= threshold {
                     error!(
                         "🐺 Watchdog: validator stalled for {}s — triggering restart (exit {})",
@@ -30193,6 +31399,7 @@ async fn run_validator() {
                     info!("🐺 Watchdog: progress resumed (slot {})", current_slot);
                 }
                 stale_checks = 0;
+                checkpoint_grace_logged = false;
                 last_known_slot = current_slot;
             }
         }
@@ -30642,6 +31849,47 @@ async fn run_validator() {
         let mut highest_network_slot = current_tip;
         let mut last_network_progress_at = Instant::now();
         loop {
+            let current_slot_before_genesis_gate = state.get_last_slot().unwrap_or(0);
+            let hot_genesis_present = match state.get_hot_block_by_slot(0) {
+                Ok(genesis) => genesis.is_some(),
+                Err(error) => {
+                    error!(
+                        "FATAL: failed inspecting hot genesis before pre-consensus admission: {}",
+                        error
+                    );
+                    return;
+                }
+            };
+            if should_activate_deferred_archive_v2_before_genesis_gate(
+                deferred_archive_v2_config.is_some(),
+                current_slot_before_genesis_gate,
+                hot_genesis_present,
+            ) {
+                let config = deferred_archive_v2_config
+                    .take()
+                    .expect("deferred Archive V2 configuration was just checked");
+                match activate_deferred_archive_v2_after_fresh_sync(
+                    &state,
+                    config,
+                    &genesis_config.chain_id,
+                    &data_dir_path,
+                    dev_mode,
+                ) {
+                    Ok(capability) => {
+                        info!(
+                            "🗄️  Activated deferred Archive V2 after bounded fresh checkpoint apply and before the genesis readiness gate"
+                        );
+                        *archive_v2_capability.write().await = Some(capability);
+                    }
+                    Err(error) => {
+                        error!(
+                            "FATAL: Archive V2 role admission failed after bounded fresh checkpoint apply: {}",
+                            error
+                        );
+                        return;
+                    }
+                }
+            }
             let has_genesis = pre_consensus_genesis_is_ready(is_joining_network, || {
                 state.get_block_by_slot(0).unwrap_or(None).is_some()
             });
@@ -30974,7 +32222,7 @@ async fn run_validator() {
             }
 
             if let Some(config) = deferred_archive_v2_config.take() {
-                match activate_runtime_archive_v2(
+                match activate_deferred_archive_v2_after_fresh_sync(
                     &state,
                     config,
                     &genesis_config.chain_id,
@@ -30982,22 +32230,6 @@ async fn run_validator() {
                     dev_mode,
                 ) {
                     Ok(capability) => {
-                        if let Err(error) =
-                            persist_archive_v2_fresh_sync_admission(&state, &capability)
-                        {
-                            error!(
-                                "FATAL: Archive V2 fresh-sync admission marker could not be persisted: {}",
-                                error
-                            );
-                            return;
-                        }
-                        if let Err(error) = state.mark_archive_v2_admitted_after_fresh_sync() {
-                            error!(
-                                "FATAL: Archive V2 fresh-sync admission status could not be recorded: {}",
-                                error
-                            );
-                            return;
-                        }
                         *archive_v2_capability.write().await = Some(capability);
                     }
                     Err(error) => {
@@ -31163,7 +32395,6 @@ async fn run_validator() {
         min_validator_stake,
         bft_timeouts,
     );
-    let mut last_dex_trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
     let proposal_staging_root = state_staging_root(&data_dir, "proposal-staging");
     reset_staging_root(&proposal_staging_root, "Proposal");
 
@@ -31456,7 +32687,7 @@ async fn run_validator() {
                 &ws_dex_broadcaster,
                 &shared_oracle_prices,
                 &last_block_time_for_local,
-                &mut last_dex_trade_count,
+                &canonical_dex_event_cursor,
                 &data_dir,
                 &sync_manager,
                 &mut parent_hash,
@@ -31496,7 +32727,7 @@ async fn run_validator() {
                 &ws_dex_broadcaster,
                 &shared_oracle_prices,
                 &last_block_time_for_local,
-                &mut last_dex_trade_count,
+                &canonical_dex_event_cursor,
                 &data_dir,
                 &sync_manager,
                 &mut parent_hash,
@@ -31535,7 +32766,7 @@ async fn run_validator() {
                 &ws_dex_broadcaster,
                 &shared_oracle_prices,
                 &last_block_time_for_local,
-                &mut last_dex_trade_count,
+                &canonical_dex_event_cursor,
                 &data_dir,
                 &sync_manager,
                 &mut parent_hash,
@@ -31793,7 +33024,7 @@ async fn run_validator() {
                         &ws_dex_broadcaster,
                         &shared_oracle_prices,
                         &last_block_time_for_local,
-                        &mut last_dex_trade_count,
+                        &canonical_dex_event_cursor,
                         &data_dir,
                         &sync_manager,
                         &mut parent_hash,
@@ -31837,7 +33068,7 @@ async fn run_validator() {
                 &ws_dex_broadcaster,
                 &shared_oracle_prices,
                 &last_block_time_for_local,
-                &mut last_dex_trade_count,
+                &canonical_dex_event_cursor,
                 &data_dir,
                 &sync_manager,
                 &mut parent_hash,
@@ -32012,7 +33243,7 @@ async fn run_validator() {
                     &ws_dex_broadcaster,
                     &shared_oracle_prices,
                     &last_block_time_for_local,
-                    &mut last_dex_trade_count,
+                    &canonical_dex_event_cursor,
                     &data_dir,
                     &sync_manager,
                     &mut parent_hash,
@@ -32059,7 +33290,7 @@ async fn run_validator() {
                     &ws_dex_broadcaster,
                     &shared_oracle_prices,
                     &last_block_time_for_local,
-                    &mut last_dex_trade_count,
+                    &canonical_dex_event_cursor,
                     &data_dir,
                     &sync_manager,
                     &mut parent_hash,
@@ -32106,7 +33337,7 @@ async fn run_validator() {
                     &ws_dex_broadcaster,
                     &shared_oracle_prices,
                     &last_block_time_for_local,
-                    &mut last_dex_trade_count,
+                    &canonical_dex_event_cursor,
                     &data_dir,
                     &sync_manager,
                     &mut parent_hash,
@@ -32205,7 +33436,7 @@ async fn run_validator() {
                             &ws_dex_broadcaster,
                             &shared_oracle_prices,
                             &last_block_time_for_local,
-                            &mut last_dex_trade_count,
+                            &canonical_dex_event_cursor,
                             &data_dir,
                             &sync_manager,
                             &mut parent_hash,
@@ -32264,7 +33495,7 @@ async fn run_validator() {
                         &ws_dex_broadcaster,
                         &shared_oracle_prices,
                         &last_block_time_for_local,
-                        &mut last_dex_trade_count,
+                        &canonical_dex_event_cursor,
                         &data_dir,
                         &sync_manager,
                         &mut parent_hash,
@@ -32354,7 +33585,7 @@ async fn run_validator() {
                                     &ws_dex_broadcaster,
                                     &shared_oracle_prices,
                                     &last_block_time_for_local,
-                                    &mut last_dex_trade_count,
+                                    &canonical_dex_event_cursor,
                                     &data_dir,
                                     &sync_manager,
                                     &mut parent_hash,
@@ -32426,7 +33657,7 @@ async fn run_validator() {
                             &ws_dex_broadcaster,
                             &shared_oracle_prices,
                             &last_block_time_for_local,
-                            &mut last_dex_trade_count,
+                            &canonical_dex_event_cursor,
                             &data_dir,
                             &sync_manager,
                             &mut parent_hash,
@@ -32521,7 +33752,7 @@ async fn run_validator() {
                                 &ws_dex_broadcaster,
                                 &shared_oracle_prices,
                                 &last_block_time_for_local,
-                                &mut last_dex_trade_count,
+                                &canonical_dex_event_cursor,
                                 &data_dir,
                                 &sync_manager,
                                 &mut parent_hash,
@@ -32707,7 +33938,7 @@ async fn run_validator() {
                                 &ws_dex_broadcaster,
                                 &shared_oracle_prices,
                                 &last_block_time_for_local,
-                                &mut last_dex_trade_count,
+                                &canonical_dex_event_cursor,
                                 &data_dir,
                                 &sync_manager,
                                 &mut parent_hash,
@@ -32741,7 +33972,7 @@ async fn run_validator() {
                         &ws_dex_broadcaster,
                         &shared_oracle_prices,
                         &last_block_time_for_local,
-                        &mut last_dex_trade_count,
+                        &canonical_dex_event_cursor,
                         &data_dir,
                         &sync_manager,
                         &mut parent_hash,
@@ -33209,7 +34440,7 @@ async fn execute_consensus_actions(
     ws_dex_broadcaster: &Arc<lichen_rpc::dex_ws::DexEventBroadcaster>,
     shared_oracle_prices: &SharedOraclePrices,
     last_block_time: &Arc<Mutex<std::time::Instant>>,
-    last_dex_trade_count: &mut u64,
+    dex_event_cursor: &Arc<AtomicU64>,
     data_dir: &str,
     sync_manager: &Arc<SyncManager>,
     parent_hash: &mut Hash,
@@ -33661,25 +34892,14 @@ async fn execute_consensus_actions(
 
             // Emit program and NFT WebSocket events
             let event_fanout_started = Instant::now();
-            let (program_events_ms, block_events_ms) =
-                emit_canonical_block_websocket_events(state, ws_event_tx, &block);
-
-            // DEX events + analytics bridge + SL/TP triggers
-            let dex_events_started = Instant::now();
-            {
-                let current_trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
-                if current_trade_count > *last_dex_trade_count {
-                    let prev = *last_dex_trade_count;
-                    *last_dex_trade_count = current_trade_count;
-                    let state_c = state.clone();
-                    let bc_c = ws_dex_broadcaster.clone();
-                    let slot_c = height;
-                    tokio::task::spawn_blocking(move || {
-                        emit_dex_events(&state_c, &bc_c, prev, current_trade_count, slot_c);
-                    });
-                }
-            }
-            let dex_events_ms = duration_millis_u64(dex_events_started.elapsed());
+            let (program_events_ms, dex_events_ms, block_events_ms) =
+                emit_canonical_block_websocket_events(
+                    state,
+                    ws_event_tx,
+                    ws_dex_broadcaster,
+                    dex_event_cursor,
+                    &block,
+                );
 
             // Finality tracking
             let signature_events_started = Instant::now();
@@ -33941,7 +35161,7 @@ async fn execute_consensus_actions(
                     ws_dex_broadcaster,
                     shared_oracle_prices,
                     last_block_time,
-                    last_dex_trade_count,
+                    dex_event_cursor,
                     data_dir,
                     sync_manager,
                     parent_hash,
@@ -34176,6 +35396,7 @@ mod tests {
                 state_root,
                 created_at: slot,
                 total_accounts: 1,
+                snapshot_profile: lichen_core::CheckpointSnapshotProfile::default(),
             },
             checkpoint_path,
             block,
@@ -35432,6 +36653,56 @@ mod tests {
     }
 
     #[test]
+    fn sync_block_materializes_verified_commit_from_canonical_child() {
+        let (_temp_dir, state, child, _validator) = parent_certificate_sync_fixture();
+        let mut parent = state
+            .get_block(&child.header.parent_hash)
+            .expect("read parent")
+            .expect("stored parent");
+        let expected_round = parent.commit_round;
+        let expected_signatures = parent.commit_signatures.clone();
+        parent.commit_signatures.clear();
+        state
+            .put_block(&parent)
+            .expect("replace parent without local commit");
+        state.put_block(&child).expect("store canonical child");
+
+        let materialized = materialize_block_commit_for_sync(
+            &state,
+            parent,
+            "lichen-mainnet-1",
+            MIN_VALIDATOR_STAKE,
+        )
+        .expect("canonical child certificate must make the parent self-contained for sync");
+
+        assert_eq!(materialized.commit_round, expected_round);
+        assert_eq!(materialized.commit_signatures, expected_signatures);
+    }
+
+    #[test]
+    fn sync_block_refuses_missing_local_and_canonical_child_commit() {
+        let temp_dir = tempfile::tempdir().expect("create state directory");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let block = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::hash(b"unsigned-sync-block"),
+            [1u8; 32],
+            Vec::new(),
+            1,
+        );
+
+        let error = materialize_block_commit_for_sync(
+            &state,
+            block,
+            "lichen-mainnet-1",
+            MIN_VALIDATOR_STAKE,
+        )
+        .expect_err("sync serving must fail closed without finality evidence");
+        assert!(error.contains("neither a local nor canonical-child commit certificate"));
+    }
+
+    #[test]
     fn classify_bft_commit_storage_allows_only_fresh_next_block() {
         let block_hash = Hash([1u8; 32]);
 
@@ -36275,6 +37546,8 @@ mod tests {
         let section = &source[start..start + relative_end];
 
         assert!(section.contains("get_hot_tx_meta_full"));
+        assert!(section.contains("get_events_by_slot(block.header.slot, usize::MAX)"));
+        assert!(!section.contains("get_contract_logs("));
         assert!(!section.contains(".get_tx_meta_full("));
     }
 
@@ -36285,8 +37558,16 @@ mod tests {
         let producer = Keypair::generate().pubkey();
         let block = Block::new(42, Hash::default(), Hash::default(), producer.0, vec![]);
         let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(8);
+        let dex_broadcaster = lichen_rpc::dex_ws::DexEventBroadcaster::new(8);
+        let dex_event_cursor = AtomicU64::new(0);
 
-        emit_canonical_block_websocket_events(&state, &event_tx, &block);
+        emit_canonical_block_websocket_events(
+            &state,
+            &event_tx,
+            &dex_broadcaster,
+            &dex_event_cursor,
+            &block,
+        );
 
         match event_rx.try_recv().expect("block event") {
             lichen_rpc::ws::Event::Block(summary) => {
@@ -36304,6 +37585,91 @@ mod tests {
             event_rx.try_recv(),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty)
         ));
+    }
+
+    #[test]
+    fn canonical_dex_websocket_cursor_emits_once_with_stored_trade_slot() {
+        use lichen_rpc::dex_ws::DexEvent;
+
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let dex = Pubkey([0x44; 32]);
+        state
+            .register_symbol(
+                "DEX",
+                lichen_core::state::SymbolRegistryEntry {
+                    symbol: "DEX".to_string(),
+                    program: dex,
+                    owner: Pubkey([0; 32]),
+                    name: None,
+                    template: None,
+                    metadata: None,
+                    decimals: None,
+                },
+            )
+            .expect("register DEX symbol");
+
+        let mut maker = vec![0u8; 128];
+        maker[32..40].copy_from_slice(&1u64.to_le_bytes());
+        maker[40] = 0;
+        maker[42..50].copy_from_slice(&105_000_000u64.to_le_bytes());
+        maker[50..58].copy_from_slice(&2_000_000_000u64.to_le_bytes());
+        maker[58..66].copy_from_slice(&2_000_000_000u64.to_le_bytes());
+        maker[66] = 2;
+        state
+            .put_contract_storage(&dex, b"dex_order_1", &maker)
+            .expect("store maker order");
+
+        let mut trade = vec![0u8; 80];
+        trade[0..8].copy_from_slice(&1u64.to_le_bytes());
+        trade[8..16].copy_from_slice(&1u64.to_le_bytes());
+        trade[16..24].copy_from_slice(&105_000_000u64.to_le_bytes());
+        trade[24..32].copy_from_slice(&2_000_000_000u64.to_le_bytes());
+        trade[64..72].copy_from_slice(&1u64.to_le_bytes());
+        trade[72..80].copy_from_slice(&77u64.to_le_bytes());
+        state
+            .put_contract_storage(&dex, b"dex_trade_1", &trade)
+            .expect("store trade");
+        state
+            .put_contract_storage(&dex, b"dex_trade_count", &1u64.to_le_bytes())
+            .expect("store trade count");
+
+        let broadcaster = lichen_rpc::dex_ws::DexEventBroadcaster::new(8);
+        let mut receiver = broadcaster.subscribe();
+        let cursor = AtomicU64::new(0);
+        emit_new_canonical_dex_events(&state, &broadcaster, &cursor);
+
+        match receiver.try_recv().expect("trade event") {
+            DexEvent::TradeExecution {
+                trade_id,
+                pair_id,
+                slot,
+                ..
+            } => {
+                assert_eq!(trade_id, 1);
+                assert_eq!(pair_id, 1);
+                assert_eq!(slot, 77);
+            }
+            event => panic!("expected trade event, got {event:?}"),
+        }
+        match receiver.try_recv().expect("orderbook event") {
+            DexEvent::OrderBookUpdate { pair_id, slot, .. } => {
+                assert_eq!(pair_id, 1);
+                assert_eq!(slot, 77);
+            }
+            event => panic!("expected orderbook event, got {event:?}"),
+        }
+        assert!(matches!(
+            receiver.try_recv().expect("order update event"),
+            DexEvent::OrderUpdate { slot: 77, .. }
+        ));
+
+        emit_new_canonical_dex_events(&state, &broadcaster, &cursor);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+        assert_eq!(cursor.load(Ordering::Acquire), 1);
     }
 
     #[test]
@@ -36805,6 +38171,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn network_genesis_waits_for_snapshot_slot_index_replacement() {
+        let dir = tempfile::tempdir().expect("state temp dir");
+        let state = StateStore::open(dir.path()).expect("open state");
+        let block_apply_lock = Arc::new(Mutex::new(()));
+        let snapshot_guard = block_apply_lock.lock().await;
+
+        let receiver_state = state.clone();
+        let receiver_lock = block_apply_lock.clone();
+        let receiver = tokio::spawn(async move {
+            let _genesis_guard = acquire_network_genesis_apply_guard(0, &receiver_lock).await;
+            receiver_state
+                .get_block_by_slot(0)
+                .expect("read genesis after snapshot boundary")
+                .is_some()
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !receiver.is_finished(),
+            "network genesis handling must wait while snapshot activation owns canonical apply"
+        );
+
+        let genesis = Block::genesis(Hash::hash(b"snapshot-slot-zero-replacement"), 1, vec![]);
+        state
+            .put_block_atomic(&genesis, Some(0), Some(0))
+            .expect("publish replacement genesis while snapshot lock is held");
+        drop(snapshot_guard);
+
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), receiver)
+                .await
+                .expect("genesis receiver unblocked")
+                .expect("genesis receiver task"),
+            "queued genesis must observe the snapshot's restored slot 0 and skip reconstruction"
+        );
+    }
+
+    #[tokio::test]
     async fn consensus_reconciliation_loads_state_only_after_block_apply_lock() {
         let dir = tempfile::tempdir().expect("state temp dir");
         let state = StateStore::open(dir.path()).expect("open state");
@@ -37239,7 +38642,9 @@ mod tests {
             1_001,
         );
 
-        state.put_block(&block).expect("put block");
+        state
+            .put_block_atomic(&block, None, None)
+            .expect("put canonical block");
         state.put_block(&child).expect("put canonical child");
         assert!(
             state.get_block_by_slot(0).expect("read slot 0").is_none(),
@@ -37396,7 +38801,9 @@ mod tests {
             1_000,
         );
 
-        state.put_block(&block).expect("put block");
+        state
+            .put_block_atomic(&block, None, None)
+            .expect("put canonical block");
         assert_eq!(
             state.migrate_to_cold(1).expect("migrate genesis to cold"),
             1
@@ -37474,7 +38881,9 @@ mod tests {
                 1_000 + slot,
             );
 
-            state.put_block(&block).expect("put block");
+            state
+                .put_block_atomic(&block, None, None)
+                .expect("put canonical block");
             parent = block;
 
             if slot <= 2 {
@@ -37542,7 +38951,9 @@ mod tests {
                 2_000 + slot,
             );
 
-            state.put_block(&block).expect("put block");
+            state
+                .put_block_atomic(&block, None, None)
+                .expect("put canonical block");
             parent = block;
             if slot <= 3 {
                 let checkpoint_path = temp_dir.path().join(format!("checkpoints/slot-{slot}"));
@@ -37599,7 +39010,9 @@ mod tests {
             1_000,
         );
 
-        state.put_block(&block).expect("put block");
+        state
+            .put_block_atomic(&block, None, None)
+            .expect("put canonical block");
         state
             .set_last_finalized_slot(1)
             .expect("set finalized slot");
@@ -38835,6 +40248,25 @@ mod tests {
         assert!(!verified_checkpoint_snapshot_needed(100, 100, root, root));
         assert!(!should_commit_verified_snapshot(100, 100, root, root));
         assert!(!should_commit_verified_snapshot(101, 100, root, newer_root));
+    }
+
+    #[test]
+    fn warming_new_checkpoint_does_not_restart_stale_ready_snapshot() {
+        let root = Hash([9u8; 32]);
+
+        assert!(verified_checkpoint_snapshot_needed(
+            80_002, 90_000, root, root,
+        ));
+        assert!(
+            !verified_checkpoint_snapshot_needed(80_002, 80_000, Hash::default(), root),
+            "an older ready snapshot must not replace live state while the newer snapshot manifest warms"
+        );
+
+        let actions = sync_catch_up_actions(sync::SyncMode::Warp, false, false);
+        assert!(
+            actions.request_block_ranges,
+            "bounded replay must continue until a useful verified snapshot is active"
+        );
     }
 
     #[test]
@@ -42039,6 +43471,273 @@ mod tests {
     }
 
     #[test]
+    fn hot_repair_manifest_binds_profile_window_and_archive_v2_catalog() {
+        let mut manifest = test_snapshot_manifest_for(23, CHECKPOINT_SNAPSHOT_CATEGORIES);
+        let profile = CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot: 50_001,
+            archive_v2_catalog_root: Some([0xA5; 32]),
+        };
+        manifest.insert(
+            0,
+            checkpoint_snapshot_profile_digest(profile).expect("hot profile marker"),
+        );
+
+        assert_eq!(advertised_snapshot_profile(&manifest).unwrap(), profile);
+        assert_eq!(
+            advertised_snapshot_manifest_categories(&manifest).unwrap(),
+            CHECKPOINT_SNAPSHOT_CATEGORIES
+        );
+        let root = snapshot_manifest_root(&manifest);
+        let mut changed_start = manifest.clone();
+        changed_start[0].entry_count += 1;
+        assert_ne!(snapshot_manifest_root(&changed_start), root);
+        let mut changed_catalog = manifest.clone();
+        changed_catalog[0].sha256[0] ^= 1;
+        assert_ne!(snapshot_manifest_root(&changed_catalog), root);
+
+        validate_snapshot_manifest_matches(&manifest, &manifest[1..])
+            .expect("received category digests match bound hot profile");
+
+        let unbound = CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot: 50_001,
+            archive_v2_catalog_root: None,
+        };
+        let mut unbound_manifest = test_snapshot_manifest_for(24, CHECKPOINT_SNAPSHOT_CATEGORIES);
+        unbound_manifest.insert(
+            0,
+            checkpoint_snapshot_profile_digest(unbound).expect("pre-activation marker"),
+        );
+        assert_eq!(unbound_manifest[0].sha256, [0u8; 32]);
+        assert_eq!(
+            advertised_snapshot_profile(&unbound_manifest).unwrap(),
+            unbound
+        );
+    }
+
+    #[test]
+    fn hot_repair_profile_rejects_short_or_malformed_windows() {
+        let short = CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot: 2,
+            archive_v2_catalog_root: Some([1u8; 32]),
+        };
+        assert!(validate_checkpoint_snapshot_profile(50_000, short)
+            .expect_err("49,999 retained slots must fail")
+            .contains("below required"));
+
+        let beyond_tip = CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot: 50_001,
+            archive_v2_catalog_root: Some([1u8; 32]),
+        };
+        assert!(validate_checkpoint_snapshot_profile(50_000, beyond_tip)
+            .expect_err("history start beyond tip must fail")
+            .contains("exceeds checkpoint slot"));
+
+        let zero_catalog = CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot: 0,
+            archive_v2_catalog_root: Some([0u8; 32]),
+        };
+        assert!(validate_checkpoint_snapshot_profile(49_999, zero_catalog)
+            .expect_err("zero catalog must fail")
+            .contains("zero Archive V2 handoff root"));
+    }
+
+    #[test]
+    fn fresh_join_accepts_only_exact_deferred_archive_v2_checkpoint_binding() {
+        let state_dir = tempfile::tempdir().expect("fresh state");
+        let state = StateStore::open(state_dir.path()).expect("open fresh state");
+        let genesis = Block::genesis(Hash::hash(b"deferred-checkpoint-state"), 1, Vec::new());
+        let identity = lichen_core::archive_v2::ArchiveV2Identity {
+            network_id: "deferred-checkpoint-testnet".to_string(),
+            genesis_hash: genesis.hash(),
+        };
+        let (_, manifest) = ArchiveV2SegmentCodec::encode(
+            identity.clone(),
+            None,
+            Hash::default(),
+            &ArchiveV2SegmentContents::from_blocks(vec![genesis.clone()]),
+            &ArchiveV2CodecConfig::default(),
+        )
+        .unwrap();
+        let first_object_hash = manifest.segment_object_hash;
+        let first_block_hash = manifest.last_block_hash;
+        let mut catalog = ArchiveV2Catalog::empty(identity).unwrap();
+        catalog.append(manifest).unwrap();
+        let catalog_root = catalog.checkpoint_handoff_root(1).unwrap();
+        let original_catalog_root = catalog.catalog_root;
+        state.attach_archive_v2_deferred_checkpoint_catalog(catalog.clone());
+        assert_eq!(
+            state.archive_v2_deferred_genesis_hash(),
+            Some(genesis.hash())
+        );
+
+        let matching = CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot: 1,
+            archive_v2_catalog_root: Some(catalog_root.0),
+        };
+        validate_hot_repair_checkpoint_target(&state, 50_000, matching)
+            .expect("exact configured deferred catalog authorizes recovery checkpoint");
+        assert!(!state.has_archive_v2_reader());
+        assert!(state.get_block_by_slot(0).unwrap().is_none());
+
+        let second = Block::new_with_timestamp(
+            1,
+            first_block_hash,
+            Hash::hash(b"deferred-checkpoint-state-1"),
+            [0xA4; 32],
+            Vec::new(),
+            2,
+        );
+        let (_, second_manifest) = ArchiveV2SegmentCodec::encode(
+            catalog.identity.clone(),
+            Some(first_object_hash),
+            first_block_hash,
+            &ArchiveV2SegmentContents::from_blocks(vec![second]),
+            &ArchiveV2CodecConfig::default(),
+        )
+        .unwrap();
+        catalog.append(second_manifest).unwrap();
+        assert_ne!(catalog.catalog_root, original_catalog_root);
+        assert_eq!(catalog.checkpoint_handoff_root(1).unwrap(), catalog_root);
+        state.attach_archive_v2_deferred_checkpoint_catalog(catalog);
+        validate_hot_repair_checkpoint_target(&state, 50_000, matching)
+            .expect("later append-only catalog publication preserves checkpoint handoff");
+
+        let wrong_root = CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot: 1,
+            archive_v2_catalog_root: Some([0xA7; 32]),
+        };
+        assert!(
+            validate_hot_repair_checkpoint_target(&state, 50_000, wrong_root)
+                .expect_err("wrong deferred catalog root must fail")
+                .contains("handoff mismatch")
+        );
+
+        let uncovered_handoff = CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot: 3,
+            archive_v2_catalog_root: Some(catalog_root.0),
+        };
+        assert!(
+            validate_hot_repair_checkpoint_target(&state, 50_002, uncovered_handoff)
+                .expect_err("deferred catalog gap must fail")
+                .contains("does not cover genesis")
+        );
+    }
+
+    #[test]
+    fn fresh_archive_v2_join_caches_only_catalog_bound_genesis_mossstake_mode() {
+        let state_dir = tempfile::tempdir().expect("fresh state");
+        let state = StateStore::open(state_dir.path()).expect("open fresh state");
+        let genesis = Block::genesis(Hash::hash(b"deferred-genesis-state"), 1, Vec::new());
+        let identity = lichen_core::archive_v2::ArchiveV2Identity {
+            network_id: "deferred-genesis-testnet".to_string(),
+            genesis_hash: genesis.hash(),
+        };
+        let (_, manifest) = ArchiveV2SegmentCodec::encode(
+            identity.clone(),
+            None,
+            Hash::default(),
+            &ArchiveV2SegmentContents::from_blocks(vec![genesis.clone()]),
+            &ArchiveV2CodecConfig::default(),
+        )
+        .expect("encode genesis segment");
+        let mut catalog = ArchiveV2Catalog::empty(identity).expect("empty catalog");
+        catalog.append(manifest).expect("append genesis segment");
+        state.attach_archive_v2_deferred_checkpoint_catalog(catalog);
+
+        let wrong_genesis = Block::genesis(Hash::hash(b"wrong-genesis-state"), 1, Vec::new());
+        assert!(
+            cache_deferred_archive_v2_genesis_mossstake_mode(&state, &wrong_genesis)
+                .expect_err("wrong genesis must fail")
+                .contains("does not match deferred catalog identity")
+        );
+        assert_eq!(state.cached_genesis_mossstake_slot_only(), None);
+
+        assert!(
+            cache_deferred_archive_v2_genesis_mossstake_mode(&state, &genesis)
+                .expect("catalog-bound genesis must cache mode")
+        );
+        assert_eq!(state.cached_genesis_mossstake_slot_only(), Some(false));
+
+        let non_genesis = Block::new_with_timestamp(
+            1,
+            genesis.hash(),
+            Hash::hash(b"non-genesis-state"),
+            [0x42; 32],
+            Vec::new(),
+            2,
+        );
+        assert!(
+            !cache_deferred_archive_v2_genesis_mossstake_mode(&state, &non_genesis)
+                .expect("non-genesis block must be ignored")
+        );
+    }
+
+    #[test]
+    fn preactivation_hot_repair_requires_exact_canonical_overlap() {
+        let local_dir = tempfile::tempdir().expect("local state");
+        let matching_dir = tempfile::tempdir().expect("matching checkpoint");
+        let divergent_dir = tempfile::tempdir().expect("divergent checkpoint");
+        let local = StateStore::open(local_dir.path()).expect("open local");
+        let matching = StateStore::open(matching_dir.path()).expect("open matching");
+        let divergent = StateStore::open(divergent_dir.path()).expect("open divergent");
+        let producer = Keypair::generate().pubkey();
+        let genesis = Block::genesis(Hash::hash(b"preactivation-overlap-genesis"), 1, vec![]);
+        let one = Block::new_with_timestamp(
+            1,
+            genesis.hash(),
+            Hash::hash(b"preactivation-overlap-one"),
+            producer.0,
+            vec![],
+            2,
+        );
+        let two = Block::new_with_timestamp(
+            2,
+            one.hash(),
+            Hash::hash(b"preactivation-overlap-two"),
+            producer.0,
+            vec![],
+            3,
+        );
+        let divergent_two = Block::new_with_timestamp(
+            2,
+            one.hash(),
+            Hash::hash(b"preactivation-overlap-divergent"),
+            producer.0,
+            vec![],
+            3,
+        );
+        for state in [&local, &matching, &divergent] {
+            state
+                .put_block_atomic(&genesis, None, None)
+                .expect("put genesis");
+            state
+                .put_block_atomic(&one, None, None)
+                .expect("put block one");
+        }
+        local
+            .put_block_atomic(&two, None, None)
+            .expect("put local block two");
+        matching
+            .put_block_atomic(&two, None, None)
+            .expect("put matching block two");
+        divergent
+            .put_block_atomic(&divergent_two, None, None)
+            .expect("put divergent block two");
+        let profile = CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot: 1,
+            archive_v2_catalog_root: None,
+        };
+
+        validate_preactivation_hot_repair_overlap(&local, &matching, 2, profile)
+            .expect("matching canonical overlap");
+        assert!(
+            validate_preactivation_hot_repair_overlap(&local, &divergent, 2, profile)
+                .expect_err("divergent overlap must fail")
+                .contains("canonical overlap mismatch at slot 2")
+        );
+    }
+
+    #[test]
     fn checkpoint_snapshot_categories_cover_full_state_and_public_history() {
         for category in [
             "blocks",
@@ -42765,6 +44464,7 @@ mod tests {
             state_root,
             created_at: 100,
             total_accounts: 1,
+            snapshot_profile: lichen_core::CheckpointSnapshotProfile::default(),
         };
         std::fs::write(
             checkpoint_path.join("checkpoint_meta.json"),
@@ -42937,6 +44637,7 @@ mod tests {
                 state_root: root_b,
                 created_at: 101,
                 total_accounts: 1,
+                snapshot_profile: lichen_core::CheckpointSnapshotProfile::default(),
             })
             .expect("serialize checkpoint meta"),
         )
@@ -43178,8 +44879,12 @@ mod tests {
             "test setup must include source-side volatile Merkle cache keys"
         );
 
-        let expected_manifest =
-            compute_checkpoint_snapshot_manifest(&source, 1000).expect("source manifest");
+        let expected_manifest = compute_checkpoint_snapshot_manifest(
+            &source,
+            1000,
+            CheckpointSnapshotProfile::FullArchiveV1,
+        )
+        .expect("source manifest");
         for category in CHECKPOINT_SNAPSHOT_CATEGORIES {
             let entries = export_roundtrip_snapshot_entries(&source, category, 1000)
                 .unwrap_or_else(|err| panic!("export {category}: {err}"));
@@ -43208,10 +44913,124 @@ mod tests {
             None,
             "stake and mossstake imports clear derived composite root caches"
         );
-        let actual_manifest =
-            compute_checkpoint_snapshot_manifest(&target, 1000).expect("target manifest");
+        let actual_manifest = compute_checkpoint_snapshot_manifest(
+            &target,
+            1000,
+            CheckpointSnapshotProfile::FullArchiveV1,
+        )
+        .expect("target manifest");
         validate_snapshot_manifest_matches(&expected_manifest, &actual_manifest)
             .expect("checkpoint manifest should ignore volatile cache entries");
+    }
+
+    #[test]
+    fn hot_repair_manifest_matches_exact_bounded_serving_bytes() {
+        let source_dir = tempfile::tempdir().expect("create source dir");
+        let source = StateStore::open(source_dir.path()).expect("open source state");
+        let owner = Keypair::generate().pubkey();
+        source
+            .put_account(&owner, &Account::new(42, owner))
+            .expect("put current account state");
+        source
+            .save_validator_set(&ValidatorSet::new())
+            .expect("save validator set");
+        source
+            .put_stake_pool(&StakePool::new())
+            .expect("save stake pool");
+        source
+            .put_mossstake_pool(&MossStakePool::new())
+            .expect("save MossStake pool");
+
+        let genesis = Block::genesis(Hash::hash(b"bounded-checkpoint-genesis"), 1, vec![]);
+        let block_1 = Block::new_with_timestamp(
+            1,
+            genesis.hash(),
+            Hash::hash(b"bounded-checkpoint-state-1"),
+            [0x61; 32],
+            Vec::new(),
+            2,
+        );
+        let block_2 = Block::new_with_timestamp(
+            2,
+            block_1.hash(),
+            Hash::hash(b"bounded-checkpoint-state-2"),
+            [0x62; 32],
+            Vec::new(),
+            3,
+        );
+        for block in [&genesis, &block_1, &block_2] {
+            source
+                .put_block_atomic(block, Some(block.header.slot), Some(block.header.slot))
+                .expect("persist checkpoint source block");
+        }
+
+        let profile = CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot: 1,
+            archive_v2_catalog_root: Some([0x63; 32]),
+        };
+        let expected = compute_checkpoint_snapshot_manifest(&source, 1, profile)
+            .expect("compute bounded manifest");
+        assert_eq!(
+            expected
+                .iter()
+                .find(|digest| digest.category == "blocks")
+                .expect("blocks digest")
+                .entry_count,
+            2
+        );
+        assert_eq!(
+            expected
+                .iter()
+                .find(|digest| digest.category == "slots")
+                .expect("slots digest")
+                .entry_count,
+            2
+        );
+
+        let mut received = HashMap::<String, SnapshotCategoryDigestAccumulator>::new();
+        for category in CHECKPOINT_SNAPSHOT_CATEGORIES {
+            let accumulator = received
+                .entry((*category).to_string())
+                .or_insert_with(|| SnapshotCategoryDigestAccumulator::new(category));
+            if matches!(*category, "validator_set" | "stake_pool" | "mossstake_pool") {
+                let entries = export_roundtrip_snapshot_entries(&source, category, 1)
+                    .unwrap_or_else(|err| panic!("export {category}: {err}"));
+                accumulator.update_entries(&entries);
+                continue;
+            }
+
+            let mut cursor = None;
+            loop {
+                let page = source
+                    .export_checkpoint_snapshot_category_cursor_untracked(
+                        category,
+                        cursor.as_deref(),
+                        1,
+                        2,
+                        profile,
+                    )
+                    .unwrap_or_else(|err| panic!("serve {category}: {err}"));
+                accumulator.update_entries(&page.entries);
+                if !page.has_more {
+                    break;
+                }
+                cursor = page.next_cursor;
+                assert!(cursor.is_some(), "{category} must advance serving pages");
+            }
+        }
+        let actual =
+            received_snapshot_manifest_from_accumulators(&received, CHECKPOINT_SNAPSHOT_CATEGORIES)
+                .expect("compute received manifest");
+        validate_snapshot_manifest_matches(&expected, &actual)
+            .expect("manifest hashing and serving must select identical bytes");
+
+        let accounts = source
+            .export_checkpoint_snapshot_category_cursor_untracked("accounts", None, 10, 2, profile)
+            .expect("export current account state");
+        assert!(
+            accounts.entries.iter().any(|(key, _)| key == &owner.0),
+            "current state must never be pruned by the history profile"
+        );
     }
 
     #[test]
@@ -43241,8 +45060,12 @@ mod tests {
             .put_metadata(MOSSSTAKE_SLOT_ONLY_METADATA_KEY, b"1")
             .expect("put source slot-only marker after legacy pool");
 
-        let expected_manifest =
-            compute_checkpoint_snapshot_manifest(&source, 1000).expect("source manifest");
+        let expected_manifest = compute_checkpoint_snapshot_manifest(
+            &source,
+            1000,
+            CheckpointSnapshotProfile::FullArchiveV1,
+        )
+        .expect("source manifest");
         let mut received_digests: HashMap<String, SnapshotCategoryDigestAccumulator> =
             HashMap::new();
 
@@ -43289,8 +45112,12 @@ mod tests {
         validate_snapshot_manifest_matches(&expected_manifest, &received_manifest)
             .expect("received snapshot bytes must match the advertised manifest");
 
-        let post_import_manifest =
-            compute_checkpoint_snapshot_manifest(&target, 1000).expect("target manifest");
+        let post_import_manifest = compute_checkpoint_snapshot_manifest(
+            &target,
+            1000,
+            CheckpointSnapshotProfile::FullArchiveV1,
+        )
+        .expect("target manifest");
         let expected_mossstake = expected_manifest
             .iter()
             .find(|digest| digest.category == "mossstake_pool")
@@ -43655,8 +45482,14 @@ mod tests {
             .expect("put old account");
         let rollback_root = live.compute_state_root_cold_start();
 
-        prepare_snapshot_live_rollback(&live, &live_path, 999, Hash([9u8; 32]))
-            .expect("prepare rollback marker");
+        prepare_snapshot_live_rollback(
+            &live,
+            &live_path,
+            999,
+            Hash([9u8; 32]),
+            CheckpointSnapshotProfile::FullArchiveV1,
+        )
+        .expect("prepare rollback marker");
         live.clear_snapshot_category("accounts")
             .expect("simulate live clear");
         live.put_account(&stale_account, &Account::new(88, stale_account))
@@ -43679,6 +45512,223 @@ mod tests {
     }
 
     #[test]
+    fn canonical_snapshot_apply_preserves_destination_cold_migration_cursor() {
+        let source_dir = tempfile::tempdir().expect("create snapshot source");
+        let source = StateStore::open(source_dir.path()).expect("open snapshot source");
+        source
+            .put_metadata("portable-snapshot-stat", b"source")
+            .expect("write portable source stat");
+
+        let target_dir = tempfile::tempdir().expect("create snapshot target");
+        let target = StateStore::open(target_dir.path()).expect("open snapshot target");
+        target
+            .put_metadata("cold_migration_cursor_v1", b"destination-layout")
+            .expect("write destination-local cursor");
+        target
+            .put_metadata(
+                "archive_v2_fresh_sync_admission_v1",
+                b"destination-admission",
+            )
+            .expect("write destination Archive V2 admission");
+        target
+            .put_metadata("genesis_sync_incomplete", b"1")
+            .expect("write destination sync status");
+        target
+            .put_metadata("join_complete", b"destination-join")
+            .expect("write destination join status");
+        target
+            .put_metadata("stale-portable-stat", b"stale")
+            .expect("write stale portable stat");
+
+        commit_snapshot_categories_from_store(
+            &source,
+            &target,
+            &["stats"],
+            SnapshotCategoryExportMode::Canonical,
+        )
+        .expect("apply canonical stats snapshot");
+
+        assert_eq!(
+            target
+                .get_metadata("cold_migration_cursor_v1")
+                .expect("read destination-local cursor"),
+            Some(b"destination-layout".to_vec())
+        );
+        assert_eq!(
+            target
+                .get_metadata("archive_v2_fresh_sync_admission_v1")
+                .expect("read destination Archive V2 admission"),
+            Some(b"destination-admission".to_vec())
+        );
+        assert_eq!(
+            target
+                .get_metadata("genesis_sync_incomplete")
+                .expect("read destination sync status"),
+            Some(b"1".to_vec())
+        );
+        assert_eq!(
+            target
+                .get_metadata("join_complete")
+                .expect("read destination join status"),
+            Some(b"destination-join".to_vec())
+        );
+        assert_eq!(
+            target
+                .get_metadata("portable-snapshot-stat")
+                .expect("read portable source stat"),
+            Some(b"source".to_vec())
+        );
+        assert_eq!(
+            target
+                .get_metadata("stale-portable-stat")
+                .expect("read stale target stat"),
+            None
+        );
+    }
+
+    #[test]
+    fn sequential_canonical_snapshot_commit_replaces_prior_sparse_state() {
+        let source_one_dir = tempfile::tempdir().expect("create first source dir");
+        let source_one = StateStore::open(source_one_dir.path()).expect("open first source");
+        let source_two_dir = tempfile::tempdir().expect("create second source dir");
+        let source_two = StateStore::open(source_two_dir.path()).expect("open second source");
+        let target_dir = tempfile::tempdir().expect("create target dir");
+        let target = StateStore::open(target_dir.path()).expect("open target");
+
+        let validator = Pubkey([0xA1; 32]);
+        let retained_account = Pubkey([0xB2; 32]);
+        let removed_account = Pubkey([0xC3; 32]);
+        let stale_target_account = Pubkey([0xD4; 32]);
+        let program = Pubkey([0xE5; 32]);
+
+        for (source, balance, contract_value, stake) in [
+            (
+                &source_one,
+                100u64,
+                b"first".as_slice(),
+                MIN_VALIDATOR_STAKE,
+            ),
+            (
+                &source_two,
+                200u64,
+                b"second".as_slice(),
+                MIN_VALIDATOR_STAKE.saturating_add(1),
+            ),
+        ] {
+            source
+                .put_account(&retained_account, &Account::new(balance, retained_account))
+                .expect("put retained source account");
+            source
+                .put_contract_storage(&program, b"retained-key", contract_value)
+                .expect("put retained source contract state");
+
+            let mut validators = ValidatorSet::new();
+            validators.add_validator(test_validator_info(validator));
+            source
+                .save_validator_set(&validators)
+                .expect("save source validator set");
+
+            let mut pool = StakePool::new();
+            pool.stake(validator, stake, 0)
+                .expect("stake source validator");
+            source
+                .put_stake_pool(&pool)
+                .expect("save source stake pool");
+            source
+                .put_mossstake_pool(&MossStakePool::new())
+                .expect("save source MossStake pool");
+        }
+
+        source_one
+            .put_account(&removed_account, &Account::new(300, removed_account))
+            .expect("put first-source-only account");
+        source_one
+            .put_contract_storage(&program, b"removed-key", b"remove-me")
+            .expect("put first-source-only contract state");
+        source_one
+            .rebuild_sparse_state_commitment(true)
+            .expect("activate first source sparse commitment");
+        source_two
+            .rebuild_sparse_state_commitment(true)
+            .expect("activate second source sparse commitment");
+
+        target
+            .put_account(
+                &stale_target_account,
+                &Account::new(400, stale_target_account),
+            )
+            .expect("put stale target account");
+        target
+            .put_contract_storage(&program, b"stale-key", b"stale")
+            .expect("put stale target contract state");
+        target
+            .put_metadata(
+                "archive_v2_fresh_sync_admission_v1",
+                b"destination-admission",
+            )
+            .expect("put destination-local admission");
+        target
+            .rebuild_sparse_state_commitment(true)
+            .expect("activate target sparse commitment");
+
+        for (index, source) in [&source_one, &source_two].into_iter().enumerate() {
+            commit_snapshot_categories_from_store(
+                source,
+                &target,
+                CHECKPOINT_SNAPSHOT_CATEGORIES,
+                SnapshotCategoryExportMode::Canonical,
+            )
+            .unwrap_or_else(|err| panic!("commit canonical snapshot {}: {err}", index + 1));
+            target
+                .reconcile_account_count()
+                .expect("reconcile target accounts");
+            target
+                .reconcile_active_account_count()
+                .expect("reconcile target active accounts");
+            target
+                .reconcile_program_count()
+                .expect("reconcile target programs");
+            target
+                .reconcile_validator_count()
+                .expect("reconcile target validators");
+            target.invalidate_merkle_cache();
+            let rebuilt = target
+                .rebuild_sparse_state_commitment(false)
+                .expect("rebuild target sparse commitment");
+            assert_eq!(
+                rebuilt.current_state_root,
+                source.compute_state_root_cold_start(),
+                "canonical snapshot commit {} must exactly replace the prior sparse state",
+                index + 1
+            );
+        }
+
+        assert!(target
+            .get_account(&removed_account)
+            .expect("read removed account")
+            .is_none());
+        assert!(target
+            .get_account(&stale_target_account)
+            .expect("read stale target account")
+            .is_none());
+        assert!(target
+            .get_contract_storage(&program, b"removed-key")
+            .expect("read removed contract key")
+            .is_none());
+        assert!(target
+            .get_contract_storage(&program, b"stale-key")
+            .expect("read stale target contract key")
+            .is_none());
+        assert_eq!(
+            target
+                .get_metadata("archive_v2_fresh_sync_admission_v1")
+                .expect("read destination-local admission")
+                .as_deref(),
+            Some(b"destination-admission".as_slice())
+        );
+    }
+
+    #[test]
     fn snapshot_live_rollback_rejects_root_only_completion_with_missing_history() {
         let live_dir = tempfile::tempdir().expect("create live dir");
         let live_path = live_dir.path().to_string_lossy().to_string();
@@ -43688,8 +45738,14 @@ mod tests {
             .expect("put canonical genesis block");
         let rollback_root = live.compute_state_root_cold_start();
 
-        prepare_snapshot_live_rollback(&live, &live_path, 0, rollback_root)
-            .expect("prepare rollback marker");
+        prepare_snapshot_live_rollback(
+            &live,
+            &live_path,
+            0,
+            rollback_root,
+            CheckpointSnapshotProfile::FullArchiveV1,
+        )
+        .expect("prepare rollback marker");
         live.clear_snapshot_category("blocks")
             .expect("simulate partial history clear");
         assert_eq!(live.get_last_slot().expect("read retained slot"), 0);
@@ -43725,8 +45781,14 @@ mod tests {
             .expect("attach cold archive");
         let rollback_root = live.compute_state_root_cold_start();
 
-        prepare_snapshot_live_rollback(&live, &live_path, 1, rollback_root)
-            .expect("prepare rollback marker");
+        prepare_snapshot_live_rollback(
+            &live,
+            &live_path,
+            1,
+            rollback_root,
+            CheckpointSnapshotProfile::FullArchiveV1,
+        )
+        .expect("prepare rollback marker");
         let rollback_dir = snapshot_live_rollback_checkpoint_dir(&live_path);
         assert!(rollback_dir.is_dir());
         assert!(
@@ -43743,8 +45805,14 @@ mod tests {
         let live_path = live_dir.path().to_string_lossy().to_string();
         let live = StateStore::open(live_dir.path()).expect("open live state");
         let rollback_root = live.compute_state_root_cold_start();
-        prepare_snapshot_live_rollback(&live, &live_path, 1, rollback_root)
-            .expect("prepare rollback marker");
+        prepare_snapshot_live_rollback(
+            &live,
+            &live_path,
+            1,
+            rollback_root,
+            CheckpointSnapshotProfile::FullArchiveV1,
+        )
+        .expect("prepare rollback marker");
 
         let rollback_dir = snapshot_live_rollback_checkpoint_dir(&live_path);
         fs::remove_dir_all(&rollback_dir).expect("remove checkpoint fixture");
@@ -43794,8 +45862,14 @@ mod tests {
         );
 
         let rollback_root = live.compute_state_root_cold_start();
-        prepare_snapshot_live_rollback(&live, &live_path, 999, Hash([9u8; 32]))
-            .expect("prepare rollback marker");
+        prepare_snapshot_live_rollback(
+            &live,
+            &live_path,
+            999,
+            Hash([9u8; 32]),
+            CheckpointSnapshotProfile::FullArchiveV1,
+        )
+        .expect("prepare rollback marker");
         live.clear_snapshot_category("accounts")
             .expect("simulate live clear");
         live.put_account(&stale_account, &Account::new(88, stale_account))
@@ -45164,6 +47238,17 @@ mod tests {
             .expect("BFT init marker");
         let section = &source[start..start + end];
 
+        let deferred_activation = section
+            .find("should_activate_deferred_archive_v2_before_genesis_gate(")
+            .expect("deferred Archive V2 pre-genesis activation");
+        let genesis_gate = section
+            .find("pre_consensus_genesis_is_ready(")
+            .expect("fresh-join genesis gate");
+        assert!(
+            deferred_activation < genesis_gate,
+            "a bounded fresh checkpoint must activate its exact deferred Archive V2 catalog before probing public genesis"
+        );
+
         for (marker, sleep_marker) in [
             (
                 "Waiting for genesis sync from network",
@@ -45215,6 +47300,22 @@ mod tests {
             !peer_wait_window.contains("drain_and_log_pre_consensus_bft_queues("),
             "peer tip observation wait must preserve queued current/future BFT messages for startup replay"
         );
+    }
+
+    #[test]
+    fn deferred_archive_v2_pre_genesis_activation_requires_applied_bounded_state() {
+        assert!(!should_activate_deferred_archive_v2_before_genesis_gate(
+            false, 100_000, false
+        ));
+        assert!(!should_activate_deferred_archive_v2_before_genesis_gate(
+            true, 0, false
+        ));
+        assert!(!should_activate_deferred_archive_v2_before_genesis_gate(
+            true, 500, true
+        ));
+        assert!(should_activate_deferred_archive_v2_before_genesis_gate(
+            true, 100_000, false
+        ));
     }
 
     #[test]
@@ -45944,7 +48045,44 @@ mod tests {
     fn watchdog_timeout_reasonable() {
         assert!(DEFAULT_WATCHDOG_TIMEOUT_SECS >= 30);
         assert!(DEFAULT_WATCHDOG_TIMEOUT_SECS <= 600);
+        assert!(MAX_ACTIVE_CHECKPOINT_WATCHDOG_SECS > DEFAULT_WATCHDOG_TIMEOUT_SECS);
+        assert!(MAX_ACTIVE_CHECKPOINT_WATCHDOG_SECS <= 30 * 60);
         assert_eq!(WATCHDOG_STALE_CONFIRMATION_CHECKS, 6);
+    }
+
+    #[test]
+    fn watchdog_checkpoint_grace_is_bounded_and_does_not_weaken_normal_stalls() {
+        let timeout = Duration::from_secs(DEFAULT_WATCHDOG_TIMEOUT_SECS);
+        let ordinary_stall = Duration::from_secs(DEFAULT_WATCHDOG_TIMEOUT_SECS + 30);
+
+        assert!(watchdog_stall_is_actionable(
+            ordinary_stall,
+            timeout,
+            40_000,
+            40_000,
+            false,
+        ));
+        assert!(!watchdog_stall_is_actionable(
+            ordinary_stall,
+            timeout,
+            40_000,
+            40_000,
+            true,
+        ));
+        assert!(watchdog_stall_is_actionable(
+            Duration::from_secs(MAX_ACTIVE_CHECKPOINT_WATCHDOG_SECS + 1),
+            timeout,
+            40_000,
+            40_000,
+            true,
+        ));
+        assert!(!watchdog_stall_is_actionable(
+            ordinary_stall,
+            timeout,
+            40_001,
+            40_000,
+            false,
+        ));
     }
 
     #[test]
@@ -45976,6 +48114,59 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_floor_tracks_profile_and_selected_network_floor() {
+        let hot_profile = CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot: 1,
+            archive_v2_catalog_root: Some([7u8; 32]),
+        };
+        assert_eq!(
+            checkpoint_minimum_available_bytes(
+                CheckpointSnapshotProfile::FullArchiveV1,
+                TESTNET_MIN_RUNTIME_AVAILABLE_BYTES,
+            ),
+            MIN_CHECKPOINT_AVAILABLE_BYTES
+        );
+        assert_eq!(
+            checkpoint_minimum_available_bytes(hot_profile, TESTNET_MIN_RUNTIME_AVAILABLE_BYTES,),
+            TESTNET_MIN_RUNTIME_AVAILABLE_BYTES
+        );
+        assert_eq!(
+            checkpoint_minimum_available_bytes(hot_profile, DEFAULT_MIN_RUNTIME_AVAILABLE_BYTES,),
+            DEFAULT_MIN_RUNTIME_AVAILABLE_BYTES,
+            "mainnet hot checkpoints must retain the mainnet runtime reserve"
+        );
+        assert_eq!(
+            hot_repair_checkpoint_peak_reserve(1),
+            ARCHIVE_V2_DEFAULT_CHECKPOINT_PEAK_BYTES,
+            "a cold-source handoff must retain the adaptive checkpoint envelope"
+        );
+        assert_eq!(
+            hot_repair_checkpoint_peak_reserve(ARCHIVE_V2_DEFAULT_CHECKPOINT_PEAK_BYTES + 1),
+            ARCHIVE_V2_DEFAULT_CHECKPOINT_PEAK_BYTES + 1,
+            "a larger measured physical rewrite must remain authoritative"
+        );
+    }
+
+    #[test]
+    fn hot_repair_checkpoint_cadence_bounds_physical_compaction_frequency() {
+        let hot_profile = CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot: 1,
+            archive_v2_catalog_root: Some([7u8; 32]),
+        };
+        assert!(checkpoint_profile_is_due(
+            HOT_REPAIR_CHECKPOINT_INTERVAL_SLOTS,
+            hot_profile,
+        ));
+        assert!(!checkpoint_profile_is_due(1_000, hot_profile));
+        assert!(checkpoint_profile_is_due(
+            1_000,
+            CheckpointSnapshotProfile::FullArchiveV1,
+        ));
+        assert!(HOT_REPAIR_CHECKPOINT_INTERVAL_SLOTS
+            .is_multiple_of(sync::SyncManager::checkpoint_interval()));
+    }
+
+    #[test]
     fn checkpoint_reclaim_obeys_disk_pressure_policy() {
         let temp = tempfile::tempdir().expect("create checkpoint reclaim test dir");
         let data_dir = temp.path().join("state");
@@ -45986,6 +48177,7 @@ mod tests {
             state_root: [1u8; 32],
             created_at: 1,
             total_accounts: 0,
+            snapshot_profile: lichen_core::CheckpointSnapshotProfile::default(),
         };
         fs::write(
             checkpoint_dir.join("checkpoint_meta.json"),
@@ -47077,7 +49269,7 @@ mod tests {
             1,
             Vec::new(),
         )];
-        for slot in 1..=10 {
+        for slot in 1..=12 {
             let parent = blocks.last().unwrap().hash();
             blocks.push(Block::new_with_timestamp(
                 slot,
@@ -47096,7 +49288,7 @@ mod tests {
             identity.clone(),
             None,
             Hash::default(),
-            &ArchiveV2SegmentContents::from_blocks(blocks[..10].to_vec()),
+            &ArchiveV2SegmentContents::from_blocks(blocks[..9].to_vec()),
             &ArchiveV2CodecConfig::default(),
         )
         .unwrap();
@@ -47129,13 +49321,21 @@ mod tests {
         state
             .put_block_atomic(&blocks[10], Some(10), Some(10))
             .unwrap();
+        state
+            .put_block_atomic(&blocks[11], Some(11), Some(11))
+            .unwrap();
+        state
+            .put_block_atomic(&blocks[12], Some(12), Some(12))
+            .unwrap();
         assert!(state.get_block_by_slot(0).unwrap().is_none());
+        assert!(state.get_hot_block_by_slot(8).unwrap().is_none());
+        assert_eq!(blocks[9].header.parent_hash, blocks[8].hash());
 
         let config = RuntimeArchiveV2Config {
             role_config: ArchiveV2RoleConfig {
                 version: ARCHIVE_V2_ROLE_CONFIG_VERSION,
                 role: ArchiveV2Role::Consensus,
-                recent_history_slots: 1,
+                recent_history_slots: 2,
                 verified_cache_quota_bytes: 0,
                 advertise_deep_history: false,
             },
@@ -47159,7 +49359,116 @@ mod tests {
         )
         .unwrap();
 
-        let capability = activate_runtime_archive_v2(
+        let conflicting_data = tempfile::tempdir().expect("create conflicting bounded state");
+        fs::write(conflicting_data.path().join("genesis.json"), b"recovery").unwrap();
+        let conflicting_state = StateStore::open(conflicting_data.path()).unwrap();
+        let conflicting_nine = Block::new_with_timestamp(
+            9,
+            Hash::hash(b"wrong-archive-v2-handoff-parent"),
+            Hash::hash(b"marker-activation-conflicting-state-9"),
+            [0x42; 32],
+            Vec::new(),
+            10,
+        );
+        let conflicting_ten = Block::new_with_timestamp(
+            10,
+            conflicting_nine.hash(),
+            Hash::hash(b"marker-activation-conflicting-state-10"),
+            [0x42; 32],
+            Vec::new(),
+            11,
+        );
+        conflicting_state
+            .put_block_atomic(&conflicting_nine, Some(9), Some(9))
+            .unwrap();
+        conflicting_state
+            .put_block_atomic(&conflicting_ten, Some(10), Some(10))
+            .unwrap();
+        assert!(activate_runtime_archive_v2(
+            &conflicting_state,
+            config.clone(),
+            "marker-activation-testnet",
+            conflicting_data.path(),
+            true,
+        )
+        .expect_err("a catalog-divergent hot handoff must fail closed")
+        .contains("role handoff parent"));
+        assert!(!conflicting_state.has_archive_v2_reader());
+
+        let incomplete_data = tempfile::tempdir().expect("create incomplete bounded state");
+        fs::write(incomplete_data.path().join("genesis.json"), b"recovery").unwrap();
+        let incomplete_state = StateStore::open(incomplete_data.path()).unwrap();
+        incomplete_state
+            .put_block_atomic(&blocks[9], Some(9), Some(9))
+            .unwrap();
+        incomplete_state
+            .put_block_atomic(&blocks[11], Some(11), Some(11))
+            .unwrap();
+        incomplete_state
+            .put_block_atomic(&blocks[12], Some(12), Some(12))
+            .unwrap();
+        assert!(activate_runtime_archive_v2(
+            &incomplete_state,
+            config.clone(),
+            "marker-activation-testnet",
+            incomplete_data.path(),
+            true,
+        )
+        .expect_err("an incomplete unpublished hot tail must fail closed")
+        .contains("canonical slot 10 is missing"));
+        assert!(!incomplete_state.has_archive_v2_reader());
+
+        let disconnected_data = tempfile::tempdir().expect("create disconnected bounded state");
+        fs::write(disconnected_data.path().join("genesis.json"), b"recovery").unwrap();
+        let disconnected_state = StateStore::open(disconnected_data.path()).unwrap();
+        let disconnected_ten = Block::new_with_timestamp(
+            10,
+            Hash::hash(b"wrong-unpublished-tail-parent"),
+            Hash::hash(b"marker-activation-disconnected-state-10"),
+            [0x42; 32],
+            Vec::new(),
+            11,
+        );
+        let disconnected_eleven = Block::new_with_timestamp(
+            11,
+            disconnected_ten.hash(),
+            Hash::hash(b"marker-activation-disconnected-state-11"),
+            [0x42; 32],
+            Vec::new(),
+            12,
+        );
+        let disconnected_twelve = Block::new_with_timestamp(
+            12,
+            disconnected_eleven.hash(),
+            Hash::hash(b"marker-activation-disconnected-state-12"),
+            [0x42; 32],
+            Vec::new(),
+            13,
+        );
+        disconnected_state
+            .put_block_atomic(&blocks[9], Some(9), Some(9))
+            .unwrap();
+        disconnected_state
+            .put_block_atomic(&disconnected_ten, Some(10), Some(10))
+            .unwrap();
+        disconnected_state
+            .put_block_atomic(&disconnected_eleven, Some(11), Some(11))
+            .unwrap();
+        disconnected_state
+            .put_block_atomic(&disconnected_twelve, Some(12), Some(12))
+            .unwrap();
+        assert!(activate_runtime_archive_v2(
+            &disconnected_state,
+            config.clone(),
+            "marker-activation-testnet",
+            disconnected_data.path(),
+            true,
+        )
+        .expect_err("a disconnected unpublished hot tail must fail closed")
+        .contains("does not extend local block 9"));
+        assert!(!disconnected_state.has_archive_v2_reader());
+
+        let capability = activate_deferred_archive_v2_after_fresh_sync(
             &state,
             config,
             "marker-activation-testnet",
@@ -47170,12 +49479,154 @@ mod tests {
         assert_eq!(capability.role, ArchiveV2Role::Consensus);
         assert!(!capability.serves_deep_history);
         assert!(state.has_archive_v2_reader());
+        assert!(state.archive_v2_status().unwrap().admitted_after_fresh_sync);
+        assert!(restore_archive_v2_fresh_sync_admission(&state, &capability).unwrap());
         assert_eq!(capability.identity.genesis_hash, blocks[0].hash());
         assert_eq!(
             state.archive_v2_status().unwrap().role.as_deref(),
             Some("consensus")
         );
         assert_eq!(state.cached_genesis_mossstake_slot_only(), Some(false));
+    }
+
+    #[test]
+    fn archive_v2_full_archive_activation_accepts_cold_catalog_tip_and_handoff() {
+        let data = tempfile::tempdir().expect("create full-archive state");
+        let cold = tempfile::tempdir().expect("create full-archive cold store");
+        let archive = tempfile::tempdir().expect("create Archive V2 root");
+        fs::create_dir_all(archive.path().join("objects")).unwrap();
+        fs::create_dir_all(archive.path().join("manifests")).unwrap();
+        fs::write(data.path().join("genesis.json"), b"recovery").unwrap();
+
+        let mut blocks = vec![Block::genesis(
+            Hash::hash(b"full-archive-cold-handoff-state-0"),
+            1,
+            Vec::new(),
+        )];
+        for slot in 1..=12 {
+            blocks.push(Block::new_with_timestamp(
+                slot,
+                blocks.last().unwrap().hash(),
+                Hash::hash(format!("full-archive-cold-handoff-state-{slot}").as_bytes()),
+                [0x24; 32],
+                Vec::new(),
+                slot + 1,
+            ));
+        }
+        let identity = lichen_core::archive_v2::ArchiveV2Identity {
+            network_id: "full-archive-cold-handoff-testnet".to_string(),
+            genesis_hash: blocks[0].hash(),
+        };
+        let (object, manifest) = ArchiveV2SegmentCodec::encode(
+            identity,
+            None,
+            Hash::default(),
+            &ArchiveV2SegmentContents::from_blocks(blocks[..9].to_vec()),
+            &ArchiveV2CodecConfig::default(),
+        )
+        .unwrap();
+        fs::write(
+            archive
+                .path()
+                .join("objects")
+                .join(format!("{}.av2s", manifest.segment_object_hash.to_hex())),
+            object,
+        )
+        .unwrap();
+        fs::write(
+            archive
+                .path()
+                .join("manifests")
+                .join(format!("{}.av2m", manifest.segment_object_hash.to_hex())),
+            manifest.encode_canonical().unwrap(),
+        )
+        .unwrap();
+        let mut catalog = ArchiveV2Catalog::empty(manifest.identity.clone()).unwrap();
+        catalog.append(manifest).unwrap();
+        catalog
+            .store_atomic(&archive.path().join("catalog.av2"))
+            .unwrap();
+
+        let mut state = StateStore::open(data.path()).unwrap();
+        state.open_cold_store(cold.path()).unwrap();
+        for block in &blocks {
+            state
+                .put_block_atomic(block, Some(block.header.slot), Some(block.header.slot))
+                .unwrap();
+        }
+        assert_eq!(state.migrate_to_cold(11).unwrap(), 11);
+        assert!(state.get_hot_block_by_slot(8).unwrap().is_none());
+        assert!(state.get_hot_block_by_slot(9).unwrap().is_none());
+        assert_eq!(
+            state
+                .get_block_by_slot(8)
+                .unwrap()
+                .map(|block| block.hash()),
+            Some(blocks[8].hash())
+        );
+        assert_eq!(
+            state
+                .get_block_by_slot(9)
+                .unwrap()
+                .map(|block| block.hash()),
+            Some(blocks[9].hash())
+        );
+
+        let capability = activate_runtime_archive_v2(
+            &state,
+            RuntimeArchiveV2Config {
+                role_config: ArchiveV2RoleConfig {
+                    version: ARCHIVE_V2_ROLE_CONFIG_VERSION,
+                    role: ArchiveV2Role::FullArchive,
+                    recent_history_slots: 2,
+                    verified_cache_quota_bytes: 0,
+                    advertise_deep_history: true,
+                },
+                root: archive.path().to_path_buf(),
+                cache_root: None,
+                source_roots: Vec::new(),
+                source_urls: Vec::new(),
+                source_timeout: Duration::from_secs(1),
+                source_max_object_bytes: 2 * 1024 * 1024 * 1024,
+                max_decoded_segments: 1,
+            },
+            "full-archive-cold-handoff-testnet",
+            data.path(),
+            true,
+        )
+        .expect("full archive must admit a catalog tip and handoff migrated to cold storage");
+
+        assert_eq!(capability.role, ArchiveV2Role::FullArchive);
+        assert!(capability.serves_deep_history);
+        assert!(state.has_archive_v2_reader());
+    }
+
+    #[test]
+    fn archive_v2_local_handoff_uses_only_a_bounded_physically_verified_tail() {
+        assert_eq!(
+            archive_v2_local_history_start(106_420, 50_000, Some(39_999)).unwrap(),
+            40_000,
+            "a checkpoint-retained unpublished tail remains valid after catch-up"
+        );
+        assert_eq!(
+            archive_v2_local_history_start(106_420, 50_000, Some(80_000)).unwrap(),
+            56_421,
+            "catalog coverage beyond the nominal window must not reduce required hot retention"
+        );
+        assert_eq!(
+            archive_v2_local_history_start(49_999, 50_000, None).unwrap(),
+            0,
+            "a pre-archive chain may remain entirely local"
+        );
+        assert!(archive_v2_local_history_start(100_000, 50_000, None)
+            .unwrap_err()
+            .contains("above the 50000-slot unpublished-tail bound"));
+        assert!(archive_v2_local_history_start(1, 0, Some(0))
+            .unwrap_err()
+            .contains("non-zero"));
+        assert!(archive_v2_local_history_start(u64::MAX, 1, Some(u64::MAX))
+            .unwrap_err()
+            .contains("cannot advance"));
     }
 
     #[test]

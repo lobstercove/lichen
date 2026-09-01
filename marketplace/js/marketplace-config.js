@@ -15,6 +15,7 @@
         rpcUrl: config.rpc,
         wsUrl: config.ws,
         mossGatewayUrl: config.moss,
+        mossProviderUrls: Array.isArray(config.mossProviders) ? config.mossProviders.slice() : [config.moss],
         network: currentNetwork,
         networks: LICHEN_CONFIG.networks,
         slotDurationMs: config.slotDurationMs || 400,
@@ -33,11 +34,21 @@
     };
 
     window.resolveMossUri = function (uri) {
+        var urls = window.resolveMossUris(uri);
+        return urls.length ? urls[0] : '';
+    };
+
+    window.resolveMossUris = function (uri) {
         var value = String(uri || '').trim();
-        if (value.indexOf('moss://') !== 0) return value;
+        if (value.indexOf('moss://') !== 0) return value ? [value] : [];
         var hash = value.slice('moss://'.length);
-        if (!/^[1-9A-HJ-NP-Za-km-z]{32,64}$/.test(hash)) return '';
-        return window.lichenMarketConfig.mossGatewayUrl.replace(/\/$/, '') + '/moss/' + hash;
+        if (!/^[1-9A-HJ-NP-Za-km-z]{32,64}$/.test(hash)) return [];
+        var providers = window.lichenMarketConfig.mossProviderUrls || [window.lichenMarketConfig.mossGatewayUrl];
+        var canonical = window.lichenMarketConfig.mossGatewayUrl;
+        return Array.from(new Set([canonical].concat(providers)
+            .map(function (url) { return String(url || '').replace(/\/$/, ''); })
+            .filter(Boolean)))
+            .map(function (url) { return url + '/moss/' + hash; });
     };
 
     window.getTrustedMarketNetwork = function () {

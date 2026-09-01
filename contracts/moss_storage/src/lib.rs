@@ -43,6 +43,7 @@ const MAX_PROVIDERS_PER_ENTRY: usize = 16;
 const REWARD_PER_SLOT_PER_BYTE: u64 = 10; // 10 spores per slot per byte stored
 const STORAGE_PRICING_V2_SCALE: u128 = 100_000_000;
 const STORAGE_PRICING_V2: u64 = 2;
+const STORAGE_ID_V3_DOMAIN: &[u8] = b"lichen-moss-storage-id-v1";
 
 // v2 constants
 const DEFAULT_CHALLENGE_WINDOW: u64 = 200; // slots to respond to a challenge
@@ -201,8 +202,8 @@ fn required_provider_collateral(
     additional_obligation: u64,
 ) -> Option<u64> {
     let base = required_provider_stake(capacity_bytes)?;
-    let obligation = stored_u64(&provider_obligation_key(provider))
-        .checked_add(additional_obligation)?;
+    let obligation =
+        stored_u64(&provider_obligation_key(provider)).checked_add(additional_obligation)?;
     let obligation_collateral = (obligation as u128)
         .checked_mul(OBLIGATION_COLLATERAL_BPS as u128)?
         .checked_add(9_999)?
@@ -366,6 +367,68 @@ fn storage_prepaid_key(data_hash: &[u8; 32]) -> Vec<u8> {
     key
 }
 
+fn storage_allowed_providers_key(data_hash: &[u8; 32]) -> Vec<u8> {
+    let mut key = b"storage_allowed_providers:".to_vec();
+    key.extend_from_slice(data_hash);
+    key
+}
+
+fn storage_content_hash_key(storage_id: &[u8; 32]) -> Vec<u8> {
+    let mut key = b"storage_content_hash:".to_vec();
+    key.extend_from_slice(storage_id);
+    key
+}
+
+fn storage_id_v3(owner: &[u8; 32], content_hash: &[u8; 32], request_nonce: &[u8; 32]) -> [u8; 32] {
+    let mut input = Vec::with_capacity(STORAGE_ID_V3_DOMAIN.len() + 96);
+    input.extend_from_slice(STORAGE_ID_V3_DOMAIN);
+    input.extend_from_slice(owner);
+    input.extend_from_slice(content_hash);
+    input.extend_from_slice(request_nonce);
+    sha256_hash(&input)
+}
+
+fn storage_content_hash(storage_id: &[u8; 32]) -> Option<[u8; 32]> {
+    match storage_get(&storage_content_hash_key(storage_id)) {
+        Some(value) if value.len() == 32 => {
+            let mut content_hash = [0u8; 32];
+            content_hash.copy_from_slice(&value);
+            Some(content_hash)
+        }
+        Some(_) => None,
+        // Legacy and V2 requests were keyed directly by their content hash.
+        None => Some(*storage_id),
+    }
+}
+
+fn storage_assignment_allows_provider(data_hash: &[u8; 32], provider: &[u8; 32]) -> bool {
+    let Some(roster) = storage_get(&storage_allowed_providers_key(data_hash)) else {
+        // Legacy and pricing-v2 requests intentionally retain open assignment.
+        return true;
+    };
+    if roster.is_empty()
+        || !roster.len().is_multiple_of(32)
+        || roster.len() > MAX_REPLICATION as usize * 32
+    {
+        return false;
+    }
+    let mut failed_assignment_exists = false;
+    for entry in roster.chunks_exact(32) {
+        let mut allowed = [0u8; 32];
+        allowed.copy_from_slice(entry);
+        if allowed == *provider {
+            return true;
+        }
+        failed_assignment_exists |=
+            storage_get(&assignment_failed_key(&allowed, data_hash)).is_some();
+    }
+    // Once an explicitly assigned provider is proven unavailable and slashed,
+    // restore permissionless replacement so replication can heal without an
+    // online owner. Before that event no unselected provider can race the
+    // uploaded, owner-approved roster.
+    failed_assignment_exists
+}
+
 fn reward_start_key(provider: &[u8; 32], data_hash: &[u8; 32]) -> Vec<u8> {
     let mut key = b"reward_start:".to_vec();
     key.extend_from_slice(provider);
@@ -386,12 +449,7 @@ fn uses_pricing_v2(data_hash: &[u8; 32]) -> bool {
     stored_u64(&storage_pricing_version_key(data_hash)) == STORAGE_PRICING_V2
 }
 
-fn storage_pricing_v2_charge(
-    size: u64,
-    replicas: u64,
-    duration: u64,
-    price: u64,
-) -> Option<u64> {
+fn storage_pricing_v2_charge(size: u64, replicas: u64, duration: u64, price: u64) -> Option<u64> {
     let numerator = (size as u128)
         .checked_mul(duration as u128)?
         .checked_mul(price as u128)?;
@@ -402,11 +460,7 @@ fn storage_pricing_v2_charge(
     (total <= u64::MAX as u128).then_some(total as u64)
 }
 
-fn storage_pricing_v2_obligation(
-    size: u64,
-    duration: u64,
-    price: u64,
-) -> Option<u64> {
+fn storage_pricing_v2_obligation(size: u64, duration: u64, price: u64) -> Option<u64> {
     let total = (size as u128)
         .checked_mul(duration as u128)?
         .checked_mul(price as u128)?
@@ -444,17 +498,12 @@ fn challenge_effective_nonce(
         return Err(1);
     }
     let submitted_nonce = bytes_to_u64(&challenge[16..24]);
-    if challenge.len() < CHALLENGE_RECORD_V2_SIZE
-        || challenge[25] != CHALLENGE_RECORD_V2_VERSION
-    {
+    if challenge.len() < CHALLENGE_RECORD_V2_SIZE || challenge[25] != CHALLENGE_RECORD_V2_VERSION {
         return Ok(submitted_nonce);
     }
-    let entropy_slot = bytes_to_u64(&challenge[0..8])
-        .checked_add(1)
-        .ok_or(7u32)?;
+    let entropy_slot = bytes_to_u64(&challenge[0..8]).checked_add(1).ok_or(7u32)?;
     let entropy = lichen_sdk::get_block_entropy(entropy_slot).ok_or(7u32)?;
-    let challenger =
-        storage_get(&challenge_challenger_key(data_hash, provider)).ok_or(1u32)?;
+    let challenger = storage_get(&challenge_challenger_key(data_hash, provider)).ok_or(1u32)?;
     if challenger.len() != 32 {
         return Err(1);
     }
@@ -752,6 +801,8 @@ pub extern "C" fn store_data(
         duration_slots,
         REWARD_PER_SLOT_PER_BYTE,
         false,
+        None,
+        None,
     )
 }
 
@@ -775,6 +826,60 @@ pub extern "C" fn store_data_v2(
         duration_slots,
         max_price_per_byte_per_slot,
         true,
+        None,
+        None,
+    )
+}
+
+/// Register pricing-v2 storage against the exact provider roster that already
+/// returned provider-signed upload receipts. The roster must contain exactly
+/// `replication_factor` unique 32-byte provider addresses. Confirmations remain
+/// restricted to that owner-approved roster unless an assigned provider is
+/// later slashed, at which point permissionless replacement restores liveness.
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)] // WASM ABI validates the exact bounded roster length.
+pub extern "C" fn store_data_v3(
+    owner_ptr: *const u8,
+    data_hash_ptr: *const u8,
+    request_nonce_ptr: *const u8,
+    size: u64,
+    replication_factor: u8,
+    duration_slots: u64,
+    max_price_per_byte_per_slot: u64,
+    providers_ptr: *const u8,
+    providers_len: u32,
+) -> u32 {
+    let request_nonce = match read_address32(request_nonce_ptr) {
+        Some(nonce) if nonce != [0u8; 32] => nonce,
+        _ => return 9,
+    };
+    let expected_len = match usize::from(replication_factor).checked_mul(32) {
+        Some(len) if replication_factor > 0 && replication_factor <= MAX_REPLICATION => len,
+        _ => return 9,
+    };
+    if providers_ptr.is_null() || providers_len as usize != expected_len {
+        return 9;
+    }
+    let bytes = unsafe { core::slice::from_raw_parts(providers_ptr, expected_len) };
+    let mut providers = Vec::with_capacity(replication_factor as usize);
+    for chunk in bytes.chunks_exact(32) {
+        let mut provider = [0u8; 32];
+        provider.copy_from_slice(chunk);
+        if provider == [0u8; 32] || providers.contains(&provider) {
+            return 9;
+        }
+        providers.push(provider);
+    }
+    store_data_at_price(
+        owner_ptr,
+        data_hash_ptr,
+        size,
+        replication_factor,
+        duration_slots,
+        max_price_per_byte_per_slot,
+        true,
+        Some(&providers),
+        Some(request_nonce),
     )
 }
 
@@ -819,6 +924,8 @@ fn store_data_at_price(
     duration_slots: u64,
     max_price_per_byte_per_slot: u64,
     pricing_v2: bool,
+    allowed_providers: Option<&[[u8; 32]]>,
+    request_nonce: Option<[u8; 32]>,
 ) -> u32 {
     if !reentrancy_enter() {
         return 100;
@@ -832,12 +939,17 @@ fn store_data_at_price(
             return 98;
         }
     };
-    let data_hash = match read_address32(data_hash_ptr) {
+    let supplied_hash = match read_address32(data_hash_ptr) {
         Some(hash) => hash,
         None => {
             reentrancy_exit();
             return 98;
         }
+    };
+    let data_hash = if let Some(request_nonce) = request_nonce {
+        storage_id_v3(&owner_arr, &supplied_hash, &request_nonce)
+    } else {
+        supplied_hash
     };
 
     // AUDIT-FIX: verify caller matches transaction signer
@@ -868,6 +980,40 @@ fn store_data_at_price(
         log_info("Maximum storage price must be nonzero");
         reentrancy_exit();
         return 8;
+    }
+    if let Some(providers) = allowed_providers {
+        if providers.len() != replication_factor as usize {
+            reentrancy_exit();
+            return 9;
+        }
+        for provider in providers {
+            let provider_data = match storage_get(&provider_key(provider)) {
+                Some(data) if data.len() >= PROVIDER_SIZE && data[24] == 1 => data,
+                _ => {
+                    reentrancy_exit();
+                    return 9;
+                }
+            };
+            let capacity = bytes_to_u64(&provider_data[0..8]);
+            let used = bytes_to_u64(&provider_data[8..16]);
+            let price = provider_price(provider);
+            let obligation = match storage_pricing_v2_obligation(size, duration_slots, price) {
+                Some(value) => value,
+                None => {
+                    reentrancy_exit();
+                    return 9;
+                }
+            };
+            if price == 0
+                || price > max_price_per_byte_per_slot
+                || used.checked_add(size).is_none_or(|next| next > capacity)
+                || required_provider_collateral(provider, capacity, obligation)
+                    .is_none_or(|required| stored_u64(&stake_key(provider)) < required)
+            {
+                reentrancy_exit();
+                return 9;
+            }
+        }
     }
 
     let dk = data_key(&data_hash);
@@ -947,6 +1093,9 @@ fn store_data_at_price(
         &[], // no providers yet
     );
     storage_set(&dk, &entry);
+    if request_nonce.is_some() {
+        storage_set(&storage_content_hash_key(&data_hash), &supplied_hash);
+    }
     storage_set(
         &storage_max_price_key(&data_hash),
         &u64_to_bytes(max_price_per_byte_per_slot),
@@ -958,7 +1107,13 @@ fn store_data_at_price(
         );
         storage_set(&storage_prepaid_key(&data_hash), &u64_to_bytes(cost));
     }
-
+    if let Some(providers) = allowed_providers {
+        let mut roster = Vec::with_capacity(providers.len() * 32);
+        for provider in providers {
+            roster.extend_from_slice(provider);
+        }
+        storage_set(&storage_allowed_providers_key(&data_hash), &roster);
+    }
     // Track total bytes stored
     let tb = stored_u64(MOSS_TOTAL_BYTES_KEY);
     storage_set(MOSS_TOTAL_BYTES_KEY, &u64_to_bytes(tb.saturating_add(size)));
@@ -1070,6 +1225,11 @@ pub extern "C" fn confirm_storage(provider_ptr: *const u8, data_hash_ptr: *const
         log_info("Provider previously failed this storage assignment");
         reentrancy_exit();
         return 12;
+    }
+    if !storage_assignment_allows_provider(&data_hash, &provider_arr) {
+        log_info("Provider is not in the owner-approved storage roster");
+        reentrancy_exit();
+        return 13;
     }
 
     // Check replication limit
@@ -1186,7 +1346,6 @@ pub extern "C" fn confirm_storage(provider_ptr: *const u8, data_hash_ptr: *const
         &provider_obligation_key(&provider_arr),
         &u64_to_bytes(next_provider_obligation),
     );
-
     log_info("Storage confirmed by provider");
     reentrancy_exit();
     0
@@ -1219,6 +1378,27 @@ pub extern "C" fn get_storage_info(data_hash_ptr: *const u8) -> u32 {
             log_info("Data entry not found");
             1
         }
+    }
+}
+
+/// Return the content commitment for a storage request identifier. V3 requests
+/// are owner-scoped and return their original Merkle root; legacy requests
+/// return the identifier itself because they were keyed directly by that root.
+#[no_mangle]
+pub extern "C" fn get_storage_content_hash(storage_id_ptr: *const u8) -> u32 {
+    let storage_id = match read_address32(storage_id_ptr) {
+        Some(id) => id,
+        None => return 98,
+    };
+    if storage_get(&data_key(&storage_id)).is_none() {
+        return 1;
+    }
+    match storage_content_hash(&storage_id) {
+        Some(content_hash) => {
+            lichen_sdk::set_return_data(&content_hash);
+            0
+        }
+        None => 2,
     }
 }
 
@@ -1390,9 +1570,7 @@ pub extern "C" fn claim_storage_rewards_page(
             .unwrap_or(current_slot);
         let mut reward_until_slot = decode_data_entry_expiry(&entry).min(current_slot);
         if let Some(challenge) = storage_get(&challenge_key(&data_hash, &provider_arr)) {
-            if challenge.len() >= CHALLENGE_RECORD_SIZE
-                && challenge[24] == CHALLENGE_STATUS_OPEN
-            {
+            if challenge.len() >= CHALLENGE_RECORD_SIZE && challenge[24] == CHALLENGE_STATUS_OPEN {
                 // An unresolved proof caps vesting at challenge issuance. A
                 // successful response reopens normal vesting; a failed proof
                 // cannot earn through its response window.
@@ -1985,17 +2163,14 @@ pub extern "C" fn close_storage(owner_ptr: *const u8, data_hash_ptr: *const u8) 
                     return 4;
                 }
             };
-            let obligation = match storage_pricing_v2_obligation(
-                size,
-                reward_duration,
-                confirmed_price,
-            ) {
-                Some(value) => value as u128,
-                None => {
-                    reentrancy_exit();
-                    return 4;
-                }
-            };
+            let obligation =
+                match storage_pricing_v2_obligation(size, reward_duration, confirmed_price) {
+                    Some(value) => value as u128,
+                    None => {
+                        reentrancy_exit();
+                        return 4;
+                    }
+                };
             match refund_wide.checked_sub(obligation) {
                 Some(value) => value,
                 None => {
@@ -2062,20 +2237,15 @@ pub extern "C" fn close_storage(owner_ptr: *const u8, data_hash_ptr: *const u8) 
             let assignment_key = assignment_obligation_key(&provider, &data_hash);
             let assignment_remaining = stored_u64(&assignment_key);
             let provider_obligation_key = provider_obligation_key(&provider);
-            let provider_obligation = match stored_u64(&provider_obligation_key)
-                .checked_sub(assignment_remaining)
-            {
-                Some(value) => value,
-                None => {
-                    reentrancy_exit();
-                    return 4;
-                }
-            };
-            obligation_updates.push((
-                assignment_key,
-                provider_obligation_key,
-                provider_obligation,
-            ));
+            let provider_obligation =
+                match stored_u64(&provider_obligation_key).checked_sub(assignment_remaining) {
+                    Some(value) => value,
+                    None => {
+                        reentrancy_exit();
+                        return 4;
+                    }
+                };
+            obligation_updates.push((assignment_key, provider_obligation_key, provider_obligation));
         }
     }
     let refund = match u64::try_from(refund_wide) {
@@ -2289,12 +2459,11 @@ pub extern "C" fn issue_challenge(
             return 4;
         }
         if chal.len() >= CHALLENGE_RECORD_SIZE {
-            let next_challenge_slot = match bytes_to_u64(&chal[0..8])
-                .checked_add(CHALLENGE_MIN_INTERVAL_SLOTS)
-            {
-                Some(slot) => slot,
-                None => return 5,
-            };
+            let next_challenge_slot =
+                match bytes_to_u64(&chal[0..8]).checked_add(CHALLENGE_MIN_INTERVAL_SLOTS) {
+                    Some(slot) => slot,
+                    None => return 5,
+                };
             if current_slot < next_challenge_slot {
                 return 5;
             }
@@ -2337,10 +2506,7 @@ pub extern "C" fn issue_challenge(
 /// the stored 25/26-byte record followed by effective_nonce(8). Returns 7 while
 /// a v2 challenge is waiting for its committed entropy slot.
 #[no_mangle]
-pub extern "C" fn get_challenge(
-    data_hash_ptr: *const u8,
-    provider_ptr: *const u8,
-) -> u32 {
+pub extern "C" fn get_challenge(data_hash_ptr: *const u8, provider_ptr: *const u8) -> u32 {
     let data_hash = match read_address32(data_hash_ptr) {
         Some(hash) => hash,
         None => return 98,
@@ -2441,7 +2607,11 @@ pub extern "C" fn respond_challenge(
     let data_size = data_size_u64 as usize;
 
     let response = unsafe { core::slice::from_raw_parts(response_ptr, data_size) };
-    if sha256_hash(response) != hash_arr {
+    let expected_content_hash = match storage_content_hash(&hash_arr) {
+        Some(hash) => hash,
+        None => return 4,
+    };
+    if sha256_hash(response) != expected_content_hash {
         log_info("Invalid proof-of-retrievability: commitment mismatch");
         return 4;
     }
@@ -2552,7 +2722,11 @@ pub extern "C" fn respond_challenge_merkle(
         };
         node_index /= 2;
     }
-    if node != hash_arr {
+    let expected_content_hash = match storage_content_hash(&hash_arr) {
+        Some(hash) => hash,
+        None => return 4,
+    };
+    if node != expected_content_hash {
         return 4;
     }
 
@@ -2695,12 +2869,11 @@ fn slash_provider_inner(data_hash_ptr: *const u8, provider_ptr: *const u8) -> u3
             None => return 4,
         };
         let provider_obligation_key = provider_obligation_key(&prov_arr);
-        let provider_obligation = match stored_u64(&provider_obligation_key)
-            .checked_sub(assignment_before)
-        {
-            Some(value) => value,
-            None => return 4,
-        };
+        let provider_obligation =
+            match stored_u64(&provider_obligation_key).checked_sub(assignment_before) {
+                Some(value) => value,
+                None => return 4,
+            };
         let reward_start = stored_u64(&reward_start_key(&prov_arr, &hash_arr));
         let reward_duration = match decode_data_entry_expiry(&entry).checked_sub(reward_start) {
             Some(duration) if reward_start >= decode_data_entry_created(&entry) => duration,
@@ -2770,10 +2943,7 @@ fn slash_provider_inner(data_hash_ptr: *const u8, provider_ptr: *const u8) -> u3
         storage_set(&reward_remainder_key, &u64_to_bytes(next_remainder));
         storage_set(&reward_key, &u64_to_bytes(matured_reward));
         storage_set(&assignment_key, &u64_to_bytes(0));
-        storage_set(
-            &provider_obligation_key,
-            &u64_to_bytes(provider_obligation),
-        );
+        storage_set(&provider_obligation_key, &u64_to_bytes(provider_obligation));
         storage_set(&failed_earned_key, &u64_to_bytes(failed_earned));
         storage_set(&assignment_failed_key(&prov_arr, &hash_arr), &[1]);
     }
@@ -2945,11 +3115,7 @@ mod tests {
         result
     }
 
-    fn issue_challenge(
-        data_hash_ptr: *const u8,
-        provider_ptr: *const u8,
-        nonce: u64,
-    ) -> u32 {
+    fn issue_challenge(data_hash_ptr: *const u8, provider_ptr: *const u8, nonce: u64) -> u32 {
         let entropy_slot = get_slot().checked_add(1).expect("test challenge slot");
         test_mock::set_block_entropy(entropy_slot, [0x5C; 32]);
         super::issue_challenge(data_hash_ptr, provider_ptr, nonce)
@@ -3242,9 +3408,18 @@ mod tests {
         assert_eq!(get_provider_info(provider_addr.as_ptr()), 0);
         let info = test_mock::get_return_data();
         assert_eq!(info.len(), PROVIDER_SIZE + 32);
-        assert_eq!(bytes_to_u64(&info[PROVIDER_SIZE..PROVIDER_SIZE + 8]), 10_000_000);
-        assert_eq!(bytes_to_u64(&info[PROVIDER_SIZE + 8..PROVIDER_SIZE + 16]), 10);
-        assert_eq!(bytes_to_u64(&info[PROVIDER_SIZE + 16..PROVIDER_SIZE + 24]), 0);
+        assert_eq!(
+            bytes_to_u64(&info[PROVIDER_SIZE..PROVIDER_SIZE + 8]),
+            10_000_000
+        );
+        assert_eq!(
+            bytes_to_u64(&info[PROVIDER_SIZE + 8..PROVIDER_SIZE + 16]),
+            10
+        );
+        assert_eq!(
+            bytes_to_u64(&info[PROVIDER_SIZE + 16..PROVIDER_SIZE + 24]),
+            0
+        );
         assert_eq!(bytes_to_u64(&info[PROVIDER_SIZE + 24..]), 10_000_000);
     }
 
@@ -3307,10 +3482,7 @@ mod tests {
                 &data_key(&hash),
                 &encode_data_entry(&owner, 1, 1, 1, 2_000, 100, &[provider]),
             );
-            storage_set(
-                &reward_position_key(&provider, &hash),
-                &u64_to_bytes(100),
-            );
+            storage_set(&reward_position_key(&provider, &hash), &u64_to_bytes(100));
             if index < 2 {
                 legacy_index.extend_from_slice(&hash);
             } else {
@@ -3490,14 +3662,7 @@ mod tests {
 
         test_mock::set_caller(owner);
         assert_eq!(
-            store_data_v2(
-                owner.as_ptr(),
-                data_hash.as_ptr(),
-                size,
-                2,
-                duration,
-                8,
-            ),
+            store_data_v2(owner.as_ptr(), data_hash.as_ptr(), size, 2, duration, 8,),
             0
         );
         assert_eq!(get_storage_max_price(data_hash.as_ptr()), 8);
@@ -3512,9 +3677,15 @@ mod tests {
         test_mock::set_value(6_000);
         assert_eq!(stake_collateral(provider.as_ptr(), 6_000), 0);
         assert_eq!(confirm_storage(provider.as_ptr(), data_hash.as_ptr()), 0);
-        assert_eq!(get_confirmed_storage_price(data_hash.as_ptr(), provider.as_ptr()), 6);
+        assert_eq!(
+            get_confirmed_storage_price(data_hash.as_ptr(), provider.as_ptr()),
+            6
+        );
         assert_eq!(set_storage_price(provider.as_ptr(), 4), 0);
-        assert_eq!(get_confirmed_storage_price(data_hash.as_ptr(), provider.as_ptr()), 6);
+        assert_eq!(
+            get_confirmed_storage_price(data_hash.as_ptr(), provider.as_ptr()),
+            6
+        );
 
         test_mock::set_slot(1_101);
         test_mock::set_caller(finalizer);
@@ -3525,6 +3696,206 @@ mod tests {
         test_mock::set_caller(provider);
         assert_eq!(claim_storage_rewards(provider.as_ptr()), 0);
         assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 6_000);
+    }
+
+    #[test]
+    fn test_store_data_v3_binds_initial_confirmations_to_signed_receipt_roster() {
+        setup();
+        configure_licn_transfers([9u8; 32]);
+        test_mock::set_slot(100);
+        let owner = [1u8; 32];
+        let provider_a = [2u8; 32];
+        let provider_b = [3u8; 32];
+        let outsider = [4u8; 32];
+        let content_hash = [0xB3; 32];
+        let request_nonce = [0x51; 32];
+        let storage_id = storage_id_v3(&owner, &content_hash, &request_nonce);
+        let size = 1_000u64;
+
+        for provider in [provider_a, provider_b, outsider] {
+            test_mock::set_caller(provider);
+            assert_eq!(register_provider(provider.as_ptr(), size), 0);
+        }
+
+        let mut roster = Vec::new();
+        roster.extend_from_slice(&provider_a);
+        roster.extend_from_slice(&provider_b);
+        test_mock::set_caller(owner);
+        test_mock::set_value(2);
+        assert_eq!(
+            store_data_v3(
+                owner.as_ptr(),
+                content_hash.as_ptr(),
+                request_nonce.as_ptr(),
+                size,
+                2,
+                1_000,
+                10,
+                roster.as_ptr(),
+                roster.len() as u32,
+            ),
+            0
+        );
+        assert_eq!(
+            storage_get(&storage_allowed_providers_key(&storage_id)),
+            Some(roster)
+        );
+        assert!(storage_get(&data_key(&content_hash)).is_none());
+        assert!(storage_get(&data_key(&storage_id)).is_some());
+        assert_eq!(get_storage_content_hash(storage_id.as_ptr()), 0);
+        assert_eq!(test_mock::get_return_data(), content_hash);
+
+        test_mock::set_caller(outsider);
+        assert_eq!(confirm_storage(outsider.as_ptr(), storage_id.as_ptr()), 13);
+        test_mock::set_caller(provider_a);
+        assert_eq!(confirm_storage(provider_a.as_ptr(), storage_id.as_ptr()), 0);
+        test_mock::set_caller(provider_b);
+        assert_eq!(confirm_storage(provider_b.as_ptr(), storage_id.as_ptr()), 0);
+
+        let replacement = [5u8; 32];
+        assert!(!storage_assignment_allows_provider(
+            &storage_id,
+            &replacement
+        ));
+        storage_set(&assignment_failed_key(&provider_a, &storage_id), &[1]);
+        assert!(storage_assignment_allows_provider(
+            &storage_id,
+            &replacement
+        ));
+    }
+
+    #[test]
+    fn test_store_data_v3_scopes_identical_content_by_owner_and_nonce() {
+        setup();
+        configure_licn_transfers([9u8; 32]);
+        test_mock::set_slot(100);
+        let owner_a = [1u8; 32];
+        let owner_b = [6u8; 32];
+        let attacker = [7u8; 32];
+        let provider = [2u8; 32];
+        let content_hash = [0xC3; 32];
+        let nonce_a = [0x61; 32];
+        let nonce_b = [0x62; 32];
+        let nonce_c = [0x63; 32];
+        let size = 1_000u64;
+
+        test_mock::set_caller(provider);
+        assert_eq!(register_provider(provider.as_ptr(), size * 3), 0);
+        test_mock::set_value(30_000_000);
+        assert_eq!(stake_collateral(provider.as_ptr(), 30_000_000), 0);
+
+        for (owner, request_nonce) in [(owner_a, nonce_a), (owner_b, nonce_b), (owner_a, nonce_c)] {
+            test_mock::set_caller(owner);
+            test_mock::set_value(1);
+            assert_eq!(
+                store_data_v3(
+                    owner.as_ptr(),
+                    content_hash.as_ptr(),
+                    request_nonce.as_ptr(),
+                    size,
+                    1,
+                    1_000,
+                    10,
+                    provider.as_ptr(),
+                    32,
+                ),
+                0
+            );
+        }
+
+        let storage_a = storage_id_v3(&owner_a, &content_hash, &nonce_a);
+        let storage_b = storage_id_v3(&owner_b, &content_hash, &nonce_b);
+        let storage_c = storage_id_v3(&owner_a, &content_hash, &nonce_c);
+        assert_ne!(storage_a, storage_b);
+        assert_ne!(storage_a, storage_c);
+        assert!(storage_get(&data_key(&storage_a)).is_some());
+        assert!(storage_get(&data_key(&storage_b)).is_some());
+        assert!(storage_get(&data_key(&storage_c)).is_some());
+        assert_eq!(stored_u64(b"data_count"), 3);
+
+        test_mock::set_caller(attacker);
+        test_mock::set_value(1);
+        assert_eq!(
+            store_data_v3(
+                owner_a.as_ptr(),
+                content_hash.as_ptr(),
+                nonce_a.as_ptr(),
+                size,
+                1,
+                1_000,
+                10,
+                provider.as_ptr(),
+                32,
+            ),
+            200
+        );
+        assert_eq!(stored_u64(b"data_count"), 3);
+    }
+
+    #[test]
+    fn test_store_data_v3_rejects_malformed_or_unready_rosters_before_payment() {
+        setup();
+        configure_licn_transfers([9u8; 32]);
+        test_mock::set_slot(100);
+        let owner = [1u8; 32];
+        let provider = [2u8; 32];
+        let data_hash = [0xB4; 32];
+        let request_nonce = [0x71; 32];
+        test_mock::set_caller(provider);
+        assert_eq!(register_provider(provider.as_ptr(), 1_000), 0);
+
+        let mut duplicate = Vec::new();
+        duplicate.extend_from_slice(&provider);
+        duplicate.extend_from_slice(&provider);
+        test_mock::set_caller(owner);
+        test_mock::set_value(2);
+        let zero_nonce = [0u8; 32];
+        assert_eq!(
+            store_data_v3(
+                owner.as_ptr(),
+                data_hash.as_ptr(),
+                zero_nonce.as_ptr(),
+                1_000,
+                1,
+                1_000,
+                10,
+                provider.as_ptr(),
+                32,
+            ),
+            9
+        );
+        assert_eq!(
+            store_data_v3(
+                owner.as_ptr(),
+                data_hash.as_ptr(),
+                request_nonce.as_ptr(),
+                1_000,
+                2,
+                1_000,
+                10,
+                duplicate.as_ptr(),
+                duplicate.len() as u32,
+            ),
+            9
+        );
+        assert!(storage_get(&data_key(&data_hash)).is_none());
+
+        let unregistered = [3u8; 32];
+        assert_eq!(
+            store_data_v3(
+                owner.as_ptr(),
+                data_hash.as_ptr(),
+                request_nonce.as_ptr(),
+                1_000,
+                1,
+                1_000,
+                10,
+                unregistered.as_ptr(),
+                32,
+            ),
+            9
+        );
+        assert!(storage_get(&data_key(&data_hash)).is_none());
     }
 
     #[test]
@@ -3547,14 +3918,7 @@ mod tests {
         assert_eq!(register_provider(provider.as_ptr(), 1), 0);
         test_mock::set_caller(owner);
         assert_eq!(
-            store_data_v2(
-                owner.as_ptr(),
-                data_hash.as_ptr(),
-                1,
-                1,
-                duration,
-                10,
-            ),
+            store_data_v2(owner.as_ptr(), data_hash.as_ptr(), 1, 1, duration, 10,),
             0
         );
         assert_eq!(stored_u64(&storage_prepaid_key(&data_hash)), 1);
@@ -3574,10 +3938,7 @@ mod tests {
         test_mock::set_slot(10_000_100);
         assert_eq!(claim_storage_rewards(provider.as_ptr()), 0);
         assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 1);
-        assert_eq!(
-            stored_u64(&reward_remainder_key(&provider, &data_hash)),
-            0
-        );
+        assert_eq!(stored_u64(&reward_remainder_key(&provider, &data_hash)), 0);
     }
 
     #[test]
@@ -3607,16 +3968,28 @@ mod tests {
             0
         );
         test_mock::set_caller(failed_provider);
-        assert_eq!(confirm_storage(failed_provider.as_ptr(), data_hash.as_ptr()), 0);
-        assert_eq!(stored_u64(&provider_obligation_key(&failed_provider)), 6_000);
+        assert_eq!(
+            confirm_storage(failed_provider.as_ptr(), data_hash.as_ptr()),
+            0
+        );
+        assert_eq!(
+            stored_u64(&provider_obligation_key(&failed_provider)),
+            6_000
+        );
         assert_eq!(get_provider_info(failed_provider.as_ptr()), 0);
         let info = test_mock::get_return_data();
-        assert_eq!(bytes_to_u64(&info[PROVIDER_SIZE + 16..PROVIDER_SIZE + 24]), 6_000);
+        assert_eq!(
+            bytes_to_u64(&info[PROVIDER_SIZE + 16..PROVIDER_SIZE + 24]),
+            6_000
+        );
         assert_eq!(bytes_to_u64(&info[PROVIDER_SIZE + 24..]), 10_006_000);
 
         test_mock::set_slot(300);
         test_mock::set_caller(challenger);
-        assert_eq!(issue_challenge(data_hash.as_ptr(), failed_provider.as_ptr(), 42), 0);
+        assert_eq!(
+            issue_challenge(data_hash.as_ptr(), failed_provider.as_ptr(), 42),
+            0
+        );
 
         // An open proof challenge freezes accrual at its issue slot. The
         // provider can claim the 200 slots already served, never the response
@@ -3625,15 +3998,24 @@ mod tests {
         test_mock::set_caller(failed_provider);
         assert_eq!(claim_storage_rewards(failed_provider.as_ptr()), 0);
         assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 1_200);
-        assert_eq!(stored_u64(&provider_obligation_key(&failed_provider)), 4_800);
+        assert_eq!(
+            stored_u64(&provider_obligation_key(&failed_provider)),
+            4_800
+        );
 
         test_mock::set_slot(502);
         test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
-        assert_eq!(slash_provider(data_hash.as_ptr(), failed_provider.as_ptr()), 0);
+        assert_eq!(
+            slash_provider(data_hash.as_ptr(), failed_provider.as_ptr()),
+            0
+        );
         assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 1_000_600);
         assert_eq!(get_provider_stake(failed_provider.as_ptr()), 9_005_400);
         assert_eq!(stored_u64(&provider_obligation_key(&failed_provider)), 0);
-        assert_eq!(stored_u64(&assignment_obligation_key(&failed_provider, &data_hash)), 0);
+        assert_eq!(
+            stored_u64(&assignment_obligation_key(&failed_provider, &data_hash)),
+            0
+        );
         assert_eq!(stored_u64(&storage_failed_earned_key(&data_hash)), 1_200);
         assert!(storage_get(&assignment_failed_key(&failed_provider, &data_hash)).is_some());
 
@@ -3670,16 +4052,22 @@ mod tests {
         // replacement for the exact remaining obligation.
         test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
         test_mock::set_caller(failed_provider);
-        assert_eq!(confirm_storage(failed_provider.as_ptr(), data_hash.as_ptr()), 12);
+        assert_eq!(
+            confirm_storage(failed_provider.as_ptr(), data_hash.as_ptr()),
+            12
+        );
 
         test_mock::set_caller(replacement);
         assert_eq!(register_provider(replacement.as_ptr(), size), 0);
         assert_eq!(set_storage_price(replacement.as_ptr(), price), 0);
-        let replacement_obligation =
-            storage_pricing_v2_obligation(size, 1_100 - 502, price).expect("replacement obligation");
+        let replacement_obligation = storage_pricing_v2_obligation(size, 1_100 - 502, price)
+            .expect("replacement obligation");
         assert_eq!(replacement_obligation, 3_588);
         test_mock::set_value(replacement_obligation);
-        assert_eq!(stake_collateral(replacement.as_ptr(), replacement_obligation), 0);
+        assert_eq!(
+            stake_collateral(replacement.as_ptr(), replacement_obligation),
+            0
+        );
         assert_eq!(confirm_storage(replacement.as_ptr(), data_hash.as_ptr()), 0);
 
         test_mock::set_slot(1_101);
@@ -4462,6 +4850,58 @@ mod tests {
                 proof.as_ptr(),
                 proof.len() as u32,
             ),
+            0
+        );
+    }
+
+    #[test]
+    fn test_v3_challenge_verifies_content_root_not_owner_scoped_storage_id() {
+        setup();
+        configure_licn_transfers([9u8; 32]);
+        test_mock::set_slot(100);
+        let owner = [1u8; 32];
+        let provider = [2u8; 32];
+        let challenger = [3u8; 32];
+        let payload = [0x5Au8; 16];
+        let content_hash = sha256_hash(&payload);
+        let request_nonce = [0x81; 32];
+        let storage_id = storage_id_v3(&owner, &content_hash, &request_nonce);
+        assert_ne!(storage_id, content_hash);
+
+        test_mock::set_caller(provider);
+        assert_eq!(
+            register_provider(provider.as_ptr(), payload.len() as u64),
+            0
+        );
+        test_mock::set_value(10_000_000);
+        assert_eq!(stake_collateral(provider.as_ptr(), 10_000_000), 0);
+
+        test_mock::set_caller(owner);
+        test_mock::set_value(1);
+        assert_eq!(
+            store_data_v3(
+                owner.as_ptr(),
+                content_hash.as_ptr(),
+                request_nonce.as_ptr(),
+                payload.len() as u64,
+                1,
+                1_000,
+                10,
+                provider.as_ptr(),
+                32,
+            ),
+            0
+        );
+        test_mock::set_caller(provider);
+        assert_eq!(confirm_storage(provider.as_ptr(), storage_id.as_ptr()), 0);
+        test_mock::set_caller(challenger);
+        assert_eq!(
+            issue_challenge(storage_id.as_ptr(), provider.as_ptr(), 7),
+            0
+        );
+        test_mock::set_caller(provider);
+        assert_eq!(
+            respond_challenge(provider.as_ptr(), storage_id.as_ptr(), payload.as_ptr()),
             0
         );
     }

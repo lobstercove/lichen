@@ -92,6 +92,7 @@ impl StateStore {
             cold_migration_lock: Arc::new(std::sync::Mutex::new(())),
             cold_migration_status: Arc::new(std::sync::Mutex::new(Default::default())),
             archive_v2_reader: Arc::new(std::sync::RwLock::new(None)),
+            archive_v2_deferred_checkpoint_catalog: Arc::new(std::sync::RwLock::new(None)),
             genesis_mossstake_slot_only: Arc::new(std::sync::OnceLock::new()),
         })
     }
@@ -119,6 +120,7 @@ impl StateStore {
             cold_migration_lock: Arc::new(std::sync::Mutex::new(())),
             cold_migration_status: Arc::new(std::sync::Mutex::new(Default::default())),
             archive_v2_reader: Arc::new(std::sync::RwLock::new(None)),
+            archive_v2_deferred_checkpoint_catalog: Arc::new(std::sync::RwLock::new(None)),
             genesis_mossstake_slot_only: Arc::new(std::sync::OnceLock::new()),
         })
     }

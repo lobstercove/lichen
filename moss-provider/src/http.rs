@@ -13,6 +13,7 @@ use axum::{Json, Router};
 use lichen_core::{Keypair, PqSignature, Pubkey};
 use serde::Serialize;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -39,16 +40,83 @@ struct HourlyUsage {
 
 #[derive(Serialize)]
 struct UploadResponse {
+    provider: String,
+    owner: String,
+    storage_id: String,
+    request_nonce: String,
+    price_per_byte_per_slot: u64,
     hash: String,
     size: u64,
     created: bool,
     uri: String,
     gateway_url: String,
     state: &'static str,
+    receipt_signature: PqSignature,
 }
 
-pub fn upload_signing_message(hash: &str, size: u64, content_type: &str) -> String {
-    format!("lichen-moss-upload-v1\n{hash}\n{size}\n{content_type}")
+pub fn derive_storage_id(
+    owner: &Pubkey,
+    hash: &str,
+    request_nonce: &str,
+) -> Result<String, String> {
+    let content_hash = crate::content::decode_hash(hash)?;
+    let request_nonce = crate::content::decode_hash(request_nonce)?;
+    if request_nonce == [0u8; 32] {
+        return Err("Moss request nonce must be nonzero".to_string());
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"lichen-moss-storage-id-v1");
+    hasher.update(owner.0);
+    hasher.update(content_hash);
+    hasher.update(request_nonce);
+    Ok(bs58::encode(hasher.finalize()).into_string())
+}
+
+#[derive(Clone, Copy)]
+struct UploadCommitment<'a> {
+    owner: &'a str,
+    storage_id: &'a str,
+    request_nonce: &'a str,
+    hash: &'a str,
+    size: u64,
+    content_type: &'a str,
+}
+
+impl UploadCommitment<'_> {
+    fn signing_message(&self) -> String {
+        let Self {
+            owner,
+            storage_id,
+            request_nonce,
+            hash,
+            size,
+            content_type,
+        } = self;
+        format!("lichen-moss-upload-v2\n{owner}\n{storage_id}\n{request_nonce}\n{hash}\n{size}\n{content_type}")
+    }
+}
+
+struct UploadReceiptCommitment<'a> {
+    provider: &'a str,
+    upload: UploadCommitment<'a>,
+    price_per_byte_per_slot: u64,
+    gateway_url: &'a str,
+}
+
+impl UploadReceiptCommitment<'_> {
+    fn signing_message(&self) -> String {
+        let provider = self.provider;
+        let owner = self.upload.owner;
+        let storage_id = self.upload.storage_id;
+        let request_nonce = self.upload.request_nonce;
+        let hash = self.upload.hash;
+        let size = self.upload.size;
+        let price_per_byte_per_slot = self.price_per_byte_per_slot;
+        let gateway_url = self.gateway_url;
+        format!(
+            "lichen-moss-upload-receipt-v2\n{provider}\n{owner}\n{storage_id}\n{request_nonce}\n{hash}\n{size}\n{price_per_byte_per_slot}\n{gateway_url}\nstaged"
+        )
+    }
 }
 
 impl AppState {
@@ -90,6 +158,21 @@ impl AppState {
         }
         usage.bytes = next;
         Ok(())
+    }
+
+    async fn refund_owner_charge(&self, owner: &str, bytes: u64) {
+        let Ok(hour) = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs() / 3_600)
+        else {
+            return;
+        };
+        let mut limiter = self.limiter.lock().await;
+        if let Some(usage) = limiter.get_mut(owner) {
+            if usage.hour == hour {
+                usage.bytes = usage.bytes.saturating_sub(bytes);
+            }
+        }
     }
 }
 
@@ -146,21 +229,28 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn ready(State(state): State<AppState>) -> Response {
     match tokio::try_join!(state.chain.current_slot(), state.chain.provider_status()) {
-        Ok((slot, Some(provider))) if provider.operational() => Json(json!({
-            "status": "ready",
-            "slot": slot,
-            "provider": state.chain.provider().to_base58(),
-            "stored_bytes": state.store.stored_bytes(),
-            "capacity_bytes": provider.capacity,
-            "used_bytes": provider.used,
-            "stored_objects": provider.stored_count,
-            "collateral_spores": provider.collateral,
-            "remaining_obligations_spores": provider.remaining_obligations,
-            "required_collateral_spores": provider.required_collateral,
-            "accepting_assignments": provider.accepting_assignments(),
-            "price": provider.price,
-        }))
-        .into_response(),
+        Ok((slot, Some(provider))) if provider.operational() => {
+            let pending_assignment_bytes = state.store.pending_assignment_bytes();
+            let logical_committed_bytes = provider.used.checked_add(pending_assignment_bytes);
+            Json(json!({
+                "status": "ready",
+                "slot": slot,
+                "provider": state.chain.provider().to_base58(),
+                "stored_bytes": state.store.stored_bytes(),
+                "capacity_bytes": provider.capacity,
+                "used_bytes": provider.used,
+                "pending_assignment_bytes": pending_assignment_bytes,
+                "logical_committed_bytes": logical_committed_bytes,
+                "stored_objects": provider.stored_count,
+                "collateral_spores": provider.collateral,
+                "remaining_obligations_spores": provider.remaining_obligations,
+                "required_collateral_spores": provider.required_collateral,
+                "accepting_assignments": provider.accepting_assignments()
+                    && logical_committed_bytes.is_some_and(|bytes| bytes < provider.capacity),
+                "price": provider.price,
+            }))
+            .into_response()
+        }
         Ok((_slot, Some(_))) => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "Moss provider is inactive or has no valid price",
@@ -174,8 +264,8 @@ async fn ready(State(state): State<AppState>) -> Response {
 }
 
 async fn upload(State(state): State<AppState>, mut multipart: Multipart) -> Response {
-    match state.chain.provider_status().await {
-        Ok(Some(provider)) if provider.accepting_assignments() => {}
+    let provider_status = match state.chain.provider_status().await {
+        Ok(Some(provider)) if provider.accepting_assignments() => provider,
         Ok(Some(_)) => {
             return error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -189,8 +279,11 @@ async fn upload(State(state): State<AppState>, mut multipart: Multipart) -> Resp
             )
         }
         Err(error) => return error_response(StatusCode::SERVICE_UNAVAILABLE, &error),
-    }
+    };
+    let provider_price = provider_status.price;
     let mut hash = None;
+    let mut storage_id = None;
+    let mut request_nonce = None;
     let mut size = None;
     let mut owner = None;
     let mut content_type = None;
@@ -225,19 +318,35 @@ async fn upload(State(state): State<AppState>, mut multipart: Multipart) -> Resp
             };
             let owner = match owner.as_deref() {
                 Some(value) => value,
-                None if !state.config.require_upload_signature => "anonymous",
+                None => return error_response(StatusCode::UNAUTHORIZED, "owner is required"),
+            };
+            let storage_id = match storage_id.as_deref() {
+                Some(value) => value,
                 None => {
-                    return error_response(StatusCode::UNAUTHORIZED, "signed owner is required")
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        "storage_id must precede object",
+                    )
                 }
             };
-            if let Err(error) = authorize_upload(
-                &state,
+            let request_nonce = match request_nonce.as_deref() {
+                Some(value) => value,
+                None => {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        "request_nonce must precede object",
+                    )
+                }
+            };
+            let upload_commitment = UploadCommitment {
+                owner,
+                storage_id,
+                request_nonce,
                 hash,
                 size,
                 content_type,
-                owner,
-                signature.as_deref(),
-            ) {
+            };
+            if let Err(error) = authorize_upload(&state, &upload_commitment, signature.as_deref()) {
                 return error_response(StatusCode::UNAUTHORIZED, &error);
             }
             if let Err(error) = state.charge_owner(owner, size).await {
@@ -245,12 +354,52 @@ async fn upload(State(state): State<AppState>, mut multipart: Multipart) -> Resp
             }
             let put = match state.store.put_stream(hash, size, field).await {
                 Ok(result) => result,
-                Err(error) => return error_response(StatusCode::BAD_REQUEST, &error),
+                Err(error) => {
+                    state.refund_owner_charge(owner, size).await;
+                    return error_response(StatusCode::BAD_REQUEST, &error);
+                }
             };
+            if !put.created {
+                // Upload authorization is intentionally idempotent for an
+                // immutable hash. Replays and concurrent duplicate uploads
+                // must not consume the owner's hourly quota repeatedly.
+                state.refund_owner_charge(owner, size).await;
+            }
             if let Err(error) = state.store.set_content_type(hash, content_type).await {
+                if put.created {
+                    state.refund_owner_charge(owner, size).await;
+                }
                 return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error);
             }
+            if let Err(error) = state
+                .store
+                .add_assignment(
+                    hash,
+                    storage_id,
+                    owner,
+                    size,
+                    provider_status.used,
+                    provider_status.capacity,
+                )
+                .await
+            {
+                if put.created {
+                    state.refund_owner_charge(owner, size).await;
+                }
+                return error_response(StatusCode::CONFLICT, &error);
+            }
             let gateway_url = format!("{}/moss/{}", state.config.public_base_url, hash);
+            let provider = state.chain.provider().to_base58();
+            let receipt_signature = state.chain.sign_message(
+                UploadReceiptCommitment {
+                    provider: &provider,
+                    upload: upload_commitment,
+                    price_per_byte_per_slot: provider_price,
+                    gateway_url: &gateway_url,
+                }
+                .signing_message()
+                .as_bytes(),
+            );
             state.reconcile_notify.notify_one();
             return (
                 if put.created {
@@ -259,12 +408,18 @@ async fn upload(State(state): State<AppState>, mut multipart: Multipart) -> Resp
                     StatusCode::OK
                 },
                 Json(UploadResponse {
+                    provider,
+                    owner: owner.to_string(),
+                    storage_id: storage_id.to_string(),
+                    request_nonce: request_nonce.to_string(),
+                    price_per_byte_per_slot: provider_price,
                     hash: hash.to_string(),
                     size: put.size,
                     created: put.created,
                     uri: format!("moss://{hash}"),
                     gateway_url,
                     state: "staged",
+                    receipt_signature,
                 }),
             )
                 .into_response();
@@ -282,6 +437,8 @@ async fn upload(State(state): State<AppState>, mut multipart: Multipart) -> Resp
         };
         match name.as_str() {
             "hash" => hash = Some(text),
+            "storage_id" => storage_id = Some(text),
+            "request_nonce" => request_nonce = Some(text),
             "size" => {
                 size = match text.parse::<u64>() {
                     Ok(value) => Some(value),
@@ -302,25 +459,39 @@ async fn upload(State(state): State<AppState>, mut multipart: Multipart) -> Resp
 
 fn authorize_upload(
     state: &AppState,
-    hash: &str,
-    size: u64,
-    content_type: &str,
-    owner: &str,
+    upload: &UploadCommitment<'_>,
     signature_json: Option<&str>,
 ) -> Result<(), String> {
+    let UploadCommitment {
+        owner,
+        storage_id,
+        request_nonce,
+        hash,
+        size,
+        ..
+    } = *upload;
     crate::content::decode_hash(hash)?;
     if size == 0 || size > state.config.max_object_bytes {
         return Err("object size is outside provider limits".to_string());
     }
+    let owner = Pubkey::from_base58(owner).map_err(|_| "owner address is invalid".to_string())?;
+    let expected_storage_id = derive_storage_id(&owner, hash, request_nonce)?;
+    if storage_id != expected_storage_id {
+        return Err("storage ID does not bind the signed owner and content hash".to_string());
+    }
     if !state.config.require_upload_signature {
         return Ok(());
     }
-    let owner = Pubkey::from_base58(owner).map_err(|_| "owner address is invalid".to_string())?;
     let signature = serde_json::from_str::<PqSignature>(
         signature_json.ok_or_else(|| "upload signature is required".to_string())?,
     )
     .map_err(|_| "upload signature JSON is invalid".to_string())?;
-    let message = upload_signing_message(hash, size, content_type);
+    let canonical_owner = owner.to_base58();
+    let message = UploadCommitment {
+        owner: &canonical_owner,
+        ..*upload
+    }
+    .signing_message();
     if !Keypair::verify(&owner, message.as_bytes(), &signature) {
         return Err("upload signature verification failed".to_string());
     }
@@ -503,8 +674,56 @@ mod tests {
     #[test]
     fn signing_message_is_canonical() {
         assert_eq!(
-            upload_signing_message("abc", 42, "image/png"),
-            "lichen-moss-upload-v1\nabc\n42\nimage/png"
+            UploadCommitment {
+                owner: "owner",
+                storage_id: "storage",
+                request_nonce: "nonce",
+                hash: "abc",
+                size: 42,
+                content_type: "image/png",
+            }
+            .signing_message(),
+            "lichen-moss-upload-v2\nowner\nstorage\nnonce\nabc\n42\nimage/png"
         );
+        assert_eq!(
+            UploadReceiptCommitment {
+                provider: "provider",
+                upload: UploadCommitment {
+                    owner: "owner",
+                    storage_id: "storage",
+                    request_nonce: "nonce",
+                    hash: "abc",
+                    size: 42,
+                    content_type: "image/png",
+                },
+                price_per_byte_per_slot: 7,
+                gateway_url: "https://testnet-moss-us.lichen.network/moss/abc",
+            }
+            .signing_message(),
+            "lichen-moss-upload-receipt-v2\nprovider\nowner\nstorage\nnonce\nabc\n42\n7\nhttps://testnet-moss-us.lichen.network/moss/abc\nstaged"
+        );
+    }
+
+    #[test]
+    fn storage_id_is_owner_scoped_and_deterministic() {
+        let content_hash = bs58::encode([0xA5; 32]).into_string();
+        let owner_a = Pubkey([1; 32]);
+        let owner_b = Pubkey([2; 32]);
+        let nonce_a = bs58::encode([3u8; 32]).into_string();
+        let nonce_b = bs58::encode([4u8; 32]).into_string();
+        let first = derive_storage_id(&owner_a, &content_hash, &nonce_a).unwrap();
+        assert_eq!(
+            first,
+            derive_storage_id(&owner_a, &content_hash, &nonce_a).unwrap()
+        );
+        assert_ne!(
+            first,
+            derive_storage_id(&owner_b, &content_hash, &nonce_a).unwrap()
+        );
+        assert_ne!(
+            first,
+            derive_storage_id(&owner_a, &content_hash, &nonce_b).unwrap()
+        );
+        assert_eq!(crate::content::decode_hash(&first).unwrap().len(), 32);
     }
 }

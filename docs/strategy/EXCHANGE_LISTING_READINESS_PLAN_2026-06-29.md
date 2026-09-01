@@ -1,8 +1,8 @@
 # Lichen Exchange Listing Readiness Plan
 
 **Created:** 2026-06-29
-**Status:** Testnet technical gates green; local gates, public testnet exchange validation, developer-portal publication, GitHub CI, public technical readiness, status-page approval, incident alias approval, and final testnet-only package publication have passed. The current package is testnet-only until mainnet launch.
-**Current signed testnet release:** `v0.5.224`; rollback anchor `v0.5.223`.
+**Status:** The `v0.5.266` testnet-only source package is a release candidate. Its final local gates, signed validator artifacts, four-validator live acceptance, developer-portal update, and signed exchange-package publication are pending. Historical exchange gates remain evidence, not acceptance of this candidate.
+**Current signed testnet release:** `v0.5.265`; candidate `v0.5.266`; rollback anchor `v0.5.265`.
 **Scope:** Native LICN exchange integration package, public RPC/WebSocket behavior, archive/history guarantees, exchange deposit/withdrawal operations, SDK/CLI/docs parity, and listing operations pack.
 
 ## Executive Position
@@ -13,17 +13,18 @@ The priority is credibility. Do not contact serious exchanges with a partial gui
 
 ## Current Repo Facts To Carry Forward
 
-These facts were updated after the 2026-07-20 archive-parity release:
+These facts were refreshed for the 2026-08-30 Archive V2 release:
 
-- Core protocol crates are at `0.5.224`: `core`, `rpc`, `validator`, and `cli`.
+- Core protocol crates are at `0.5.266`: `core`, `rpc`, `validator`, and `cli`.
 - The root `README.md`, production deployment runbook, mainnet launch runbook,
-  exchange docs, and public readiness gate use `v0.5.223` as the rollback anchor.
+  exchange docs, and public readiness gate use `v0.5.265` as the rollback anchor.
 - Mainnet is not live and remains outside the current public testnet exchange package scope until the mainnet launch exchange handoff closes.
-- `sdk/rust/Cargo.toml` package version `0.1.6` is published and depends on
-  `lobstercove-lichen-core = "=0.5.224"` while using the local `../../core` path.
-- `sdk/js/package.json` version `1.0.6` is published; the Python SDK remains
-  `1.0.0`.
-- Mainnet launch docs require every public RPC validator to use automatic archive-backed hot/cold storage from first boot and require a post-launch exchange handoff before any mainnet exchange package is published.
+- `sdk/rust/Cargo.toml` package version is `0.1.7` and depends on
+  `lobstercove-lichen-core = "=0.5.266"` while using the local `../../core` path.
+- JavaScript SDK `1.0.7`, Python SDK `1.0.1`, and Rust SDK `0.1.7` are the
+  documented release lines.
+- Fresh networks and mainnet use bounded recent hot history plus deterministic
+  Archive V2 segments from genesis; no testnet historical-loss waiver transfers.
 - Testnet state policy already treats account activity and transaction history as persistent user-facing indexes.
 - Local full-stack testing is supported by `scripts/start-local-stack.sh testnet`, which starts the local three-validator cluster plus custody/faucet/source-chain mocks; cleanup is `scripts/stop-local-stack.sh testnet`.
 
@@ -48,7 +49,7 @@ Exchange readiness means an integration engineer can perform the full LICN lifec
 - No exchange guide may claim archive support until `getTransaction`, `getTransactionsByAddress`, `getBlock`, latest block, and account history are verified against hot and cold archive-backed data.
 - No docs may publish guessed address regexes, chain IDs, fee units, logo URLs, or finality buffers. Values must come from source code, deployed configuration, or signed release artifacts.
 - No public docs may expose secrets, private RPC provider URLs, hot wallet key material, custody seeds, private contacts beyond approved incident aliases, or filled production env files.
-- Keep `v0.5.223` as the rollback anchor until a newer signed rollback point is
+- Keep `v0.5.265` as the rollback anchor until a newer signed rollback point is
   explicitly recorded.
 
 ## Deliverables
@@ -353,8 +354,8 @@ Exit gate:
 
 ### Phase 7: Public Testnet Release Gate
 
-Status: complete for testnet after signed `v0.5.221`; external package
-publication is complete for testnet-only scope.
+Status: historical testnet evidence is complete after signed `v0.5.221`; the
+`v0.5.266` refresh remains blocked until its signed rollout and live acceptance.
 
 Purpose: publish only after local proof.
 
@@ -364,7 +365,7 @@ Preconditions:
 - Archive/history tests passed.
 - Docs package passes link/static checks.
 - SDK/CLI examples are current.
-- Rollback anchor `v0.5.223` is recorded.
+- Rollback anchor `v0.5.265` is recorded.
 - Public testnet RPC is healthy and not stale/readiness-gated.
 - Mainnet RPC/WebSocket/archive checks are deferred because the package is
   explicitly scoped to testnet-only integration testing before mainnet launch.
@@ -372,7 +373,7 @@ Preconditions:
 - Public developer portal exchange page serves exchange-specific testnet-only
   content.
 - Status page and incident aliases are approved. Target exchange-package release
-  tag `exchange-testnet-v0.5.221` is selected before publication.
+  tag `exchange-testnet-v0.5.266` is selected before publication.
 
 Tasks:
 
@@ -399,9 +400,9 @@ Exit gate:
 
 ### Phase 8: External Listing Package
 
-Status: complete for testnet-only package publication.
-Developer-portal publication is complete. Mainnet is excluded from the current
-package until the mainnet launch exchange handoff closes; EVM wording is
+Status: the `v0.5.266` testnet-only package source is complete, but its signed
+publication and matching developer-portal deployment are pending. Mainnet is
+excluded until the mainnet launch exchange handoff closes; EVM wording is
 reconciled for native listings.
 
 Purpose: produce the package an exchange can review without backchannel dependency.
@@ -424,13 +425,13 @@ Contents:
 Publication tag:
 
 ```text
-exchange-testnet-v0.5.221
+exchange-testnet-v0.5.266
 ```
 
 Package release:
 
 ```text
-https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221
+https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.266
 ```
 
 Exit gate:

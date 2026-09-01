@@ -220,11 +220,10 @@
 
             <div class="callout callout-info">
                 <div class="callout-title"><i class="fas fa-terminal"></i> Surface Coverage</div>
-                Source-verified for candidate <code>v0.5.265</code>: the CLI covers wallet, identity, validator, staking,
+                Source-verified for release line <code>v0.5.266</code>: the CLI covers wallet, identity, validator, staking,
                 contract, token, governance, restriction, symbol, NFT, DeFi, and utility commands, plus the global
-                <code>--rpc-url</code> and <code>--output</code> flags documented below. Public-network installation
-                remains bound to signed release artifacts; the currently signed testnet release is
-                <code>v0.5.263</code> until this candidate completes the release gates.
+                <code>--rpc-url</code> and <code>--output</code> flags documented below. Public-network installation is
+                bound to published, checksum-signed, provenance-attested release artifacts.
             </div>
 
             <div class="callout callout-info">
@@ -879,6 +878,17 @@ Total: 2 validators, 205000.0 LICN staked</code></pre>
                 </div>
             </div>
 
+            <div class="cmd-section" id="validator-fingerprint">
+                <h3><code>lichen validator fingerprint</code></h3>
+                <p>Print the local 32-byte machine fingerprint used by validator registration. This is a stable
+                    registration input, not a validator private key or signer credential.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
+                    <pre><code>lichen validator fingerprint</code></pre>
+                </div>
+            </div>
+
             <div class="cmd-section" id="sparse-state-commitment">
                 <h3><code>lichen-validator</code> sparse state-commitment flags</h3>
                 <p>Sparse state-commitment maintenance is handled by the validator binary, not by the wallet
@@ -1267,7 +1277,7 @@ lichen-validator --activate-sparse-state-commitment \
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>lichen call &lt;contract&gt; &lt;function&gt; [--args &lt;json&gt;] [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen call &lt;contract&gt; &lt;function&gt; [--args &lt;json&gt;] [--value-spores &lt;u64&gt;] [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -1297,6 +1307,13 @@ lichen-validator --activate-sparse-state-commitment \
                             <td>JSON</td>
                             <td><code>[]</code></td>
                             <td>Arguments as a JSON array</td>
+                        </tr>
+                        <tr>
+                            <td><code>--value-spores</code></td>
+                            <td>u64</td>
+                            <td><code>0</code></td>
+                            <td>Native LICN value attached to the contract call, in exact spores. Required by
+                                payable functions such as Moss provider collateral staking.</td>
                         </tr>
                         <tr>
                             <td><code>--keypair, -k</code></td>
@@ -2973,6 +2990,22 @@ Total: 2 active proposals</code></pre>
             <p>These commands are implemented directly at the top level of <code>lichen</code> and are useful for
                 contract lifecycle operations, chain inspection, and operator workflows.</p>
 
+            <div class="cmd-section" id="governed-transfer">
+                <h3><code>lichen governed-transfer</code></h3>
+                <p>Create and operate threshold/timelock proposals for governed native wallets. Proposal mutations
+                    support <code>--dry-run</code>, optional signer <code>--keypair</code>, and explicit
+                    <code>--skip-preflight</code>; skipping simulation does not bypass on-chain authorization.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
+                    <pre><code>lichen governed-transfer propose &lt;to&gt; &lt;amount-licn&gt; --source &lt;role-or-address&gt; [--keypair &lt;path&gt;] [--dry-run]
+lichen governed-transfer approve &lt;proposal-id&gt; [--keypair &lt;path&gt;] [--dry-run]
+lichen governed-transfer execute &lt;proposal-id&gt; [--keypair &lt;path&gt;] [--dry-run]
+lichen governed-transfer cancel &lt;proposal-id&gt; [--keypair &lt;path&gt;] [--dry-run]
+lichen governed-transfer info &lt;proposal-id&gt;</code></pre>
+                </div>
+            </div>
+
             <div class="cmd-section" id="upgrade">
                 <h3><code>lichen upgrade</code></h3>
                 <p>Upgrade an existing contract in place by submitting a new WASM binary for a contract you own.</p>
@@ -3024,7 +3057,7 @@ Total: 2 active proposals</code></pre>
                     <div class="code-block-header"><span class="code-lang">Shell</span><button
                             class="code-copy-btn">Copy</button></div>
                     <pre><code>$ lichen version
-		lichen 0.5.265</code></pre>
+		lichen 0.5.266</code></pre>
                 </div>
             </div>
 

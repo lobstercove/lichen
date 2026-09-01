@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Services &amp; Release Binaries - Lichen Developer Portal</title>
+    <meta name="description"
+        content="Source-backed reference for Lichen validators, custody, faucet, Moss provider, release binaries, configuration, and service boundaries.">
+    <link rel="stylesheet" href="shared-base-styles.css">
+    <link rel="stylesheet" href="shared-theme.css">
+    <link rel="stylesheet" href="css/developers.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+
+<body>
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="LichenDevelopers_Logo_256.png" class="logo-icon" alt="Lichen Dev">
+                <span class="logo-text">Lichen Dev</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Hub</a></li>
+                <li><a href="getting-started.html">Get Started</a></li>
+                <li><a href="rpc-reference.html">API</a></li>
+                <li><a href="sdk-js.html">SDK</a></li>
+                <li><a href="contracts.html">Contracts</a></li>
+                <li><a href="cli-reference.html">CLI</a></li>
+            </ul>
+            <div class="nav-actions">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Search docs... (⌘K)">
+                    <i class="fas fa-search search-icon"></i>
+                </div>
+                <select id="devNetworkSelect" class="network-select"></select>
+            </div>
+            <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu">
+                <span></span><span></span><span></span>
+            </button>
+        </div>
+    </nav>
+
+    <div class="search-overlay" id="searchOverlay">
+        <div class="search-modal">
+            <input type="text" class="search-modal-input" id="searchModalInput" placeholder="Search documentation...">
+            <div class="search-results" id="searchResults"></div>
+        </div>
+    </div>
+
+    <button class="sidebar-toggle" aria-label="Toggle table of contents"><i class="fas fa-bars"></i></button>
+    <div class="sidebar-backdrop"></div>
+
+    <div class="docs-layout">
+        <aside class="docs-sidebar">
+            <div class="sidebar-section">
+                <div class="sidebar-title">Services</div>
+                <a href="#release-boundary" class="sidebar-link">Release boundary</a>
+                <a href="#network-services" class="sidebar-link">Network services</a>
+                <a href="#operator-tools" class="sidebar-link">Operator tools</a>
+                <a href="#configuration" class="sidebar-link">Configuration</a>
+                <a href="#archive-v2" class="sidebar-link">Archive V2</a>
+                <a href="#verification" class="sidebar-link">Verification</a>
+            </div>
+        </aside>
+
+        <main class="docs-main">
+            <div class="breadcrumbs">
+                <a href="index.html">Dev Hub</a>
+                <span class="separator">›</span>
+                <span class="current">Services &amp; Release Binaries</span>
+            </div>
+
+            <h1>Services &amp; Release Binaries</h1>
+            <p>This page maps every user-facing runtime service and signed release binary to its source package,
+                configuration contract, and deployment boundary. It is checked against the workspace and release
+                workflow on every release.</p>
+
+            <section id="release-boundary">
+                <h2>Signed Release Boundary</h2>
+                <div class="callout callout-warning">
+                    <div class="callout-title"><i class="fas fa-shield-halved"></i> Verify before installation</div>
+                    Install production-host binaries only from a published GitHub release. Verify
+                    <code>SHA256SUMS</code>, its detached ML-DSA signature <code>SHA256SUMS.sig</code>, the signer in
+                    <code>deploy/release-trust-anchor.json</code>, and GitHub artifact provenance. A local build is for
+                    development and qualification, never for replacing a live validator binary.
+                </div>
+                <p>The public network is testnet. Mainnet has not launched; a fresh mainnet requires its own no-waiver
+                    genesis-to-tip archive proof, capacity approval, and signed launch handoff.</p>
+            </section>
+
+            <section id="network-services">
+                <h2>Network Services</h2>
+                <table class="flags-table">
+                    <thead>
+                        <tr>
+                            <th>Binary / unit</th>
+                            <th>Default listener</th>
+                            <th>Responsibility</th>
+                            <th>Production boundary</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>lichen-validator</code><br><code>lichen-validator.service</code></td>
+                            <td>RPC 8899<br>WS 8900<br>P2P 7001</td>
+                            <td>Consensus, state transition, RPC, WebSocket, P2P, archive reads, signer, supervisor,
+                                and watchdog integration.</td>
+                            <td>Public RPC/WS must sit behind the configured edge proxy and origin authentication.
+                                Consensus-critical upgrades use coordinated stop/install/start.</td>
+                        </tr>
+                        <tr>
+                            <td><code>lichen-custody</code><br><code>lichen-custody.service</code></td>
+                            <td>HTTP 9105</td>
+                            <td>Bridge deposit observation, governed credit execution, withdrawal policy,
+                                multi-signer coordination, route accounting, and reconciliation.</td>
+                            <td>Routes fail closed when their source-chain, token, signer, auth, incident, or treasury
+                                configuration is absent or inconsistent.</td>
+                        </tr>
+                        <tr>
+                            <td><code>lichen-faucet</code><br><code>lichen-faucet.service</code></td>
+                            <td>HTTP 9100</td>
+                            <td>Rate-limited public-testnet LICN requests signed by the configured faucet identity.</td>
+                            <td>Testnet only. Missing key material disables dispensing; it is not a mainnet service.</td>
+                        </tr>
+                        <tr>
+                            <td><code>lichen-moss-provider</code><br><code>lichen-moss-provider.service</code></td>
+                            <td>HTTP 9120 on loopback</td>
+                            <td>Content-addressed Moss storage, upload authorization, provider registration,
+                                capacity accounting, challenge proofs, and on-chain reconciliation.</td>
+                            <td>Public base URLs require HTTPS, explicit CORS origins, bounded object/total capacity,
+                                owner-signed uploads, provider-signed receipts, and unique provider identities.
+                                Receipts bind the owner, owner-scoped storage ID, request nonce, immutable content root, price, and
+                                gateway; providers keep independent durable assignment state and logical capacity
+                                reservations for shared content.
+                                Marketplace requests bind to the exact receipt roster. <code>/healthz</code> proves process
+                                liveness; <code>/readyz</code> additionally proves usable on-chain registration,
+                                collateral, and pricing. Public marketplace writes wait for three distinct provider
+                                confirmations. See the <a href="https://github.com/lobstercove/lichen/blob/main/docs/deployment/MOSS_PROVIDER_DEPLOYMENT.md">operator runbook</a>.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section id="operator-tools">
+                <h2>Operator and Developer Tools</h2>
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Binary</th><th>Purpose</th><th>Safety boundary</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>lichen</code></td>
+                            <td>Wallet, identity, transfer, staking, validator, contract, token, governance,
+                                restriction, symbol, NFT, DeFi, and query CLI.</td>
+                            <td>See the <a href="cli-reference.html">complete CLI reference</a>; mutation builders do
+                                not bypass governance or runtime authorization.</td>
+                        </tr>
+                        <tr>
+                            <td><code>lichen-genesis</code></td>
+                            <td>Creates and verifies fresh-network genesis plus the embedded contract catalog.</td>
+                            <td>Never run against an existing shared network as an upgrade or recovery shortcut.</td>
+                        </tr>
+                        <tr>
+                            <td><code>lichen-archive-v2</code></td>
+                            <td>Builds, signs, verifies, mirrors, restores, activates, retires, and audits bounded
+                                Archive V2 ranges and catalogs.</td>
+                            <td>Retirement is signed, range-bound, replica-verified, idempotent, and conflict-aborting.</td>
+                        </tr>
+                        <tr>
+                            <td><code>zk-prove</code></td>
+                            <td>Builds supported proof envelopes such as domain-bound reserve/liability proofs.</td>
+                            <td>The historical shielded scheme 0x01 remains read-only and fail-closed; this tool does
+                                not reactivate unconstrained shielded proofs.</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>Governed migration binaries</h3>
+                <p>The signed platform bundle also carries the exact-tag tools
+                    <code>bountyboard_v2_migrate</code>, <code>compute_market_v3_migrate</code>,
+                    <code>dex_margin_v2_migrate</code>, <code>lichenauction_v3_migrate</code>,
+                    <code>lichenmarket_v3_migrate</code>, <code>sporepay_v3_migrate</code>,
+                    <code>sporepump_v3_migrate</code>, <code>sporevault_v2_migrate</code>, and
+                    <code>protocol_governance_contract_call</code>. Each is an explicit governed migration or proposal
+                    tool, not an automatic startup migration.</p>
+            </section>
+
+            <section id="configuration">
+                <h2>Configuration Sources</h2>
+                <table class="flags-table">
+                    <thead><tr><th>Surface</th><th>Canonical public template</th><th>Secret handling</th></tr></thead>
+                    <tbody>
+                        <tr>
+                            <td>Validator</td>
+                            <td><a href="https://github.com/lobstercove/lichen/blob/main/deploy/env-testnet.example"><code>deploy/env-testnet.example</code></a></td>
+                            <td>Passwords, signer tokens, identities, and keypairs remain host-local.</td>
+                        </tr>
+                        <tr>
+                            <td>Custody</td>
+                            <td><a href="https://github.com/lobstercove/lichen/blob/main/deploy/custody-env.example"><code>deploy/custody-env.example</code></a> and
+                                <a href="https://github.com/lobstercove/lichen/blob/main/deploy/custody-route-profile.md">route profile</a></td>
+                            <td>Source-chain credentials, treasury seeds, signer tokens, and auth tokens are never
+                                committed or copied between unrelated trust domains.</td>
+                        </tr>
+                        <tr>
+                            <td>Faucet</td>
+                            <td><a href="https://github.com/lobstercove/lichen/blob/main/deploy/faucet-env.example"><code>deploy/faucet-env.example</code></a></td>
+                            <td>The funded faucet keypair and password remain host-local.</td>
+                        </tr>
+                        <tr>
+                            <td>Moss provider</td>
+                            <td><a href="https://github.com/lobstercove/lichen/blob/main/deploy/moss-provider.env.example"><code>deploy/moss-provider.env.example</code></a>, regional
+                                <a href="https://github.com/lobstercove/lichen/tree/main/deploy"><code>Caddyfile.*-moss-*</code></a> fragments, and the
+                                <a href="https://github.com/lobstercove/lichen/blob/main/docs/deployment/MOSS_PROVIDER_DEPLOYMENT.md">deployment runbook</a></td>
+                            <td>The provider keypair remains local; storage and rate limits are mandatory.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section id="archive-v2">
+                <h2>Archive V2 Lifecycle</h2>
+                <ol>
+                    <li>Build canonical, certificate-normalized segments from a coherent hot/cold source checkpoint.</li>
+                    <li>Verify deterministic segment and catalog roots locally and in both configured replica domains.</li>
+                    <li>Activate only a signed catalog whose admitted range and following boundary match canonical
+                        chain history.</li>
+                    <li>Prove every validator serves the same genesis-to-tip public-history manifest, subject only to
+                        an explicitly recorded network-specific waiver.</li>
+                    <li>Retire legacy rows only with a signed, exact-range authorization after V2 source and replica
+                        equivalence.</li>
+                    <li>Compact the retired RocksDB ranges, measure physical reclaim, and retain only the running
+                        signed release plus its signed rollback anchor.</li>
+                </ol>
+                <p>Object storage is a replica and recovery domain, not a substitute for deterministic local serving.
+                    Source-backed recovery tails are removed only after all validators prove V2 parity.</p>
+            </section>
+
+            <section id="verification">
+                <h2>Release Verification</h2>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
+                    <pre><code>node scripts/verify-release-checksums.mjs .
+grep 'lichen-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
+gh attestation verify lichen-validator-linux-x86_64.tar.gz -R lobstercove/lichen</code></pre>
+                </div>
+                <p>After installation, verify the extracted, installed, and running executable hashes independently.
+                    See the <a href="validator.html">Validator Guide</a> for service hardening and the
+                    <a href="architecture.html">Architecture Guide</a> for consensus and storage behavior.</p>
+            </section>
+        </main>
+    </div>
+
+    <script src="shared-config.js"></script>
+    <script src="shared/env.js"></script>
+    <script src="js/developers.js"></script>
+</body>
+
+</html>

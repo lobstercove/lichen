@@ -212,6 +212,10 @@ pub(super) enum Commands {
         #[arg(short, long, default_value = "[]")]
         args: String,
 
+        /// Native LICN value attached to the call, in spores
+        #[arg(long, default_value_t = 0)]
+        value_spores: u64,
+
         /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,

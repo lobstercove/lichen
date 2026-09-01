@@ -158,8 +158,8 @@ pub use state::{
     AccountTxsRebuildReport, AccountTxsSlotInspection, AccountTxsSourceInspection,
     ArchiveV2RetirementLimits, ArchiveV2RetirementPassReport, ArchiveV2RetirementPhase,
     ArchiveV2RetirementReclaimLimits, ArchiveV2RetirementReclaimReport, CheckpointMeta,
-    GovernedProposalTxBackfillReport, PublicHistoryCategoryDigest, PublicHistoryImportReport,
-    PublicHistoryManifest, PUBLIC_HISTORY_SNAPSHOT_CATEGORIES,
+    CheckpointSnapshotProfile, GovernedProposalTxBackfillReport, PublicHistoryCategoryDigest,
+    PublicHistoryImportReport, PublicHistoryManifest, PUBLIC_HISTORY_SNAPSHOT_CATEGORIES,
 };
 pub use transaction::{
     Instruction, Message, Transaction, TransactionType, DEFAULT_COMPUTE_BUDGET, MAX_COMPUTE_BUDGET,

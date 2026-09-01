@@ -170,6 +170,7 @@ jq -e '
   .operation == "role_bootstrap"
   and .bootstrap_authorized == true
   and .marker_created == false
+  and .state_admission_created == false
   and .dry_run == true
 ' "$dry_run_json" >/dev/null
 if [ -n "$marker_preexisting_sha256" ]; then
@@ -188,6 +189,7 @@ fi
 jq -e '
   .operation == "role_bootstrap"
   and .bootstrap_authorized == true
+  and .state_admission_persisted == true
   and .dry_run == false
 ' "$publish_json" >/dev/null
 require_regular_file "$marker" "published Archive V2 role marker"
@@ -203,6 +205,12 @@ if [ -n "$marker_preexisting_sha256" ]; then
 else
   [ "$(jq -r '.marker_created' "$publish_json")" = "true" ] || {
     echo "new publish did not report marker creation" >&2
+    exit 2
+  }
+fi
+if [ "$(jq -r '.state_admission_persisted' "$dry_run_json")" = "false" ]; then
+  [ "$(jq -r '.state_admission_created' "$publish_json")" = "true" ] || {
+    echo "publish did not create the missing state-bound Archive V2 admission marker" >&2
     exit 2
   }
 fi
@@ -237,5 +245,5 @@ jq -n \
 set +o noclobber
 sync -f "$ARCHIVE_V2_EVIDENCE_OUTPUT"
 
-echo "Archive V2 role marker verified and published; no validator start or legacy deletion was performed."
+echo "Archive V2 role and state-admission markers verified and published; no validator start or legacy deletion was performed."
 echo "Evidence: $ARCHIVE_V2_EVIDENCE_OUTPUT"

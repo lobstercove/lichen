@@ -269,6 +269,7 @@ impl<'a> ArchiveV2Builder<'a> {
             }
             ArchiveV2SegmentCodec::decode(&object_bytes, manifest, &self.identity)?;
             self.replicate_catalog_and_verify(&catalog, &journal.replica_acknowledgements)?;
+            self.cleanup_cataloged_staging(&manifest.segment_object_hash)?;
             return Ok(ArchiveV2BuildReport {
                 start_slot: manifest.start_slot,
                 end_slot: manifest.end_slot,
@@ -521,6 +522,8 @@ impl<'a> ArchiveV2Builder<'a> {
             store_journal(&journal_path, &journal)?;
         }
 
+        self.cleanup_cataloged_staging(&manifest.segment_object_hash)?;
+
         Ok(ArchiveV2BuildReport {
             start_slot: manifest.start_slot,
             end_slot: manifest.end_slot,
@@ -742,6 +745,29 @@ impl<'a> ArchiveV2Builder<'a> {
         self.options
             .staging_root()
             .join(format!("{}.manifest", hash.to_hex()))
+    }
+
+    fn cleanup_cataloged_staging(&self, object_hash: &Hash) -> Result<(), ArchiveV2Error> {
+        for path in [
+            self.staged_segment_path(object_hash),
+            self.staged_manifest_path(object_hash),
+        ] {
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(ArchiveV2Error::Io(format!(
+                        "failed removing cataloged staging file {}: {error}",
+                        path.display()
+                    )))
+                }
+            }
+        }
+        OpenOptions::new()
+            .read(true)
+            .open(self.options.staging_root())?
+            .sync_all()?;
+        Ok(())
     }
 
     fn validate_journal(&self, journal: &ArchiveV2BuildJournal) -> Result<(), ArchiveV2Error> {
@@ -1066,10 +1092,19 @@ mod tests {
             assert!(report.resumed);
             assert_eq!(report.replica_acknowledgements, 1);
             assert!(builder.options.catalog_path().exists());
+            let object_hash = report.segment_object_hash.unwrap();
+            assert!(!builder.staged_segment_path(&object_hash).exists());
+            assert!(!builder.staged_manifest_path(&object_hash).exists());
+            assert!(builder.journal_path().exists());
             let primary_catalog = ArchiveV2Catalog::load(&builder.options.catalog_path()).unwrap();
             let replica_catalog =
                 ArchiveV2Catalog::load(&replica.path().join("catalog.av2")).unwrap();
             assert_eq!(replica_catalog, primary_catalog);
+            let repeated = builder.build().unwrap();
+            assert!(repeated.resumed);
+            assert_eq!(repeated.segment_object_hash, Some(object_hash));
+            assert!(!builder.staged_segment_path(&object_hash).exists());
+            assert!(!builder.staged_manifest_path(&object_hash).exists());
         }
     }
 

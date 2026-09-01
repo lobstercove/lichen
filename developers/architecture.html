@@ -67,6 +67,7 @@
                 <a href="#consensus" class="sidebar-link">Tendermint BFT Consensus</a>
                 <a href="#tx-lifecycle" class="sidebar-link">Transaction Lifecycle</a>
                 <a href="#state" class="sidebar-link">State Model</a>
+                <a href="#archive-v2" class="sidebar-link">Archive V2</a>
                 <a href="#wasm" class="sidebar-link">WASM Execution</a>
                 <a href="#lichenid-integration" class="sidebar-link">LichenID Integration</a>
                 <a href="#privacy" class="sidebar-link">Privacy &amp; Security</a>
@@ -375,6 +376,42 @@ selected_proposer_priority -= total_voting_power</code></pre>
                 formula is: <code>min_balance = data_size × 6960 + 890880</code> spores. Accounts that fall below this
                 threshold are garbage-collected after 2 epochs.
             </div>
+
+            <h3 id="archive-v2">Archive V2 Public History</h3>
+            <p>Archive V2 separates mutable consensus state from immutable public history. Validators retain a bounded
+                recent-history window with current state and serve older canonical history from deterministic,
+                checksummed segments admitted by a signed catalog.</p>
+            <table class="arch-table">
+                <thead><tr><th>Layer</th><th>Contents</th><th>Invariant</th></tr></thead>
+                <tbody>
+                    <tr>
+                        <td>Hot state</td>
+                        <td>Current consensus state plus the configured recent public-history window</td>
+                        <td>Crash-recoverable RocksDB/WAL state; checkpointed coherently with archive inputs</td>
+                    </tr>
+                    <tr>
+                        <td>Archive V2 segments</td>
+                        <td>Canonical blocks, transactions, indexes, events, trades, and account snapshots by bounded
+                            slot range</td>
+                        <td>Certificate-normalized deterministic bytes, content hashes, range roots, and explicit
+                            previous/following boundaries</td>
+                    </tr>
+                    <tr>
+                        <td>Signed catalog</td>
+                        <td>Ordered segment identities and the admitted genesis-to-watermark range</td>
+                        <td>Activation fails closed on gaps, conflicts, signer mismatch, replica disagreement, or
+                            insufficient headroom</td>
+                    </tr>
+                    <tr>
+                        <td>Replica domains</td>
+                        <td>Independent object-storage copies of the same catalog and segment objects</td>
+                        <td>Recovery copies; they do not replace local serving or authorize deletion by themselves</td>
+                    </tr>
+                </tbody>
+            </table>
+            <p>Legacy hot/cold history is a migration source, not a permanent second archive. It is removed only after
+                four-way V2 manifest parity through a signed exact-range retirement followed by RocksDB compaction.
+                Fresh networks start on this model and receive no historical-loss waiver.</p>
 
             <!-- ========== 5. WASM EXECUTION ========== -->
             <h2 id="wasm">WASM Execution</h2>
@@ -834,7 +871,9 @@ bootstrap_peers = [
                 <li>Switch to normal gossip-based block following</li>
             </ol>
 
-            <p>Full state snapshots are generated every 1,000 slots (~6.7 minutes) by archive nodes. Typical sync time
+            <p>Legacy full-archive snapshots use the 1,000-slot cadence. Archive V2 bounded hot-repair snapshots are
+                generated every 10,000 slots (~67 minutes at the production slot target) so their physical
+                public-history compaction cannot become a continuous validator workload. Typical sync time
                 for a new node is under 2 minutes for testnet.</p>
 
             <h3>RPC &amp; WebSocket Endpoints</h3>

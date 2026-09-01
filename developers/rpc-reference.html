@@ -2488,7 +2488,12 @@
                 <h3>Chain / Account / Tx</h3>
                 <ul>
                     <li><code>confirmTransaction</code></li>
+                    <li><code>getRecentBlocks</code> — bounded newest-first block history with archive fallback</li>
                     <li><code>getRecentTransactions</code></li>
+                    <li><code>getRecentShieldedTransactions</code> — read-only historical scheme-0x01 activity; no
+                        shielded mutation is enabled</li>
+                    <li><code>getEpochInfo</code> — current epoch, slot boundaries, and timing fields</li>
+                    <li><code>getSupply</code> — native supply, circulation, staking, and burn accounting</li>
                     <li><code>getTokenAccounts</code></li>
                     <li><code>getTreasuryInfo</code></li>
                     <li><code>getGenesisAccounts</code></li>
@@ -2498,11 +2503,39 @@
 
                 <h3>Fee / Network / Validator</h3>
                 <ul>
+                    <li><code>estimateTransactionFee</code> — deterministic fee estimate for the supplied transaction
+                        envelope</li>
+                    <li><code>getMarketplaceConfig</code> — marketplace fee and runtime configuration used by public
+                        clients</li>
+                    <li><code>getIncidentStatus</code> — current signed/operator incident restriction summary</li>
+                    <li><code>getServiceFleetStatus</code> — configured service-fleet readiness without exposing
+                        credentials or private control surfaces</li>
                     <li><code>getOraclePrices</code> — returns nullable fresh consensus prices plus
                         <code>operational</code>, <code>consensusManaged</code>, <code>paused</code>,
                         <code>requiredFeeds</code>, and <code>freshFeeds</code>. Missing, malformed, future, or stale
                         quotes are never represented as live zero/reference prices.</li>
                     <li><code>getClusterInfo</code></li>
+                </ul>
+
+                <h3>Restriction Governance and Transaction Builders</h3>
+                <p>Read methods expose active restriction state. Builder methods return unsigned governed transaction
+                    payloads; they do not apply a restriction or bypass proposal authorization by themselves.</p>
+                <ul>
+                    <li><code>getRestriction</code>, <code>listRestrictions</code>,
+                        <code>listActiveRestrictions</code>, <code>getRestrictionStatus</code></li>
+                    <li><code>getAccountRestrictionStatus</code>, <code>getAssetRestrictionStatus</code>,
+                        <code>getAccountAssetRestrictionStatus</code>, <code>getContractLifecycleStatus</code>,
+                        <code>getCodeHashRestrictionStatus</code></li>
+                    <li><code>canSend</code>, <code>canReceive</code>, <code>canTransfer</code> — pre-signing policy
+                        evaluation for wallets, custody, and integrations</li>
+                    <li><code>buildRestrictAccountTx</code>, <code>buildUnrestrictAccountTx</code>,
+                        <code>buildRestrictAccountAssetTx</code>, <code>buildUnrestrictAccountAssetTx</code>,
+                        <code>buildSetFrozenAssetAmountTx</code></li>
+                    <li><code>buildSuspendContractTx</code>, <code>buildResumeContractTx</code>,
+                        <code>buildQuarantineContractTx</code>, <code>buildTerminateContractTx</code>,
+                        <code>buildBanCodeHashTx</code>, <code>buildUnbanCodeHashTx</code></li>
+                    <li><code>buildPauseBridgeRouteTx</code>, <code>buildResumeBridgeRouteTx</code>,
+                        <code>buildExtendRestrictionTx</code>, <code>buildLiftRestrictionTx</code></li>
                 </ul>
 
                 <h3>Liquid Staking</h3>
@@ -2559,7 +2592,8 @@
                         <code>getSporePumpStats</code>,
                         <code>getSporeVaultStats</code>, <code>getBountyBoardStats</code>,
                         <code>getComputeMarketStats</code>, <code>getMossStorageStats</code>,
-                        <code>getLichenMarketStats</code>, <code>getLichenAuctionStats</code>,
+                        <code>getLichenMarketStats</code>, <code>getLichenMarketTokenStats</code>,
+                        <code>getLichenAuctionStats</code>,
                         <code>getLichenPunksStats</code>
                     </li>
                     <li><code>getSporePayStats</code> reads the canonical <code>sp_*</code> contract keys and returns

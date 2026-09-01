@@ -13,10 +13,15 @@
     var MOSS_STORAGE_PROGRAM_ID = null; // resolved lazily
     var MOSS_GATEWAY_URL = (window.lichenMarketConfig && window.lichenMarketConfig.mossGatewayUrl)
         || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.moss === 'function' ? LICHEN_CONFIG.moss() : null);
+    var MOSS_PROVIDER_URLS = (window.lichenMarketConfig && window.lichenMarketConfig.mossProviderUrls)
+        || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.mossProviders === 'function'
+            ? LICHEN_CONFIG.mossProviders()
+            : [MOSS_GATEWAY_URL]);
     var MOSS_REPLICATION_FACTOR = 3;
     var MOSS_DURATION_SLOTS = 78840000; // 365 days at the protocol's 400ms target cadence
     var MOSS_MAX_PRICE = 10;
     var MOSS_PRICING_SCALE = 100000000n;
+    var MOSS_ASSIGNMENT_TIMEOUT_MS = 120000;
     var MINTING_FEE = 0.5; // default, overridden by on-chain value at init
     var _mintingFeeLoaded = false;
     var CREATE_COLLECTION_OPCODE = 6;
@@ -158,6 +163,23 @@
         return new Uint8Array(digest);
     }
 
+    async function deriveMossStorageId(ownerAddress, objectHash, requestNonce) {
+        var ownerBytes = bs58decode(ownerAddress);
+        var contentHashBytes = bs58decode(objectHash);
+        var requestNonceBytes = bs58decode(requestNonce);
+        if (!ownerBytes || ownerBytes.length !== 32
+            || !contentHashBytes || contentHashBytes.length !== 32
+            || !requestNonceBytes || requestNonceBytes.length !== 32) {
+            throw new Error('Moss owner, content hash, and request nonce must be canonical 32-byte values');
+        }
+        return bs58encode(await sha256Bytes(concatBytes([
+            new TextEncoder().encode('lichen-moss-storage-id-v1'),
+            ownerBytes,
+            contentHashBytes,
+            requestNonceBytes
+        ])));
+    }
+
     async function mossRootBytes(blob) {
         if (!blob || !Number.isSafeInteger(blob.size) || blob.size <= 0) {
             throw new Error('Moss objects must contain at least one byte');
@@ -179,8 +201,7 @@
         return nodes[0];
     }
 
-    function utf8ToBase64(input) {
-        var bytes = new TextEncoder().encode(input || '');
+    function bytesToBase64(bytes) {
         var binary = '';
         for (var i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
         return btoa(binary);
@@ -198,6 +219,14 @@
         var bytes = new Uint8Array(length);
         getCrypto().getRandomValues(bytes);
         return bytes;
+    }
+
+    function nonzeroRandomBytes(length) {
+        for (var attempt = 0; attempt < 4; attempt++) {
+            var bytes = randomBytes(length);
+            if (bytes.some(function (byte) { return byte !== 0; })) return bytes;
+        }
+        throw new Error('Secure randomness returned an invalid all-zero value');
     }
 
     function cryptoRandomU32() {
@@ -231,7 +260,7 @@
         if (typeof entry === 'string') {
             candidate = entry;
         } else if (entry && typeof entry === 'object') {
-            candidate = entry.id || entry.program_id || entry.contract_id || null;
+            candidate = entry.program || entry.program_id || entry.contract_id || entry.id || null;
         }
         if (!candidate) throw new Error('Moss storage contract not found in symbol registry');
         MOSS_STORAGE_PROGRAM_ID = candidate;
@@ -255,9 +284,15 @@
     function mossStorageCostLicn(sizeBytes) {
         return estimateMossStorageCost(
             sizeBytes,
-            MOSS_REPLICATION_FACTOR,
+            mossRequiredReplication(),
             MOSS_DURATION_SLOTS
         ) / 1000000000;
+    }
+
+    function mossRequiredReplication() {
+        var localDevelopment = window.lichenMarketConfig
+            && String(window.lichenMarketConfig.network || '').indexOf('local-') === 0;
+        return localDevelopment ? 1 : MOSS_REPLICATION_FACTOR;
     }
 
     function normalizeMossContentType(value) {
@@ -268,63 +303,234 @@
         return normalized;
     }
 
-    async function uploadObjectToMoss(blob, objectHash, contentType) {
+    async function uploadObjectToMoss(blob, objectHash, requestNonce, storageId, contentType) {
         if (!MOSS_GATEWAY_URL) throw new Error('Moss content gateway is not configured');
         if (!currentWallet || !window.lichenWallet || typeof window.lichenWallet.signMessage !== 'function') {
             throw new Error('Wallet message signing is required for Moss uploads');
         }
         contentType = normalizeMossContentType(contentType);
-        var message = 'lichen-moss-upload-v1\n' + objectHash + '\n' + blob.size + '\n' + contentType;
+        var message = 'lichen-moss-upload-v2\n' + currentWallet.address + '\n' + storageId
+            + '\n' + requestNonce + '\n' + objectHash + '\n' + blob.size + '\n' + contentType;
         var signed = await window.lichenWallet.signMessage(message);
         var pqSignature = signed && (signed.pqSignature || (signed.result && signed.result.pqSignature));
         if (!pqSignature) throw new Error('Wallet did not return a PQ upload signature');
 
-        var form = new FormData();
-        form.append('hash', objectHash);
-        form.append('size', String(blob.size));
-        form.append('owner', currentWallet.address);
-        form.append('content_type', contentType);
-        form.append('signature', JSON.stringify(pqSignature));
-        form.append('object', blob, objectHash);
-        var response = await fetch(MOSS_GATEWAY_URL.replace(/\/$/, '') + '/v1/uploads', {
-            method: 'POST',
-            body: form,
+        var providers = Array.from(new Set((MOSS_PROVIDER_URLS || [])
+            .map(function (url) { return String(url || '').replace(/\/$/, ''); })
+            .filter(Boolean)));
+        var requiredReceipts = mossRequiredReplication();
+        if (providers.length < requiredReceipts) {
+            throw new Error('Moss requires ' + requiredReceipts + ' distinct upload providers; only '
+                + providers.length + ' are configured');
+        }
+
+        var receipts = [];
+        var providerIdentities = new Set();
+        var failures = [];
+        var startIndex = Array.from(objectHash).reduce(function (sum, character) {
+            return (sum + character.charCodeAt(0)) >>> 0;
+        }, 0) % providers.length;
+        for (var providerOffset = 0; providerOffset < providers.length; providerOffset++) {
+            var providerUrl = providers[(startIndex + providerOffset) % providers.length];
+            try {
+                var form = new FormData();
+                form.append('hash', objectHash);
+                form.append('storage_id', storageId);
+                form.append('request_nonce', requestNonce);
+                form.append('size', String(blob.size));
+                form.append('owner', currentWallet.address);
+                form.append('content_type', contentType);
+                form.append('signature', JSON.stringify(pqSignature));
+                form.append('object', blob, objectHash);
+                var response = await fetch(providerUrl + '/v1/uploads', {
+                    method: 'POST',
+                    body: form,
+                });
+                var payload = await response.json().catch(function () { return {}; });
+                if (!response.ok) {
+                    throw new Error(payload.error || ('HTTP ' + response.status));
+                }
+                var providerIdentity = payload && String(payload.provider || '');
+                var providerBytes = providerIdentity ? bs58decode(providerIdentity) : null;
+                var providerPrice = payload && Number(payload.price_per_byte_per_slot);
+                var expectedGateway = providerUrl + '/moss/' + objectHash;
+                if (!payload || payload.owner !== currentWallet.address
+                    || payload.storage_id !== storageId || payload.request_nonce !== requestNonce
+                    || payload.hash !== objectHash
+                    || Number(payload.size) !== blob.size
+                    || !providerBytes || providerBytes.length !== 32
+                    || !Number.isSafeInteger(providerPrice) || providerPrice <= 0
+                    || providerPrice > MOSS_MAX_PRICE || payload.state !== 'staged'
+                    || payload.gateway_url !== expectedGateway || !payload.receipt_signature) {
+                    throw new Error('conflicting upload receipt');
+                }
+                if (!window.LichenPQ || typeof window.LichenPQ.verifySignature !== 'function') {
+                    throw new Error('PQ receipt verification is unavailable');
+                }
+                var receiptMessage = 'lichen-moss-upload-receipt-v2\n' + providerIdentity
+                    + '\n' + currentWallet.address + '\n' + storageId + '\n' + requestNonce
+                    + '\n' + objectHash
+                    + '\n' + blob.size + '\n' + providerPrice
+                    + '\n' + expectedGateway + '\nstaged';
+                var receiptValid = await window.LichenPQ.verifySignature(
+                    payload.receipt_signature,
+                    new TextEncoder().encode(receiptMessage),
+                    providerIdentity
+                );
+                if (!receiptValid) {
+                    throw new Error('invalid provider-signed upload receipt');
+                }
+                if (providerIdentities.has(providerIdentity)) {
+                    throw new Error('duplicate provider identity');
+                }
+                providerIdentities.add(providerIdentity);
+                receipts.push({ endpoint: providerUrl, provider: providerIdentity, receipt: payload });
+                if (receipts.length >= requiredReceipts) break;
+            } catch (error) {
+                failures.push(providerUrl + ': ' + (error && error.message ? error.message : String(error)));
+            }
+        }
+        if (receipts.length < requiredReceipts) {
+            throw new Error('Moss replication received ' + receipts.length + '/' + requiredReceipts
+                + ' required provider receipts' + (failures.length ? ': ' + failures.join(' | ') : ''));
+        }
+        var primary = receipts.find(function (entry) {
+            return entry.endpoint === String(MOSS_GATEWAY_URL).replace(/\/$/, '');
+        }) || receipts[0];
+        primary.receipt.replica_receipts = receipts.map(function (entry) {
+            return { endpoint: entry.endpoint, provider: entry.provider };
         });
-        var payload = await response.json().catch(function () { return {}; });
-        if (!response.ok) {
-            throw new Error(payload.error || ('Moss upload failed with HTTP ' + response.status));
+        return primary.receipt;
+    }
+
+    function sleep(milliseconds) {
+        return new Promise(function (resolve) { setTimeout(resolve, milliseconds); });
+    }
+
+    async function waitForSuccessfulTransaction(signature, timeoutMs) {
+        var value = String(signature || '').trim();
+        if (!value) throw new Error('Wallet returned no storage transaction signature');
+        var deadline = Date.now() + timeoutMs;
+        var lastError = 'transaction is not yet available';
+        while (Date.now() < deadline) {
+            var transaction = null;
+            try {
+                transaction = await marketTrustedRpcCall('getTransaction', [value]);
+            } catch (error) {
+                lastError = error && error.message ? error.message : String(error);
+            }
+            if (transaction) {
+                if (transaction.success === false || transaction.error || transaction.err) {
+                    throw new Error(transaction.error || transaction.err || 'storage transaction failed');
+                }
+                return transaction;
+            }
+            await sleep(800);
         }
-        if (!payload || payload.hash !== objectHash || Number(payload.size) !== blob.size) {
-            throw new Error('Moss gateway returned a conflicting upload receipt');
+        throw new Error('Storage transaction confirmation timed out: ' + lastError);
+    }
+
+    function decodeMossStorageInfo(result, expected) {
+        if (!result || result.success === false || Number(result.returnCode) !== 0 || !result.returnData) {
+            return null;
         }
-        return payload;
+        var raw = atob(result.returnData);
+        var bytes = new Uint8Array(raw.length);
+        for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+        if (bytes.length < 59) throw new Error('Moss storage assignment is truncated');
+        var sizeView = new DataView(bytes.buffer, bytes.byteOffset + 32, 8);
+        var size = sizeView.getBigUint64(0, true);
+        var replication = bytes[40];
+        var providerCount = bytes[58];
+        var owner = bs58encode(bytes.slice(0, 32));
+        if (size !== BigInt(expected.blob.size) || replication !== expected.replicationFactor
+            || owner !== currentWallet.address || bytes.length < 59 + providerCount * 32) {
+            throw new Error('Moss storage assignment conflicts with the uploaded object');
+        }
+        var providers = [];
+        for (var providerIndex = 0; providerIndex < providerCount; providerIndex++) {
+            providers.push(bs58encode(bytes.slice(59 + providerIndex * 32, 91 + providerIndex * 32)));
+        }
+        return { owner: owner, providerCount: providerCount, providers: providers };
+    }
+
+    async function waitForMossReplication(mossProgram, preparedObjects, timeoutMs) {
+        var deadline = Date.now() + timeoutMs;
+        var lastCounts = preparedObjects.map(function () { return 0; });
+        while (Date.now() < deadline) {
+            var allReplicated = true;
+            for (var i = 0; i < preparedObjects.length; i++) {
+                var storageIdBytes = bs58decode(preparedObjects[i].storageId);
+                if (!storageIdBytes || storageIdBytes.length !== 32) {
+                    throw new Error('Moss storage ID is not a 32-byte contract argument');
+                }
+                var args = bytesToBase64(storageIdBytes);
+                var result = await marketTrustedRpcCall('callContract', [
+                    mossProgram,
+                    'get_storage_info',
+                    args,
+                    currentWallet.address
+                ]);
+                var info = decodeMossStorageInfo(result, preparedObjects[i]);
+                var expectedProviders = new Set(preparedObjects[i].uploadProviders || []);
+                var confirmedProviders = new Set(info ? info.providers : []);
+                var matchedProviders = Array.from(expectedProviders).filter(function (provider) {
+                    return confirmedProviders.has(provider);
+                }).length;
+                lastCounts[i] = matchedProviders;
+                if (expectedProviders.size !== preparedObjects[i].replicationFactor
+                    || confirmedProviders.size < preparedObjects[i].replicationFactor
+                    || matchedProviders < preparedObjects[i].replicationFactor) {
+                    allReplicated = false;
+                }
+            }
+            if (allReplicated) return;
+            await sleep(1000);
+        }
+        throw new Error('Moss replication timed out (confirmed providers: ' + lastCounts.join(', ') + ')');
     }
 
     async function prepareMossObject(blob, contentType) {
         contentType = normalizeMossContentType(contentType);
+        var replicationFactor = mossRequiredReplication();
+        var objectHash = bs58encode(await mossRootBytes(blob));
+        var requestNonce = bs58encode(nonzeroRandomBytes(32));
         return {
             blob: blob,
             contentType: contentType,
-            objectHash: bs58encode(await mossRootBytes(blob)),
+            objectHash: objectHash,
+            requestNonce: requestNonce,
+            storageId: await deriveMossStorageId(currentWallet.address, objectHash, requestNonce),
+            replicationFactor: replicationFactor,
             storageValue: estimateMossStorageCost(
                 blob.size,
-                MOSS_REPLICATION_FACTOR,
+                replicationFactor,
                 MOSS_DURATION_SLOTS
             ),
         };
     }
 
     function buildMossStorageInstruction(mossProgram, prepared) {
+        var providerRoster = [];
+        (prepared.uploadProviders || []).forEach(function (provider) {
+            providerRoster.push.apply(providerRoster, Array.from(bs58decode(provider)));
+        });
+        if (providerRoster.length !== prepared.replicationFactor * 32) {
+            throw new Error('Moss provider roster does not match the requested replication factor');
+        }
         return {
             program_id: CONTRACT_PROGRAM_ID,
             accounts: [currentWallet.address, mossProgram],
-            data: buildContractCallData('store_data_v2', [
+            data: buildContractCallData('store_data_v3', [
                 currentWallet.address,
                 prepared.objectHash,
+                prepared.requestNonce,
                 prepared.blob.size,
-                MOSS_REPLICATION_FACTOR,
+                prepared.replicationFactor,
                 MOSS_DURATION_SLOTS,
-                MOSS_MAX_PRICE
+                MOSS_MAX_PRICE,
+                providerRoster,
+                providerRoster.length
             ], prepared.storageValue),
         };
     }
@@ -336,11 +542,22 @@
         var mossProgram = await resolveMossStorageProgram();
         for (var i = 0; i < preparedObjects.length; i++) {
             var prepared = preparedObjects[i];
-            await uploadObjectToMoss(prepared.blob, prepared.objectHash, prepared.contentType);
+            var uploadReceipt = await uploadObjectToMoss(
+                prepared.blob,
+                prepared.objectHash,
+                prepared.requestNonce,
+                prepared.storageId,
+                prepared.contentType
+            );
+            prepared.uploadProviders = (uploadReceipt.replica_receipts || []).map(function (receipt) {
+                return receipt.provider;
+            });
         }
-        await window.lichenWallet.sendTransaction(preparedObjects.map(function (prepared) {
+        var storageSignature = await window.lichenWallet.sendTransaction(preparedObjects.map(function (prepared) {
             return buildMossStorageInstruction(mossProgram, prepared);
         }));
+        await waitForSuccessfulTransaction(storageSignature, MOSS_ASSIGNMENT_TIMEOUT_MS);
+        await waitForMossReplication(mossProgram, preparedObjects, MOSS_ASSIGNMENT_TIMEOUT_MS);
         return preparedObjects.map(function (prepared) { return 'moss://' + prepared.objectHash; });
     }
 

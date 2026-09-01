@@ -4,14 +4,13 @@ This is the operator runbook for launching Lichen mainnet and then enabling
 mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
-Written for the next mainnet package. Release candidate for this runbook is
-`v0.5.265`; keep `v0.5.263` as the signed restart-safe anchor and immediate
-rollback. Keep `v0.5.262`, `v0.5.260`, and `v0.5.258` as prior signed
-restart-safe evidence, and retain `v0.5.240` as the Archive V2 recovery anchor. The candidate
-must not be used until its exact tag and signed artifacts pass the release
-gates. Preserve `v0.5.225` as pre-change evidence, not as a restartable
-rollback. Mainnet remains blocked until production storage, full-scope launch
-gates, independent review, and deployment approval pass.
+Written for the next mainnet package. Release line for this runbook is
+`v0.5.266`; keep `v0.5.265` as the signed restart-safe anchor and immediate
+rollback. The release must not be used until its exact tag and signed artifacts
+pass the release gates. Historical tags and audit records remain in Git; they
+are not installed rollback binaries. Mainnet remains blocked until production
+storage, full-scope launch gates, independent review, and deployment approval
+pass.
 
 ## Operating Rules
 
@@ -20,9 +19,11 @@ gates, independent review, and deployment approval pass.
   genesis. That is expected.
 - Start the Lichen chain first. Enable custody only after all four validators
   are healthy, synced, and serving the same genesis.
-- Public mainnet validators are archive-backed from first boot. `v0.5.224` and
-  later automatically enable archive mode and derive `archive-mainnet` beside
-  `state-mainnet`; public runtime archive flags fail startup.
+- Public mainnet validators use Archive V2 from genesis with a bounded recent
+  hot window and immutable signed V2 segments on separately monitored archive
+  storage. A fresh mainnet must not create or depend on the legacy unbounded
+  `archive-mainnet` layout. Public runtime archive flags fail startup when this
+  profile or genesis-to-tip coverage is incomplete.
 - A materially lagging validator returns to bounded catch-up before future
   block processing. Canonical commits and accepted verified snapshot chunks,
   not raw receipt or pending queues, are the runtime progress signal.
@@ -57,10 +58,9 @@ gates, independent review, and deployment approval pass.
   preserve replay compatibility for the June 2026 testnet after governed signer
   custody was lost; mainnet must launch from verified custody instead.
 - Do not deploy a release that changes consensus rules with a mixed-version
-  rolling restart. The current safe anchor `v0.5.263` must remain available
-  until `v0.5.265` is signed, fully qualified, deployed, and explicitly
-  recorded as restart-safe. Retain
-  `v0.5.240` separately as the Archive V2 recovery anchor.
+  rolling restart. The current safe anchor `v0.5.265` must remain available
+  until `v0.5.266` is signed, fully qualified, deployed, and explicitly
+  recorded as restart-safe.
 - Do not commit provider URLs, auth tokens, keypair passwords, custody seeds,
   funded keypairs, signing keys, or filled production env files.
 - Do not print secrets in shell logs, tickets, chat, or launch notes. Print key
@@ -249,7 +249,7 @@ credentials, or keypair passwords.
 Use the signed release that passed CI. For the current package:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.265
+export LICHEN_RELEASE_TAG=v0.5.266
 export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
 ```
 
@@ -297,7 +297,7 @@ cursor is not restart-safe on a mature activated chain. For recovery, explicitly
 reinstall the current signed safe anchor through the same release path:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.263
+export LICHEN_RELEASE_TAG=v0.5.265
 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh mainnet
 bash scripts/rolling-release-deploy.sh mainnet
 ```
@@ -434,14 +434,10 @@ Expected before genesis:
 - `/var/lib/lichen/state-mainnet` is missing or empty.
 - `/var/lib/lichen/custody-db-mainnet` is missing or empty.
 
-If setup is missing, run this on each VPS from the checked-out release tree:
-
-```bash
-sudo bash deploy/setup.sh mainnet
-```
-
-Then repeat the host preflight. Do not continue until every host has the same
-runtime shape.
+If this host layout is missing, stop. Provision it from the exact signed
+release's systemd/Caddy templates and the approved secret manager, then repeat
+the host preflight. Do not build on the VPS or continue until every host has the
+same verified runtime shape.
 
 ## Phase 3: Mainnet Env Preflight
 
@@ -489,9 +485,9 @@ LICHEN_EXTRA_ARGS=--auto-update=off
 Public RPC validators are archive validators. Do not launch or roll a public
 RPC node with state-only storage: consensus state can remain valid while
 `getTransactionsByAddress`, wallet activity, explorer activity, and historical
-block/transaction lookups lose their backed source rows. `deploy/setup.sh`
-creates `/var/lib/lichen/archive-<network>`, while the validator derives that
-sibling from its state directory and enables archive mode without operator
+block/transaction lookups lose their backed source rows. Approved host
+provisioning creates `/var/lib/lichen/archive-<network>`; the validator derives
+that sibling from its state directory and enables archive mode without operator
 flags.
 
 Required base custody env keys:

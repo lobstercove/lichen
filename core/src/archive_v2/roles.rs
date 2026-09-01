@@ -4,10 +4,18 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use super::{ArchiveV2Error, ArchiveV2Identity};
+use crate::codec::serialize_legacy_bincode;
 use crate::Hash;
 
 pub const ARCHIVE_V2_ROLE_CONFIG_VERSION: u16 = 1;
 pub const ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS: u64 = 50_000;
+/// Durable, node-local proof that an Archive V2 role was admitted either after
+/// a fresh state sync or by the stopped-validator role-bootstrap gate.
+///
+/// The historical key name remains unchanged for on-disk compatibility. The
+/// value is deliberately role- and chain-bound while allowing an immutable
+/// catalog to advance within the already admitted role.
+pub const ARCHIVE_V2_STATE_ADMISSION_METADATA_KEY: &str = "archive_v2_fresh_sync_admission_v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -140,6 +148,16 @@ impl ArchiveV2CapabilityAdvertisement {
         }
         Ok(())
     }
+}
+
+pub fn archive_v2_state_admission_fingerprint(
+    capability: &ArchiveV2CapabilityAdvertisement,
+) -> Result<Hash, String> {
+    let payload = serialize_legacy_bincode(
+        &(1u16, &capability.identity, capability.role),
+        "Archive V2 state admission fingerprint",
+    )?;
+    Ok(Hash::hash(&payload))
 }
 
 impl ArchiveV2RoleConfig {

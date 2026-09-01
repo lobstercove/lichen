@@ -22,6 +22,7 @@ document.addEventListener('DOMContentLoaded', () => {
 function ensureDeveloperNavLinks() {
     const requiredLinks = [
         { href: 'architecture.html', label: 'Architecture' },
+        { href: 'services.html', label: 'Services' },
         { href: 'validator.html', label: 'Validator' },
         { href: 'changelog.html', label: 'Changelog' }
     ];
@@ -356,6 +357,12 @@ const SEARCH_INDEX = [
     { title: 'WASM Runtime', desc: 'WebAssembly smart contract execution engine', url: 'architecture.html#wasm', category: 'Concepts' },
     { title: 'State Model', desc: 'Account-based state management', url: 'architecture.html#state', category: 'Concepts' },
     { title: 'LichenID Integration', desc: 'On-chain identity and reputation system', url: 'architecture.html#lichenid-integration', category: 'Concepts' },
+
+    // Runtime services and release binaries
+    { title: 'Services and Release Binaries', desc: 'Validator, custody, faucet, Moss provider, signed tools, configuration, and Archive V2 lifecycle', url: 'services.html', category: 'Operations' },
+    { title: 'Moss Storage Provider', desc: 'Provider daemon, signed uploads, capacity limits, and challenge reconciliation', url: 'services.html#network-services', category: 'Services' },
+    { title: 'Archive V2 Operator', desc: 'Canonical segment build, mirror, activation, retirement, and verification lifecycle', url: 'services.html#archive-v2', category: 'Services' },
+    { title: 'Release Verification', desc: 'Detached ML-DSA checksum signature, trust anchor, provenance, and running hash parity', url: 'services.html#verification', category: 'Security' },
 
     // JSON-RPC API
     { title: 'JSON-RPC API Reference', desc: 'Complete list of all RPC endpoints', url: 'rpc-reference.html', category: 'API' },

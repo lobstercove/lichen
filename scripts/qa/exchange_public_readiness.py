@@ -17,6 +17,7 @@ import re
 import socket
 import ssl
 import struct
+import subprocess
 import sys
 import time
 import urllib.error
@@ -38,21 +39,28 @@ ADMIN_MONITORING_HOST = "monitoring.lichen.network"
 EXCHANGE_STATUS_URL = "https://exchanges.lichen.network"
 DEFAULT_STATUS_URL = os.environ.get("LICHEN_EXCHANGE_STATUS_URL", EXCHANGE_STATUS_URL).strip()
 DEVELOPER_EXCHANGE_URL = "https://developers.lichen.network/exchange-integration"
-ROLLBACK_TAG = "v0.5.223"
+ROLLBACK_TAG = "v0.5.265"
 ROLLBACK_RELEASE_API = (
     "https://api.github.com/repos/lobstercove/lichen/releases/tags/" + ROLLBACK_TAG
 )
 ROLLBACK_RELEASE_PAGE = "https://github.com/lobstercove/lichen/releases/tag/" + ROLLBACK_TAG
-EXCHANGE_PACKAGE_TAG = "exchange-testnet-v0.5.221"
+EXCHANGE_PACKAGE_TAG = "exchange-testnet-v0.5.266"
 EXCHANGE_PACKAGE_RELEASE_API = (
     "https://api.github.com/repos/lobstercove/lichen/releases/tags/" + EXCHANGE_PACKAGE_TAG
 )
 EXCHANGE_PACKAGE_RELEASE_PAGE = (
     "https://github.com/lobstercove/lichen/releases/tag/" + EXCHANGE_PACKAGE_TAG
 )
-EXCHANGE_PACKAGE_REQUIRED_ASSETS = (
+EXCHANGE_PACKAGE_ARCHIVE = "lichen-exchange-testnet-v0.5.266.tar.gz"
+EXCHANGE_PACKAGE_REPORT = "exchange-public-readiness-report.json"
+EXCHANGE_PACKAGE_CANDIDATE_REQUIRED_ASSETS = (
     "SHA256SUMS",
-    "lichen-exchange-testnet-v0.5.221.tar.gz",
+    "SHA256SUMS.sig",
+    EXCHANGE_PACKAGE_ARCHIVE,
+)
+EXCHANGE_PACKAGE_PUBLISHED_REQUIRED_ASSETS = (
+    *EXCHANGE_PACKAGE_CANDIDATE_REQUIRED_ASSETS,
+    EXCHANGE_PACKAGE_REPORT,
 )
 EXPECTED_LOGO_SHA256 = "bfa0986bc4bde64c3c7ce590782beba78980985f301fbd0fbd4a39dc045ca876"
 DEVELOPER_EXCHANGE_REQUIRED_SNIPPETS = (
@@ -64,7 +72,7 @@ DEVELOPER_EXCHANGE_REQUIRED_SNIPPETS = (
     "Withdrawal Cookbook",
     "Canonical JSON-RPC Cookbook",
     "Mainnet Handoff",
-    "exchange-testnet-v0.5.221",
+    "exchange-testnet-v0.5.266",
     "testnet-only",
 )
 DEVELOPER_EXCHANGE_FORBIDDEN_SNIPPETS = (ADMIN_MONITORING_HOST,)
@@ -412,7 +420,7 @@ def check_exchange_package_release(gate: Gate) -> None:
         return
     assets = payload.get("assets") if isinstance(payload, dict) else []
     asset_names = sorted(asset.get("name") for asset in assets if isinstance(asset, dict))
-    required = set(EXCHANGE_PACKAGE_REQUIRED_ASSETS)
+    required = set(EXCHANGE_PACKAGE_PUBLISHED_REQUIRED_ASSETS)
     ok = (
         status == 200
         and payload.get("tag_name") == EXCHANGE_PACKAGE_TAG
@@ -429,6 +437,76 @@ def check_exchange_package_release(gate: Gate) -> None:
             "prerelease": payload.get("prerelease"),
             "assets": asset_names,
             "required_assets": sorted(required),
+        },
+    )
+
+
+def check_exchange_package_candidate(gate: Gate, candidate_dir: Path) -> None:
+    required = set(EXCHANGE_PACKAGE_CANDIDATE_REQUIRED_ASSETS)
+    present = (
+        {
+            path.name
+            for path in candidate_dir.iterdir()
+            if path.is_file() and not path.is_symlink()
+        }
+        if candidate_dir.is_dir()
+        else set()
+    )
+    missing = sorted(required - present)
+    if missing:
+        gate.add(
+            "signed exchange package candidate",
+            False,
+            detail={"directory": str(candidate_dir), "missing_assets": missing},
+        )
+        return
+
+    sums_path = candidate_dir / "SHA256SUMS"
+    archive_path = candidate_dir / EXCHANGE_PACKAGE_ARCHIVE
+    try:
+        lines = [line for line in sums_path.read_text(encoding="utf-8").splitlines() if line]
+        if len(lines) != 1:
+            raise ValueError("SHA256SUMS must contain exactly the exchange archive")
+        match = re.fullmatch(r"([0-9a-f]{64})  (\S+)", lines[0])
+        if not match or match.group(2) != EXCHANGE_PACKAGE_ARCHIVE:
+            raise ValueError("SHA256SUMS does not bind the exact exchange archive name")
+        actual = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+        if actual != match.group(1):
+            raise ValueError(
+                f"exchange archive checksum mismatch: got {actual}, expected {match.group(1)}"
+            )
+        verification = subprocess.run(
+            [
+                "node",
+                str(ROOT / "scripts" / "verify-release-checksums.mjs"),
+                str(candidate_dir),
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if verification.returncode != 0:
+            raise ValueError(
+                "detached ML-DSA checksum signature verification failed: "
+                + (verification.stderr.strip() or verification.stdout.strip())
+            )
+    except Exception as exc:
+        gate.add(
+            "signed exchange package candidate",
+            False,
+            detail={"directory": str(candidate_dir), "error": str(exc)},
+        )
+        return
+
+    gate.add(
+        "signed exchange package candidate",
+        True,
+        detail={
+            "directory": str(candidate_dir),
+            "assets": sorted(required),
+            "archive_sha256": actual,
         },
     )
 
@@ -461,10 +539,17 @@ def main() -> int:
         ),
     )
     parser.add_argument(
-        "--release-tag-selected",
-        action="store_true",
-        default=os.environ.get("LICHEN_EXCHANGE_RELEASE_TAG_SELECTED") == "1",
-        help="mark final exchange package release tag selected; default also reads LICHEN_EXCHANGE_RELEASE_TAG_SELECTED=1",
+        "--release-stage",
+        choices=("candidate", "published"),
+        default=os.environ.get("LICHEN_EXCHANGE_RELEASE_STAGE", "candidate"),
+        help="verify signed local candidate assets before publication, or the complete published release afterward",
+    )
+    parser.add_argument(
+        "--candidate-dir",
+        default=os.environ.get(
+            "LICHEN_EXCHANGE_CANDIDATE_DIR", str(ROOT / "dist" / "exchange")
+        ),
+        help="directory containing archive, SHA256SUMS, and SHA256SUMS.sig for candidate-stage verification",
     )
     args = parser.parse_args()
 
@@ -542,17 +627,14 @@ def main() -> int:
             "exchange status page is operator-approved"
         ),
     )
-    if args.release_tag_selected:
+    if args.release_stage == "published":
         check_exchange_package_release(gate)
     else:
-        gate.add(
-            "final exchange package release tag selected",
-            False,
-            detail="set LICHEN_EXCHANGE_RELEASE_TAG_SELECTED=1 only after the exchange package release is published",
-        )
+        check_exchange_package_candidate(gate, Path(args.candidate_dir).resolve())
 
     report = {
         "scope": args.scope,
+        "release_stage": args.release_stage,
         "started_at_unix": started,
         "completed_at_unix": int(time.time()),
         "checks": gate.checks,

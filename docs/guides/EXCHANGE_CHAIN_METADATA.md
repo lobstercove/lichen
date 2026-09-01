@@ -1,18 +1,20 @@
 # Lichen Exchange Chain Metadata
 
-**Status:** Published testnet-only exchange metadata
+**Status:** Testnet-only release-candidate metadata
 **Created:** 2026-06-29
 **Integration guide:** [EXCHANGE_INTEGRATION.md](EXCHANGE_INTEGRATION.md)
 **Address vectors:** [EXCHANGE_ADDRESS_VALIDATION_VECTORS.md](EXCHANGE_ADDRESS_VALIDATION_VECTORS.md)
 **Tracker:** [../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md](../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md)
-**Current testnet release:** `v0.5.224`
-**Rollback anchor:** `v0.5.223`
-**Exchange package tag:** `exchange-testnet-v0.5.221`
-**Exchange package release:** `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221`
+**Current signed testnet release:** `v0.5.265`
+**Candidate testnet release:** `v0.5.266`
+**Rollback anchor:** `v0.5.265`
+**Exchange package tag:** `exchange-testnet-v0.5.266`
+**Exchange package release:** `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.266`
 
-This sheet is the canonical exchange metadata sheet for the current testnet-only
-exchange package. It must not be used as a mainnet listing sheet until every
-mainnet deferred item below is resolved with evidence.
+This sheet is the canonical candidate metadata for the next testnet-only
+exchange package. It must not be distributed as final until the signed
+validator and exchange release gates pass, and it must not be used as a mainnet
+listing sheet until every mainnet deferred item below is resolved with evidence.
 
 Current package scope: testnet-only integration testing until mainnet launch.
 Mainnet rows below are launch placeholders and must not be used in an external
@@ -44,9 +46,9 @@ listing sheet until the mainnet launch runbook closes its exchange handoff gate.
 | Explorer URL | `https://explorer.lichen.network` | Route templates verified on 2026-06-29 | `seeds.json`, `developers/shared-config.js`, `explorer/js/*.js`, tracker Phase 5 metadata evidence |
 | Logo URL | `https://lichen.network/Lichen_Logo_256.png` | Public asset verified on 2026-06-29: PNG, 256x256, SHA-256 matches repo asset | `website/Lichen_Logo_256.png`, tracker Phase 5 metadata evidence |
 | Public exchange status page | `https://exchanges.lichen.network` | Active on Cloudflare Pages project `lichen-network-exchanges`; production readiness is green; page uses a same-origin read-only status RPC proxy and remains explicitly testnet-only until mainnet launch handoff | Operations pack policy |
-| Release verification | GitHub releases `v0.5.224` and rollback `v0.5.223` have `SHA256SUMS` plus `SHA256SUMS.sig`; PQ signatures verified locally. Exchange package release remains `exchange-testnet-v0.5.221`. | Current signed release, rollback anchor, and testnet exchange package verified | `.github/workflows/release.yml`, `scripts/sign-release.sh`, `scripts/verify-release-checksums.mjs`, GitHub release API, exchange package release |
+| Release verification | Signed `v0.5.265` is the current release and rollback anchor. Candidate `v0.5.266` and `exchange-testnet-v0.5.266` require `SHA256SUMS`, `SHA256SUMS.sig`, provenance, and final public verification before their status changes. | Candidate release gate pending | `.github/workflows/release.yml`, `.github/workflows/exchange-release.yml`, the offline maintainer signing procedure, `scripts/verify-release-checksums.mjs`, GitHub release API |
 | Release signer | `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk` | Source mapped | `deploy/release-trust-anchor.json` |
-| Current rollback anchor | `v0.5.223` | Signed and verified | `v0.5.224` deployment closeout on 2026-07-20 |
+| Current rollback anchor | `v0.5.265` | Signed and verified; also the current fleet release until v0.5.266 acceptance | Signed release evidence |
 
 ## Native Address Validation
 
@@ -137,7 +139,8 @@ Source-backed release artifacts:
 - `SHA256SUMS`
 - `SHA256SUMS.sig`
 - Trust anchor: `deploy/release-trust-anchor.json`
-- Signing helper: `scripts/sign-release.sh`
+- Signing boundary: offline maintainer procedure; no release private-key tooling or
+  material is shipped in the public repository
 - Verification helper: `scripts/verify-release-checksums.mjs`
 - Release workflow: `.github/workflows/release.yml`
 
@@ -165,7 +168,7 @@ Historical signed testnet recovery release metadata on 2026-07-01:
   signature against signer `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk`.
 
 Final external testnet docs/package artifacts are attached to the
-`exchange-testnet-v0.5.221` package release.
+`exchange-testnet-v0.5.266` package release.
 
 ## Remaining Final Metadata Blockers
 
@@ -189,11 +192,11 @@ mandatory before mainnet is included in an external exchange package.
 | ID | Check | Evidence |
 | --- | --- | --- |
 | M-06 | Incident contacts approved; public status page active | `security@lichen.network`, `exchange-ops@lichen.network`, and `business@lichen.network` recorded in the operations pack. The public status/operations portal is active at `https://exchanges.lichen.network`, production readiness passed on 2026-07-05, and internal monitoring remains admin-only. |
-| M-07 | Final external package publication approved | Package release `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221` contains `lichen-exchange-testnet-v0.5.221.tar.gz` and `SHA256SUMS` |
+| M-07 | Final external package publication | Pending: the published package must contain `lichen-exchange-testnet-v0.5.266.tar.gz`, `SHA256SUMS`, `SHA256SUMS.sig`, provenance, and a final public readiness report |
 | M-04 | Explorer route templates | Source route inspection plus hosted `200` checks for root, account, transaction, and block pages on 2026-06-29 |
 | M-05 | Logo URL cache verification | `https://lichen.network/Lichen_Logo_256.png` returned `200`, `image/png`, 45,415 bytes; downloaded file is PNG 256x256 and SHA-256 `bfa0986bc4bde64c3c7ce590782beba78980985f301fbd0fbd4a39dc045ca876`, matching `website/Lichen_Logo_256.png` |
-| M-07 rollback subset | `v0.5.223` rollback-anchor release signatures | GitHub release is published, checksum/signature assets downloaded, and `scripts/verify-release-checksums.mjs` verified signer `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk` |
+| M-07 rollback subset | `v0.5.265` rollback-anchor release signatures | GitHub release checksum/signature assets and signer are verified before deployment |
 | M-02 | Runtime fee value refreshed on public testnet | `getFeeConfig` returned `base_fee_spores = 1000000`, contract/NFT fee fields, and `40/30/10/10/10` fee split after signed `v0.5.221` recovery rollout |
 | M-09 | Testnet RPC/WS readiness after final rollout | Public `getHealth` returned `status = ok`; sustained public cadence sampled `370.0ms/block`; public `getMetrics` returned `observed_block_interval_ms = 372` and `avg_block_time_ms = 380`; WebSocket readiness and live slot notifications passed |
-| M-10 | Current signed testnet release signatures | `v0.5.224` release checksum and detached PQ signature were verified against `deploy/release-trust-anchor.json`; exact installed/running validator hashes match on all four hosts |
+| M-10 | Candidate signed testnet release signatures | Pending: `v0.5.266` release checksum, detached ML-DSA signature, provenance, and exact installed/running validator hashes must match on all four hosts |
 | M-08 | EVM chain ID wording reconciled for native listings | Native exchange integrations use string chain IDs from `getNetworkInfo`; EVM compatibility uses runtime `/evm` `eth_chainId`; live testnet returned `0xca3f1595a6c25e9f`; `8001` is documented as a core compatibility/default constant, not the native listing chain ID |

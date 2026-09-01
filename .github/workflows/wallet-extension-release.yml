@@ -18,6 +18,10 @@ jobs:
     package:
         name: Package Wallet Extension
         runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            id-token: write
+            attestations: write
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
@@ -30,7 +34,9 @@ jobs:
 
             - name: Run wallet release validation
               run: |
+                  node scripts/qa/test_wallet_release_docs.js
                   node scripts/qa/test_wallet_extension_audit.js
+                  node scripts/qa/test_wallet_extension_signing_e2e.js
                   node scripts/qa/test_wallet_audit.js
 
             - name: Package extension release artifacts
@@ -49,6 +55,16 @@ jobs:
                   runtime_zip="$(ls LichenWallet-extension-v*.zip)"
                   sha256sum "${runtime_zip}" > SHA256SUMS
                   rm -f LichenWallet-extension-store-submission-*.zip latest.json
+
+            - name: Attest wallet runtime archive
+              uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+              with:
+                  subject-path: dist/wallet-extension/LichenWallet-extension-v*.zip
+
+            - name: Attest wallet checksums
+              uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+              with:
+                  subject-path: dist/wallet-extension/SHA256SUMS
 
             - name: Upload packaged artifacts
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -89,6 +105,14 @@ jobs:
 
                       - `LichenWallet-extension-v*.zip`: runtime extension ZIP
                       - `SHA256SUMS`: checksum for the runtime ZIP
+                      - `SHA256SUMS.sig`: detached ML-DSA checksum signature attached before publication
+
+                      Verify the checksum signature against `deploy/release-trust-anchor.json`, then verify GitHub
+                      artifact provenance with:
+
+                      ```bash
+                      gh attestation verify LichenWallet-extension-v*.zip -R lobstercove/lichen
+                      ```
 
                       ### Auto Update
 

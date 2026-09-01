@@ -1,31 +1,38 @@
 # Lichen Exchange Integration
 
-**Status:** Published testnet-only exchange package
+**Status:** Testnet-only release candidate; publication blocked on the final signed rollout
 **Created:** 2026-06-29
 **Plan:** [../strategy/EXCHANGE_LISTING_READINESS_PLAN_2026-06-29.md](../strategy/EXCHANGE_LISTING_READINESS_PLAN_2026-06-29.md)
 **Tracker:** [../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md](../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md)
 **Metadata:** [EXCHANGE_CHAIN_METADATA.md](EXCHANGE_CHAIN_METADATA.md)
 **Address vectors:** [EXCHANGE_ADDRESS_VALIDATION_VECTORS.md](EXCHANGE_ADDRESS_VALIDATION_VECTORS.md)
 **Operations pack:** [../deployment/EXCHANGE_OPERATIONS_PACK.md](../deployment/EXCHANGE_OPERATIONS_PACK.md)
-**Current testnet release:** `v0.5.224`
-**Rollback anchor:** `v0.5.223`
-**Exchange package tag:** `exchange-testnet-v0.5.221`
-**Exchange package release:** `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221`
+**Current signed testnet release:** `v0.5.265`
+**Candidate testnet release:** `v0.5.266`
+**Rollback anchor:** `v0.5.265`
+**Exchange package tag:** `exchange-testnet-v0.5.266`
+**Exchange package release:** `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.266`
 
 This document is the canonical exchange-facing integration guide for native LICN.
-It is approved for testnet-only exchange integration under package tag
-`exchange-testnet-v0.5.221`. The three-validator local exchange simulation
+It is the candidate source for the testnet-only package tag
+`exchange-testnet-v0.5.266`. The three-validator local exchange simulation
 passed from a clean stack with cleanup evidence on 2026-06-29, and the public
 faucet-backed testnet exchange simulation passed after the signed `v0.5.221`
 recovery rollout on 2026-07-01. Public RPC/WebSocket, explorer, rollback,
-developer-page, status-page, and package readiness were revalidated after the
-signed `v0.5.224` archive-parity rollout on 2026-07-20. External publication is
-scoped to testnet-only integration testing until mainnet launch.
+developer-page, status-page, signed validator release, live Archive V2 rollout,
+and package readiness must be revalidated before publication. External
+publication remains blocked until those gates pass and is then scoped to
+testnet-only integration testing until mainnet launch.
 
 ## Publication Gate
 
-The current testnet-only package is published. Do not extend this guide to a
-mainnet exchange package while any of these remain open:
+Do not publish the current testnet-only candidate, or extend this guide to a
+mainnet exchange package, while any of these remain open:
+
+- Signed `v0.5.266` validator artifacts, four-validator live acceptance, and
+  Archive V2 history parity.
+- Signed and provenance-attested `exchange-testnet-v0.5.266` assets plus the
+  public post-publication verification report.
 
 - Runtime fee config verification on every public network included in the
   package. Testnet was reverified after `v0.5.224`; mainnet remains pending until

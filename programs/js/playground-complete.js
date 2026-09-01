@@ -10706,10 +10706,13 @@ strip = true
     },
     storage: {
         name: 'MossStorage',
-        description: 'Decentralized storage with proof-of-storage, staking, slashing',
+        description: 'Educational Moss storage starter; use the canonical contract for production',
         files: {
-            'lib.rs': `// Moss Storage - Decentralized Storage
-// Register storage requests, providers confirm and earn rewards
+            'lib.rs': `// Moss Storage - educational starter only
+// This compact playground example intentionally omits production custody,
+// provider-signed receipt rosters, exact pricing, proofs, staking, slashing,
+// bounded indexes, and migration controls. Do not deploy it as Moss Storage.
+// Use contracts/moss_storage and its published ABI for production integrations.
 
 #![no_std]
 #![no_main]

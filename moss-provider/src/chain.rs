@@ -1,6 +1,6 @@
 use crate::merkle::{proof_for_file, CHUNK_BYTES};
 use base64::Engine as _;
-use lichen_client_sdk::{Client, Keypair};
+use lichen_client_sdk::{Client, Keypair, PqSignature};
 use lichen_core::{KeypairFile, Pubkey};
 use serde_json::json;
 use std::path::Path;
@@ -42,7 +42,9 @@ impl ProviderStatus {
     }
 
     pub fn accepting_assignments(self) -> bool {
-        self.operational() && self.collateral >= self.required_collateral
+        self.operational()
+            && self.used < self.capacity
+            && self.collateral >= self.required_collateral
     }
 }
 
@@ -78,6 +80,10 @@ impl ChainClient {
         self.signer.pubkey()
     }
 
+    pub fn sign_message(&self, message: &[u8]) -> PqSignature {
+        self.signer.sign(message)
+    }
+
     pub async fn current_slot(&self) -> Result<u64, String> {
         self.client
             .get_slot()
@@ -96,8 +102,8 @@ impl ChainClient {
             .map_err(|error| format!("Moss {function} query failed: {error}"))
     }
 
-    pub async fn storage_info(&self, hash: &str) -> Result<Option<StorageInfo>, String> {
-        let args = serde_json::to_vec(&json!([hash]))
+    pub async fn storage_info(&self, storage_id: &str) -> Result<Option<StorageInfo>, String> {
+        let args = serde_json::to_vec(&json!([storage_id]))
             .map_err(|error| format!("encode Moss storage query: {error}"))?;
         let result = self.readonly("get_storage_info", args).await?;
         match result.return_code {
@@ -144,6 +150,24 @@ impl ChainClient {
         }))
     }
 
+    pub async fn storage_content_hash(&self, storage_id: &str) -> Result<String, String> {
+        let args = serde_json::to_vec(&json!([storage_id]))
+            .map_err(|error| format!("encode Moss content-hash query: {error}"))?;
+        let result = self.readonly("get_storage_content_hash", args).await?;
+        if !result.success || result.return_code != Some(0) {
+            return Err(format!(
+                "Moss get_storage_content_hash returned {:?}: {}",
+                result.return_code,
+                result.error.unwrap_or_else(|| "unknown error".to_string())
+            ));
+        }
+        let data = decode_return_data(&result, "get_storage_content_hash")?;
+        if data.len() != 32 {
+            return Err("Moss content hash has an invalid length".to_string());
+        }
+        Ok(bs58::encode(data).into_string())
+    }
+
     pub async fn provider_status(&self) -> Result<Option<ProviderStatus>, String> {
         let args = serde_json::to_vec(&json!([self.provider().to_base58()]))
             .map_err(|error| format!("encode Moss provider query: {error}"))?;
@@ -173,8 +197,8 @@ impl ChainClient {
         }))
     }
 
-    pub async fn challenge(&self, hash: &str) -> Result<ChallengeState, String> {
-        let args = serde_json::to_vec(&json!([hash, self.provider().to_base58()]))
+    pub async fn challenge(&self, storage_id: &str) -> Result<ChallengeState, String> {
+        let args = serde_json::to_vec(&json!([storage_id, self.provider().to_base58()]))
             .map_err(|error| format!("encode Moss challenge query: {error}"))?;
         let result = self.readonly("get_challenge", args).await?;
         match result.return_code {
@@ -200,15 +224,16 @@ impl ChainClient {
         }))
     }
 
-    pub async fn confirm_storage(&self, hash: &str) -> Result<String, String> {
-        let args = serde_json::to_vec(&json!([self.provider().to_base58(), hash]))
+    pub async fn confirm_storage(&self, storage_id: &str) -> Result<String, String> {
+        let args = serde_json::to_vec(&json!([self.provider().to_base58(), storage_id]))
             .map_err(|error| format!("encode Moss confirmation: {error}"))?;
         self.call("confirm_storage", args).await
     }
 
     pub async fn respond_to_challenge(
         &self,
-        hash: &str,
+        storage_id: &str,
+        content_hash: &str,
         path: &Path,
         size: u64,
         effective_nonce: u64,
@@ -226,7 +251,8 @@ impl ChainClient {
             return Err("Moss object size changed before challenge response".to_string());
         }
         let provider = self.provider().0.to_vec();
-        let data_hash = crate::content::decode_hash(hash)?.to_vec();
+        let data_hash = crate::content::decode_hash(storage_id)?.to_vec();
+        crate::content::decode_hash(content_hash)?;
         if size <= CHUNK_BYTES as u64 {
             let args = encode_wide_layout(vec![
                 WideArgument::Pointer(provider),
@@ -251,15 +277,15 @@ impl ChainClient {
         }
     }
 
-    pub async fn is_closed(&self, hash: &str) -> Result<bool, String> {
-        let args = serde_json::to_vec(&json!([hash]))
+    pub async fn is_closed(&self, storage_id: &str) -> Result<bool, String> {
+        let args = serde_json::to_vec(&json!([storage_id]))
             .map_err(|error| format!("encode Moss close query: {error}"))?;
         let result = self.readonly("is_storage_closed", args).await?;
         Ok(matches!(result.return_code, Some(1)))
     }
 
-    pub async fn close_storage(&self, owner: &Pubkey, hash: &str) -> Result<String, String> {
-        let args = serde_json::to_vec(&json!([owner.to_base58(), hash]))
+    pub async fn close_storage(&self, owner: &Pubkey, storage_id: &str) -> Result<String, String> {
+        let args = serde_json::to_vec(&json!([owner.to_base58(), storage_id]))
             .map_err(|error| format!("encode Moss close call: {error}"))?;
         self.call("close_storage", args).await
     }
@@ -388,5 +414,7 @@ mod tests {
         assert!(!status.accepting_assignments());
         status.collateral = 20_000_000;
         assert!(status.accepting_assignments());
+        status.used = status.capacity;
+        assert!(!status.accepting_assignments());
     }
 }

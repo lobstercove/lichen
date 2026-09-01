@@ -37,7 +37,8 @@ jobs:
             cli/Cargo.toml \
             custody/Cargo.toml \
             faucet-service/Cargo.toml \
-            genesis/Cargo.toml; do
+            genesis/Cargo.toml \
+            moss-provider/Cargo.toml; do
             actual="$(awk -F'"' '/^version = "/ { print $2; exit }' "$manifest")"
             if [ "$actual" != "$expected" ]; then
               echo "$manifest version $actual does not match tag $GITHUB_REF_NAME" >&2
@@ -132,10 +133,23 @@ jobs:
           node scripts/qa/test_legacy_bincode_codec_policy.js
           node scripts/qa/test_release_audit_summaries.js
           node scripts/qa/test_public_claims.js
+          node scripts/qa/test_developer_surface_coverage.js
+          node scripts/qa/test_exchange_release_assets.js
           node scripts/qa/test_release_signer_trust_anchor.js
           node scripts/qa/test_deployment_env_examples.js
           node scripts/qa/test_rust_dependency_policy.js
           node scripts/qa/test_archive_parity_gate_assets.js
+          node scripts/qa/test_rolling_release_custody_sequence.js
+          node scripts/qa/test_frontend_asset_integrity.js
+          node scripts/qa/test_marketplace_moss_storage.js
+          node scripts/qa/test_explorer_live_cadence.js
+          node scripts/qa/test_frontend_shared_helper_drift.js
+          node scripts/qa/test_monitoring_risk_lifecycle.js
+          node scripts/qa/test_wallet_release_docs.js
+          node scripts/qa/test_wallet_extension_audit.js
+          node scripts/qa/test_wallet_extension_signing_e2e.js
+          node scripts/qa/test_wallet_audit.js
+          python3 -m unittest scripts.qa.test_exchange_public_readiness
           python3 scripts/coverage_self_test.py
           python3 scripts/qa/update-expected-contracts.py --check
 
@@ -214,7 +228,7 @@ jobs:
           LICHEN_COLD_RETENTION_SLOTS=20 \
           LICHEN_ARCHIVE_V2_TEST_CATALOG_HEADROOM_SLOTS=5 \
           LICHEN_ARCHIVE_V2_FRESH_JOIN_CATALOG_HEADROOM_SLOTS=10 \
-          LICHEN_ARCHIVE_V2_FRESH_JOIN_RECENT_HISTORY_SLOTS=50000 \
+          LICHEN_ARCHIVE_V2_FRESH_JOIN_RECENT_HISTORY_SLOTS=5000 \
           LICHEN_COLD_MIGRATION_INTERVAL_SECS=5 \
           bash tests/local-multi-validator-test.sh 4
 
@@ -306,7 +320,7 @@ jobs:
 
       - name: Build Linux service binaries
         if: startsWith(matrix.os, 'ubuntu')
-        run: cargo build --release --locked --target ${{ matrix.target }} --bin lichen-custody --bin lichen-faucet
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin lichen-custody --bin lichen-faucet --bin lichen-moss-provider
 
       - name: Strip binary (Linux)
         if: startsWith(matrix.os, 'ubuntu') && matrix.target != 'aarch64-unknown-linux-gnu'
@@ -321,6 +335,7 @@ jobs:
           done
           strip target/${{ matrix.target }}/release/lichen-custody
           strip target/${{ matrix.target }}/release/lichen-faucet
+          strip target/${{ matrix.target }}/release/lichen-moss-provider
 
       - name: Strip binary (Linux aarch64)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -335,6 +350,7 @@ jobs:
           done
           aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen-custody
           aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen-faucet
+          aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen-moss-provider
 
       - name: Strip binary (macOS)
         if: startsWith(matrix.os, 'macos')
@@ -360,7 +376,7 @@ jobs:
           for bin in bountyboard_v2_migrate compute_market_v3_migrate dex_margin_v2_migrate lichenauction_v3_migrate lichenmarket_v3_migrate protocol_governance_contract_call sporepay_v3_migrate sporepump_v3_migrate sporevault_v2_migrate; do
             cp "target/${{ matrix.target }}/release/$bin" ${{ matrix.artifact }}/
           done
-          for bin in lichen-custody lichen-faucet; do
+          for bin in lichen-custody lichen-faucet lichen-moss-provider; do
             if [ -x "target/${{ matrix.target }}/release/$bin" ]; then
               cp "target/${{ matrix.target }}/release/$bin" ${{ matrix.artifact }}/
             fi
@@ -369,6 +385,9 @@ jobs:
           cp -R release-contracts/contracts ${{ matrix.artifact }}/contracts
           mkdir -p ${{ matrix.artifact }}/docs
           cp -R docs/deployment ${{ matrix.artifact }}/docs/deployment
+          case "${{ matrix.os }}" in
+            ubuntu-*) cp -R deploy ${{ matrix.artifact }}/deploy ;;
+          esac
           tar czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
 
       - name: Create archive (Windows)
@@ -492,7 +511,8 @@ jobs:
             Each archive includes `lichen-validator`, `lichen-genesis`, `lichen`,
             `lichen-archive-v2`, `zk-prove`,
             `seeds.json`, and the genesis contract WASM bundle under `contracts/`. Linux
-            archives also include `lichen-custody` and `lichen-faucet` for VPS service rollouts.
+            archives also include `lichen-custody`, `lichen-faucet`, and
+            `lichen-moss-provider` for VPS service rollouts.
             Install `seeds.json` under your chosen `--db-path` (or `/etc/lichen/seeds.json`)
             so seed-set updates flow through normal release upgrades.
 

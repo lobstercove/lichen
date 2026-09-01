@@ -7,13 +7,14 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current installed signed testnet release:** `v0.5.263`. The `v0.5.265`
-candidate becomes an installable release only when protected-branch CI
-passes and its tag workflow publishes detached post-quantum-signed artifacts. It adds the
-fail-closed Archive V2 role-bootstrap path needed for low-space legacy
-retirement without weakening source, replica, headroom, or signed-authorization
-requirements. Immutable tag `v0.5.264` failed closed in its Linux
-four-validator gate and produced no release assets; it must not be deployed.
+**Candidate release line:** `v0.5.266`; the current signed testnet release is
+`v0.5.265`. Official installable artifacts are the published
+GitHub release archives whose checksums, detached ML-DSA signature, release
+trust anchor, and provenance attestations all verify. The candidate adds the
+coherent hot-to-Archive-V2 checkpoint path, certificate-normalized public
+history, fail-closed role bootstrap, and signed range-bound retirement tooling
+needed to move an existing network fully onto Archive V2. Treat those changes
+as unreleased until the exact tag, signature, provenance, and release gates pass.
 
 **Network status:** the public network is testnet. Mainnet has not launched and
 is not approved. The current 200 GB validator fleet is not approved for mainnet
@@ -74,21 +75,47 @@ lichen/
 ├── developers/  # Developer portal & documentation hub
 ├── deploy/      # Public service and Caddy templates
 ├── scripts/     # Build, local validation, and helper scripts
-└── tests/       # Local-private E2E harness, intentionally not shipped in the public clone
+└── tests/       # Local and release E2E harnesses
 ```
 
-The public repository does not ship local-private `docs/`, `infra/`, or `tests/` operator material. Tracked automation skips private harness checks when the private bundle is absent, while local operator workflows can still use the same paths when those bundles are present.
+The repository ships the public operator guides, developer documentation,
+deployment templates, integration tests, and CI-facing QA required to build and
+verify a release. Secrets, live credentials, funded key material, private
+incident evidence, and environment-specific infrastructure state remain
+outside Git. Checks that depend on separately controlled incident evidence fail
+closed or report an explicit skip when that evidence is not present; release
+gates under `scripts/qa/` and `tests/` remain tracked and runnable.
 
-Tracked CI-facing static and integration QA checks now live under `scripts/qa/`.
-
-Four binaries ship from this repo:
+The signed release command surface is:
 
 | Binary | Default port | Purpose |
 |---|---|---|
 | `lichen-validator` | 8899 (RPC), 8900 (WS), 7001 (P2P) | Full node with built-in supervisor & watchdog |
 | `lichen-custody` | 9105 | Bridge custody service with threshold treasury withdrawals on supported paths; multi-signer deposit creation fails closed unless local sweeps are explicitly allowed |
 | `lichen-faucet` | 9100 | Testnet LICN dispenser |
+| `lichen-moss-provider` | 9120 (loopback by default) | Content-addressed Moss storage provider, signed upload service, and proof/reconciliation daemon |
 | `lichen` | — | CLI wallet, queries, contract deploys |
+| `lichen-genesis` | — | Fresh-network genesis creator and verifier |
+| `lichen-archive-v2` | — | Archive V2 build, verify, mirror, restore, activation, retirement, and audit CLI |
+| `zk-prove` | — | Domain-bound proof-envelope generator for supported proof types; it does not reactivate historical shielded scheme 0x01 |
+
+The public Moss release gate requires four independently keyed regional
+providers. Marketplace writes require three identity-distinct upload receipts
+signed by those provider identities. Every receipt binds the wallet owner,
+owner-scoped storage ID, immutable content commitment, price, and regional
+gateway, with a fresh request nonce permitting repeat storage; the on-chain
+request binds to that exact roster and then requires all
+three provider confirmations before minting continues. Content URIs remain
+portable `moss://<content-root>` values while request IDs prevent copied-hash
+front-running; the feature must remain unpublished whenever that live gate is
+not met. Operators should use the
+[Moss provider deployment runbook](docs/deployment/MOSS_PROVIDER_DEPLOYMENT.md);
+`/healthz` is liveness only, while `/readyz` is the assignment-readiness gate.
+
+The release also includes governed accounting-migration binaries and the exact
+contract WASM bundle that passed the release gate. See the
+[services and release binaries reference](https://developers.lichen.network/services)
+for service units, configuration templates, and safety boundaries.
 
 ---
 
@@ -233,7 +260,7 @@ $env:LICHEN_KEYPAIR_PASSWORD = 'set-a-long-random-secret-before-first-start'
 
 Windows release assets are now part of the release contract, but if a given tag does not include them yet, use the source-build workflow for Windows until the next release is published.
 
-Release bundles now ship `lichen-validator`, `lichen-genesis`, `lichen`, `lichen-archive-v2`, `zk-prove`, `lichen-custody`, `lichen-faucet`, all governed accounting-migration and contract-call tools, `seeds.json`, and the contract WASM bundle so agents can keep validator, archive, custody, migration, repair, faucet, shielded-transaction, and runtime artifacts on the same signed provenance boundary. Operators should pin the current seed set under `{db-path}/seeds.json` for supervisor-managed starts, and `--auto-update=apply` refreshes that file from newer release archives during apply-mode upgrades. Validator identity keys are generated locally on first start, and external signed-metadata manifests or standalone proving/verification-key bundles are not required just to join and sync a validator.
+Release bundles now ship `lichen-validator`, `lichen-genesis`, `lichen`, `lichen-archive-v2`, `zk-prove`, `lichen-custody`, `lichen-faucet`, `lichen-moss-provider`, all governed accounting-migration and contract-call tools, `seeds.json`, and the contract WASM bundle so agents can keep validator, archive, custody, migration, repair, faucet, storage-provider, proof, and runtime artifacts on the same signed provenance boundary. Operators should pin the current seed set under `{db-path}/seeds.json` for supervisor-managed starts, and `--auto-update=apply` refreshes that file from newer release archives during apply-mode upgrades. Validator identity keys are generated locally on first start, and external signed-metadata manifests or standalone proving/verification-key bundles are not required just to join and sync a validator.
 
 The validator identity is also the validator wallet/reward account. The address printed at startup is the account that receives bootstrap stake and validator rewards. Preserve the state directory, validator key files, and `LICHEN_KEYPAIR_PASSWORD`; an agent can restart or upgrade from the same state and catch up, but it cannot sign as the same validator if the key or password is lost.
 
@@ -569,7 +596,7 @@ README stays high-level. These are the canonical entry points for the callable d
 | Phase | Timeline | Milestones |
 |---|---|---|
 | **Phase 1: Testnet Foundation** | Live testnet | LichenVM, LichenID, wallet/explorer/DEX/marketplace/programs/developer portal, and custody-configured wrapped-asset surfaces. The historical shielded pool is read-only while proof scheme 0x01 remains disabled. |
-| **Phase 2: Production Hardening** | Current | Restore durable validator headroom, complete Archive V2 activation, increase fleet redundancy, verify every application and custody route, and publish reproducible benchmark evidence. |
+| **Phase 2: Production Hardening** | Current | Operate deterministic Archive V2 storage, maintain durable validator headroom and multi-region redundancy, verify every application and custody route, and publish reproducible benchmark evidence. |
 | **Phase 3: Mainnet Readiness** | Gated, not launched | Fresh genesis-to-tip archive completeness, dedicated capacity, signed operational handoffs, external security review, migration/activation approvals, and all mainnet release gates. |
 
 ---

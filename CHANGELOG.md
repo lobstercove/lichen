@@ -5,6 +5,89 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.266] - 2026-09-01
+
+### Added
+
+- Add a checkpoint-manifest inspection mode and source-backed Archive V2
+  handoff selection that starts at the earliest unadmitted tail and remains
+  bounded by the configured extension window.
+- Ship `lichen-moss-provider` in signed Linux release archives and enforce the
+  service bundle in release QA.
+- Add a source-checked developer service reference and fail the release when a
+  native RPC method, contract ABI function, primary CLI surface, service
+  binary, or SDK version is absent from the developer portal.
+- Add Moss Storage pricing-v3 requests that bind initial on-chain provider
+  confirmations to the exact unique provider roster whose ML-DSA-signed upload
+  receipts the owner accepted. A slashed assigned provider still opens
+  permissionless replacement so replication can heal without the owner.
+- Derive every pricing-v3 storage request ID from its owner, original content
+  commitment, and fresh nonzero request nonce, while preserving the raw
+  commitment for `moss://` retrieval and challenge proofs. Copied hashes cannot
+  block the owner, and one wallet can create independent repeat requests.
+
+### Fixed
+
+- Project contract logs only from the exact newly committed slot and feed DEX
+  WebSocket events through one shared, monotonic cursor on every canonical
+  block-application path. This removes repeated Archive V2 history scans from
+  event fanout, prevents duplicate trade projection, and restores bounded
+  trade, ticker, and order-book delivery after BFT, peer sync, pending-chain,
+  and fork-choice commits.
+- Make stopped-validator Archive V2 role bootstrap persist a durable,
+  chain-and-role-bound state admission fingerprint only after the external role
+  marker is verified. Dry runs remain read-only, conflicting state markers fail
+  before publication, retries are idempotent, and migrated validators can use
+  catalog-bound hot checkpoints without weakening runtime capacity admission.
+- Materialize every bounded public-history category from the coherent hot/cold
+  view into hot-only checkpoint staging before Archive V2 construction, so a
+  cold-migrated block body cannot disappear from a checkpoint.
+- Permit a fresh validator to verify a catalog-bound hot-repair checkpoint
+  against its exact configured Archive V2 catalog before role admission,
+  without attaching a public-history reader. Runtime activation still requires
+  the restored hot suffix to chain exactly from the catalog tip. A successfully
+  applied bounded checkpoint activates that deferred catalog before the fresh
+  node's public-genesis readiness gate, avoiding a catalog/genesis circularity
+  while still failing closed on a root, coverage, or parent-hash mismatch.
+- Normalize node-local commit-round and signature presentation while exporting
+  checkpoint block bodies, producing deterministic Archive V2 segment bytes
+  for validators with the same canonical history.
+- Exclude the node-local cold-migration cursor from network snapshot statistics
+  so operational progress cannot create cross-validator snapshot drift.
+- Physically rebuild and compact hot-repair checkpoints to their advertised
+  bounded public-history window, remove non-portable operational metadata, and
+  budget the temporary rewrite allocation before construction. Checkpoint
+  materialization uses a bounded 128 MiB RocksDB cache and the four-validator
+  harness discards an interrupted candidate's sibling snapshot-rollback
+  transaction before restoring the original validator state. The common
+  catalog is range-bound by the slowest stopped validator while reserving a
+  finalized transfer-and-restart overlap, and every fresh join proves that its
+  checkpoint retains the exact 50,000-slot production suffix beginning at the
+  catalog handoff. Bounded hot-repair checkpoints use a 10,000-slot cadence
+  while legacy checkpoint profiles retain their existing 1,000-slot cadence.
+- Hash final public-history parity over the complete logical Archive V2 prefix
+  plus the authenticated hot checkpoint suffix, rather than over the physical
+  hot partition alone. Validators with different retirement handoffs now prove
+  one partition-independent genesis-to-tip manifest, while a missing,
+  overlapping, or discontinuous catalog/checkpoint boundary fails closed.
+- Sign every public Moss upload receipt with the provider identity, verify its
+  exact owner, owner-scoped storage ID, request nonce, gateway, object commitment, size,
+  price, and staging state before the storage call. Failed/idempotent uploads
+  refund their quota charge, and providers retain durable per-request
+  associations so closing one owner request cannot delete content still
+  assigned to another owner.
+- Reserve logical provider capacity for every signed but not-yet-confirmed
+  upload association and reconstruct that reservation after restart. Receipt
+  issuance fails before overbooking even when immutable object bytes deduplicate.
+- Bind dual-R2 catalog replacement to a stable authenticated preflight ETag
+  using `If-Match`, so concurrent publication aborts instead of overwriting a
+  newer catalog after immutable objects have been verified in both buckets.
+- Keep historical shielded proof scheme `0x01` fail-closed; no shield, transfer,
+  or unshield mutation is accepted until a constrained versioned successor and
+  custody transition are reviewed and activated.
+- Remove the obsolete `RUSTSEC-2024-0370` exception after `proc-macro-error`
+  left every locked workspace dependency graph.
+
 ## [0.5.265] - 2026-08-29
 
 ### Fixed

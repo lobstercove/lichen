@@ -6,12 +6,14 @@ set -euo pipefail
 # Usage:
 #   LICHEN_RELEASE_TAG=vX.Y.Z bash scripts/rolling-release-deploy.sh testnet
 #   LICHEN_RELEASE_TAG=vX.Y.Z bash scripts/rolling-release-deploy.sh mainnet
+#   LICHEN_RELEASE_TAG=vX.Y.Z LICHEN_COORDINATED_RELEASE=1 bash scripts/rolling-release-deploy.sh testnet
 #   LICHEN_RELEASE_TAG=vX.Y.Z LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh testnet
 #
-# This script installs an exact GitHub Release archive on each validator and
-# restarts one validator at a time. It never deletes chain state.
-# Do not use it for consensus-critical releases unless the operator has planned
-# mixed-version safety explicitly.
+# This script installs an exact GitHub Release archive on each validator. Its
+# default is a one-host-at-a-time restart; `LICHEN_COORDINATED_RELEASE=1` stages
+# every host stopped before starting the complete fleet. It never deletes chain
+# state. Consensus-critical releases require coordinated mode unless an
+# explicitly reviewed mixed-version exception is supplied.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -54,6 +56,17 @@ DEX_SMOKE_TIMEOUT_SECS="${LICHEN_DEX_SMOKE_TIMEOUT_SECS:-90}"
 ARTIFACT_DIR="${LICHEN_RELEASE_ARTIFACT_DIR:-/tmp/lichen-rolling-${NETWORK}-${RELEASE_TAG:-unset}}"
 RELEASE_SIGNING_ADDRESS="${LICHEN_RELEASE_SIGNING_ADDRESS:-8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk}"
 REMOTE_RELEASE_DOWNLOAD="${LICHEN_REMOTE_RELEASE_DOWNLOAD:-auto}"
+COORDINATED_RELEASE="${LICHEN_COORDINATED_RELEASE:-0}"
+MOSS_SERVICE="lichen-moss-provider.service"
+MOSS_HEALTH_URL="${LICHEN_MOSS_HEALTH_URL:-http://127.0.0.1:9120/readyz}"
+
+case "$COORDINATED_RELEASE" in
+  0|1) ;;
+  *)
+    echo "LICHEN_COORDINATED_RELEASE must be 0 or 1." >&2
+    exit 2
+    ;;
+esac
 
 is_consensus_critical_release() {
   if [ "${LICHEN_FORCE_CONSENSUS_CRITICAL:-0}" = "1" ]; then
@@ -104,6 +117,10 @@ if [ -z "$RELEASE_TAG" ]; then
   echo "LICHEN_RELEASE_TAG is required." >&2
   exit 2
 fi
+if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9][A-Za-z0-9.-]*)?$ ]]; then
+  echo "LICHEN_RELEASE_TAG must be a canonical validator release tag." >&2
+  exit 2
+fi
 
 if [ -z "$HOSTS" ]; then
   echo "No VPS hosts configured. Set LICHEN_VPS_HOSTS for ${NETWORK}." >&2
@@ -115,7 +132,7 @@ if [ -n "${LICHEN_OWNER_APPROVED_RESET:-}" ] || [ -n "${LICHEN_CLEAN_SLATE_REDEP
   exit 2
 fi
 
-for tool in gh git node sha256sum tar ssh scp; do
+for tool in gh git node python3 sha256sum tar ssh scp; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "Missing required tool: $tool" >&2
     exit 2
@@ -172,9 +189,58 @@ archive_for_arch() {
   esac
 }
 
+validate_archive_members() {
+  local archive_path="$1"
+  python3 - "$archive_path" <<'PY'
+import pathlib
+import posixpath
+import re
+import sys
+import tarfile
+
+archive = sys.argv[1]
+with tarfile.open(archive, "r:gz") as bundle:
+    members = bundle.getmembers()
+if not members:
+    raise SystemExit("release archive is empty")
+
+root = None
+seen = set()
+for member in members:
+    name = member.name
+    normalized = posixpath.normpath(name)
+    if (
+        not name
+        or name.startswith("/")
+        or "\\" in name
+        or normalized in ("", ".")
+        or normalized != name.rstrip("/")
+    ):
+        raise SystemExit(f"unsafe release archive member path: {name!r}")
+    parts = pathlib.PurePosixPath(normalized).parts
+    if not parts or ".." in parts:
+        raise SystemExit(f"unsafe release archive member path: {name!r}")
+    if root is None:
+        root = parts[0]
+        if not re.fullmatch(r"[A-Za-z0-9._+-]+", root):
+            raise SystemExit(f"unsafe release archive root name: {root!r}")
+    if parts[0] != root:
+        raise SystemExit("release archive must contain exactly one top-level directory")
+    if normalized in seen:
+        raise SystemExit(f"duplicate release archive member: {name!r}")
+    seen.add(normalized)
+    if not (member.isdir() or member.isreg()):
+        raise SystemExit(f"release archive member is not a regular file or directory: {name!r}")
+    if len(parts) == 1 and not member.isdir():
+        raise SystemExit("release archive top-level member must be a directory")
+
+print(root)
+PY
+}
+
 archive_root() {
   local archive="$1"
-  tar tzf "$ARTIFACT_DIR/$archive" | awk -F/ 'NR==1 { print $1 }'
+  validate_archive_members "$ARTIFACT_DIR/$archive"
 }
 
 archive_bin_sha() {
@@ -183,6 +249,17 @@ archive_bin_sha() {
   local bin="$3"
   if tar tzf "$ARTIFACT_DIR/$archive" | grep -qx "$root/$bin"; then
     tar xOf "$ARTIFACT_DIR/$archive" "$root/$bin" |
+      sha256sum |
+      awk '{print $1}'
+  fi
+}
+
+archive_file_sha() {
+  local archive="$1"
+  local root="$2"
+  local relative_path="$3"
+  if tar tzf "$ARTIFACT_DIR/$archive" | grep -qx "$root/$relative_path"; then
+    tar xOf "$ARTIFACT_DIR/$archive" "$root/$relative_path" |
       sha256sum |
       awk '{print $1}'
   fi
@@ -201,13 +278,27 @@ require_archive_bin_sha() {
   printf '%s\n' "$sha"
 }
 
+require_archive_file_sha() {
+  local archive="$1"
+  local root="$2"
+  local relative_path="$3"
+  local sha
+  sha="$(archive_file_sha "$archive" "$root" "$relative_path")"
+  if [ -z "$sha" ]; then
+    echo "Release archive ${archive} is missing required file: ${relative_path}" >&2
+    return 1
+  fi
+  printf '%s\n' "$sha"
+}
+
 validate_release_archive() {
   local archive="$1"
   local root="$2"
   local bin
-  for bin in lichen-validator lichen-genesis lichen lichen-archive-v2 zk-prove lichen-custody lichen-faucet; do
+  for bin in lichen-validator lichen-genesis lichen lichen-archive-v2 zk-prove lichen-custody lichen-faucet lichen-moss-provider; do
     require_archive_bin_sha "$archive" "$root" "$bin" >/dev/null
   done
+  require_archive_file_sha "$archive" "$root" deploy/lichen-moss-provider.service >/dev/null
 }
 
 archive_sha() {
@@ -393,7 +484,7 @@ REMOTE
 
 install_host() {
   local host="$1"
-  local arch archive root expected_archive_sha expected_validator_sha expected_archive_v2_sha expected_custody_sha expected_faucet_sha release_url
+  local arch archive root expected_archive_sha expected_validator_sha expected_archive_v2_sha expected_custody_sha expected_faucet_sha expected_moss_sha expected_moss_unit_sha release_url
   arch="$(ssh_run "$host" "uname -m")"
   archive="$(archive_for_arch "$arch")"
   root="$(archive_root "$archive")"
@@ -402,6 +493,8 @@ install_host() {
   expected_archive_v2_sha="$(require_archive_bin_sha "$archive" "$root" lichen-archive-v2)"
   expected_custody_sha="$(require_archive_bin_sha "$archive" "$root" lichen-custody)"
   expected_faucet_sha="$(require_archive_bin_sha "$archive" "$root" lichen-faucet)"
+  expected_moss_sha="$(require_archive_bin_sha "$archive" "$root" lichen-moss-provider)"
+  expected_moss_unit_sha="$(require_archive_file_sha "$archive" "$root" deploy/lichen-moss-provider.service)"
   release_url="$(release_asset_url "$archive")"
 
   echo "Install ${RELEASE_TAG} on ${host} (${archive})"
@@ -421,11 +514,19 @@ REMOTE
   else
     scp_to "$ARTIFACT_DIR/$archive" "$host" "/tmp/$archive"
   fi
-  ssh_run_script "$host" "NETWORK='$NETWORK' SERVICE='$SERVICE' CUSTODY_SERVICE='$CUSTODY_SERVICE' RELEASE_TAG='$RELEASE_TAG' ARCHIVE='/tmp/$archive' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_ARCHIVE_V2_SHA='$expected_archive_v2_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha'" <<'REMOTE'
+  ssh_run_script "$host" "NETWORK='$NETWORK' SERVICE='$SERVICE' CUSTODY_SERVICE='$CUSTODY_SERVICE' MOSS_SERVICE='$MOSS_SERVICE' RELEASE_TAG='$RELEASE_TAG' ARCHIVE='/tmp/$archive' EXPECTED_ROOT='$root' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_ARCHIVE_V2_SHA='$expected_archive_v2_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha' EXPECTED_MOSS_SHA='$expected_moss_sha' EXPECTED_MOSS_UNIT_SHA='$expected_moss_unit_sha' DEFER_START='$COORDINATED_RELEASE'" <<'REMOTE'
 set -euo pipefail
 sudo() { command sudo -n "$@" </dev/null; }
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp" "$ARCHIVE"' EXIT
+cleanup_staging() {
+  rm -rf "$tmp" "$ARCHIVE"
+  local bin
+  for bin in lichen-validator lichen-genesis lichen lichen-archive-v2 zk-prove lichen-custody lichen-faucet lichen-moss-provider; do
+    sudo -n rm -f "/usr/local/bin/${bin}.new"
+  done
+  sudo -n rm -f "/etc/systemd/system/${MOSS_SERVICE}.new"
+}
+trap cleanup_staging EXIT
 backup_suffix="before-${RELEASE_TAG}-$(date -u +%Y%m%dT%H%M%SZ)"
 before_pid="$(systemctl show "$SERVICE" -p MainPID --value || true)"
 before_start="$(systemctl show "$SERVICE" -p ExecMainStartTimestampMonotonic --value || true)"
@@ -451,41 +552,92 @@ optional_service_required() {
   fi
 }
 
-restart_optional_service() {
+stop_service_unit() {
   local unit="$1"
-  local required="$2"
-  if [ "$required" != "1" ] || ! unit_exists "$unit"; then
-    return 0
-  fi
   sudo -n systemctl stop "$unit" || true
   for _ in $(seq 1 20); do
     if ! systemctl is-active --quiet "$unit"; then
-      break
-    fi
-    sleep 1
-  done
-  if systemctl is-active --quiet "$unit"; then
-    sudo -n systemctl kill --kill-who=control-group -s SIGKILL "$unit" || true
-    sleep 2
-  fi
-  sudo -n systemctl reset-failed "$unit" || true
-  sudo -n systemctl start "$unit"
-  for _ in $(seq 1 30); do
-    if systemctl is-active --quiet "$unit"; then
       return 0
     fi
     sleep 1
   done
-  echo "Optional service ${unit} did not become active after validator restart."
-  exit 1
+  echo "Service ${unit} remained active after stop; killing its control group."
+  sudo -n systemctl kill --kill-who=control-group -s SIGKILL "$unit" || true
+  sleep 2
+  if systemctl is-active --quiet "$unit"; then
+    echo "Service ${unit} is still active after control-group kill."
+    exit 1
+  fi
+}
+
+stop_optional_service() {
+  local unit="$1"
+  local required="$2"
+  if [ "$required" = "1" ] && unit_exists "$unit"; then
+    stop_service_unit "$unit"
+  fi
 }
 
 custody_service_required="$(optional_service_required "$CUSTODY_SERVICE")"
 faucet_service_required="$(optional_service_required lichen-faucet.service)"
+moss_service_required="$(optional_service_required "$MOSS_SERVICE")"
+validate_remote_archive_members() {
+  python3 - "$ARCHIVE" <<'PY'
+import pathlib
+import posixpath
+import re
+import sys
+import tarfile
+
+with tarfile.open(sys.argv[1], "r:gz") as bundle:
+    members = bundle.getmembers()
+if not members:
+    raise SystemExit("release archive is empty")
+root = None
+seen = set()
+for member in members:
+    name = member.name
+    normalized = posixpath.normpath(name)
+    if (not name or name.startswith("/") or "\\" in name or normalized in ("", ".") or normalized != name.rstrip("/")):
+        raise SystemExit(f"unsafe release archive member path: {name!r}")
+    parts = pathlib.PurePosixPath(normalized).parts
+    if not parts or ".." in parts:
+        raise SystemExit(f"unsafe release archive member path: {name!r}")
+    if root is None:
+        root = parts[0]
+        if not re.fullmatch(r"[A-Za-z0-9._+-]+", root):
+            raise SystemExit(f"unsafe release archive root name: {root!r}")
+    if parts[0] != root:
+        raise SystemExit("release archive must contain exactly one top-level directory")
+    if normalized in seen:
+        raise SystemExit(f"duplicate release archive member: {name!r}")
+    seen.add(normalized)
+    if not (member.isdir() or member.isreg()):
+        raise SystemExit(f"release archive member is not a regular file or directory: {name!r}")
+    if len(parts) == 1 and not member.isdir():
+        raise SystemExit("release archive top-level member must be a directory")
+print(root)
+PY
+}
+archive_root="$(validate_remote_archive_members)"
+if [ "$archive_root" != "$EXPECTED_ROOT" ]; then
+  echo "Release archive root mismatch: got=${archive_root} expected=${EXPECTED_ROOT}"
+  exit 1
+fi
 tar xzf "$ARCHIVE" -C "$tmp"
-root="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -1)"
-if [ -z "$root" ]; then
+root="$tmp/$archive_root"
+if [ ! -d "$root" ]; then
   echo "Release archive did not contain a root directory."
+  exit 1
+fi
+if [ ! -f "$root/deploy/lichen-moss-provider.service" ]; then
+  echo "Release archive is missing deploy/lichen-moss-provider.service."
+  exit 1
+fi
+sudo -n install -m 644 "$root/deploy/lichen-moss-provider.service" "/etc/systemd/system/${MOSS_SERVICE}.new"
+staged_moss_unit_sha="$(sha256sum "/etc/systemd/system/${MOSS_SERVICE}.new" | awk '{print $1}')"
+if [ "$staged_moss_unit_sha" != "$EXPECTED_MOSS_UNIT_SHA" ]; then
+  echo "Staged Moss unit hash mismatch: got=${staged_moss_unit_sha} expected=${EXPECTED_MOSS_UNIT_SHA}"
   exit 1
 fi
 
@@ -514,6 +666,7 @@ install_optional_service_bin() {
 
 install_optional_service_bin lichen-custody "$EXPECTED_CUSTODY_SHA"
 install_optional_service_bin lichen-faucet "$EXPECTED_FAUCET_SHA"
+install_optional_service_bin lichen-moss-provider "$EXPECTED_MOSS_SHA"
 
 if [ -f "$root/seeds.json" ]; then
   sudo -n install -m 644 "$root/seeds.json" /etc/lichen/seeds.json
@@ -547,7 +700,16 @@ for bin in lichen-validator lichen-genesis lichen lichen-archive-v2 zk-prove; do
 done
 check_staged_bin_hash lichen-custody "$EXPECTED_CUSTODY_SHA"
 check_staged_bin_hash lichen-faucet "$EXPECTED_FAUCET_SHA"
+check_staged_bin_hash lichen-moss-provider "$EXPECTED_MOSS_SHA"
 check_staged_bin_hash lichen-archive-v2 "$EXPECTED_ARCHIVE_V2_SHA"
+
+# Stop every process that may execute a replaced binary before committing any
+# staged file. Coordinated mode keeps every validator stopped until all hosts
+# have completed this install phase.
+stop_optional_service "$CUSTODY_SERVICE" "$custody_service_required"
+stop_optional_service lichen-faucet.service "$faucet_service_required"
+stop_optional_service "$MOSS_SERVICE" "$moss_service_required"
+stop_service_unit "$SERVICE"
 
 install_staged_bin() {
   local bin="$1"
@@ -568,18 +730,21 @@ for bin in lichen-validator lichen-genesis lichen lichen-archive-v2 zk-prove; do
 done
 install_staged_bin lichen-custody "$EXPECTED_CUSTODY_SHA"
 install_staged_bin lichen-faucet "$EXPECTED_FAUCET_SHA"
+install_staged_bin lichen-moss-provider "$EXPECTED_MOSS_SHA"
 
-sudo -n systemctl stop "$SERVICE" || true
-for _ in $(seq 1 20); do
-  if ! systemctl is-active --quiet "$SERVICE"; then
-    break
-  fi
-  sleep 1
-done
-if systemctl is-active --quiet "$SERVICE"; then
-  echo "Service still active after stop; killing service control group before restart."
-  sudo -n systemctl kill --kill-who=control-group -s SIGKILL "$SERVICE" || true
-  sleep 2
+if [ -f "/etc/systemd/system/$MOSS_SERVICE" ]; then
+  sudo -n cp -p "/etc/systemd/system/$MOSS_SERVICE" "/etc/systemd/system/${MOSS_SERVICE}.${backup_suffix}"
+fi
+sudo -n mv -f "/etc/systemd/system/${MOSS_SERVICE}.new" "/etc/systemd/system/$MOSS_SERVICE"
+sudo -n systemctl daemon-reload
+if [ -f /etc/lichen/moss-provider.env ]; then
+  sudo -n systemctl enable "$MOSS_SERVICE"
+  moss_service_required=1
+fi
+
+if [ "$DEFER_START" = "1" ]; then
+  echo "Staged ${RELEASE_TAG} on ${SERVICE}; coordinated start is deferred."
+  exit 0
 fi
 sudo -n systemctl reset-failed "$SERVICE" || true
 sudo -n systemctl start "$SERVICE"
@@ -620,14 +785,36 @@ for pid in $service_pids; do
   fi
 done
 
-restart_optional_service "$CUSTODY_SERVICE" "$custody_service_required"
-restart_optional_service lichen-faucet.service "$faucet_service_required"
+REMOTE
+}
+
+start_coordinated_validator() {
+  local host="$1"
+  echo "Start coordinated validator ${host}"
+  ssh_run "$host" "SERVICE='$SERVICE' bash -s" <<'REMOTE'
+set -euo pipefail
+sudo() { command sudo -n "$@" </dev/null; }
+if systemctl is-active --quiet "$SERVICE"; then
+  echo "Refusing coordinated start because ${SERVICE} was not left stopped."
+  exit 1
+fi
+sudo -n systemctl reset-failed "$SERVICE" || true
+sudo -n systemctl start "$SERVICE"
+for _ in $(seq 1 30); do
+  pid="$(systemctl show "$SERVICE" -p MainPID --value || true)"
+  if systemctl is-active --quiet "$SERVICE" && [ -n "$pid" ] && [ "$pid" != "0" ]; then
+    exit 0
+  fi
+  sleep 1
+done
+echo "${SERVICE} did not become active during coordinated start."
+exit 1
 REMOTE
 }
 
 verify_host_release() {
   local host="$1"
-  local arch archive root expected_validator_sha expected_archive_v2_sha expected_custody_sha expected_faucet_sha
+  local arch archive root expected_validator_sha expected_archive_v2_sha expected_custody_sha expected_faucet_sha expected_moss_sha expected_moss_unit_sha
   arch="$(ssh_run "$host" "uname -m")"
   archive="$(archive_for_arch "$arch")"
   root="$(archive_root "$archive")"
@@ -635,9 +822,11 @@ verify_host_release() {
   expected_archive_v2_sha="$(require_archive_bin_sha "$archive" "$root" lichen-archive-v2)"
   expected_custody_sha="$(require_archive_bin_sha "$archive" "$root" lichen-custody)"
   expected_faucet_sha="$(require_archive_bin_sha "$archive" "$root" lichen-faucet)"
+  expected_moss_sha="$(require_archive_bin_sha "$archive" "$root" lichen-moss-provider)"
+  expected_moss_unit_sha="$(require_archive_file_sha "$archive" "$root" deploy/lichen-moss-provider.service)"
 
   echo "Verify installed release ${host}"
-  ssh_run "$host" "SERVICE='$SERVICE' CUSTODY_SERVICE='$CUSTODY_SERVICE' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_ARCHIVE_V2_SHA='$expected_archive_v2_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha' bash -s" <<'REMOTE'
+  ssh_run "$host" "SERVICE='$SERVICE' CUSTODY_SERVICE='$CUSTODY_SERVICE' MOSS_SERVICE='$MOSS_SERVICE' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_ARCHIVE_V2_SHA='$expected_archive_v2_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha' EXPECTED_MOSS_SHA='$expected_moss_sha' EXPECTED_MOSS_UNIT_SHA='$expected_moss_unit_sha' bash -s" <<'REMOTE'
 set -euo pipefail
 sudo() { command sudo -n "$@" </dev/null; }
 
@@ -672,6 +861,22 @@ check_file_hash() {
   actual="$(sha256sum "$path" | awk '{print $1}')"
   if [ "$actual" != "$expected" ]; then
     echo "${label} binary hash mismatch: got=${actual} expected=${expected}"
+    exit 1
+  fi
+}
+
+check_regular_file_hash() {
+  local path="$1"
+  local expected="$2"
+  local label="$3"
+  local actual
+  if [ ! -f "$path" ]; then
+    echo "Expected ${label} file is missing: ${path}"
+    exit 1
+  fi
+  actual="$(sha256sum "$path" | awk '{print $1}')"
+  if [ "$actual" != "$expected" ]; then
+    echo "${label} file hash mismatch: got=${actual} expected=${expected}"
     exit 1
   fi
 }
@@ -734,10 +939,13 @@ check_file_hash /usr/local/bin/lichen-validator "$EXPECTED_VALIDATOR_SHA" lichen
 check_file_hash /usr/local/bin/lichen-archive-v2 "$EXPECTED_ARCHIVE_V2_SHA" lichen-archive-v2
 check_file_hash /usr/local/bin/lichen-custody "$EXPECTED_CUSTODY_SHA" lichen-custody
 check_file_hash /usr/local/bin/lichen-faucet "$EXPECTED_FAUCET_SHA" lichen-faucet
+check_file_hash /usr/local/bin/lichen-moss-provider "$EXPECTED_MOSS_SHA" lichen-moss-provider
+check_regular_file_hash "/etc/systemd/system/$MOSS_SERVICE" "$EXPECTED_MOSS_UNIT_SHA" "$MOSS_SERVICE"
 
 check_service_tree_hash "$SERVICE" "$EXPECTED_VALIDATOR_SHA" "$SERVICE"
 check_service_tree_hash "$CUSTODY_SERVICE" "$EXPECTED_CUSTODY_SHA" "$CUSTODY_SERVICE"
 check_service_tree_hash lichen-faucet.service "$EXPECTED_FAUCET_SHA" lichen-faucet.service
+check_service_tree_hash "$MOSS_SERVICE" "$EXPECTED_MOSS_SHA" "$MOSS_SERVICE"
 REMOTE
 }
 
@@ -868,6 +1076,45 @@ exit 1
 REMOTE
 }
 
+restart_moss_if_local() {
+  local host="$1"
+
+  echo "Refresh Moss provider after validator health ${host}"
+  ssh_run "$host" "MOSS_SERVICE='$MOSS_SERVICE' MOSS_HEALTH_URL='$MOSS_HEALTH_URL' bash -s" <<'REMOTE'
+set -euo pipefail
+sudo() { command sudo -n "$@" </dev/null; }
+if ! systemctl list-unit-files --no-legend "$MOSS_SERVICE" 2>/dev/null | awk '{print $1}' | grep -Fxq "$MOSS_SERVICE"; then
+  exit 0
+fi
+if ! systemctl is-enabled --quiet "$MOSS_SERVICE" 2>/dev/null && \
+   ! systemctl is-active --quiet "$MOSS_SERVICE" 2>/dev/null; then
+  exit 0
+fi
+
+sudo -n systemctl stop "$MOSS_SERVICE" || true
+for _ in $(seq 1 20); do
+  if ! systemctl is-active --quiet "$MOSS_SERVICE"; then
+    break
+  fi
+  sleep 1
+done
+if systemctl is-active --quiet "$MOSS_SERVICE"; then
+  sudo -n systemctl kill --kill-who=control-group -s SIGKILL "$MOSS_SERVICE" || true
+  sleep 2
+fi
+sudo -n systemctl reset-failed "$MOSS_SERVICE" || true
+sudo -n systemctl start "$MOSS_SERVICE"
+for _ in $(seq 1 30); do
+  if curl -fsS "$MOSS_HEALTH_URL" >/dev/null; then
+    exit 0
+  fi
+  sleep 1
+done
+echo "Moss provider did not become healthy after restart."
+exit 1
+REMOTE
+}
+
 public_smoke() {
   local public_url
   case "$NETWORK" in
@@ -957,6 +1204,7 @@ if [ "${LICHEN_VERIFY_RELEASE_ONLY:-}" = "1" ]; then
 fi
 
 if is_consensus_critical_release &&
+  [ "$COORDINATED_RELEASE" != "1" ] &&
   [ "${LICHEN_ALLOW_CONSENSUS_CRITICAL_ROLLING:-0}" != "1" ]; then
   echo "${RELEASE_TAG} changes consensus- or storage-critical behavior; refusing mixed-version rolling restart." >&2
   echo "Use a coordinated stop/install/start rollout, then run this script with LICHEN_VERIFY_RELEASE_ONLY=1." >&2
@@ -968,13 +1216,34 @@ for host in $HOSTS; do
   preflight_host "$host"
 done
 
-for host in $HOSTS; do
-  install_host "$host"
-  wait_healthy "$host"
-  restart_custody_if_local "$host"
-  restart_faucet_if_local "$host"
-  verify_host_release "$host"
-done
+if [ "$COORDINATED_RELEASE" = "1" ]; then
+  echo "Coordinated mode: stage every host while no new validator is started."
+  for host in $HOSTS; do
+    install_host "$host"
+  done
+  echo "Coordinated mode: all hosts staged and stopped; starting the complete fleet."
+  for host in $HOSTS; do
+    start_coordinated_validator "$host"
+  done
+  for host in $HOSTS; do
+    wait_healthy "$host"
+  done
+  for host in $HOSTS; do
+    restart_custody_if_local "$host"
+    restart_faucet_if_local "$host"
+    restart_moss_if_local "$host"
+    verify_host_release "$host"
+  done
+else
+  for host in $HOSTS; do
+    install_host "$host"
+    wait_healthy "$host"
+    restart_custody_if_local "$host"
+    restart_faucet_if_local "$host"
+    restart_moss_if_local "$host"
+    verify_host_release "$host"
+  done
+fi
 
 for host in $HOSTS; do
   verify_host_release "$host"

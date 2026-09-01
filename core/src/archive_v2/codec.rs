@@ -1,4 +1,7 @@
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -17,6 +20,7 @@ use crate::{Block, Hash, Transaction};
 const MAX_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RECORD_BYTES: usize = 128 * 1024 * 1024;
 const SEGMENT_TRAILER_BYTES: usize = 32;
+const FRAME_HEADER_BYTES: usize = 1 + 8 + 4 + 4 + 4 + 32;
 const COMPACT_INDEX_MAGIC: &[u8; 8] = b"AV2IDX1\0";
 const COMPACT_INDEX_VERSION: u16 = 1;
 const MAX_INDEX_KEY_BYTES: usize = 4 * 1024 * 1024;
@@ -514,86 +518,32 @@ impl ArchiveV2SegmentCodec {
         }
         let indexes = decode_seekable_indexes(segment_bytes, manifest, &config)?;
         validate_index_frame_references(&indexes, &manifest.frames)?;
-        let Some((block_frame_index, block_frame_ordinal)) =
-            indexes.blocks_by_slot.get(&slot).copied()
-        else {
-            return Err(ArchiveV2Error::Ordering(format!(
-                "segment slot index is missing {slot}"
-            )));
-        };
-        let block_descriptor = manifest
-            .frames
-            .get(block_frame_index as usize)
-            .ok_or_else(|| ArchiveV2Error::Ordering("block frame index is invalid".to_string()))?;
-        let block_raw = decode_seekable_frame(segment_bytes, block_descriptor, &config.dictionary)?;
-        let block_record = record_at(
-            &block_raw,
-            block_frame_ordinal,
-            block_descriptor.record_count,
-        )?;
-        let archived: ArchivedBlockRecord = deserialize_legacy_bincode_strict(
-            block_record,
-            MAX_RECORD_BYTES as u64,
-            "archive v2 seekable block record",
-        )
-        .map_err(ArchiveV2Error::Codec)?;
-        let mut block: Block = deserialize_legacy_bincode_strict(
-            &archived.encoded_skeleton,
-            MAX_RECORD_BYTES as u64,
-            "archive v2 seekable block skeleton",
-        )
-        .map_err(ArchiveV2Error::Codec)?;
+        decode_block_from_indexes(manifest, slot, &indexes, |descriptor| {
+            decode_seekable_frame(segment_bytes, descriptor, &config.dictionary)
+        })
+    }
 
-        let mut transaction_frames = BTreeMap::<u32, Vec<u8>>::new();
-        let mut transactions = Vec::with_capacity(archived.transaction_ordinals.len());
-        for ordinal in &archived.transaction_ordinals {
-            let (frame_index, descriptor) =
-                transaction_descriptor_for_ordinal(&manifest.frames, *ordinal as u64)?;
-            if let std::collections::btree_map::Entry::Vacant(entry) =
-                transaction_frames.entry(frame_index)
-            {
-                entry.insert(decode_seekable_frame(
-                    segment_bytes,
-                    descriptor,
-                    &config.dictionary,
-                )?);
-            }
-            let raw = transaction_frames
-                .get(&frame_index)
-                .expect("seekable transaction frame was inserted");
-            let records = decode_records(raw)?;
-            let local = (*ordinal as u64)
-                .checked_sub(descriptor.first_ordinal)
-                .ok_or_else(|| {
-                    ArchiveV2Error::Ordering("transaction ordinal underflow".to_string())
-                })?;
-            let record = records.get(local as usize).ok_or_else(|| {
-                ArchiveV2Error::Ordering("transaction frame ordinal is invalid".to_string())
-            })?;
-            let archived_transaction: ArchivedTransactionRecord =
-                deserialize_legacy_bincode_strict(
-                    record,
-                    MAX_RECORD_BYTES as u64,
-                    "archive v2 seekable transaction record",
-                )
-                .map_err(ArchiveV2Error::Codec)?;
-            let transaction: Transaction = deserialize_legacy_bincode_strict(
-                &archived_transaction.encoded_transaction,
-                MAX_RECORD_BYTES as u64,
-                "archive v2 seekable transaction",
-            )
-            .map_err(ArchiveV2Error::Codec)?;
-            if transaction.signature() != archived_transaction.signature {
-                return Err(ArchiveV2Error::WrongRoot);
-            }
-            transactions.push(transaction);
+    /// Resolve one block by reading only the catalog-committed envelope,
+    /// compact public index, and referenced data frames from an immutable
+    /// object file. Every byte that influences the answer is authenticated by
+    /// its manifest frame hash; remote objects still require whole-object hash
+    /// verification before they are admitted to the local cache.
+    pub fn decode_block_at_path(
+        path: &Path,
+        manifest: &ArchiveV2Manifest,
+        expected_identity: &ArchiveV2Identity,
+        slot: u64,
+    ) -> Result<Option<Block>, ArchiveV2Error> {
+        let mut file = File::open(path)?;
+        let config = verify_seekable_file(&mut file, manifest, expected_identity)?;
+        if slot < manifest.start_slot || slot > manifest.end_slot {
+            return Ok(None);
         }
-        block.transactions = transactions;
-        if block.header.slot != slot || archived.slot != slot || block.hash() != archived.block_hash
-        {
-            return Err(ArchiveV2Error::WrongRoot);
-        }
-        Ok(Some(block))
+        let indexes = decode_seekable_indexes_from_file(&mut file, manifest, &config)?;
+        validate_index_frame_references(&indexes, &manifest.frames)?;
+        decode_block_from_indexes(manifest, slot, &indexes, |descriptor| {
+            decode_seekable_frame_from_file(&mut file, descriptor, &config.dictionary)
+        })
     }
 
     pub fn decode_transaction_at(
@@ -605,32 +555,51 @@ impl ArchiveV2SegmentCodec {
         let config = verify_seekable_object(segment_bytes, manifest, expected_identity)?;
         let indexes = decode_seekable_indexes(segment_bytes, manifest, &config)?;
         validate_index_frame_references(&indexes, &manifest.frames)?;
-        let Some((frame_index, frame_ordinal, slot, _)) =
-            indexes.transactions_by_signature.get(signature).copied()
-        else {
+        decode_transaction_from_indexes(manifest, signature, &indexes, |descriptor| {
+            decode_seekable_frame(segment_bytes, descriptor, &config.dictionary)
+        })
+    }
+
+    /// Resolve one transaction with the same bounded authenticated file reads
+    /// used by `decode_block_at_path`.
+    pub fn decode_transaction_at_path(
+        path: &Path,
+        manifest: &ArchiveV2Manifest,
+        expected_identity: &ArchiveV2Identity,
+        signature: &Hash,
+    ) -> Result<Option<(Transaction, u64)>, ArchiveV2Error> {
+        let mut file = File::open(path)?;
+        let config = verify_seekable_file(&mut file, manifest, expected_identity)?;
+        let indexes = decode_seekable_indexes_from_file(&mut file, manifest, &config)?;
+        validate_index_frame_references(&indexes, &manifest.frames)?;
+        decode_transaction_from_indexes(manifest, signature, &indexes, |descriptor| {
+            decode_seekable_frame_from_file(&mut file, descriptor, &config.dictionary)
+        })
+    }
+
+    /// Resolve one raw public-history category value by reading only the
+    /// catalog-committed envelope and compact public-index frame. Category
+    /// values are embedded in that authenticated frame, so no block or
+    /// transaction data frame—and no whole-segment decode—is required.
+    pub fn decode_category_value_at_path(
+        path: &Path,
+        manifest: &ArchiveV2Manifest,
+        expected_identity: &ArchiveV2Identity,
+        category: &str,
+        key: &[u8],
+    ) -> Result<Option<(u64, Vec<u8>)>, ArchiveV2Error> {
+        let mut file = File::open(path)?;
+        let config = verify_seekable_file(&mut file, manifest, expected_identity)?;
+        let indexes = decode_seekable_indexes_from_file(&mut file, manifest, &config)?;
+        validate_index_frame_references(&indexes, &manifest.frames)?;
+        let Some(rows) = indexes.categories.get(category) else {
             return Ok(None);
         };
-        let descriptor = manifest.frames.get(frame_index as usize).ok_or_else(|| {
-            ArchiveV2Error::Ordering("transaction frame index is invalid".to_string())
-        })?;
-        let raw = decode_seekable_frame(segment_bytes, descriptor, &config.dictionary)?;
-        let record = record_at(&raw, frame_ordinal, descriptor.record_count)?;
-        let archived: ArchivedTransactionRecord = deserialize_legacy_bincode_strict(
-            record,
-            MAX_RECORD_BYTES as u64,
-            "archive v2 seekable transaction record",
-        )
-        .map_err(ArchiveV2Error::Codec)?;
-        let transaction: Transaction = deserialize_legacy_bincode_strict(
-            &archived.encoded_transaction,
-            MAX_RECORD_BYTES as u64,
-            "archive v2 seekable transaction",
-        )
-        .map_err(ArchiveV2Error::Codec)?;
-        if archived.signature != *signature || transaction.signature() != *signature {
-            return Err(ArchiveV2Error::WrongRoot);
-        }
-        Ok(Some((transaction, slot)))
+        let Ok(index) = rows.binary_search_by(|row| row.key.as_slice().cmp(key)) else {
+            return Ok(None);
+        };
+        let row = &rows[index];
+        Ok(Some((row.slot, row.value.clone())))
     }
 }
 
@@ -1506,6 +1475,92 @@ fn verify_seekable_object(
     expected_identity: &ArchiveV2Identity,
 ) -> Result<ArchiveV2CodecConfig, ArchiveV2Error> {
     manifest.validate()?;
+    if Hash::hash(bytes) != manifest.segment_object_hash {
+        return Err(ArchiveV2Error::WrongObjectHash);
+    }
+    let header_bytes = validate_seekable_layout(manifest, bytes.len() as u64)?;
+    let header = bytes
+        .get(..header_bytes)
+        .ok_or(ArchiveV2Error::Truncated("seekable segment header"))?;
+    let trailer = bytes
+        .get(bytes.len().saturating_sub(SEGMENT_TRAILER_BYTES)..)
+        .ok_or(ArchiveV2Error::Truncated("segment content root"))?;
+    verify_seekable_envelope(header, trailer, manifest, expected_identity)
+}
+
+fn verify_seekable_file(
+    file: &mut File,
+    manifest: &ArchiveV2Manifest,
+    expected_identity: &ArchiveV2Identity,
+) -> Result<ArchiveV2CodecConfig, ArchiveV2Error> {
+    manifest.validate()?;
+    let object_bytes = file.metadata()?.len();
+    let header_bytes = validate_seekable_layout(manifest, object_bytes)?;
+    let mut header = vec![0u8; header_bytes];
+    file.seek(SeekFrom::Start(0))?;
+    file.read_exact(&mut header)?;
+    let trailer_offset = object_bytes
+        .checked_sub(SEGMENT_TRAILER_BYTES as u64)
+        .ok_or(ArchiveV2Error::Truncated("segment content root"))?;
+    let mut trailer = [0u8; SEGMENT_TRAILER_BYTES];
+    file.seek(SeekFrom::Start(trailer_offset))?;
+    file.read_exact(&mut trailer)?;
+    verify_seekable_envelope(&header, &trailer, manifest, expected_identity)
+}
+
+fn validate_seekable_layout(
+    manifest: &ArchiveV2Manifest,
+    object_bytes: u64,
+) -> Result<usize, ArchiveV2Error> {
+    let header_bytes = ARCHIVE_V2_SEGMENT_MAGIC
+        .len()
+        .checked_add(2)
+        .and_then(|bytes| bytes.checked_add(2 + manifest.identity.network_id.len()))
+        .and_then(|bytes| bytes.checked_add(32 + 8 + 8 + 1))
+        .and_then(|bytes| {
+            bytes.checked_add(if manifest.previous_segment_hash.is_some() {
+                32
+            } else {
+                0
+            })
+        })
+        .and_then(|bytes| bytes.checked_add(32 + 4 + 4 + 4 + 4))
+        .and_then(|bytes| bytes.checked_add(manifest.dictionary_bytes as usize))
+        .and_then(|bytes| bytes.checked_add(4))
+        .ok_or_else(|| ArchiveV2Error::Bounds("segment header length overflow".to_string()))?;
+    let mut expected_header_offset = header_bytes as u64;
+    for descriptor in &manifest.frames {
+        let actual_header_offset = descriptor
+            .file_offset
+            .checked_sub(FRAME_HEADER_BYTES as u64)
+            .ok_or_else(|| {
+                ArchiveV2Error::Ordering("frame offset precedes its header".to_string())
+            })?;
+        if actual_header_offset != expected_header_offset {
+            return Err(ArchiveV2Error::Ordering(
+                "seekable frame layout is not canonical and contiguous".to_string(),
+            ));
+        }
+        expected_header_offset = descriptor
+            .file_offset
+            .checked_add(descriptor.compressed_bytes as u64)
+            .ok_or_else(|| ArchiveV2Error::Bounds("compressed frame overflow".to_string()))?;
+    }
+    let expected_object_bytes = expected_header_offset
+        .checked_add(SEGMENT_TRAILER_BYTES as u64)
+        .ok_or_else(|| ArchiveV2Error::Bounds("segment length overflow".to_string()))?;
+    if object_bytes != expected_object_bytes {
+        return Err(ArchiveV2Error::Truncated("seekable segment object"));
+    }
+    Ok(header_bytes)
+}
+
+fn verify_seekable_envelope(
+    header: &[u8],
+    trailer: &[u8],
+    manifest: &ArchiveV2Manifest,
+    expected_identity: &ArchiveV2Identity,
+) -> Result<ArchiveV2CodecConfig, ArchiveV2Error> {
     expected_identity.validate()?;
     if manifest.identity.network_id != expected_identity.network_id {
         return Err(ArchiveV2Error::WrongNetwork {
@@ -1516,13 +1571,10 @@ fn verify_seekable_object(
     if manifest.identity.genesis_hash != expected_identity.genesis_hash {
         return Err(ArchiveV2Error::WrongGenesis);
     }
-    if Hash::hash(bytes) != manifest.segment_object_hash {
-        return Err(ArchiveV2Error::WrongObjectHash);
-    }
-    if bytes.len() < ARCHIVE_V2_SEGMENT_MAGIC.len() + SEGMENT_TRAILER_BYTES {
-        return Err(ArchiveV2Error::Truncated("seekable segment"));
-    }
-    let mut cursor = SegmentCursor { bytes, offset: 0 };
+    let mut cursor = SegmentCursor {
+        bytes: header,
+        offset: 0,
+    };
     if cursor.take(ARCHIVE_V2_SEGMENT_MAGIC.len(), "segment magic")? != ARCHIVE_V2_SEGMENT_MAGIC {
         return Err(ArchiveV2Error::Malformed(
             "segment magic mismatch".to_string(),
@@ -1591,9 +1643,11 @@ fn verify_seekable_object(
             "segment frame count differs from manifest".to_string(),
         ));
     }
-    let trailer = bytes
-        .get(bytes.len().saturating_sub(SEGMENT_TRAILER_BYTES)..)
-        .ok_or(ArchiveV2Error::Truncated("segment content root"))?;
+    if cursor.offset != header.len() {
+        return Err(ArchiveV2Error::Ordering(
+            "seekable segment header is not canonical".to_string(),
+        ));
+    }
     if trailer != manifest.segment_content_root.0
         || descriptor_root(&manifest.frames) != manifest.segment_content_root
     {
@@ -1630,7 +1684,6 @@ fn decode_seekable_frame(
     descriptor: &ArchiveV2FrameDescriptor,
     dictionary: &[u8],
 ) -> Result<Vec<u8>, ArchiveV2Error> {
-    const FRAME_HEADER_BYTES: usize = 1 + 8 + 4 + 4 + 4 + 32;
     let offset = usize::try_from(descriptor.file_offset)
         .map_err(|_| ArchiveV2Error::Bounds("frame offset overflow".to_string()))?;
     let header_start = offset
@@ -1658,7 +1711,54 @@ fn decode_seekable_frame(
     if compressed_end > bytes.len().saturating_sub(SEGMENT_TRAILER_BYTES) {
         return Err(ArchiveV2Error::Truncated("compressed frame"));
     }
-    let compressed = &bytes[offset..compressed_end];
+    decode_seekable_frame_encoding(&bytes[header_start..compressed_end], descriptor, dictionary)
+}
+
+fn decode_seekable_frame_from_file(
+    file: &mut File,
+    descriptor: &ArchiveV2FrameDescriptor,
+    dictionary: &[u8],
+) -> Result<Vec<u8>, ArchiveV2Error> {
+    let header_start = descriptor
+        .file_offset
+        .checked_sub(FRAME_HEADER_BYTES as u64)
+        .ok_or_else(|| ArchiveV2Error::Ordering("frame offset precedes its header".to_string()))?;
+    let encoded_bytes = FRAME_HEADER_BYTES
+        .checked_add(descriptor.compressed_bytes as usize)
+        .ok_or_else(|| ArchiveV2Error::Bounds("compressed frame overflow".to_string()))?;
+    let mut encoded = vec![0u8; encoded_bytes];
+    file.seek(SeekFrom::Start(header_start))?;
+    file.read_exact(&mut encoded)?;
+    decode_seekable_frame_encoding(&encoded, descriptor, dictionary)
+}
+
+fn decode_seekable_frame_encoding(
+    encoded_frame: &[u8],
+    descriptor: &ArchiveV2FrameDescriptor,
+    dictionary: &[u8],
+) -> Result<Vec<u8>, ArchiveV2Error> {
+    if encoded_frame.len()
+        != FRAME_HEADER_BYTES.saturating_add(descriptor.compressed_bytes as usize)
+    {
+        return Err(ArchiveV2Error::Truncated("encoded frame"));
+    }
+    let mut header = SegmentCursor {
+        bytes: encoded_frame,
+        offset: 0,
+    };
+    let encoded = ArchiveV2FrameDescriptor {
+        kind: ArchiveV2FrameKind::try_from(header.u8("frame kind")?)?,
+        first_ordinal: header.u64("frame first ordinal")?,
+        record_count: header.u32("frame record count")?,
+        compressed_bytes: header.u32("frame compressed bytes")?,
+        uncompressed_bytes: header.u32("frame uncompressed bytes")?,
+        content_hash: header.hash("frame content hash")?,
+        file_offset: descriptor.file_offset,
+    };
+    if encoded != *descriptor || header.offset != FRAME_HEADER_BYTES {
+        return Err(ArchiveV2Error::WrongRoot);
+    }
+    let compressed = &encoded_frame[FRAME_HEADER_BYTES..];
     let raw = if dictionary.is_empty() {
         zstd::bulk::decompress(compressed, descriptor.uncompressed_bytes as usize)
     } else {
@@ -1702,6 +1802,149 @@ fn decode_seekable_indexes(
     let indexes = decode_compact_indexes(record)?;
     indexes.validate(manifest.start_slot, manifest.end_slot)?;
     Ok(indexes)
+}
+
+fn decode_seekable_indexes_from_file(
+    file: &mut File,
+    manifest: &ArchiveV2Manifest,
+    config: &ArchiveV2CodecConfig,
+) -> Result<ArchiveV2PublicIndexes, ArchiveV2Error> {
+    let mut descriptors = manifest
+        .frames
+        .iter()
+        .filter(|descriptor| descriptor.kind == ArchiveV2FrameKind::PublicIndexes);
+    let descriptor = descriptors
+        .next()
+        .ok_or_else(|| ArchiveV2Error::Ordering("segment has no public index frame".to_string()))?;
+    if descriptors.next().is_some() {
+        return Err(ArchiveV2Error::Ordering(
+            "segment has multiple public index frames".to_string(),
+        ));
+    }
+    let raw = decode_seekable_frame_from_file(file, descriptor, &config.dictionary)?;
+    let record = record_at(&raw, 0, 1)?;
+    let indexes = decode_compact_indexes(record)?;
+    indexes.validate(manifest.start_slot, manifest.end_slot)?;
+    Ok(indexes)
+}
+
+fn decode_block_from_indexes<F>(
+    manifest: &ArchiveV2Manifest,
+    slot: u64,
+    indexes: &ArchiveV2PublicIndexes,
+    mut decode_frame: F,
+) -> Result<Option<Block>, ArchiveV2Error>
+where
+    F: FnMut(&ArchiveV2FrameDescriptor) -> Result<Vec<u8>, ArchiveV2Error>,
+{
+    let Some((block_frame_index, block_frame_ordinal)) = indexes.blocks_by_slot.get(&slot).copied()
+    else {
+        return Err(ArchiveV2Error::Ordering(format!(
+            "segment slot index is missing {slot}"
+        )));
+    };
+    let block_descriptor = manifest
+        .frames
+        .get(block_frame_index as usize)
+        .ok_or_else(|| ArchiveV2Error::Ordering("block frame index is invalid".to_string()))?;
+    let block_raw = decode_frame(block_descriptor)?;
+    let block_record = record_at(
+        &block_raw,
+        block_frame_ordinal,
+        block_descriptor.record_count,
+    )?;
+    let archived: ArchivedBlockRecord = deserialize_legacy_bincode_strict(
+        block_record,
+        MAX_RECORD_BYTES as u64,
+        "archive v2 seekable block record",
+    )
+    .map_err(ArchiveV2Error::Codec)?;
+    let mut block: Block = deserialize_legacy_bincode_strict(
+        &archived.encoded_skeleton,
+        MAX_RECORD_BYTES as u64,
+        "archive v2 seekable block skeleton",
+    )
+    .map_err(ArchiveV2Error::Codec)?;
+
+    let mut transaction_frames = BTreeMap::<u32, Vec<u8>>::new();
+    let mut transactions = Vec::with_capacity(archived.transaction_ordinals.len());
+    for ordinal in &archived.transaction_ordinals {
+        let (frame_index, descriptor) =
+            transaction_descriptor_for_ordinal(&manifest.frames, *ordinal as u64)?;
+        if let std::collections::btree_map::Entry::Vacant(entry) =
+            transaction_frames.entry(frame_index)
+        {
+            entry.insert(decode_frame(descriptor)?);
+        }
+        let raw = transaction_frames
+            .get(&frame_index)
+            .expect("seekable transaction frame was inserted");
+        let records = decode_records(raw)?;
+        let local = (*ordinal as u64)
+            .checked_sub(descriptor.first_ordinal)
+            .ok_or_else(|| ArchiveV2Error::Ordering("transaction ordinal underflow".to_string()))?;
+        let record = records.get(local as usize).ok_or_else(|| {
+            ArchiveV2Error::Ordering("transaction frame ordinal is invalid".to_string())
+        })?;
+        let archived_transaction: ArchivedTransactionRecord = deserialize_legacy_bincode_strict(
+            record,
+            MAX_RECORD_BYTES as u64,
+            "archive v2 seekable transaction record",
+        )
+        .map_err(ArchiveV2Error::Codec)?;
+        let transaction: Transaction = deserialize_legacy_bincode_strict(
+            &archived_transaction.encoded_transaction,
+            MAX_RECORD_BYTES as u64,
+            "archive v2 seekable transaction",
+        )
+        .map_err(ArchiveV2Error::Codec)?;
+        if transaction.signature() != archived_transaction.signature {
+            return Err(ArchiveV2Error::WrongRoot);
+        }
+        transactions.push(transaction);
+    }
+    block.transactions = transactions;
+    if block.header.slot != slot || archived.slot != slot || block.hash() != archived.block_hash {
+        return Err(ArchiveV2Error::WrongRoot);
+    }
+    Ok(Some(block))
+}
+
+fn decode_transaction_from_indexes<F>(
+    manifest: &ArchiveV2Manifest,
+    signature: &Hash,
+    indexes: &ArchiveV2PublicIndexes,
+    mut decode_frame: F,
+) -> Result<Option<(Transaction, u64)>, ArchiveV2Error>
+where
+    F: FnMut(&ArchiveV2FrameDescriptor) -> Result<Vec<u8>, ArchiveV2Error>,
+{
+    let Some((frame_index, frame_ordinal, slot, _)) =
+        indexes.transactions_by_signature.get(signature).copied()
+    else {
+        return Ok(None);
+    };
+    let descriptor = manifest.frames.get(frame_index as usize).ok_or_else(|| {
+        ArchiveV2Error::Ordering("transaction frame index is invalid".to_string())
+    })?;
+    let raw = decode_frame(descriptor)?;
+    let record = record_at(&raw, frame_ordinal, descriptor.record_count)?;
+    let archived: ArchivedTransactionRecord = deserialize_legacy_bincode_strict(
+        record,
+        MAX_RECORD_BYTES as u64,
+        "archive v2 seekable transaction record",
+    )
+    .map_err(ArchiveV2Error::Codec)?;
+    let transaction: Transaction = deserialize_legacy_bincode_strict(
+        &archived.encoded_transaction,
+        MAX_RECORD_BYTES as u64,
+        "archive v2 seekable transaction",
+    )
+    .map_err(ArchiveV2Error::Codec)?;
+    if archived.signature != *signature || transaction.signature() != *signature {
+        return Err(ArchiveV2Error::WrongRoot);
+    }
+    Ok(Some((transaction, slot)))
 }
 
 fn decode_segment_file(
@@ -1902,8 +2145,11 @@ fn validate_decoded_blocks(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
     use crate::{CommitSignature, Instruction, Keypair, Message, Pubkey};
+    use tempfile::tempdir;
 
     fn fixture_blocks(count: u64) -> Vec<Block> {
         let mut blocks = Vec::new();
@@ -2002,6 +2248,62 @@ mod tests {
                 .unwrap();
         assert_eq!(slot, 7);
         assert_eq!(seekable_transaction.signature(), signature);
+    }
+
+    #[test]
+    fn authenticated_file_point_reads_reject_noncanonical_layout_and_used_frame_corruption() {
+        let identity = ArchiveV2Identity {
+            network_id: "archive-v2-file-testnet".to_string(),
+            genesis_hash: Hash::hash(b"archive-v2-file-genesis"),
+        };
+        let contents = ArchiveV2SegmentContents::from_blocks(fixture_blocks(12));
+        let (bytes, manifest) = ArchiveV2SegmentCodec::encode(
+            identity.clone(),
+            None,
+            Hash::default(),
+            &contents,
+            &ArchiveV2CodecConfig {
+                target_frame_bytes: 1024 * 1024,
+                ..ArchiveV2CodecConfig::default()
+            },
+        )
+        .unwrap();
+        let root = tempdir().unwrap();
+        let path = root.path().join("segment.av2s");
+        fs::write(&path, &bytes).unwrap();
+
+        let block = ArchiveV2SegmentCodec::decode_block_at_path(&path, &manifest, &identity, 7)
+            .unwrap()
+            .unwrap();
+        assert_eq!(block.hash(), contents.blocks[7].hash());
+        let signature = contents.blocks[7].transactions[0].signature();
+        let (transaction, slot) = ArchiveV2SegmentCodec::decode_transaction_at_path(
+            &path, &manifest, &identity, &signature,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(slot, 7);
+        assert_eq!(transaction.signature(), signature);
+
+        let mut corrupt_index_header = bytes.clone();
+        let index = manifest
+            .frames
+            .iter()
+            .find(|frame| frame.kind == ArchiveV2FrameKind::PublicIndexes)
+            .unwrap();
+        corrupt_index_header[index.file_offset as usize - 1] ^= 1;
+        fs::write(&path, corrupt_index_header).unwrap();
+        assert!(
+            ArchiveV2SegmentCodec::decode_block_at_path(&path, &manifest, &identity, 7).is_err()
+        );
+
+        let mut noncanonical_length = bytes;
+        noncanonical_length.push(0);
+        fs::write(&path, noncanonical_length).unwrap();
+        assert!(ArchiveV2SegmentCodec::decode_transaction_at_path(
+            &path, &manifest, &identity, &signature,
+        )
+        .is_err());
     }
 
     #[test]

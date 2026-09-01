@@ -2,6 +2,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::time::Duration;
 
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+
 use crate::block::Block;
 use crate::codec::{append_legacy_bincode, deserialize_legacy_bincode};
 
@@ -42,7 +47,16 @@ enum PublicHistoryExistingRow {
     Conflict,
 }
 
-const CANONICAL_LEDGER_MANIFEST_CATEGORIES: &[&str] = &[
+#[derive(Clone, Copy)]
+struct PublicHistoryIndexSnapshotScan<'a> {
+    category: &'a str,
+    cf_name: &'a str,
+    after_key: Option<&'a [u8]>,
+    limit: u64,
+    checkpoint_source: bool,
+}
+
+pub(super) const CANONICAL_LEDGER_MANIFEST_CATEGORIES: &[&str] = &[
     "slots",
     "blocks",
     "transactions",
@@ -50,6 +64,115 @@ const CANONICAL_LEDGER_MANIFEST_CATEGORIES: &[&str] = &[
     "tx_to_slot",
     "tx_meta",
 ];
+
+/// Keys that describe one validator's physical layout or in-progress startup
+/// lifecycle. They must remain local across every portable checkpoint.
+const NODE_LOCAL_STATS_KEYS: &[&[u8]] = &[
+    b"cold_migration_cursor_v1",
+    b"archive_v2_fresh_sync_admission_v1",
+    b"genesis_sync_incomplete",
+    b"join_complete",
+];
+
+const PORTABLE_SNAPSHOT_OMITTED_STATS_KEYS: &[&[u8]] = &[
+    b"cached_state_root",
+    b"cached_state_root_schema",
+    b"cached_state_commitment_schema",
+    b"cached_accounts_root",
+    b"cached_contract_root",
+    b"merkle_leaf_count",
+    b"contract_merkle_leaf_count",
+    b"cold_migration_cursor_v1",
+    b"archive_v2_fresh_sync_admission_v1",
+    b"genesis_sync_incomplete",
+    b"join_complete",
+];
+
+/// Hot-repair checkpoint construction runs beside the live validator cache.
+/// Keep its writable staging and final read-only verification caches bounded
+/// so a coordinated four-validator checkpoint cannot multiply the production
+/// default into avoidable memory pressure.
+const HOT_REPAIR_CHECKPOINT_CACHE_MB: usize = 128;
+
+/// Serializes the I/O-heavy bounded-history rewrite when multiple validators
+/// share one physical disk. Every validator captures its exact raw checkpoint
+/// before taking this lock, so consensus is never held behind another node's
+/// compaction. Production validators on separate hosts remain independent.
+#[cfg(unix)]
+struct HotRepairMaterializationLock {
+    file: std::fs::File,
+}
+
+#[cfg(not(unix))]
+struct HotRepairMaterializationLock;
+
+impl HotRepairMaterializationLock {
+    fn acquire(checkpoint_dir: &std::path::Path) -> Result<Self, String> {
+        let checkpoint_root = checkpoint_dir.parent().ok_or_else(|| {
+            format!(
+                "Hot-repair checkpoint has no checkpoint root: {}",
+                checkpoint_dir.display()
+            )
+        })?;
+        let state_root = checkpoint_root.parent().unwrap_or(checkpoint_root);
+        let state_name = state_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        let lock_root = if state_name.starts_with("state-") {
+            state_root.parent().unwrap_or(state_root)
+        } else {
+            state_root
+        };
+        let lock_path = lock_root.join(".hot-repair-checkpoint-materialization.lock");
+
+        #[cfg(unix)]
+        {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(&lock_path)
+                .map_err(|error| {
+                    format!(
+                        "Failed to open hot-repair materialization lock {}: {error}",
+                        lock_path.display()
+                    )
+                })?;
+            loop {
+                // SAFETY: `file` owns a valid descriptor for this scope. flock
+                // neither retains the pointer nor accesses Rust-managed data.
+                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+                    return Ok(Self { file });
+                }
+                let error = std::io::Error::last_os_error();
+                if error.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(format!(
+                        "Failed to acquire hot-repair materialization lock {}: {error}",
+                        lock_path.display()
+                    ));
+                }
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = lock_path;
+            Ok(Self)
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for HotRepairMaterializationLock {
+    fn drop(&mut self) {
+        // SAFETY: the descriptor remains valid until `file` is dropped after
+        // this method. Unlock failure cannot be recovered during Drop.
+        let _ = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
 
 /// The legacy testnet replay-drift incident left six validators' account
 /// snapshots with node-local before images at this slot. The signed recovery
@@ -127,7 +250,7 @@ pub(super) const LEGACY_TESTNET_REPLAY_SNAPSHOT_CORRECTIONS:
     },
 ];
 
-struct PublicHistoryDigestAccumulator {
+pub(super) struct PublicHistoryDigestAccumulator {
     category: String,
     hasher: Sha256,
     entry_count: u64,
@@ -136,7 +259,7 @@ struct PublicHistoryDigestAccumulator {
 }
 
 impl PublicHistoryDigestAccumulator {
-    fn new(category: &str) -> Self {
+    pub(super) fn new(category: &str) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(b"lichen-public-history-category-v1");
         update_public_history_digest_bytes(&mut hasher, category.as_bytes());
@@ -149,7 +272,7 @@ impl PublicHistoryDigestAccumulator {
         }
     }
 
-    fn push(&mut self, key: &[u8], value: &[u8]) {
+    pub(super) fn push(&mut self, key: &[u8], value: &[u8]) {
         if self.first_key_hex.is_none() {
             self.first_key_hex = Some(hex::encode(key));
         }
@@ -158,7 +281,7 @@ impl PublicHistoryDigestAccumulator {
         self.entry_count = self.entry_count.saturating_add(1);
     }
 
-    fn finish(mut self) -> PublicHistoryCategoryDigest {
+    pub(super) fn finish(mut self) -> PublicHistoryCategoryDigest {
         self.hasher.update(self.entry_count.to_le_bytes());
         let digest = self.hasher.finalize();
         let mut sha256 = [0u8; 32];
@@ -261,6 +384,39 @@ pub struct GovernedProposalTxBackfillReport {
 
 /// Metadata stored alongside each checkpoint (serialized as JSON in the
 /// checkpoint directory).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CheckpointSnapshotProfile {
+    /// Self-contained hot and legacy-cold checkpoint used before Archive V2.
+    #[default]
+    FullArchiveV1,
+    /// Self-contained consensus state plus a complete recent hot-history
+    /// window. Older public history remains independently authenticated by the
+    /// bound Archive V2 catalog handoff and is never copied into this
+    /// checkpoint.
+    HotRepairV1 {
+        history_start_slot: u64,
+        /// Append-stable root of the exact immutable catalog prefix required
+        /// before `history_start_slot`. The serialized field name is retained
+        /// for profile compatibility; this is deliberately not the moving
+        /// terminal catalog root. `None` is reserved for an explicitly enabled
+        /// pre-activation repair between validators that prove an overlapping
+        /// canonical hot-history chain.
+        archive_v2_catalog_root: Option<[u8; 32]>,
+    },
+}
+
+impl CheckpointSnapshotProfile {
+    pub fn history_start_slot(self) -> Option<u64> {
+        match self {
+            Self::FullArchiveV1 => None,
+            Self::HotRepairV1 {
+                history_start_slot, ..
+            } => Some(history_start_slot),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointMeta {
     /// Finalized slot at which the checkpoint was taken.
@@ -271,9 +427,13 @@ pub struct CheckpointMeta {
     pub created_at: u64,
     /// Total accounts at checkpoint time.
     pub total_accounts: u64,
+    /// Public-history recovery contract carried by this checkpoint. Old
+    /// metadata omitted this field and therefore remains full-archive V1.
+    #[serde(default)]
+    pub snapshot_profile: CheckpointSnapshotProfile,
 }
 
-fn decode_snapshot_block_value(value: &[u8]) -> Result<Block, String> {
+pub(super) fn decode_snapshot_block_value(value: &[u8]) -> Result<Block, String> {
     if value.first() == Some(&0xBC) {
         deserialize_legacy_bincode(&value[1..], "block")
             .map_err(|err| format!("Failed to deserialize block snapshot value: {}", err))
@@ -376,7 +536,9 @@ fn incomplete_public_history_block_upgrade(
     canonical_block_snapshot_value_from_block(incoming).map(Some)
 }
 
-fn canonical_block_snapshot_value_from_block(mut block: Block) -> Result<Vec<u8>, String> {
+pub(super) fn canonical_block_snapshot_value_from_block(
+    mut block: Block,
+) -> Result<Vec<u8>, String> {
     // Commit certificates are semantically a set; collection order can differ
     // across validators that finalized the same block.
     block.commit_signatures.sort_by(|a, b| {
@@ -410,7 +572,10 @@ fn canonical_block_snapshot_value_from_block(mut block: Block) -> Result<Vec<u8>
     Ok(canonical)
 }
 
-fn public_history_manifest_block_value(key: &[u8], value: &[u8]) -> Result<Vec<u8>, String> {
+pub(super) fn public_history_manifest_block_value(
+    key: &[u8],
+    value: &[u8],
+) -> Result<Vec<u8>, String> {
     let mut block = decode_snapshot_block_value(value)?;
     let block_hash = block.hash();
     if key != block_hash.0 {
@@ -494,7 +659,7 @@ fn update_public_history_digest_entry(hasher: &mut Sha256, key: &[u8], value: &[
     update_public_history_digest_bytes(hasher, value);
 }
 
-fn append_canonical_tx_manifest_entries(
+pub(super) fn append_canonical_tx_manifest_entries(
     accumulators: &mut std::collections::BTreeMap<String, PublicHistoryDigestAccumulator>,
     slot: u64,
     tx_index: u64,
@@ -518,7 +683,7 @@ fn append_canonical_tx_manifest_entries(
     Ok(())
 }
 
-fn public_history_manifest_root(categories: &[PublicHistoryCategoryDigest]) -> [u8; 32] {
+pub(super) fn public_history_manifest_root(categories: &[PublicHistoryCategoryDigest]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"lichen-public-history-manifest-v1");
     for digest in categories {
@@ -1151,17 +1316,126 @@ impl StateStore {
         checkpoint_dir: &str,
         slot: u64,
     ) -> Result<CheckpointMeta, String> {
+        self.create_checkpoint_with_profile(
+            checkpoint_dir,
+            slot,
+            CheckpointSnapshotProfile::FullArchiveV1,
+        )
+    }
+
+    /// Create an atomically published checkpoint with an explicit recovery
+    /// profile. Hot-repair checkpoints deliberately exclude the independently
+    /// managed legacy cold archive and Archive V2 object store.
+    pub fn create_checkpoint_with_profile(
+        &self,
+        checkpoint_dir: &str,
+        slot: u64,
+        snapshot_profile: CheckpointSnapshotProfile,
+    ) -> Result<CheckpointMeta, String> {
+        self.create_checkpoint_with_profile_and_raw_capture(
+            checkpoint_dir,
+            slot,
+            snapshot_profile,
+            || {},
+        )
+    }
+
+    /// Create an atomically published checkpoint and notify the caller as soon
+    /// as the exact point-in-time RocksDB snapshot exists. Hot-repair history
+    /// filtering and compaction continue after the notification, while the
+    /// final directory remains hidden behind the staging publication boundary.
+    ///
+    /// Callers may use this boundary to release a consensus-apply lock without
+    /// allowing the live database to advance before the checkpoint captures
+    /// the requested slot. The callback must be short and non-panicking.
+    pub fn create_checkpoint_with_profile_and_raw_capture(
+        &self,
+        checkpoint_dir: &str,
+        slot: u64,
+        snapshot_profile: CheckpointSnapshotProfile,
+        on_raw_capture: impl FnOnce(),
+    ) -> Result<CheckpointMeta, String> {
+        if let CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot,
+            archive_v2_catalog_root,
+        } = snapshot_profile
+        {
+            if history_start_slot > slot {
+                return Err(format!(
+                    "Hot-repair checkpoint history start {} exceeds checkpoint slot {}",
+                    history_start_slot, slot
+                ));
+            }
+            if archive_v2_catalog_root.is_some_and(|root| root == [0u8; 32]) {
+                return Err(
+                    "Hot-repair checkpoint has an invalid zero Archive V2 catalog root".to_string(),
+                );
+            }
+        }
         let _publication_guard = CHECKPOINT_PUBLICATION_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let checkpoint_path = std::path::Path::new(checkpoint_dir);
-        publish_checkpoint_directory(checkpoint_path, |staging| {
+        publish_checkpoint_directory(checkpoint_path, move |staging| {
             let staging = staging
                 .to_str()
                 .ok_or_else(|| "Checkpoint staging path must be UTF-8".to_string())?;
-            self.create_raw_checkpoint(staging)?;
-            let checkpoint_store = Self::open_checkpoint(staging)
-                .map_err(|e| format!("Failed to open created checkpoint: {}", e))?;
+            let mut on_raw_capture = Some(on_raw_capture);
+            match snapshot_profile {
+                CheckpointSnapshotProfile::FullArchiveV1 => {
+                    self.create_raw_checkpoint(staging)?;
+                    on_raw_capture
+                        .take()
+                        .expect("raw checkpoint callback is called exactly once")(
+                    );
+                }
+                CheckpointSnapshotProfile::HotRepairV1 { .. } => {
+                    // Cold migration deletes hot rows only after their cold
+                    // writes are durable. Hold the same boundary while the hot
+                    // checkpoint hard-links its state and while every bounded
+                    // public-history row is materialized from the coherent
+                    // hot/cold view. The published checkpoint remains a single
+                    // hot database and never pins the legacy cold directory.
+                    let _archive_guard = self.lock_archive_maintenance();
+                    self.create_hot_raw_checkpoint(staging)?;
+                    on_raw_capture
+                        .take()
+                        .expect("raw checkpoint callback is called exactly once")(
+                    );
+                    tracing::info!(
+                        checkpoint_slot = slot,
+                        checkpoint_dir = staging,
+                        "Waiting for shared-disk hot-repair checkpoint materialization lock"
+                    );
+                    let _materialization_lock =
+                        HotRepairMaterializationLock::acquire(std::path::Path::new(staging))?;
+                    tracing::info!(
+                        checkpoint_slot = slot,
+                        checkpoint_dir = staging,
+                        "Acquired shared-disk hot-repair checkpoint materialization lock"
+                    );
+                    self.materialize_hot_repair_checkpoint_history(
+                        staging,
+                        slot,
+                        snapshot_profile,
+                    )?;
+                }
+            }
+            let checkpoint_cache_mb = matches!(
+                snapshot_profile,
+                CheckpointSnapshotProfile::HotRepairV1 { .. }
+            )
+            .then_some(HOT_REPAIR_CHECKPOINT_CACHE_MB);
+            let checkpoint_store =
+                Self::open_checkpoint_with_cache_mb(staging, checkpoint_cache_mb)
+                    .map_err(|e| format!("Failed to open created checkpoint: {}", e))?;
+            let checkpoint_slot = checkpoint_store.get_last_slot()?;
+            if checkpoint_slot != slot {
+                return Err(format!(
+                    "Checkpoint source advanced while slot {} was being captured; staged tip is {}",
+                    slot, checkpoint_slot
+                ));
+            }
             let state_root = checkpoint_store
                 .compute_state_root_cached_read_only()
                 .unwrap_or_else(|| checkpoint_store.compute_state_root_read_only());
@@ -1174,6 +1448,7 @@ impl StateStore {
                     .unwrap_or_default()
                     .as_secs(),
                 total_accounts,
+                snapshot_profile,
             };
 
             let meta_path = std::path::Path::new(staging).join("checkpoint_meta.json");
@@ -1195,9 +1470,249 @@ impl StateStore {
         })
     }
 
+    fn materialize_hot_repair_checkpoint_history(
+        &self,
+        checkpoint_dir: &str,
+        snapshot_slot: u64,
+        profile: CheckpointSnapshotProfile,
+    ) -> Result<(), String> {
+        const PAGE_ROWS: u64 = 10_000;
+
+        let checkpoint =
+            Self::open_with_cache_mb(checkpoint_dir, Some(HOT_REPAIR_CHECKPOINT_CACHE_MB))
+                .map_err(|error| {
+                    format!(
+                        "Failed to open hot-repair checkpoint for history materialization: {error}"
+                    )
+                })?;
+        let stats_cf = checkpoint
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found in hot-repair checkpoint".to_string())?;
+        for key in NODE_LOCAL_STATS_KEYS {
+            checkpoint.db.delete_cf(&stats_cf, key).map_err(|error| {
+                format!(
+                    "Failed to remove node-local stats key {} from hot checkpoint: {error}",
+                    String::from_utf8_lossy(key)
+                )
+            })?;
+        }
+        for (category_index, category) in PUBLIC_HISTORY_SNAPSHOT_CATEGORIES.iter().enumerate() {
+            tracing::info!(
+                checkpoint_slot = snapshot_slot,
+                category = *category,
+                category_index = category_index + 1,
+                category_count = PUBLIC_HISTORY_SNAPSHOT_CATEGORIES.len(),
+                "Rebuilding bounded hot-repair checkpoint category"
+            );
+            let preserved_slot_metadata = if *category == "slots" {
+                let slots_cf = checkpoint
+                    .db
+                    .cf_handle(CF_SLOTS)
+                    .ok_or_else(|| "Slots CF not found in hot-repair checkpoint".to_string())?;
+                let mut read_options = rocksdb::ReadOptions::default();
+                read_options.set_total_order_seek(true);
+                let mut entries = Vec::new();
+                for item in checkpoint.db.iterator_cf_opt(
+                    &slots_cf,
+                    read_options,
+                    rocksdb::IteratorMode::Start,
+                ) {
+                    let (key, value) = item.map_err(|error| {
+                        format!("Failed reading checkpoint slot metadata: {error}")
+                    })?;
+                    if key.as_ref() == b"last_slot"
+                        || key.as_ref() == b"confirmed_slot"
+                        || key.as_ref() == b"finalized_slot"
+                    {
+                        entries.push((key.to_vec(), value.to_vec()));
+                    }
+                }
+                entries
+            } else {
+                Vec::new()
+            };
+            // The native hot checkpoint initially hard-links every live hot
+            // SST. Filtering only the network export would therefore hide old
+            // history without releasing the underlying files. Rebuild each
+            // public-history CF inside the staging checkpoint so the physical
+            // checkpoint carries exactly the advertised bounded window.
+            checkpoint
+                .clear_hot_repair_checkpoint_category(category)
+                .map_err(|error| {
+                    format!("Failed to clear hot-repair checkpoint category {category}: {error}")
+                })?;
+            if !preserved_slot_metadata.is_empty() {
+                checkpoint
+                    .import_snapshot_category(category, &preserved_slot_metadata)
+                    .map_err(|error| {
+                        format!("Failed to restore checkpoint slot metadata: {error}")
+                    })?;
+            }
+            let mut cursor: Option<Vec<u8>> = None;
+            let mut materialized_rows = 0u64;
+            loop {
+                let page = self.export_checkpoint_snapshot_category_cursor_untracked(
+                    category,
+                    cursor.as_deref(),
+                    PAGE_ROWS,
+                    snapshot_slot,
+                    profile,
+                )?;
+                if !page.entries.is_empty() {
+                    materialized_rows = materialized_rows.saturating_add(page.entries.len() as u64);
+                    checkpoint
+                        .import_snapshot_category(category, &page.entries)
+                        .map_err(|error| {
+                            format!(
+                                "Failed to materialize hot-repair checkpoint category {category}: {error}"
+                            )
+                        })?;
+                }
+                if !page.has_more {
+                    break;
+                }
+                let next_cursor = page.next_cursor.ok_or_else(|| {
+                    format!("Hot-repair checkpoint category {category} has more rows but no cursor")
+                })?;
+                if cursor.as_deref() == Some(next_cursor.as_slice()) {
+                    return Err(format!(
+                        "Hot-repair checkpoint category {category} did not advance its cursor"
+                    ));
+                }
+                cursor = Some(next_cursor);
+            }
+            checkpoint.db.flush_wal(true).map_err(|error| {
+                format!("Failed to sync hot-repair checkpoint category {category}: {error}")
+            })?;
+            let (cf_name, _) = Self::snapshot_category_cf(category)
+                .ok_or_else(|| format!("Missing snapshot category mapping for {category}"))?;
+            let cf = checkpoint.db.cf_handle(cf_name).ok_or_else(|| {
+                format!("Missing checkpoint column family {cf_name} for {category}")
+            })?;
+            checkpoint.db.flush_cf(&cf).map_err(|error| {
+                format!(
+                    "Failed to flush rebuilt hot-repair checkpoint category {category}: {error}"
+                )
+            })?;
+            checkpoint
+                .db
+                .compact_range_cf(&cf, None::<&[u8]>, None::<&[u8]>);
+            tracing::info!(
+                checkpoint_slot = snapshot_slot,
+                category = *category,
+                materialized_rows,
+                "Completed bounded hot-repair checkpoint category"
+            );
+        }
+        checkpoint.db.flush_wal(true).map_err(|error| {
+            format!("Failed to sync hot-repair checkpoint history WAL: {error}")
+        })?;
+        checkpoint
+            .db
+            .flush()
+            .map_err(|error| format!("Failed to flush hot-repair checkpoint history: {error}"))?;
+        Ok(())
+    }
+
+    /// The staging checkpoint is a private, unpublished RocksDB instance, so
+    /// a range tombstone is both safe and substantially cheaper than emitting
+    /// one delete per inherited hot-history row. Imports occur at later RocksDB
+    /// sequence numbers and therefore survive the tombstone; the caller then
+    /// compacts the column family before publication.
+    fn clear_hot_repair_checkpoint_category(&self, category: &str) -> Result<(), String> {
+        let (cf_name, display_name) = Self::snapshot_category_cf(category)
+            .ok_or_else(|| format!("Unsupported snapshot category: {category}"))?;
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("{display_name} CF not found"))?;
+
+        let mut first_read_options = rocksdb::ReadOptions::default();
+        first_read_options.set_total_order_seek(true);
+        let first = self
+            .db
+            .iterator_cf_opt(&cf, first_read_options, rocksdb::IteratorMode::Start)
+            .next()
+            .transpose()
+            .map_err(|error| format!("Failed to read first {display_name} key: {error}"))?
+            .map(|(key, _)| key.to_vec());
+
+        let mut last_read_options = rocksdb::ReadOptions::default();
+        last_read_options.set_total_order_seek(true);
+        let last = self
+            .db
+            .iterator_cf_opt(&cf, last_read_options, rocksdb::IteratorMode::End)
+            .next()
+            .transpose()
+            .map_err(|error| format!("Failed to read last {display_name} key: {error}"))?
+            .map(|(key, _)| key.to_vec());
+
+        if let (Some(first), Some(mut exclusive_end)) = (first, last) {
+            // RocksDB DeleteRange excludes the upper bound. Appending one byte
+            // is greater than the complete largest key without assuming its
+            // width or suffix, including a key ending in 0xff.
+            exclusive_end.push(0);
+            let mut batch = WriteBatch::default();
+            batch.delete_range_cf(&cf, &first, &exclusive_end);
+            self.db.write(batch).map_err(|error| {
+                format!("Failed to range-clear hot-repair {display_name}: {error}")
+            })?;
+        }
+
+        if category == "account_txs" {
+            let stats_cf = self
+                .db
+                .cf_handle(CF_STATS)
+                .ok_or_else(|| "Stats CF not found".to_string())?;
+            let mut batch = WriteBatch::default();
+            batch.delete_range_cf(&stats_cf, b"atxc:", b"atxc;");
+            self.db.write(batch).map_err(|error| {
+                format!("Failed to range-clear hot-repair account tx counters: {error}")
+            })?;
+        }
+
+        Ok(())
+    }
+
+    /// Conservative temporary-space estimate for physically rebuilding every
+    /// public-history column family in a bounded hot-repair checkpoint. The
+    /// source SSTs are hard-linked into staging, while compaction writes new
+    /// bounded SSTs before unlinking the old checkpoint references.
+    pub fn estimated_hot_repair_checkpoint_compaction_peak_bytes(&self) -> Result<u64, String> {
+        let mut input_bytes = 0u64;
+        for category in PUBLIC_HISTORY_SNAPSHOT_CATEGORIES {
+            let (cf_name, _) = Self::snapshot_category_cf(category)
+                .ok_or_else(|| format!("Missing snapshot category mapping for {category}"))?;
+            let cf = self
+                .db
+                .cf_handle(cf_name)
+                .ok_or_else(|| format!("Missing public-history column family {cf_name}"))?;
+            let metadata = self.db.get_column_family_metadata_cf(&cf);
+            let memtable_bytes = self
+                .db
+                .property_int_value_cf(&cf, rocksdb::properties::CUR_SIZE_ALL_MEM_TABLES)
+                .map_err(|error| {
+                    format!("Failed reading {cf_name} checkpoint size metrics: {error}")
+                })?
+                .unwrap_or(0);
+            input_bytes = input_bytes
+                .saturating_add(metadata.size)
+                .saturating_add(memtable_bytes);
+        }
+        Ok(input_bytes.saturating_mul(2))
+    }
+
     /// Open a checkpoint as a read-only StateStore for serving snapshot data.
     pub fn open_checkpoint(checkpoint_dir: &str) -> Result<Self, String> {
-        let mut store = Self::open_read_only_with_cache_mb(checkpoint_dir, None)?;
+        Self::open_checkpoint_with_cache_mb(checkpoint_dir, None)
+    }
+
+    fn open_checkpoint_with_cache_mb(
+        checkpoint_dir: &str,
+        cache_mb: Option<usize>,
+    ) -> Result<Self, String> {
+        let mut store = Self::open_read_only_with_cache_mb(checkpoint_dir, cache_mb)?;
         let cold_checkpoint_dir = std::path::Path::new(checkpoint_dir).join("cold");
         if cold_checkpoint_dir.is_dir() {
             store.open_cold_store_read_only(&cold_checkpoint_dir)?;
@@ -1584,6 +2099,19 @@ impl StateStore {
         limit: u64,
         to_slot: Option<u64>,
     ) -> Result<KvPage, String> {
+        self.export_public_history_category_range_cursor_untracked_with_source(
+            category, after_key, limit, to_slot, false,
+        )
+    }
+
+    pub(super) fn export_public_history_category_range_cursor_untracked_with_source(
+        &self,
+        category: &str,
+        after_key: Option<&[u8]>,
+        limit: u64,
+        to_slot: Option<u64>,
+        checkpoint_source: bool,
+    ) -> Result<KvPage, String> {
         if !PUBLIC_HISTORY_SNAPSHOT_CATEGORIES.contains(&category) {
             return Err(format!("Unsupported public-history category: {}", category));
         }
@@ -1591,7 +2119,12 @@ impl StateStore {
             return self.export_public_slots_cursor(after_key, limit, to_slot);
         }
         if category == "blocks" {
-            return self.export_blocks_cursor_canonical(after_key, limit, to_slot);
+            return self.export_blocks_cursor_canonical(
+                after_key,
+                limit,
+                to_slot,
+                checkpoint_source,
+            );
         }
         let tx_category = match category {
             "transactions" => Some(CanonicalTxSnapshotCategory::Transactions),
@@ -1606,6 +2139,7 @@ impl StateStore {
                 after_key,
                 limit,
                 to_slot,
+                checkpoint_source,
             );
         }
         if to_slot.is_some() {
@@ -1613,7 +2147,12 @@ impl StateStore {
                 "Slot-bounded public-history export is not supported for {category}"
             ));
         }
-        self.export_snapshot_category_cursor_untracked(category, after_key, limit)
+        self.export_snapshot_category_cursor_untracked_with_source(
+            category,
+            after_key,
+            limit,
+            checkpoint_source,
+        )
     }
 
     fn export_public_slots_cursor(
@@ -1977,8 +2516,20 @@ impl StateStore {
         after_key: Option<&[u8]>,
         limit: u64,
     ) -> Result<KvPage, String> {
+        self.export_snapshot_category_cursor_untracked_with_source(
+            category, after_key, limit, false,
+        )
+    }
+
+    pub(super) fn export_snapshot_category_cursor_untracked_with_source(
+        &self,
+        category: &str,
+        after_key: Option<&[u8]>,
+        limit: u64,
+        checkpoint_source: bool,
+    ) -> Result<KvPage, String> {
         if category == "blocks" {
-            return self.export_blocks_cursor_canonical(after_key, limit, None);
+            return self.export_blocks_cursor_canonical(after_key, limit, None, checkpoint_source);
         }
         if category == "transactions" {
             return self.export_canonical_tx_snapshot_cursor(
@@ -1986,6 +2537,7 @@ impl StateStore {
                 after_key,
                 limit,
                 None,
+                checkpoint_source,
             );
         }
         if category == "account_txs" {
@@ -1995,6 +2547,7 @@ impl StateStore {
                 Some(COLD_CF_ACCOUNT_TXS),
                 after_key,
                 limit,
+                checkpoint_source,
             );
         }
         if category == "account_snapshots" {
@@ -2004,6 +2557,7 @@ impl StateStore {
                 Some(COLD_CF_ACCOUNT_SNAPSHOTS),
                 after_key,
                 limit,
+                checkpoint_source,
             );
         }
         if category == "tx_by_slot" {
@@ -2012,6 +2566,7 @@ impl StateStore {
                 after_key,
                 limit,
                 None,
+                checkpoint_source,
             );
         }
         if category == "tx_to_slot" {
@@ -2020,6 +2575,7 @@ impl StateStore {
                 after_key,
                 limit,
                 None,
+                checkpoint_source,
             );
         }
         if category == "tx_meta" {
@@ -2028,6 +2584,7 @@ impl StateStore {
                 after_key,
                 limit,
                 None,
+                checkpoint_source,
             );
         }
         if category == "events" {
@@ -2037,6 +2594,7 @@ impl StateStore {
                 Some(COLD_CF_EVENTS),
                 after_key,
                 limit,
+                checkpoint_source,
             );
         }
         if category == "token_transfers" {
@@ -2046,6 +2604,7 @@ impl StateStore {
                 Some(COLD_CF_TOKEN_TRANSFERS),
                 after_key,
                 limit,
+                checkpoint_source,
             );
         }
         if category == "program_calls" {
@@ -2055,6 +2614,7 @@ impl StateStore {
                 Some(COLD_CF_PROGRAM_CALLS),
                 after_key,
                 limit,
+                checkpoint_source,
             );
         }
         if category == "stats" {
@@ -2087,16 +2647,6 @@ impl StateStore {
         after_key: Option<&[u8]>,
         limit: u64,
     ) -> Result<KvPage, String> {
-        const VOLATILE_MERKLE_STATS_KEYS: &[&[u8]] = &[
-            b"cached_state_root",
-            b"cached_state_root_schema",
-            b"cached_state_commitment_schema",
-            b"cached_accounts_root",
-            b"cached_contract_root",
-            b"merkle_leaf_count",
-            b"contract_merkle_leaf_count",
-        ];
-
         if limit == 0 {
             return Ok(KvPage {
                 entries: Vec::new(),
@@ -2133,7 +2683,7 @@ impl StateStore {
                     continue;
                 }
             }
-            if VOLATILE_MERKLE_STATS_KEYS
+            if PORTABLE_SNAPSHOT_OMITTED_STATS_KEYS
                 .iter()
                 .any(|volatile| key.as_ref() == *volatile)
             {
@@ -2165,12 +2715,18 @@ impl StateStore {
     fn account_tx_snapshot_entry_is_canonical_or_unverifiable(
         &self,
         key: &[u8],
+        checkpoint_source: bool,
     ) -> Result<bool, String> {
         let Some((slot, seq, tx_hash)) = parse_account_tx_snapshot_key(key)? else {
             return Ok(true);
         };
 
-        match self.get_block_by_slot(slot)? {
+        let block = if checkpoint_source {
+            self.get_hot_or_legacy_cold_block_by_slot_for_checkpoint(slot)?
+        } else {
+            self.get_block_by_slot(slot)?
+        };
+        match block {
             Some(block) => Ok(block
                 .transactions
                 .iter()
@@ -2186,6 +2742,7 @@ impl StateStore {
         cold_cf_name: Option<&str>,
         after_key: Option<&[u8]>,
         limit: u64,
+        checkpoint_source: bool,
     ) -> Result<KvPage, String> {
         if limit == 0 {
             return Ok(KvPage {
@@ -2198,21 +2755,27 @@ impl StateStore {
 
         let mut merged = std::collections::BTreeMap::<Vec<u8>, Vec<u8>>::new();
         self.collect_public_history_index_snapshot_entries(
-            category,
             &self.db,
-            hot_cf_name,
-            after_key,
-            limit,
+            PublicHistoryIndexSnapshotScan {
+                category,
+                cf_name: hot_cf_name,
+                after_key,
+                limit,
+                checkpoint_source,
+            },
             &mut merged,
         )?;
         if let (Some(ref cold), Some(cold_cf_name)) = (&self.cold_db, cold_cf_name) {
             if cold.cf_handle(cold_cf_name).is_some() {
                 self.collect_public_history_index_snapshot_entries(
-                    category,
                     cold,
-                    cold_cf_name,
-                    after_key,
-                    limit,
+                    PublicHistoryIndexSnapshotScan {
+                        category,
+                        cf_name: cold_cf_name,
+                        after_key,
+                        limit,
+                        checkpoint_source,
+                    },
                     &mut merged,
                 )?;
             }
@@ -2239,13 +2802,17 @@ impl StateStore {
 
     fn collect_public_history_index_snapshot_entries(
         &self,
-        category: &str,
         db: &DB,
-        cf_name: &str,
-        after_key: Option<&[u8]>,
-        limit: u64,
+        scan: PublicHistoryIndexSnapshotScan<'_>,
         entries: &mut std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
     ) -> Result<(), String> {
+        let PublicHistoryIndexSnapshotScan {
+            category,
+            cf_name,
+            after_key,
+            limit,
+            checkpoint_source,
+        } = scan;
         let cf = db
             .cf_handle(cf_name)
             .ok_or_else(|| format!("{} CF not found", cf_name))?;
@@ -2272,7 +2839,10 @@ impl StateStore {
             }
 
             if category == "account_txs"
-                && !self.account_tx_snapshot_entry_is_canonical_or_unverifiable(&key)?
+                && !self.account_tx_snapshot_entry_is_canonical_or_unverifiable(
+                    &key,
+                    checkpoint_source,
+                )?
             {
                 continue;
             }
@@ -2307,6 +2877,7 @@ impl StateStore {
         after_key: Option<&[u8]>,
         limit: u64,
         to_slot: Option<u64>,
+        checkpoint_source: bool,
     ) -> Result<KvPage, String> {
         if limit == 0 {
             return Ok(KvPage {
@@ -2359,10 +2930,13 @@ impl StateStore {
 
             let mut block_hash = [0u8; 32];
             block_hash.copy_from_slice(&hash_value);
-            let block = self
-                .get_block(&Hash(block_hash))
-                .map_err(|err| format!("Failed reading canonical block {}: {}", slot, err))?
-                .ok_or_else(|| format!("Canonical block {} missing from hot/cold storage", slot))?;
+            let block = if checkpoint_source {
+                self.get_hot_or_legacy_cold_block_for_checkpoint(&Hash(block_hash))
+            } else {
+                self.get_block(&Hash(block_hash))
+            }
+            .map_err(|err| format!("Failed reading canonical block {}: {}", slot, err))?
+            .ok_or_else(|| format!("Canonical block {} missing from hot/cold storage", slot))?;
             let canonical = canonical_block_snapshot_value_from_block(block)?;
             entries.push((block_hash.to_vec(), canonical));
             next_cursor = Some(slot.to_be_bytes().to_vec());
@@ -2382,6 +2956,7 @@ impl StateStore {
         after_key: Option<&[u8]>,
         limit: u64,
         to_slot: Option<u64>,
+        checkpoint_source: bool,
     ) -> Result<KvPage, String> {
         if limit == 0 {
             return Ok(KvPage {
@@ -2476,7 +3051,12 @@ impl StateStore {
             if to_slot.is_some_and(|upper| slot > upper) {
                 break;
             }
-            let Some(block) = self.get_block_by_slot(slot)? else {
+            let block = if checkpoint_source {
+                self.get_hot_or_legacy_cold_block_by_slot_for_checkpoint(slot)?
+            } else {
+                self.get_block_by_slot(slot)?
+            };
+            let Some(block) = block else {
                 continue;
             };
             for (tx_index, tx) in block.transactions.iter().enumerate() {
@@ -2542,11 +3122,21 @@ impl StateStore {
             if merged.contains_key(key.as_ref()) {
                 continue;
             }
-            if self.get_block_by_slot(slot)?.is_some() {
+            let canonical_block = if checkpoint_source {
+                self.get_hot_or_legacy_cold_block_by_slot_for_checkpoint(slot)?
+            } else {
+                self.get_block_by_slot(slot)?
+            };
+            if canonical_block.is_some() {
                 continue;
             }
 
-            let Some(tx) = self.get_transaction(&tx_hash)? else {
+            let transaction = if checkpoint_source {
+                self.get_hot_or_legacy_cold_transaction_for_checkpoint(&tx_hash)?
+            } else {
+                self.get_transaction(&tx_hash)?
+            };
+            let Some(tx) = transaction else {
                 continue;
             };
             if tx.signature() != tx_hash {
@@ -4802,6 +5392,31 @@ impl StateStore {
     /// Remove all entries from a whitelisted snapshot category before applying
     /// a verified full-category snapshot.
     pub fn clear_snapshot_category(&self, category: &str) -> Result<u64, String> {
+        self.clear_snapshot_category_except(category, &[])
+    }
+
+    /// Remove portable snapshot rows while preserving metadata that belongs to
+    /// this validator's physical storage layout. A network snapshot must
+    /// neither import another validator's cold-migration cursor nor erase the
+    /// destination's source-bound cursor while its cold archive remains
+    /// attached.
+    pub fn clear_snapshot_category_preserving_node_local(
+        &self,
+        category: &str,
+    ) -> Result<u64, String> {
+        let preserved_keys = if category == "stats" {
+            NODE_LOCAL_STATS_KEYS
+        } else {
+            &[]
+        };
+        self.clear_snapshot_category_except(category, preserved_keys)
+    }
+
+    fn clear_snapshot_category_except(
+        &self,
+        category: &str,
+        preserved_keys: &[&[u8]],
+    ) -> Result<u64, String> {
         const DELETE_BATCH_SIZE: usize = 10_000;
 
         let (cf_name, display_name) = Self::snapshot_category_cf(category)
@@ -4821,6 +5436,12 @@ impl StateStore {
         let mut deleted = 0u64;
         for item in iter {
             let (key, _) = item.map_err(|e| format!("{} iterator error: {}", display_name, e))?;
+            if preserved_keys
+                .iter()
+                .any(|preserved| key.as_ref() == *preserved)
+            {
+                continue;
+            }
             batch.delete_cf(&cf, key);
             batch_count += 1;
             if batch_count >= DELETE_BATCH_SIZE {
@@ -4861,12 +5482,166 @@ mod manifest_tests {
             state_root: [slot as u8; 32],
             created_at: 1,
             total_accounts: 0,
+            snapshot_profile: CheckpointSnapshotProfile::default(),
         };
         std::fs::write(
             path.join("checkpoint_meta.json"),
             serde_json::to_vec(&meta).unwrap(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn legacy_checkpoint_metadata_defaults_to_full_archive_profile() {
+        let meta: CheckpointMeta = serde_json::from_str(
+            r#"{"slot":7,"state_root":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"created_at":1,"total_accounts":0}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            meta.snapshot_profile,
+            CheckpointSnapshotProfile::FullArchiveV1
+        );
+    }
+
+    #[test]
+    fn hot_repair_checkpoint_materializes_bounded_cold_history_without_cold_store() {
+        let hot = tempdir().unwrap();
+        let cold = tempdir().unwrap();
+        let checkpoint_parent = tempdir().unwrap();
+        let checkpoint = checkpoint_parent.path().join("slot-7");
+        let mut state = StateStore::open(hot.path()).unwrap();
+        state.open_cold_store(cold.path()).unwrap();
+        state
+            .put_metadata("cold_migration_cursor_v1", b"source-bound-cold-layout")
+            .unwrap();
+        state
+            .put_metadata("archive_v2_fresh_sync_admission_v1", b"source-role-bound")
+            .unwrap();
+        state.put_metadata("genesis_sync_incomplete", b"0").unwrap();
+        state.put_metadata("join_complete", b"1").unwrap();
+        let old_block = Block::new(
+            6,
+            Hash::default(),
+            Hash::hash(b"hot-repair-outside-window"),
+            [0xA6; 32],
+            Vec::new(),
+        );
+        state
+            .put_block_atomic(&old_block, Some(6), Some(6))
+            .unwrap();
+        let mut block = Block::new(
+            7,
+            old_block.hash(),
+            Hash::hash(b"hot-repair-cold-tail-state"),
+            [0xA7; 32],
+            Vec::new(),
+        );
+        block.commit_round = 9;
+        state.put_block_atomic(&block, Some(7), Some(7)).unwrap();
+        state.set_archive_contiguous_tip(7, block.hash()).unwrap();
+        state
+            .put_post_state_commitment_anchor(6, &old_block.hash(), &old_block.header.state_root)
+            .unwrap();
+
+        let block_hash = block.hash();
+        let hot_blocks = state.db.cf_handle(CF_BLOCKS).unwrap();
+        let cold_blocks = state
+            .cold_db
+            .as_ref()
+            .unwrap()
+            .cf_handle(COLD_CF_BLOCKS)
+            .unwrap();
+        let encoded = state.db.get_cf(&hot_blocks, block_hash.0).unwrap().unwrap();
+        state
+            .cold_db
+            .as_ref()
+            .unwrap()
+            .put_cf(&cold_blocks, block_hash.0, &encoded)
+            .unwrap();
+        state.cold_db.as_ref().unwrap().flush_wal(true).unwrap();
+        state.db.delete_cf(&hot_blocks, block_hash.0).unwrap();
+        state.db.flush_wal(true).unwrap();
+        assert!(state.get_hot_block_by_slot(7).unwrap().is_none());
+        assert!(state.get_block_by_slot(7).unwrap().is_some());
+
+        let archive = tempdir().unwrap();
+        let identity = crate::archive_v2::ArchiveV2Identity {
+            network_id: "hot-repair-consensus-role-testnet".to_string(),
+            genesis_hash: old_block.hash(),
+        };
+        let catalog = crate::archive_v2::ArchiveV2Catalog::empty(identity.clone()).unwrap();
+        let catalog_root = catalog.catalog_root;
+        let catalog_path = archive.path().join("catalog.av2");
+        catalog.store_atomic(&catalog_path).unwrap();
+        state.attach_archive_v2_reader(
+            crate::archive_v2::ArchiveV2Reader::open(
+                identity,
+                &catalog_path,
+                crate::archive_v2::ArchiveV2ReaderConfig {
+                    role: crate::archive_v2::ArchiveV2Role::Consensus,
+                    root: archive.path().to_path_buf(),
+                    cache_root: None,
+                    cache_quota_bytes: 0,
+                    max_decoded_segments: 1,
+                    allow_remote_fetch: false,
+                    sources: Vec::new(),
+                },
+            )
+            .unwrap(),
+        );
+        state.mark_archive_v2_admitted_after_fresh_sync().unwrap();
+        assert!(state
+            .get_block(&block_hash)
+            .unwrap_err()
+            .contains("consensus role does not serve Archive V2 deep history"));
+
+        let profile = CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot: 7,
+            archive_v2_catalog_root: Some(catalog_root.0),
+        };
+
+        let meta = state
+            .create_checkpoint_with_profile(checkpoint.to_str().unwrap(), 7, profile)
+            .unwrap();
+
+        assert_eq!(meta.snapshot_profile, profile);
+        assert!(checkpoint.join("checkpoint_meta.json").is_file());
+        assert!(
+            !checkpoint.join("cold").exists(),
+            "Archive V2 hot-repair checkpoints must not pin or publish legacy cold storage"
+        );
+        let reopened = StateStore::open_checkpoint(checkpoint.to_str().unwrap()).unwrap();
+        assert!(!reopened.has_archive_v2_reader());
+        for key in NODE_LOCAL_STATS_KEYS {
+            assert_eq!(
+                reopened
+                    .get_metadata(&String::from_utf8_lossy(key))
+                    .unwrap(),
+                None,
+                "a hot-only checkpoint must not retain node-local stats key {}",
+                String::from_utf8_lossy(key)
+            );
+        }
+        let restored = reopened.get_hot_block_by_slot(7).unwrap().unwrap();
+        assert_eq!(restored.hash(), block_hash);
+        assert_eq!(restored.commit_round, 0);
+        assert!(restored.commit_signatures.is_empty());
+        assert!(
+            reopened.get_hot_block_by_slot(6).unwrap().is_none(),
+            "the physical checkpoint must not retain public history outside its advertised window"
+        );
+        assert_eq!(
+            reopened.get_archive_contiguous_tip().unwrap(),
+            None,
+            "a bounded hot checkpoint must not claim a local genesis-to-tip archive proof"
+        );
+        assert!(
+            reopened
+                .get_post_state_commitment_anchor(6)
+                .unwrap()
+                .is_none(),
+            "historical node-local state-root anchors must not pin rows outside the hot profile"
+        );
     }
 
     #[test]
@@ -4884,6 +5659,62 @@ mod manifest_tests {
         assert_eq!(result.unwrap_err(), "injected cold checkpoint failure");
         assert!(!final_path.exists());
         assert!(!staging.exists());
+    }
+
+    #[test]
+    fn raw_checkpoint_notification_precedes_atomic_publication() {
+        let temp = tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let checkpoint = state_dir.join("checkpoints/slot-0");
+        let staging = checkpoint_staging_path(&checkpoint).unwrap();
+        let state = StateStore::open(&state_dir).unwrap();
+        let genesis = Block::genesis(Hash::hash(b"raw-capture-state"), 1, Vec::new());
+        state.put_block_atomic(&genesis, Some(0), Some(0)).unwrap();
+        let notified = std::cell::Cell::new(false);
+
+        let meta = state
+            .create_checkpoint_with_profile_and_raw_capture(
+                checkpoint.to_str().unwrap(),
+                0,
+                CheckpointSnapshotProfile::HotRepairV1 {
+                    history_start_slot: 0,
+                    archive_v2_catalog_root: None,
+                },
+                || {
+                    assert!(staging.join("CURRENT").is_file());
+                    assert!(
+                        !checkpoint.exists(),
+                        "raw capture must remain hidden behind the staging boundary"
+                    );
+                    notified.set(true);
+                },
+            )
+            .unwrap();
+
+        assert!(notified.get());
+        assert_eq!(meta.slot, 0);
+        assert!(checkpoint.join("checkpoint_meta.json").is_file());
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn checkpoint_publication_rejects_a_slot_different_from_the_staged_tip() {
+        let state_dir = tempdir().unwrap();
+        let checkpoint_parent = tempdir().unwrap();
+        let checkpoint = checkpoint_parent.path().join("slot-1");
+        let state = StateStore::open(state_dir.path()).unwrap();
+        let genesis = Block::genesis(Hash::hash(b"checkpoint-slot-binding"), 1, Vec::new());
+        state.put_block_atomic(&genesis, Some(0), Some(0)).unwrap();
+
+        let error = state
+            .create_checkpoint(checkpoint.to_str().unwrap(), 1)
+            .unwrap_err();
+        assert!(
+            error.contains("staged tip is 0"),
+            "unexpected error: {error}"
+        );
+        assert!(!checkpoint.exists());
+        assert!(!checkpoint_staging_path(&checkpoint).unwrap().exists());
     }
 
     #[test]
@@ -5072,6 +5903,13 @@ mod manifest_tests {
             .set_post_block_effects_frontier(42, &frontier_hash)
             .unwrap();
         source.commit_batch(batch).unwrap();
+        let stats_cf = source.db.cf_handle(CF_STATS).unwrap();
+        for key in NODE_LOCAL_STATS_KEYS {
+            source
+                .db
+                .put_cf(&stats_cf, key, b"node-local-layout")
+                .unwrap();
+        }
 
         let page = source
             .export_snapshot_category_cursor_untracked("stats", None, 10_000)
@@ -5082,6 +5920,15 @@ mod manifest_tests {
                 .any(|(key, _)| key.as_slice() == POST_BLOCK_EFFECTS_FRONTIER_KEY),
             "the durable readiness frontier must be present in network snapshots"
         );
+        for omitted in NODE_LOCAL_STATS_KEYS {
+            assert!(
+                page.entries
+                    .iter()
+                    .all(|(key, _)| key.as_slice() != *omitted),
+                "node-local stats key {} must not cross a checkpoint boundary",
+                String::from_utf8_lossy(omitted)
+            );
+        }
 
         let restored_dir = tempdir().unwrap();
         let restored = StateStore::open(restored_dir.path()).unwrap();
