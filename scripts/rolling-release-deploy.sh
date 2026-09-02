@@ -914,7 +914,7 @@ repair_args=(
 )
 sudo -n -u lichen /usr/local/bin/lichen-validator "${repair_args[@]}" --dry-run
 sudo -n -u lichen /usr/local/bin/lichen-validator "${repair_args[@]}" \
-  --confirm repair-dex-contracts:testnet:v0.5.271
+  --confirm repair-dex-contracts:testnet:v0.5.272
 postcheck="$(sudo -n -u lichen /usr/local/bin/lichen-validator "${repair_args[@]}" --dry-run)"
 printf '%s\n' "$postcheck"
 printf '%s\n' "$postcheck" | grep -Fxq 'contracts=17'
