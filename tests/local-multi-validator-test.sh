@@ -523,6 +523,44 @@ get_finalized_slot() {
         || echo 0
 }
 
+get_health_frontier_with_retry() {
+    local rpc=$1 attempts=${2:-3} timeout_seconds=${3:-10}
+    local response frontier attempt
+
+    for attempt in $(seq 1 "$attempts"); do
+        response="$(rpc_query_params_with_timeout "$rpc" "getHealth" '[]' "$timeout_seconds")"
+        frontier="$(
+            python3 -c '
+import json
+import sys
+
+result = json.load(sys.stdin).get("result", {})
+slot = result.get("slot") if isinstance(result, dict) else None
+finalized = result.get("finalized_slot") if isinstance(result, dict) else None
+valid = (
+    result.get("status") == "ok"
+    and isinstance(slot, int)
+    and not isinstance(slot, bool)
+    and isinstance(finalized, int)
+    and not isinstance(finalized, bool)
+    and slot > 0
+    and finalized > 0
+    and finalized <= slot
+)
+if not valid:
+    raise SystemExit(1)
+print(slot, finalized)
+' <<< "$response" 2>/dev/null
+        )" || frontier=""
+        if [[ "$frontier" =~ ^[1-9][0-9]*\ [1-9][0-9]*$ ]]; then
+            printf '%s\n' "$frontier"
+            return 0
+        fi
+        (( attempt < attempts )) && sleep 1
+    done
+    return 1
+}
+
 get_slot_with_retry() {
     local rpc=$1 attempts=${2:-5}
     local response slot attempt
@@ -582,7 +620,12 @@ wait_for_cluster_finalized_spread() {
     local timeout_seconds=$2
     local deadline=$((SECONDS + timeout_seconds))
     local maximum_finalized minimum_finalized finalized_spread maximum_lag
-    local processed finalized lag live validator_num sample=0
+    local processed finalized lag live validator_num sample=0 sample_dir
+    local -a probe_pids=()
+
+    sample_dir="$(mktemp -d /tmp/lichen-finalized-frontiers.XXXXXX)"
+    [[ "$sample_dir" == /tmp/lichen-finalized-frontiers.* && -d "$sample_dir" ]] \
+        || fail "Could not create bounded finalized-frontier sample directory"
 
     while (( SECONDS < deadline )); do
         maximum_finalized=0
@@ -590,8 +633,20 @@ wait_for_cluster_finalized_spread() {
         maximum_lag=0
         live=0
         for validator_num in $(seq 1 "$MAX_VALIDATORS"); do
-            processed="$(get_slot "$(rpc_port "$validator_num")")"
-            finalized="$(get_finalized_slot "$(rpc_port "$validator_num")")"
+            : > "$sample_dir/$validator_num"
+            (
+                get_health_frontier_with_retry "$(rpc_port "$validator_num")"
+            ) > "$sample_dir/$validator_num" &
+            probe_pids[validator_num]=$!
+        done
+        for validator_num in $(seq 1 "$MAX_VALIDATORS"); do
+            wait "${probe_pids[validator_num]}" || true
+        done
+        for validator_num in $(seq 1 "$MAX_VALIDATORS"); do
+            read -r processed finalized < "$sample_dir/$validator_num" || {
+                processed=0
+                finalized=0
+            }
             if [[ "$processed" =~ ^[1-9][0-9]*$ \
                 && "$finalized" =~ ^[1-9][0-9]*$ \
                 && "$finalized" -le "$processed" ]]; then
@@ -607,6 +662,7 @@ wait_for_cluster_finalized_spread() {
             && finalized_spread <= max_spread \
             && maximum_lag <= max_spread )); then
             ok "All validators' finalized frontiers are within ${finalized_spread} slots with maximum tip lag ${maximum_lag} before coordinated Archive V2 stop"
+            rm -rf -- "$sample_dir"
             return 0
         fi
         sample=$((sample + 1))
@@ -616,6 +672,7 @@ wait_for_cluster_finalized_spread() {
         sleep 1
     done
     warn "Validator finalized frontiers did not converge within ${timeout_seconds}s (live=${live}/${MAX_VALIDATORS}, min=${minimum_finalized}, max=${maximum_finalized}, spread=${finalized_spread}, max_tip_lag=${maximum_lag})"
+    rm -rf -- "$sample_dir"
     return 1
 }
 

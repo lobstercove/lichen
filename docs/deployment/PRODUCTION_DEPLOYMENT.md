@@ -15,11 +15,11 @@ Use this document as the canonical workflow for:
 
 This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
 
-The target testnet release for this runbook is `v0.5.268`; the current signed
+The target testnet release for this runbook is `v0.5.269`; the current signed
 fleet release and immediate restart-safe anchor is `v0.5.265`. Install
-`v0.5.268` only after
+`v0.5.269` only after
 its exact tag workflow, attestations, checksums, detached PQ signature, and
-four-validator Archive V2 gate pass. Once the fleet is proven on `v0.5.268`,
+four-validator Archive V2 gate pass. Once the fleet is proven on `v0.5.269`,
 keep only those two signed release installations on each validator. Historical
 tags and audit records remain in Git; they are not live rollback binaries.
 `v0.5.265` remains Archive V2 dual-reader capable and must be retained until the
@@ -970,7 +970,7 @@ templates plus the approved secret manager. Release upgrades then use the
 coordinated signed-artifact deployer from the operator machine:
 
 ```bash
-LICHEN_RELEASE_TAG=v0.5.268 LICHEN_COORDINATED_RELEASE=1 \
+LICHEN_RELEASE_TAG=v0.5.269 LICHEN_COORDINATED_RELEASE=1 \
   bash scripts/rolling-release-deploy.sh testnet
 ```
 

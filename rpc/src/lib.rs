@@ -1549,12 +1549,18 @@ fn rpc_readiness(state: &RpcState) -> RpcReadiness {
 
 fn rpc_readiness_json(state: &RpcState) -> serde_json::Value {
     let readiness = rpc_readiness(state);
+    let finalized_slot = state
+        .finality
+        .as_ref()
+        .map(FinalityTracker::finalized_slot)
+        .unwrap_or_else(|| state.state.get_last_finalized_slot().unwrap_or(0));
     let migration = state.state.cold_migration_status();
     let archive_v2 = state.state.archive_v2_status();
     let mut payload = serde_json::json!({
         "status": readiness.status,
         "reason": readiness.reason,
         "slot": readiness.slot,
+        "finalized_slot": finalized_slot,
         "archive_migration": {
             "advisory_only": true,
             "affects_consensus_readiness": false,
@@ -23252,6 +23258,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let state = StateStore::open(tmp.path()).unwrap();
         put_tip_block_with_timestamp(&state, 7, current_unix_secs());
+        state.set_last_finalized_slot(6).unwrap();
 
         let rpc_state = make_test_rpc_state(state);
         let readiness = rpc_readiness(&rpc_state);
@@ -23262,6 +23269,7 @@ mod tests {
         let payload = rpc_readiness_json(&rpc_state);
         assert_eq!(payload["status"], "ok");
         assert_eq!(payload["slot"], 7);
+        assert_eq!(payload["finalized_slot"], 6);
     }
 
     #[tokio::test]
