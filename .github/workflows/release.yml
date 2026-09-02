@@ -175,12 +175,15 @@ jobs:
       - name: Stage contract artifacts
         run: |
           mkdir -p genesis-contracts/contracts
-          while IFS= read -r wasm; do
-            dest="genesis-contracts/${wasm}"
+          while IFS= read -r artifact; do
+            dest="genesis-contracts/${artifact}"
             mkdir -p "$(dirname "$dest")"
-            cp "$wasm" "$dest"
-          done < <(find contracts -maxdepth 2 -type f -name '*.wasm' | sort)
-          test "$(find genesis-contracts/contracts -maxdepth 2 -type f -name '*.wasm' | wc -l)" -gt 0
+            cp "$artifact" "$dest"
+          done < <(find contracts -maxdepth 2 -type f \( -name '*.wasm' -o -name 'abi.json' \) | sort)
+          wasm_count="$(find genesis-contracts/contracts -maxdepth 2 -type f -name '*.wasm' | wc -l)"
+          abi_count="$(find genesis-contracts/contracts -maxdepth 2 -type f -name 'abi.json' | wc -l)"
+          test "$wasm_count" -gt 0
+          test "$abi_count" -eq "$wasm_count"
 
       - name: Upload genesis contract bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

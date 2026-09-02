@@ -468,6 +468,15 @@
       }
     },
     {
+      "name": "set_router_address",
+      "opcode": 24,
+      "params": [
+        { "name": "caller", "type": "Pubkey" },
+        { "name": "router", "type": "Pubkey" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
       "name": "set_sporepump_authority",
       "params": [
         { "name": "caller", "type": "Pubkey" },

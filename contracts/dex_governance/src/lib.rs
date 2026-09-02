@@ -6,7 +6,8 @@
 //   - LichenID reputation-gated proposals (min 500 rep)
 //   - Configurable per-proposal voting period, 66% approval threshold
 //   - Emergency delisting by admin
-//   - Listing requirements: min liquidity, min holders
+//   - Quote-token allowlisting for governance-created CLOB pairs
+//   - Launchpad liquidity/holder admission is enforced by Sporepump graduation
 //   - Emergency pause, reentrancy guard
 
 #![no_std]
@@ -35,8 +36,6 @@ const MAX_VOTING_PERIOD_SLOTS: u64 = 6_480_000; // 30 days at 400ms/slot
 const APPROVAL_THRESHOLD_BPS: u64 = 6600; // 66%
 const EXECUTION_DELAY_SLOTS: u64 = 9_000; // 1 hour timelock after voting at 400ms/slot
 const MIN_REPUTATION: u64 = 500;
-const MIN_LISTING_LIQUIDITY: u64 = 10_000_000_000_000; // 10,000 LICN per TOKENOMICS.md
-const MIN_LISTING_HOLDERS: u64 = 10;
 const MAX_PROPOSALS: u64 = 500;
 const MAX_FEE_BPS: i16 = 100;
 
@@ -178,9 +177,6 @@ fn load_proposal_quote(proposal_id: u64) -> Option<[u8; 32]> {
 }
 
 fn downstream_call_succeeded(result: &[u8]) -> bool {
-    if result.is_empty() {
-        return true;
-    }
     if result.len() >= 8 {
         return bytes_to_u64(&result[..8]) == 0;
     }
@@ -189,7 +185,7 @@ fn downstream_call_succeeded(result: &[u8]) -> bool {
         code.copy_from_slice(&result[..4]);
         return u32::from_le_bytes(code) == 0;
     }
-    result[0] == 0
+    false
 }
 
 // ============================================================================
@@ -584,7 +580,7 @@ pub fn propose_new_pair_with_period(
     }
 
     // Validate quote token against allowed quotes list
-    if !is_allowed_quote(&qt) {
+    if bt == qt || !is_allowed_quote(&qt) {
         reentrancy_exit();
         log_info("Proposal rejected: quote token not in allowed quotes list");
         return 4;
@@ -667,8 +663,9 @@ pub fn propose_fee_change_with_period(
     }
     if pair_id == 0
         || new_taker_fee > MAX_FEE_BPS as u16
-        || new_maker_fee > MAX_FEE_BPS
+        || new_maker_fee > 0
         || new_maker_fee < -MAX_FEE_BPS
+        || (new_maker_fee < 0 && new_maker_fee.unsigned_abs() > new_taker_fee)
     {
         reentrancy_exit();
         return 4;
@@ -837,7 +834,8 @@ pub fn vote(voter: *const u8, proposal_id: u64, approve: bool) -> u32 {
 }
 
 /// Finalize a proposal after voting period ends
-/// Returns: 0=success (passed), 1=not found, 2=still active, 3=already finalized
+/// Returns: 0=finalized passed, 1=not found, 2=still active,
+///          3=already finalized, 4=finalized rejected
 pub fn finalize_proposal(proposal_id: u64) -> u32 {
     let pk = proposal_key(proposal_id);
     let mut data = match storage_get(&pk) {
@@ -863,7 +861,7 @@ pub fn finalize_proposal(proposal_id: u64) -> u32 {
             update_prop_status(&mut data, STATUS_REJECTED);
             storage_set(&pk, &data);
             log_info("Proposal rejected: vote total overflow");
-            return 1;
+            return 4;
         }
     };
 
@@ -874,7 +872,7 @@ pub fn finalize_proposal(proposal_id: u64) -> u32 {
         update_prop_status(&mut data, STATUS_REJECTED);
         storage_set(&pk, &data);
         log_info("Proposal rejected: insufficient quorum");
-        return 1;
+        return 4;
     }
 
     let passed = if total == 0 {
@@ -893,14 +891,17 @@ pub fn finalize_proposal(proposal_id: u64) -> u32 {
     if passed {
         0
     } else {
-        1
+        4
     }
 }
 
 /// Execute a passed proposal (after timelock)
 /// Returns: 0=success, 1=not found, 2=not passed, 3=timelock not expired,
-///          4=downstream call failed, 5=core address not configured
+///          4=downstream call failed, 5=core address not configured, 6=paused
 pub fn execute_proposal(proposal_id: u64) -> u32 {
+    if !require_not_paused() {
+        return 6;
+    }
     let pk = proposal_key(proposal_id);
     let mut data = match storage_get(&pk) {
         Some(d) if d.len() >= PROPOSAL_SIZE => d,
@@ -1046,7 +1047,9 @@ pub fn execute_proposal(proposal_id: u64) -> u32 {
     0
 }
 
-/// Emergency delist a pair (admin only, no governance needed)
+/// Emergency delist a pair (admin only, no governance needed).
+/// Returns: 0=success, 1=not admin, 2=core not configured,
+///          3=DEX core rejected the pause, 200=caller mismatch.
 pub fn emergency_delist(caller: *const u8, pair_id: u64) -> u32 {
     let mut c = [0u8; 32];
     unsafe {
@@ -1060,17 +1063,34 @@ pub fn emergency_delist(caller: *const u8, pair_id: u64) -> u32 {
     if !require_admin(&c) {
         return 1;
     }
-    // In production: cross-call dex_core to pause the pair
-    // Store delist record
+
+    let core_addr = load_addr(CORE_ADDRESS_KEY);
+    if is_zero(&core_addr) {
+        return 2;
+    }
+    let governance_addr = get_contract_address().0;
+    let mut args = Vec::with_capacity(40);
+    args.extend_from_slice(&governance_addr);
+    args.extend_from_slice(&u64_to_bytes(pair_id));
+    match call_contract(CrossCall::new(Address(core_addr), "pause_pair", args)) {
+        Ok(result) if downstream_call_succeeded(&result) => {}
+        Ok(_) | Err(_) => return 3,
+    }
+
+    // Publish the audit record only after the pair is actually paused.
     let mut dk = Vec::from(&b"gov_delist_"[..]);
     dk.extend_from_slice(&u64_to_decimal(pair_id));
     save_u64(&dk, get_slot());
-    log_info("Emergency delist executed");
+    log_info("Emergency delist executed and DEX pair paused");
     0
 }
 
-/// Set listing requirements (admin only)
-pub fn set_listing_requirements(caller: *const u8, min_liquidity: u64, min_holders: u64) -> u32 {
+/// Legacy ABI retained for compatibility. Governance-created pairs are CLOB
+/// markets and therefore have no initial AMM liquidity or enumerable holder
+/// set to validate here. Launchpad admission is enforced atomically by
+/// Sporepump graduation. Fail closed instead of storing unenforced policy.
+/// Returns: 1=not admin, 2=unsupported, 200=caller mismatch.
+pub fn set_listing_requirements(caller: *const u8, _min_liquidity: u64, _min_holders: u64) -> u32 {
     let mut c = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
@@ -1083,9 +1103,7 @@ pub fn set_listing_requirements(caller: *const u8, min_liquidity: u64, min_holde
     if !require_admin(&c) {
         return 1;
     }
-    save_u64(b"gov_min_liq", min_liquidity);
-    save_u64(b"gov_min_holders", min_holders);
-    0
+    2
 }
 
 pub fn emergency_pause(caller: *const u8) -> u32 {
@@ -1457,6 +1475,7 @@ mod tests {
 
     fn setup() -> [u8; 32] {
         test_mock::reset();
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
         test_mock::set_contract_address(TEST_GOVERNANCE_CONTRACT);
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
@@ -1550,6 +1569,20 @@ mod tests {
     }
 
     #[test]
+    fn test_propose_new_pair_rejects_identical_tokens() {
+        let _admin = setup_with_reputation();
+        let proposer = [2u8; 32];
+        let token = [10u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
+        assert_eq!(
+            propose_new_pair(proposer.as_ptr(), token.as_ptr(), token.as_ptr()),
+            4
+        );
+        assert_eq!(get_proposal_count(), 0);
+    }
+
+    #[test]
     fn test_propose_new_pair_rejects_invalid_voting_period() {
         let _admin = setup_with_reputation();
         let proposer = [2u8; 32];
@@ -1617,6 +1650,8 @@ mod tests {
         assert_eq!(propose_fee_change(proposer.as_ptr(), 1, -101, 10), 4);
         assert_eq!(propose_fee_change(proposer.as_ptr(), 1, 101, 10), 4);
         assert_eq!(propose_fee_change(proposer.as_ptr(), 1, -2, 101), 4);
+        assert_eq!(propose_fee_change(proposer.as_ptr(), 1, 1, 10), 4);
+        assert_eq!(propose_fee_change(proposer.as_ptr(), 1, -11, 10), 4);
         assert_eq!(get_proposal_count(), 0);
     }
 
@@ -1734,7 +1769,7 @@ mod tests {
         }
 
         test_mock::set_slot(100 + VOTING_PERIOD_SLOTS + 1);
-        assert_eq!(finalize_proposal(1), 1); // rejected
+        assert_eq!(finalize_proposal(1), 4); // finalized as rejected
         let pd = storage_get(&proposal_key(1)).unwrap();
         assert_eq!(decode_prop_status(&pd), STATUS_REJECTED);
     }
@@ -1792,7 +1827,38 @@ mod tests {
     #[test]
     fn test_emergency_delist() {
         let admin = setup();
+        let core = [88u8; 32];
+        assert_eq!(set_core_address(admin.as_ptr(), core.as_ptr()), 0);
+        test_mock::set_slot(42);
         assert_eq!(emergency_delist(admin.as_ptr(), 1), 0);
+        let (target, function, args, value) =
+            test_mock::get_last_cross_call().expect("delist must cross-call DEX core");
+        assert_eq!(target, core);
+        assert_eq!(function, "pause_pair");
+        assert_eq!(value, 0);
+        assert_eq!(&args[..32], &TEST_GOVERNANCE_CONTRACT);
+        assert_eq!(bytes_to_u64(&args[32..40]), 1);
+        let mut key = Vec::from(&b"gov_delist_"[..]);
+        key.extend_from_slice(b"1");
+        assert_eq!(load_u64(&key), get_slot());
+    }
+
+    #[test]
+    fn test_emergency_delist_fails_closed_without_core_or_downstream_success() {
+        let admin = setup();
+        assert_eq!(emergency_delist(admin.as_ptr(), 1), 2);
+
+        let core = [88u8; 32];
+        assert_eq!(set_core_address(admin.as_ptr(), core.as_ptr()), 0);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        assert_eq!(emergency_delist(admin.as_ptr(), 1), 3);
+        let mut key = Vec::from(&b"gov_delist_"[..]);
+        key.extend_from_slice(b"1");
+        assert_eq!(load_u64(&key), 0);
+
+        test_mock::set_cross_call_response(Some(Vec::new()));
+        assert_eq!(emergency_delist(admin.as_ptr(), 1), 3);
+        assert_eq!(load_u64(&key), 0);
     }
 
     #[test]
@@ -1804,11 +1870,11 @@ mod tests {
     }
 
     #[test]
-    fn test_set_listing_requirements() {
+    fn test_legacy_listing_requirements_fail_closed() {
         let admin = setup();
-        assert_eq!(set_listing_requirements(admin.as_ptr(), 50_000, 20), 0);
-        assert_eq!(load_u64(b"gov_min_liq"), 50_000);
-        assert_eq!(load_u64(b"gov_min_holders"), 20);
+        assert_eq!(set_listing_requirements(admin.as_ptr(), 50_000, 20), 2);
+        assert_eq!(load_u64(b"gov_min_liq"), 0);
+        assert_eq!(load_u64(b"gov_min_holders"), 0);
     }
 
     #[test]
@@ -1831,6 +1897,28 @@ mod tests {
         assert_eq!(
             propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
             1
+        );
+    }
+
+    #[test]
+    fn test_paused_governance_cannot_execute_passed_proposal() {
+        let admin = setup_with_reputation();
+        let proposer = [2u8; 32];
+        let base = [10u8; 32];
+        let quote = [20u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
+        assert_eq!(
+            propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
+            0
+        );
+        pass_and_timelock(1, 100);
+        test_mock::set_caller(admin);
+        assert_eq!(emergency_pause(admin.as_ptr()), 0);
+        assert_eq!(execute_proposal(1), 6);
+        assert_eq!(
+            decode_prop_status(&storage_get(&proposal_key(1)).unwrap()),
+            STATUS_PASSED
         );
     }
 
@@ -2078,7 +2166,7 @@ mod tests {
         test_mock::set_slot(100 + VOTING_PERIOD_SLOTS + 1);
         // Finalize → should reject due to insufficient quorum
         let result = finalize_proposal(1);
-        assert_eq!(result, 1); // rejected (insufficient quorum)
+        assert_eq!(result, 4); // finalized as rejected (insufficient quorum)
                                // Verify status is REJECTED
         let pd = storage_get(&proposal_key(1)).unwrap();
         assert_eq!(decode_prop_status(&pd), STATUS_REJECTED);

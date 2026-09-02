@@ -298,6 +298,17 @@ assert(
         && dexJs.includes('writeU64LE(v, 45, currentProposalVotingSlots())'),
     'governance defaults are data-synced and proposal voting period is encoded on-chain'
 );
+const proposalValidation = extractFunctionBody(dexJs, 'getProposalSubmitValidation');
+assert(
+    proposalValidation.includes('makerFee > 0')
+        && proposalValidation.includes('Math.abs(makerFee) > takerFee')
+        && dexHtml.includes('Delist proposals are not supported by the current governance ABI')
+        && dexHtml.includes('Emergency delist pauses new CLOB activity')
+        && !dexHtml.includes('All open orders on this pair will be cancelled')
+        && !dexHtml.includes('LP positions will be auto-withdrawn at current price')
+        && !dexHtml.includes('Margin positions will be force-closed at mark price'),
+    'governance UI enforces funded maker rebates and describes the real delist boundary'
+);
 assert(applyWalletGateAll.includes('.btn-predict-resolve, .btn-predict-challenge, .btn-predict-finalize, .btn-predict-claim, .btn-predict-claim-pos'), 'prediction lifecycle buttons share wallet signing gate');
 assert(applyWalletGateAll.includes("document.querySelectorAll('.margin-close-btn, .cancel-btn')") && applyWalletGateAll.includes('btn.disabled = !canSign'), 'cancel and margin close actions require signing readiness');
 assert(applyWalletGateAll.includes('.launch-quick-buy, .launch-quick-sell') && applyWalletGateAll.includes('updateLaunchTradeButton()') && applyWalletGateAll.includes('updateLaunchCreateButton()'), 'launchpad quick and primary actions share launch validation');
@@ -353,7 +364,15 @@ assert(
     'DEX frontend uses REST only for read/quote paths, not mutating writes'
 );
 assert(
+    dexJs.includes('const CONTRACT_TX_COMPUTE_BUDGET = 1_400_000;')
+        && dexJs.includes('instructions.some(ix => (ix.program_id || ix.programId) === CONTRACT_PROGRAM_ID)')
+        && dexJs.includes('? CONTRACT_TX_COMPUTE_BUDGET'),
+    'DEX contract transactions retain the protocol-max compute budget unless explicitly overridden'
+);
+assert(
     dexJs.includes('prepareTokenPull(spotEscrowSymbol(state.orderSide, state.activePair), contracts.dex_core, escrowRaw)')
+        && dexJs.includes('const escrow = notional + proportionalFee + quantity / lotSize;')
+        && dexJs.includes("throw new Error('Order escrow exceeds the wallet precision limit')")
         && dexJs.includes('prepareTokenPull(MARGIN_COLLATERAL_SYMBOL, contracts.dex_margin, marginDeposit)')
         && dexJs.includes('prepareTokenPull(tokenA, contracts.dex_amm, rawA)')
         && dexJs.includes('prepareTokenPull(tokenB, contracts.dex_amm, rawB)')
@@ -364,7 +383,7 @@ assert(
         && dexJs.includes('?amount_raw=${inputRaw}')
         && dexJs.includes('const minimumOutput = quote.outputRaw')
         && dexJs.includes("namedCallIx(contracts.sporepump, 'create_token_with_metadata'"),
-    'DEX frontend pulls native/token collateral before signed trade, margin, pool, prediction, and launch actions'
+    'DEX frontend reserves fragmented-fill-safe escrow and pulls native/token collateral before signed actions'
 );
 assert(
     dexJs.includes("const LICN_LOGO_URL = 'https://lichen.network/assets/img/coins/128x128/licn.png';")

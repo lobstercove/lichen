@@ -582,6 +582,19 @@ assert(
         && dexSetupHelper.includes('waitForFreshMarginMark('),
     'strict volume E2E advances the canonical validator-oracle quorum before opening margin positions',
 );
+const wsPhaseOffset = volumeE2e.indexOf("section('Phase 11: WebSocket Live Events')");
+const wsBandRefreshOffset = volumeE2e.indexOf('await refreshMarginMarkPrice(', wsPhaseOffset);
+const wsSellOffset = volumeE2e.indexOf("'WS trigger: Eve sell'", wsPhaseOffset);
+assert(
+    wsPhaseOffset >= 0
+        && wsBandRefreshOffset > wsPhaseOffset
+        && wsSellOffset > wsBandRefreshOffset
+        && volumeE2e.includes('refreshed.dexBandSourceSlot === refreshed.sourceSlot')
+        && dexSetupHelper.includes('async function waitForFreshDexBand(')
+        && dexSetupHelper.includes('`dex_band_${pairId}`')
+        && dexSetupHelper.includes('band.price !== marginPrice'),
+    'strict volume E2E refreshes and verifies the canonical DEX price band immediately before the WebSocket trade',
+);
 
 const packageJson = JSON.parse(fs.readFileSync(repoPath('package.json'), 'utf8'));
 const packageLock = JSON.parse(fs.readFileSync(repoPath('package-lock.json'), 'utf8'));
@@ -610,6 +623,7 @@ for (const [packageName, importers] of Array.from(allPackages).sort()) {
 const releaseWorkflow = fs.readFileSync(repoPath('.github/workflows/release.yml'), 'utf8');
 const rollingReleaseDeploy = fs.readFileSync(repoPath('scripts/rolling-release-deploy.sh'), 'utf8');
 const archiveJob = extractWorkflowJob(releaseWorkflow, 'archive-parity-local-gate');
+const contractBundleJob = extractWorkflowJob(releaseWorkflow, 'contract-bundle');
 const releaseBuildJob = extractWorkflowJob(releaseWorkflow, 'build');
 const setupNodeOffset = archiveJob.indexOf('actions/setup-node@');
 const npmCiOffset = archiveJob.indexOf('npm ci --ignore-scripts');
@@ -648,9 +662,26 @@ assert(
     'signed platform binaries embed the exact contract bundle that passed the contract gate',
 );
 assert(
+    contractBundleJob.includes("-name 'abi.json'")
+        && contractBundleJob.includes('test "$abi_count" -eq "$wasm_count"'),
+    'signed contract bundle pairs every tested WASM with its ABI',
+);
+assert(
     releaseBuildJob.includes('cp "$wasm" "$destination"')
         && releaseBuildJob.includes('test "$contract_count" -gt 0'),
     'release binary build fails closed when the tested contract bundle cannot be staged',
+);
+assert(
+    rollingReleaseDeploy.includes('LICHEN_REPAIR_TESTNET_DEX_CONTRACTS')
+        && rollingReleaseDeploy.includes('DEX contract repair is testnet-only and requires LICHEN_COORDINATED_RELEASE=1')
+        && rollingReleaseDeploy.includes('all validators are stopped; applying the signed Testnet DEX code/ABI repair'),
+    'preserved-chain DEX repair is testnet-only and runs only after the coordinated fleet stop',
+);
+assert(
+    rollingReleaseDeploy.includes("grep -Fxq 'contracts=17'")
+        && rollingReleaseDeploy.includes("grep -Fxq 'changed=0'")
+        && rollingReleaseDeploy.includes('--confirm repair-dex-contracts:testnet:v0.5.270'),
+    'coordinated DEX repair dry-runs, writes explicitly, and proves idempotent completion',
 );
 assert(
     releaseWorkflow.includes('--bin lichen-archive-v2')

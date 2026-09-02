@@ -1458,8 +1458,8 @@ pub fn genesis_initialize_contracts(
         }
     }
 
-    // ── DEX Router: wire dex_core, dex_amm, lichenswap addresses ──
-    // Opcode 1 = set_addresses. Format: [1][admin 32B][dex_core 32B][dex_amm 32B][lichenswap 32B]
+    // ── DEX Router: wire dex_core and dex_amm addresses ──
+    // Opcode 1 = set_addresses. Format: [1][admin 32B][dex_core 32B][dex_amm 32B]
     if let Some(router_pk) = address_map.get("dex_router") {
         let required_contract_addr = |name: &str| -> Result<[u8; 32], String> {
             address_map
@@ -1469,20 +1469,48 @@ pub fn genesis_initialize_contracts(
         };
         let dex_core_addr = required_contract_addr("dex_core")?;
         let dex_amm_addr = required_contract_addr("dex_amm")?;
-        let lichenswap_addr = required_contract_addr("lichenswap")?;
-        let mut args = Vec::with_capacity(129);
+        let mut args = Vec::with_capacity(97);
         args.push(1u8); // opcode 1 = set_addresses
         args.extend_from_slice(&admin);
         args.extend_from_slice(&dex_core_addr);
         args.extend_from_slice(&dex_amm_addr);
-        args.extend_from_slice(&lichenswap_addr);
         if exec_as_governance(router_pk, "call", &args, "dex_router(set_addresses)") {
             info!("  SET dex_router(set_addresses)");
         } else {
             return Err("failed to set mandatory dex_router addresses".to_string());
         }
 
-        // ── DEX Router: register mandatory genesis routes: CLOB + AMM for all 13 launch pairs ──
+        // Nested contract calls see the router contract as their caller. Bind
+        // that immutable authority before registering routes so routed CLOB and
+        // AMM swaps can debit the original trader without opening either venue
+        // to arbitrary contract impersonation.
+        for (program, opcode, label) in [
+            (
+                address_map
+                    .get("dex_core")
+                    .ok_or_else(|| "mandatory genesis contract dex_core missing".to_string())?,
+                36u8,
+                "dex_core(set_router_address)",
+            ),
+            (
+                address_map
+                    .get("dex_amm")
+                    .ok_or_else(|| "mandatory genesis contract dex_amm missing".to_string())?,
+                24u8,
+                "dex_amm(set_router_address)",
+            ),
+        ] {
+            let mut authority_args = Vec::with_capacity(65);
+            authority_args.push(opcode);
+            authority_args.extend_from_slice(&admin);
+            authority_args.extend_from_slice(&router_pk.0);
+            if !exec_as_governance(program, "call", &authority_args, label) {
+                return Err(format!("failed to configure mandatory {label}"));
+            }
+            info!("  SET {label}");
+        }
+
+        // ── DEX Router: register mandatory bidirectional CLOB + AMM routes ──
         // Opcode 2 = register_route. 115 bytes:
         // [opcode 1B][caller 32B][token_in 32B][token_out 32B][route_type 1B][pool_id 8B][secondary_id 8B][split_percent 1B]
         let wsol_addr = required_contract_addr("wsol_token")?;
@@ -1510,54 +1538,70 @@ pub fn genesis_initialize_contracts(
             (wbtc_addr, licn_addr, 13, 13, "wBTC/LICN"),
         ];
 
-        for (token_in, token_out, pair_id, pool_id, label) in &route_pairs {
-            // CLOB route: route_type=0, id=pair_id
-            let mut clob_args = Vec::with_capacity(115);
-            clob_args.push(2u8); // opcode 2 = register_route
-            clob_args.extend_from_slice(&admin);
-            clob_args.extend_from_slice(token_in);
-            clob_args.extend_from_slice(token_out);
-            clob_args.push(0); // route_type: DIRECT_CLOB
-            clob_args.extend_from_slice(&pair_id.to_le_bytes());
-            clob_args.extend_from_slice(&0u64.to_le_bytes()); // secondary_id
-            clob_args.push(0); // split_percent
-            if exec_as_governance(
-                router_pk,
-                "call",
-                &clob_args,
-                &format!("dex_router(route CLOB {})", label),
-            ) {
-                info!("  ROUTE CLOB {} (pair_id={})", label, pair_id);
-            } else {
-                return Err(format!("failed to register mandatory CLOB route {}", label));
-            }
+        for (token_a, token_b, pair_id, pool_id, label) in &route_pairs {
+            for (token_in, token_out, amm_direction, direction_label) in [
+                (token_a, token_b, 1u64, "forward"),
+                (token_b, token_a, 2u64, "reverse"),
+            ] {
+                // CLOB route: route_type=0, id=pair_id. The core derives the
+                // side from token_in, so the same pair supports both directions.
+                let mut clob_args = Vec::with_capacity(115);
+                clob_args.push(2u8); // opcode 2 = register_route
+                clob_args.extend_from_slice(&admin);
+                clob_args.extend_from_slice(token_in);
+                clob_args.extend_from_slice(token_out);
+                clob_args.push(0); // route_type: DIRECT_CLOB
+                clob_args.extend_from_slice(&pair_id.to_le_bytes());
+                clob_args.extend_from_slice(&0u64.to_le_bytes()); // secondary_id
+                clob_args.push(0); // split_percent
+                if !exec_as_governance(
+                    router_pk,
+                    "call",
+                    &clob_args,
+                    &format!("dex_router(route CLOB {label} {direction_label})"),
+                ) {
+                    return Err(format!(
+                        "failed to register mandatory CLOB route {label} {direction_label}"
+                    ));
+                }
+                info!(
+                    "  ROUTE CLOB {} {} (pair_id={})",
+                    label, direction_label, pair_id
+                );
 
-            // AMM route: route_type=1, id=pool_id
-            let mut amm_args = Vec::with_capacity(115);
-            amm_args.push(2u8); // opcode 2 = register_route
-            amm_args.extend_from_slice(&admin);
-            amm_args.extend_from_slice(token_in);
-            amm_args.extend_from_slice(token_out);
-            amm_args.push(1); // route_type: DIRECT_AMM
-            amm_args.extend_from_slice(&pool_id.to_le_bytes());
-            amm_args.extend_from_slice(&0u64.to_le_bytes()); // secondary_id
-            amm_args.push(0); // split_percent
-            if exec_as_governance(
-                router_pk,
-                "call",
-                &amm_args,
-                &format!("dex_router(route AMM {})", label),
-            ) {
-                info!("  ROUTE AMM {} (pool_id={})", label, pool_id);
-            } else {
-                return Err(format!("failed to register mandatory AMM route {}", label));
+                // AMM route: secondary_id explicitly records token-A (1) or
+                // token-B (2) input, preventing reverse swaps from executing
+                // with the forward price direction.
+                let mut amm_args = Vec::with_capacity(115);
+                amm_args.push(2u8); // opcode 2 = register_route
+                amm_args.extend_from_slice(&admin);
+                amm_args.extend_from_slice(token_in);
+                amm_args.extend_from_slice(token_out);
+                amm_args.push(1); // route_type: DIRECT_AMM
+                amm_args.extend_from_slice(&pool_id.to_le_bytes());
+                amm_args.extend_from_slice(&amm_direction.to_le_bytes());
+                amm_args.push(0); // split_percent
+                if !exec_as_governance(
+                    router_pk,
+                    "call",
+                    &amm_args,
+                    &format!("dex_router(route AMM {label} {direction_label})"),
+                ) {
+                    return Err(format!(
+                        "failed to register mandatory AMM route {label} {direction_label}"
+                    ));
+                }
+                info!(
+                    "  ROUTE AMM {} {} (pool_id={})",
+                    label, direction_label, pool_id
+                );
             }
         }
         info!(
             "  ✅ Registered {} genesis routes ({} CLOB + {} AMM)",
+            route_pairs.len() * 4,
             route_pairs.len() * 2,
-            route_pairs.len(),
-            route_pairs.len()
+            route_pairs.len() * 2
         );
     } else {
         return Err("mandatory genesis contract dex_router missing".to_string());

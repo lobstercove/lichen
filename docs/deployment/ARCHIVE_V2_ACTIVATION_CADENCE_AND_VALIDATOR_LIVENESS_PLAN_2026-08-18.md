@@ -1,7 +1,7 @@
 # Archive V2 Activation, Cadence Recovery, And Validator Liveness Plan
 
 **Date:** 2026-08-18
-**Last updated:** 2026-09-01
+**Last updated:** 2026-09-02
 **Status:** Authoritative execution plan. Signed `v0.5.265` is installed on all
 four validators from its release-workflow artifact. A read-only 2026-08-30
 sample found the same installed validator SHA-256 on every host,
@@ -39,12 +39,22 @@ load even while processed slots and block production advanced. No platform
 artifacts or deployment were produced, and the immutable tag must not be
 rewritten or rerun again.
 
-`v0.5.269` is the only successor candidate. It carries the complete v0.5.268
-runtime and journey correction, publishes the same authoritative finalized
-frontier through the always-available health response, and probes all four
-health frontiers concurrently with bounded retries. The strict finalized
-spread and processed-to-finalized lag requirements remain unchanged.
-The inherited runtime adds a bounded, catalog-bound
+Immutable `v0.5.269` carried the complete v0.5.268 runtime correction,
+published the authoritative finalized frontier through the always-available
+health response, and passed protected and post-merge CI. Its tag workflow
+passed the complete Archive V2 matrix and then failed in the later WebSocket
+trade journey. The hosted network advanced about 24.4 slots per second: the
+controlled price refreshed at slot 34,481, and the trade ran 34.3 seconds
+later, beyond the strict 750-slot DEX price-band lifetime. The matching local
+transaction consumed only 47,543 of 200,000 compute units, ruling out compute
+exhaustion. No artifact or deployment was produced and the tag is immutable.
+
+`v0.5.270` is the only successor candidate. It refreshes the controlled
+LICN/USD price through signed active-validator quorum attestations immediately
+before the WebSocket trade and reads back the exact DEX band price and source
+slot. It also preserves bounded actionable RPC preflight diagnostics. The
+750-slot runtime stale-price rejection remains unchanged. The inherited
+runtime adds a bounded, catalog-bound
 hot-repair checkpoint profile for Archive V2, reconciles a common catalog before
 checkpoint selection, normalizes node-local block commit evidence during
 history export, excludes the local cold-migration cursor from state snapshot
@@ -67,7 +77,7 @@ temporary replicated recovery/archive source, not the permanent mainnet
 storage design, and deletion of any R2 object remains unauthorized.
 
 The signed `v0.5.265` release is the sole immediate rollback anchor for
-`v0.5.269`. Once `v0.5.269` is running and four-way V2 parity plus rollback
+`v0.5.270`. Once `v0.5.270` is running and four-way V2 parity plus rollback
 rehearsal are recorded, validator hosts keep only those two signed release
 installations. Legacy history is retired only by signed, source-backed,
 range-bound Archive V2 retirement and compaction; low disk space does not
@@ -94,7 +104,7 @@ ad-hoc production change.
 The fleet state and rollback artifacts remain preserved on signed `v0.5.265`,
 but the testnet is halted below quorum and is not mainnet-ready. Archive V2
 roles and legacy retirement remain open, current 200 GB root volumes are not
-approved for indefinite archive growth, and `v0.5.269` still requires local and
+approved for indefinite archive growth, and `v0.5.270` still requires local and
 hosted signed-artifact, coordinated-deployment, and live acceptance gates.
 
 ### 1.1 Current decision
@@ -300,7 +310,7 @@ Accordingly:
 2. Use only the bounded, content-hashed emergency headroom pass required to
    recover a validator that reached the fail-closed disk floor. Do not delete
    R2 objects or treat that temporary bridge as Archive V2 activation.
-3. Preserve the completed `v0.5.266` runtime evidence and publish `v0.5.269`
+3. Preserve the completed `v0.5.266` runtime evidence and publish `v0.5.270`
    through the
    signed release workflow, verify provenance plus its detached post-quantum
    checksum signature, and deploy it through one coordinated four-host
@@ -1015,7 +1025,7 @@ This is a testnet exception, not the final production archive policy:
   Archive V2 retirement or larger storage, not another emergency offload;
 - the transition is reversible through the preserved baseline environment and
   signed `v0.5.265` immediate rollback artifact. Older releases remain Git and
-  audit history, not installed rollback binaries after `v0.5.269` acceptance.
+  audit history, not installed rollback binaries after `v0.5.270` acceptance.
 
 The later dedicated archive plane in Section 3.2 replaces this exception. It
 does not block honest Archive V2 role activation on the current testnet once
@@ -1035,7 +1045,7 @@ The 2026-08-27 stopped-node proof found a circular dependency in v0.5.263:
    reserve correctly returned `StopValidator` while legacy cold still occupied
    the disk.
 
-`v0.5.265` introduced the role-bootstrap correction, and `v0.5.269` carries it
+`v0.5.265` introduced the role-bootstrap correction, and `v0.5.270` carries it
 forward without changing consensus, Archive V2 object format, catalog format,
 or capacity policy:
 
@@ -1119,11 +1129,11 @@ Current execution order is fixed:
 1. Preserve the signed `v0.5.265` deployment, exact four-host failure evidence,
    US recovery tail, and prior outage/rejoin and RPC/FUSE diagnostics. Do not
    weaken timeouts, history requirements, or storage reserves.
-2. Preserve the completed clean runtime gate and `v0.5.268` hosted evidence,
-   including both fail-closed finalized-RPC polling attempts, and qualify the
-   narrow `v0.5.269` concurrent health-frontier correction through every
-   affected local gate.
-3. Commit through protected `main`, create the immutable `v0.5.269` tag, wait
+2. Preserve the completed clean runtime gate and `v0.5.269` hosted evidence,
+   including the green Archive V2 matrix and exact stale DEX-band timing, and
+   qualify the narrow `v0.5.270` pre-WebSocket quorum refresh plus bounded
+   preflight diagnostics through every affected local gate.
+3. Commit through protected `main`, create the immutable `v0.5.270` tag, wait
    for every hosted hard gate, attach the detached PQ checksum signature, verify
    provenance and every binary hash, and publish the public validator release.
 4. Capture a stopped preflight on all four hosts, prove identities/WALs/state,
@@ -1147,7 +1157,7 @@ Current execution order is fixed:
    validators to author, measure reclaimed bytes per host, and complete the
    documented stable-observation window.
 9. Publish and deploy the matching wallet `0.1.9`, exchange
-   `exchange-testnet-v0.5.269`, developer portal, README, and frontend surfaces
+   `exchange-testnet-v0.5.270`, developer portal, README, and frontend surfaces
    only after their live readiness evidence is attached. Keep only the new
    signed validator release and signed `v0.5.265` rollback installation on each
    VPS; remove obsolete caches, staging, superseded checkpoints, and redundant

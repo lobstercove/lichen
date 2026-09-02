@@ -8258,6 +8258,57 @@ fn transaction_has_mandatory_shielded_preflight(tx: &Transaction) -> bool {
     })
 }
 
+const PREFLIGHT_DIAGNOSTIC_LOG_LIMIT: usize = 4;
+const PREFLIGHT_DIAGNOSTIC_LOG_CHAR_LIMIT: usize = 256;
+
+fn bounded_preflight_log(log: &str) -> String {
+    log.chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .take(PREFLIGHT_DIAGNOSTIC_LOG_CHAR_LIMIT)
+        .collect()
+}
+
+fn format_preflight_simulation_failure(
+    simulation: &lichen_core::SimulationResult,
+    compute_budget: u64,
+) -> String {
+    let reason = simulation
+        .error
+        .as_deref()
+        .unwrap_or("Contract execution failed");
+    let return_code = simulation
+        .return_code
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let logs = simulation
+        .logs
+        .iter()
+        .rev()
+        .take(PREFLIGHT_DIAGNOSTIC_LOG_LIMIT)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|log| bounded_preflight_log(log))
+        .collect::<Vec<_>>()
+        .join(" | ");
+
+    let mut diagnostic = format!(
+        "{reason}; return_code={return_code}; compute={}/{compute_budget}",
+        simulation.compute_used
+    );
+    if !logs.is_empty() {
+        diagnostic.push_str("; logs=");
+        diagnostic.push_str(&logs);
+    }
+    diagnostic
+}
+
 pub(crate) async fn preflight_transaction_submission(
     state: &RpcState,
     tx: &Transaction,
@@ -8433,12 +8484,15 @@ pub(crate) async fn preflight_transaction_submission(
         let processor = TxProcessor::new(state.state.clone());
         let sim = processor.simulate_transaction(tx);
         if !sim.success {
-            let reason = sim
-                .error
-                .unwrap_or_else(|| "Contract execution failed".to_string());
             return Err(RpcError {
                 code: -32002,
-                message: format!("Transaction simulation failed: {}", reason),
+                message: format!(
+                    "Transaction simulation failed: {}",
+                    format_preflight_simulation_failure(
+                        &sim,
+                        tx.message.effective_compute_budget()
+                    )
+                ),
             });
         }
     }
@@ -21959,16 +22013,17 @@ mod tests {
         bridge_access_message_v2_create, classify_evm_method_tier, classify_method,
         classify_solana_method_tier, clear_privileged_rpc_mutation_test_sink,
         decode_contract_result_u64, disk_readiness_from_counts, encode_readonly_return_data_b64,
-        encode_rpc_response, filter_signatures_for_address, get_cached_program_list_response,
-        get_cached_read_slot_response, handle_build_ban_code_hash_tx,
-        handle_build_extend_restriction_tx, handle_build_lift_restriction_tx,
-        handle_build_pause_bridge_route_tx, handle_build_quarantine_contract_tx,
-        handle_build_restrict_account_asset_tx, handle_build_restrict_account_tx,
-        handle_build_resume_bridge_route_tx, handle_build_resume_contract_tx,
-        handle_build_set_frozen_asset_amount_tx, handle_build_suspend_contract_tx,
-        handle_build_terminate_contract_tx, handle_build_unban_code_hash_tx,
-        handle_build_unrestrict_account_asset_tx, handle_build_unrestrict_account_tx,
-        handle_can_receive, handle_can_send, handle_can_transfer, handle_create_bridge_deposit,
+        encode_rpc_response, filter_signatures_for_address, format_preflight_simulation_failure,
+        get_cached_program_list_response, get_cached_read_slot_response,
+        handle_build_ban_code_hash_tx, handle_build_extend_restriction_tx,
+        handle_build_lift_restriction_tx, handle_build_pause_bridge_route_tx,
+        handle_build_quarantine_contract_tx, handle_build_restrict_account_asset_tx,
+        handle_build_restrict_account_tx, handle_build_resume_bridge_route_tx,
+        handle_build_resume_contract_tx, handle_build_set_frozen_asset_amount_tx,
+        handle_build_suspend_contract_tx, handle_build_terminate_contract_tx,
+        handle_build_unban_code_hash_tx, handle_build_unrestrict_account_asset_tx,
+        handle_build_unrestrict_account_tx, handle_can_receive, handle_can_send,
+        handle_can_transfer, handle_create_bridge_deposit,
         handle_get_account_asset_restriction_status, handle_get_account_proof,
         handle_get_account_restriction_status, handle_get_all_symbol_registry,
         handle_get_asset_restriction_status, handle_get_block_commit, handle_get_bridge_deposit,
@@ -22225,6 +22280,35 @@ mod tests {
             Hash([0x22; 32]),
         ));
         assert!(!transaction_has_governed_system_preflight(&tx));
+    }
+
+    #[test]
+    fn contract_preflight_failure_includes_bounded_actionable_diagnostics() {
+        let simulation = lichen_core::SimulationResult {
+            success: false,
+            fee: 0,
+            logs: vec![
+                "discarded oldest log".to_string(),
+                "first retained log".to_string(),
+                "nested transfer_from failed\nwith control text".to_string(),
+                "third retained log".to_string(),
+                "x".repeat(300),
+            ],
+            error: Some("Contract 'place_order' returned ABI failure code 11".to_string()),
+            compute_used: 200_000,
+            return_data: None,
+            return_code: Some(11),
+            state_changes: 0,
+        };
+
+        let diagnostic = format_preflight_simulation_failure(&simulation, 200_000);
+        assert!(diagnostic.contains("ABI failure code 11"));
+        assert!(diagnostic.contains("return_code=11"));
+        assert!(diagnostic.contains("compute=200000/200000"));
+        assert!(!diagnostic.contains("discarded oldest log"));
+        assert!(diagnostic.contains("nested transfer_from failed with control text"));
+        assert!(!diagnostic.contains('\n'));
+        assert!(!diagnostic.contains(&"x".repeat(257)));
     }
 
     #[tokio::test]

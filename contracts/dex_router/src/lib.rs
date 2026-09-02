@@ -29,10 +29,14 @@ use lichen_sdk::{
 // CONSTANTS
 // ============================================================================
 
-const MAX_ROUTES: u64 = 200;
+// Genesis consumes 52 bidirectional direct routes. A 256-route ceiling still
+// bounds storage/administration while leaving enough room for every AMM pool
+// permitted by dex_amm (100 pools) to have forward and reverse launch routes.
+const MAX_ROUTES: u64 = 256;
 const MAX_HOPS: u64 = 4;
 const MAX_SPLIT_LEGS: u64 = 3;
 const SLIPPAGE_GUARD_BPS: u64 = 500; // 5% max auto-slippage
+const AMM_TOKEN_B_INPUT_FLAG: u64 = 1u64 << 63;
 
 // Route types
 const ROUTE_DIRECT_CLOB: u8 = 0;
@@ -119,6 +123,16 @@ fn pair_route_key(token_in: &[u8; 32], token_out: &[u8; 32]) -> Vec<u8> {
     k.extend_from_slice(&hex_encode(token_in));
     k.push(b'_');
     k.extend_from_slice(&hex_encode(token_out));
+    k
+}
+
+fn pair_route_type_key(token_in: &[u8; 32], token_out: &[u8; 32], route_type: u8) -> Vec<u8> {
+    let mut k = Vec::from(&b"rtr_prt_"[..]);
+    k.extend_from_slice(&hex_encode(token_in));
+    k.push(b'_');
+    k.extend_from_slice(&hex_encode(token_out));
+    k.push(b'_');
+    k.extend_from_slice(&u64_to_decimal(route_type as u64));
     k
 }
 
@@ -214,6 +228,20 @@ fn decode_route_type(data: &[u8]) -> u8 {
         0
     }
 }
+fn decode_route_token_in(data: &[u8]) -> [u8; 32] {
+    let mut token = [0u8; 32];
+    if data.len() >= 32 {
+        token.copy_from_slice(&data[..32]);
+    }
+    token
+}
+fn decode_route_token_out(data: &[u8]) -> [u8; 32] {
+    let mut token = [0u8; 32];
+    if data.len() >= 64 {
+        token.copy_from_slice(&data[32..64]);
+    }
+    token
+}
 fn decode_route_pool_id(data: &[u8]) -> u64 {
     if data.len() >= 81 {
         bytes_to_u64(&data[73..81])
@@ -241,6 +269,57 @@ fn decode_route_enabled(data: &[u8]) -> bool {
     } else {
         false
     }
+}
+
+fn stored_direct_amm_direction(data: &[u8]) -> Option<bool> {
+    if decode_route_type(data) != ROUTE_DIRECT_AMM {
+        return None;
+    }
+    match decode_route_secondary_id(data) {
+        1 => Some(true),
+        2 => Some(false),
+        _ => None,
+    }
+}
+
+fn route_matches(data: &[u8], token_in: &[u8; 32], token_out: &[u8; 32]) -> bool {
+    data.len() >= ROUTE_SIZE
+        && decode_route_token_in(data) == *token_in
+        && decode_route_token_out(data) == *token_out
+}
+
+/// Resolve the unique route for one venue type. The bounded scan is only a
+/// compatibility migration for pre-index state; all new registrations write
+/// the typed index directly, so normal quote/swap cost is independent of the
+/// global route count.
+fn load_direct_route_by_type(
+    token_in: &[u8; 32],
+    token_out: &[u8; 32],
+    route_type: u8,
+) -> Option<(u64, Vec<u8>)> {
+    let typed_key = pair_route_type_key(token_in, token_out, route_type);
+    let indexed_id = load_u64(&typed_key);
+    if indexed_id != 0 {
+        if let Some(route) = storage_get(&route_key(indexed_id)) {
+            if route_matches(&route, token_in, token_out)
+                && decode_route_type(&route) == route_type
+            {
+                return Some((indexed_id, route));
+            }
+        }
+    }
+
+    for route_id in 1..=load_u64(ROUTE_COUNT_KEY).min(MAX_ROUTES) {
+        if let Some(route) = storage_get(&route_key(route_id)) {
+            if route_matches(&route, token_in, token_out)
+                && decode_route_type(&route) == route_type
+            {
+                save_u64(&typed_key, route_id);
+                return Some((route_id, route));
+            }
+        }
+    }
+    None
 }
 
 // ============================================================================
@@ -366,8 +445,11 @@ pub fn set_addresses(caller: *const u8, core_addr: *const u8, amm_addr: *const u
     0
 }
 
-/// Register a route (admin only)
-/// Returns: 0=success, 1=not admin, 2=max routes, 3=invalid type, 4=reentrancy
+/// Register a route (admin or bound SporePump only).
+/// For direct AMM routes `secondary_id` is direction metadata:
+/// 1=token A input, 2=token B input, 0=legacy auto-detection.
+/// Returns: 0=success, 1=not authorized, 2=max routes, 3=invalid route,
+/// 4=reentrancy, 5=duplicate route type for token direction.
 pub fn register_route(
     caller: *const u8,
     token_in: *const u8,
@@ -406,20 +488,49 @@ pub fn register_route(
         reentrancy_exit();
         return 2;
     }
-    if route_type > ROUTE_MULTI_HOP {
+    if route_type > ROUTE_MULTI_HOP || ti == to || pool_or_pair_id == 0 {
         reentrancy_exit();
         return 3;
     }
-    if route_type == ROUTE_SPLIT && (split_percent == 0 || split_percent >= 100) {
+    let invalid_shape = match route_type {
+        ROUTE_DIRECT_CLOB => secondary_id != 0 || split_percent != 0,
+        ROUTE_DIRECT_AMM => secondary_id > 2 || split_percent != 0,
+        ROUTE_SPLIT => secondary_id == 0 || split_percent == 0 || split_percent >= 100,
+        ROUTE_MULTI_HOP => secondary_id == 0 || split_percent != 0,
+        _ => true,
+    };
+    if invalid_shape {
         reentrancy_exit();
         return 3;
     }
-    if load_u64(&pair_route_key(&ti, &to)) != 0 {
+
+    // Migrate the per-type index lazily so pre-upgrade route records remain
+    // authoritative and cannot be duplicated after this release.
+    let typed_key = pair_route_type_key(&ti, &to, route_type);
+    let mut existing = load_u64(&typed_key);
+    if existing == 0 {
+        for route_id in 1..=count {
+            if let Some(route) = storage_get(&route_key(route_id)) {
+                if route_matches(&route, &ti, &to) && decode_route_type(&route) == route_type {
+                    existing = route_id;
+                    save_u64(&typed_key, route_id);
+                    break;
+                }
+            }
+        }
+    }
+    if existing != 0 {
         reentrancy_exit();
         return 5;
     }
 
-    let route_id = count + 1;
+    let route_id = match count.checked_add(1) {
+        Some(id) => id,
+        None => {
+            reentrancy_exit();
+            return 2;
+        }
+    };
     let data = encode_route(
         &ti,
         &to,
@@ -435,6 +546,7 @@ pub fn register_route(
 
     // Index by token pair for fast lookup
     save_u64(&pair_route_key(&ti, &to), route_id);
+    save_u64(&typed_key, route_id);
     lichen_sdk::set_return_data(&u64_to_bytes(route_id));
 
     log_info("Route registered");
@@ -466,6 +578,50 @@ pub fn set_route_enabled(caller: *const u8, route_id: u64, enabled: bool) -> u32
     data[90] = if enabled { 1 } else { 0 };
     storage_set(&rk, &data);
     0
+}
+
+/// Quote every enabled direct venue for a token direction and return the
+/// highest executable output. The boolean reports whether any direct route
+/// existed, allowing callers to distinguish "no route" from failed quotes.
+fn select_best_direct_route(
+    trader: &[u8; 32],
+    token_in: &[u8; 32],
+    token_out: &[u8; 32],
+    amount_in: u64,
+) -> (Option<(u64, Vec<u8>, Option<bool>)>, bool) {
+    let mut best: Option<(u64, Vec<u8>, Option<bool>)> = None;
+    let mut best_out = 0u64;
+    let mut found_direct = false;
+    for route_type in [ROUTE_DIRECT_CLOB, ROUTE_DIRECT_AMM] {
+        let (route_id, route) = match load_direct_route_by_type(token_in, token_out, route_type) {
+            Some(route) if decode_route_enabled(&route.1) => route,
+            _ => continue,
+        };
+        found_direct = true;
+        let (quoted_out, direction) = if route_type == ROUTE_DIRECT_CLOB {
+            (
+                quote_clob_swap(trader, token_in, amount_in, decode_route_pool_id(&route))
+                    .unwrap_or(0),
+                None,
+            )
+        } else {
+            let direction = stored_direct_amm_direction(&route).or_else(|| {
+                resolve_amm_leg(decode_route_pool_id(&route), token_in, Some(token_out))
+                    .map(|leg| leg.0)
+            });
+            let quoted = direction
+                .and_then(|is_token_a_in| {
+                    quote_amm_swap(decode_route_pool_id(&route), is_token_a_in, amount_in)
+                })
+                .unwrap_or(0);
+            (quoted, direction)
+        };
+        if quoted_out > best_out {
+            best_out = quoted_out;
+            best = Some((route_id, route, direction));
+        }
+    }
+    (best, found_direct)
 }
 
 /// Execute a smart-routed swap
@@ -513,31 +669,53 @@ pub fn swap(
         return 200;
     }
 
-    // Find best route
-    let route_id = load_u64(&pair_route_key(&ti, &to_addr));
-    if route_id == 0 {
-        reentrancy_exit();
-        return 2;
-    }
-
-    let rk = route_key(route_id);
-    let route_data = match storage_get(&rk) {
-        Some(d) if d.len() >= ROUTE_SIZE => d,
-        _ => {
+    // Compare live quotes when both direct CLOB and AMM routes exist. Split or
+    // multi-hop routes remain deterministic fallbacks when no direct venue is
+    // registered for the token direction.
+    let (best_direct, found_direct) = select_best_direct_route(&t, &ti, &to_addr, amount_in);
+    let (route_id, route_data, selected_amm_direction) = if let Some(best) = best_direct {
+        best
+    } else {
+        if found_direct {
             reentrancy_exit();
-            return 2;
+            return 7;
         }
+        let route_id = load_u64(&pair_route_key(&ti, &to_addr));
+        let route_data = match storage_get(&route_key(route_id)) {
+            Some(data)
+                if route_id != 0
+                    && route_matches(&data, &ti, &to_addr)
+                    && decode_route_enabled(&data) =>
+            {
+                data
+            }
+            _ => {
+                reentrancy_exit();
+                return 2;
+            }
+        };
+        (route_id, route_data, None)
     };
-
-    if !decode_route_enabled(&route_data) {
-        reentrancy_exit();
-        return 2;
-    }
 
     let rtype = decode_route_type(&route_data);
     let pool_id = decode_route_pool_id(&route_data);
     let secondary = decode_route_secondary_id(&route_data);
     let split_pct = decode_route_split_percent(&route_data);
+
+    let swap_id = match load_u64(SWAP_COUNT_KEY).checked_add(1) {
+        Some(id) => id,
+        None => {
+            reentrancy_exit();
+            return 8;
+        }
+    };
+    let new_total_volume = match load_u64(TOTAL_VOLUME_KEY).checked_add(amount_in) {
+        Some(total) => total,
+        None => {
+            reentrancy_exit();
+            return 8;
+        }
+    };
 
     // Execute based on route type
     let amount_out = match rtype {
@@ -551,7 +729,14 @@ pub fn swap(
             }
         }
         ROUTE_DIRECT_AMM => {
-            match execute_amm_swap(&t, amount_in, pool_id, min_amount_out, deadline) {
+            let direction = match selected_amm_direction {
+                Some(direction) => direction,
+                None => {
+                    reentrancy_exit();
+                    return 7;
+                }
+            };
+            match execute_amm_swap(&t, amount_in, pool_id, direction, min_amount_out, deadline) {
                 Some(out) if out > 0 => out,
                 _ => {
                     reentrancy_exit();
@@ -560,14 +745,21 @@ pub fn swap(
             }
         }
         ROUTE_SPLIT => {
-            let leg1_amount = amount_in * split_pct as u64 / 100;
+            let leg1_amount = (amount_in as u128 * split_pct as u128 / 100) as u64;
             let leg2_amount = amount_in - leg1_amount;
             if leg1_amount == 0 || leg2_amount == 0 {
                 reentrancy_exit();
                 return 7;
             }
-            let leg1_min = min_amount_out * split_pct as u64 / 100;
+            let leg1_min = (min_amount_out as u128 * split_pct as u128 / 100) as u64;
             let leg2_min = min_amount_out.saturating_sub(leg1_min);
+            let amm_direction = match resolve_amm_leg(secondary, &ti, Some(&to_addr)) {
+                Some((direction, _)) => direction,
+                None => {
+                    reentrancy_exit();
+                    return 7;
+                }
+            };
             let out1 = match execute_clob_swap(&t, &ti, leg1_amount, leg1_min, deadline, pool_id) {
                 Some(out) if out > 0 => out,
                 _ => {
@@ -575,7 +767,14 @@ pub fn swap(
                     return 7;
                 }
             };
-            let out2 = match execute_amm_swap(&t, leg2_amount, secondary, leg2_min, deadline) {
+            let out2 = match execute_amm_swap(
+                &t,
+                leg2_amount,
+                secondary,
+                amm_direction,
+                leg2_min,
+                deadline,
+            ) {
                 Some(out) if out > 0 => out,
                 _ => {
                     reentrancy_exit();
@@ -591,16 +790,38 @@ pub fn swap(
             }
         }
         ROUTE_MULTI_HOP => {
-            // First hop (no min_out for intermediate hops)
-            let mid_amount = match execute_amm_swap(&t, amount_in, pool_id, 0, deadline) {
-                Some(out) if out > 0 => out,
-                _ => {
+            let (first_direction, intermediate) = match resolve_amm_leg(pool_id, &ti, None) {
+                Some(leg) => leg,
+                None => {
                     reentrancy_exit();
                     return 7;
                 }
             };
+            let second_direction = match resolve_amm_leg(secondary, &intermediate, Some(&to_addr)) {
+                Some((direction, _)) => direction,
+                None => {
+                    reentrancy_exit();
+                    return 7;
+                }
+            };
+            // First hop (no min_out for intermediate hops)
+            let mid_amount =
+                match execute_amm_swap(&t, amount_in, pool_id, first_direction, 0, deadline) {
+                    Some(out) if out > 0 => out,
+                    _ => {
+                        reentrancy_exit();
+                        return 7;
+                    }
+                };
             // Second hop (final leg — apply min_amount_out)
-            match execute_amm_swap(&t, mid_amount, secondary, min_amount_out, deadline) {
+            match execute_amm_swap(
+                &t,
+                mid_amount,
+                secondary,
+                second_direction,
+                min_amount_out,
+                deadline,
+            ) {
                 Some(out) if out > 0 => out,
                 _ => {
                     reentrancy_exit();
@@ -617,17 +838,12 @@ pub fn swap(
     }
 
     // Record swap
-    let swap_count = load_u64(SWAP_COUNT_KEY);
-    let swap_id = swap_count + 1;
     let record = encode_swap_record(&t, amount_in, amount_out, rtype, current_slot, route_id);
     storage_set(&swap_record_key(swap_id), &record);
     save_u64(SWAP_COUNT_KEY, swap_id);
 
     // Track total routed volume
-    save_u64(
-        TOTAL_VOLUME_KEY,
-        load_u64(TOTAL_VOLUME_KEY).saturating_add(amount_in),
-    );
+    save_u64(TOTAL_VOLUME_KEY, new_total_volume);
 
     lichen_sdk::set_return_data(&u64_to_bytes(amount_out));
     log_info("Router swap executed");
@@ -679,7 +895,23 @@ pub fn multi_hop_swap(
         return 200;
     }
 
-    // Read path — each entry is a pool_id (u64)
+    let swap_id = match load_u64(SWAP_COUNT_KEY).checked_add(1) {
+        Some(id) => id,
+        None => {
+            reentrancy_exit();
+            return 8;
+        }
+    };
+    let new_total_volume = match load_u64(TOTAL_VOLUME_KEY).checked_add(amount_in) {
+        Some(total) => total,
+        None => {
+            reentrancy_exit();
+            return 8;
+        }
+    };
+
+    // Read path — each entry is a pool id. The high bit selects token B as
+    // input; an unset high bit selects token A and preserves legacy paths.
     let mut current_amount = amount_in;
     for i in 0..path_count.saturating_sub(1) {
         let offset = (i * 8) as usize;
@@ -690,14 +922,21 @@ pub fn multi_hop_swap(
         unsafe {
             core::ptr::copy_nonoverlapping(path_ptr.add(offset), pool_bytes.as_mut_ptr(), 8);
         }
-        let pool_id = u64::from_le_bytes(pool_bytes);
-        current_amount = match execute_amm_swap(&t, current_amount, pool_id, 0, deadline) {
-            Some(out) if out > 0 => out,
-            _ => {
-                reentrancy_exit();
-                return 7;
-            }
-        };
+        let encoded_pool_id = u64::from_le_bytes(pool_bytes);
+        let is_token_a_in = encoded_pool_id & AMM_TOKEN_B_INPUT_FLAG == 0;
+        let pool_id = encoded_pool_id & !AMM_TOKEN_B_INPUT_FLAG;
+        if pool_id == 0 {
+            reentrancy_exit();
+            return 2;
+        }
+        current_amount =
+            match execute_amm_swap(&t, current_amount, pool_id, is_token_a_in, 0, deadline) {
+                Some(out) if out > 0 => out,
+                _ => {
+                    reentrancy_exit();
+                    return 7;
+                }
+            };
     }
 
     if current_amount < min_out {
@@ -706,8 +945,6 @@ pub fn multi_hop_swap(
     }
 
     // Record
-    let swap_count = load_u64(SWAP_COUNT_KEY);
-    let swap_id = swap_count + 1;
     let record = encode_swap_record(
         &t,
         amount_in,
@@ -720,24 +957,37 @@ pub fn multi_hop_swap(
     save_u64(SWAP_COUNT_KEY, swap_id);
 
     // Track total routed volume
-    save_u64(
-        TOTAL_VOLUME_KEY,
-        load_u64(TOTAL_VOLUME_KEY).saturating_add(amount_in),
-    );
+    save_u64(TOTAL_VOLUME_KEY, new_total_volume);
 
     lichen_sdk::set_return_data(&u64_to_bytes(current_amount));
     reentrancy_exit();
     0
 }
 
-/// Get best route for a token pair
-pub fn get_best_route(token_in: *const u8, token_out: *const u8, _amount: u64) -> u64 {
+/// Get the highest-output executable direct route for a token pair and amount.
+/// An amount of zero retains the metadata-only compatibility lookup.
+pub fn get_best_route(token_in: *const u8, token_out: *const u8, amount: u64) -> u64 {
     let mut ti = [0u8; 32];
     let mut to = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(token_in, ti.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(token_out, to.as_mut_ptr(), 32);
     }
+    if amount > 0 {
+        // The query ABI predates trader-aware quotes. A zero address is used so
+        // self-trade prevention does not make the answer depend on an invented
+        // signer; swap() performs the final quote with the real trader.
+        let quote_trader = [0u8; 32];
+        let (best, found_direct) = select_best_direct_route(&quote_trader, &ti, &to, amount);
+        if let Some((route_id, data, _)) = best {
+            lichen_sdk::set_return_data(&data);
+            return route_id;
+        }
+        if found_direct {
+            return 0;
+        }
+    }
+
     let route_id = load_u64(&pair_route_key(&ti, &to));
     if route_id > 0 {
         if let Some(data) = storage_get(&route_key(route_id)) {
@@ -786,6 +1036,84 @@ fn execute_clob_swap(
     None
 }
 
+fn quote_clob_swap(
+    trader: &[u8; 32],
+    token_in: &[u8; 32],
+    amount_in: u64,
+    pair_id: u64,
+) -> Option<u64> {
+    let core_addr = load_addr(CORE_ADDRESS_KEY);
+    if is_zero(&core_addr) {
+        return None;
+    }
+    let pair = u64_to_bytes(pair_id);
+    let amount = u64_to_bytes(amount_in);
+    let args = lichen_sdk::crosscall::encode_layout_args(&[
+        trader.as_slice(),
+        &pair,
+        token_in.as_slice(),
+        &amount,
+    ])
+    .ok()?;
+    let result = call_contract(CrossCall::new(
+        Address(core_addr),
+        "quote_swap_exact_in",
+        args,
+    ))
+    .ok()?;
+    (result.len() >= 8).then(|| bytes_to_u64(&result))
+}
+
+/// Resolve AMM direction from immutable pool token addresses. `expected_out`
+/// is optional for the first leg of a configured multi-hop route.
+fn resolve_amm_leg(
+    pool_id: u64,
+    token_in: &[u8; 32],
+    expected_out: Option<&[u8; 32]>,
+) -> Option<(bool, [u8; 32])> {
+    let amm_addr = load_addr(AMM_ADDRESS_KEY);
+    if is_zero(&amm_addr) {
+        return None;
+    }
+    let result = call_contract(CrossCall::new(
+        Address(amm_addr),
+        "get_pool_info",
+        u64_to_bytes(pool_id).to_vec(),
+    ))
+    .ok()?;
+    if result.len() < 64 {
+        return None;
+    }
+    let mut token_a = [0u8; 32];
+    let mut token_b = [0u8; 32];
+    token_a.copy_from_slice(&result[..32]);
+    token_b.copy_from_slice(&result[32..64]);
+    let (direction, output) = if *token_in == token_a {
+        (true, token_b)
+    } else if *token_in == token_b {
+        (false, token_a)
+    } else {
+        return None;
+    };
+    if expected_out.is_some_and(|expected| *expected != output) {
+        return None;
+    }
+    Some((direction, output))
+}
+
+fn quote_amm_swap(pool_id: u64, is_token_a_in: bool, amount_in: u64) -> Option<u64> {
+    let amm_addr = load_addr(AMM_ADDRESS_KEY);
+    if is_zero(&amm_addr) {
+        return None;
+    }
+    let pool = u64_to_bytes(pool_id);
+    let direction = [u8::from(is_token_a_in)];
+    let amount = u64_to_bytes(amount_in);
+    let args = lichen_sdk::crosscall::encode_layout_args(&[&pool, &direction, &amount]).ok()?;
+    let result = call_contract(CrossCall::new(Address(amm_addr), "quote_swap", args)).ok()?;
+    (result.len() >= 8).then(|| bytes_to_u64(&result))
+}
+
 /// Execute swap via AMM (dex_amm) — cross-contract call
 /// Uses the shared SDK layout encoder so callers do not hand-maintain ABI blobs.
 fn build_amm_swap_exact_in_args(
@@ -816,6 +1144,7 @@ fn execute_amm_swap(
     trader: &[u8; 32],
     amount_in: u64,
     pool_id: u64,
+    is_token_a_in: bool,
     min_out: u64,
     deadline: u64,
 ) -> Option<u64> {
@@ -824,9 +1153,14 @@ fn execute_amm_swap(
     }
     let amm_addr = load_addr(AMM_ADDRESS_KEY);
     if !is_zero(&amm_addr) {
-        if let Some(args) =
-            build_amm_swap_exact_in_args(trader, pool_id, true, amount_in, min_out, deadline)
-        {
+        if let Some(args) = build_amm_swap_exact_in_args(
+            trader,
+            pool_id,
+            is_token_a_in,
+            amount_in,
+            min_out,
+            deadline,
+        ) {
             let call = CrossCall::new(Address(amm_addr), "swap_exact_in", args).with_value(0);
             if let Ok(result) = call_contract(call) {
                 if result.len() >= 8 {
@@ -1169,6 +1503,13 @@ mod tests {
         );
     }
 
+    fn pool_info_response(token_a: [u8; 32], token_b: [u8; 32]) -> Vec<u8> {
+        let mut response = Vec::with_capacity(64);
+        response.extend_from_slice(&token_a);
+        response.extend_from_slice(&token_b);
+        response
+    }
+
     // --- Initialization ---
 
     #[test]
@@ -1280,7 +1621,7 @@ mod tests {
                 tb.as_ptr(),
                 ROUTE_DIRECT_AMM,
                 1,
-                0,
+                1,
                 0
             ),
             0
@@ -1307,7 +1648,7 @@ mod tests {
                 token_b().as_ptr(),
                 ROUTE_DIRECT_AMM,
                 1,
-                0,
+                1,
                 0,
             ),
             0
@@ -1320,7 +1661,7 @@ mod tests {
                 token_b().as_ptr(),
                 ROUTE_DIRECT_AMM,
                 1,
-                0,
+                1,
                 0,
             ),
             5
@@ -1394,7 +1735,7 @@ mod tests {
                 tb.as_ptr(),
                 ROUTE_DIRECT_AMM,
                 1,
-                0,
+                1,
                 0
             ),
             1
@@ -1425,7 +1766,7 @@ mod tests {
             tb.as_ptr(),
             ROUTE_DIRECT_AMM,
             1,
-            0,
+            1,
             0,
         );
         assert_eq!(set_route_enabled(admin.as_ptr(), 1, false), 0);
@@ -1479,7 +1820,7 @@ mod tests {
             tb.as_ptr(),
             ROUTE_DIRECT_AMM,
             1,
-            0,
+            1,
             0,
         );
         test_mock::set_caller(trader);
@@ -1494,6 +1835,122 @@ mod tests {
     }
 
     #[test]
+    fn test_smart_route_selects_best_live_direct_quote() {
+        let admin = setup();
+        let ta = token_a();
+        let tb = token_b();
+        let trader = [2u8; 32];
+        test_mock::set_slot(100);
+        configure_addresses(admin);
+        assert_eq!(
+            register_route(
+                admin.as_ptr(),
+                ta.as_ptr(),
+                tb.as_ptr(),
+                ROUTE_DIRECT_CLOB,
+                1,
+                0,
+                0,
+            ),
+            0
+        );
+        assert_eq!(
+            register_route(
+                admin.as_ptr(),
+                ta.as_ptr(),
+                tb.as_ptr(),
+                ROUTE_DIRECT_AMM,
+                1,
+                1,
+                0,
+            ),
+            0
+        );
+        test_mock::set_cross_call_responses(Vec::from([
+            u64_to_bytes(800_000).to_vec(),
+            u64_to_bytes(900_000).to_vec(),
+            u64_to_bytes(890_000).to_vec(),
+        ]));
+        test_mock::set_caller(trader);
+        assert_eq!(
+            swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 1_000_000, 0, 0),
+            0
+        );
+        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 890_000);
+        assert_eq!(
+            test_mock::get_last_cross_call().map(|call| call.1),
+            Some("swap_exact_in".into())
+        );
+    }
+
+    #[test]
+    fn test_reverse_amm_route_encodes_token_b_input() {
+        let admin = setup();
+        let ta = token_a();
+        let tb = token_b();
+        let trader = [2u8; 32];
+        configure_addresses(admin);
+        set_swap_output(900_000);
+        assert_eq!(
+            register_route(
+                admin.as_ptr(),
+                tb.as_ptr(),
+                ta.as_ptr(),
+                ROUTE_DIRECT_AMM,
+                1,
+                2,
+                0,
+            ),
+            0
+        );
+        test_mock::set_caller(trader);
+        assert_eq!(
+            swap(trader.as_ptr(), tb.as_ptr(), ta.as_ptr(), 1_000_000, 0, 0),
+            0
+        );
+        let (_, function, args, _) = test_mock::get_last_cross_call().unwrap();
+        assert_eq!(function, "swap_exact_in");
+        assert_eq!(
+            args[47], 0,
+            "reverse route must pass token-B input direction"
+        );
+    }
+
+    #[test]
+    fn test_legacy_amm_route_resolves_direction_from_pool_tokens() {
+        let admin = setup();
+        let ta = token_a();
+        let tb = token_b();
+        let trader = [2u8; 32];
+        configure_addresses(admin);
+        assert_eq!(
+            register_route(
+                admin.as_ptr(),
+                tb.as_ptr(),
+                ta.as_ptr(),
+                ROUTE_DIRECT_AMM,
+                1,
+                0,
+                0,
+            ),
+            0
+        );
+        test_mock::set_cross_call_responses(Vec::from([
+            pool_info_response(ta, tb),
+            u64_to_bytes(900_000).to_vec(),
+            u64_to_bytes(900_000).to_vec(),
+        ]));
+        test_mock::set_caller(trader);
+        assert_eq!(
+            swap(trader.as_ptr(), tb.as_ptr(), ta.as_ptr(), 1_000_000, 0, 0),
+            0
+        );
+        let (_, function, args, _) = test_mock::get_last_cross_call().unwrap();
+        assert_eq!(function, "swap_exact_in");
+        assert_eq!(args[47], 0);
+    }
+
+    #[test]
     fn test_swap_split_route() {
         let admin = setup();
         let ta = token_a();
@@ -1501,7 +1958,11 @@ mod tests {
         let trader = [2u8; 32];
         test_mock::set_slot(100);
         configure_addresses(admin);
-        set_swap_outputs(&[550_000, 350_000]);
+        test_mock::set_cross_call_responses(Vec::from([
+            pool_info_response(ta, tb),
+            u64_to_bytes(550_000).to_vec(),
+            u64_to_bytes(350_000).to_vec(),
+        ]));
         register_route(
             admin.as_ptr(),
             ta.as_ptr(),
@@ -1530,7 +1991,12 @@ mod tests {
         let trader = [2u8; 32];
         test_mock::set_slot(100);
         configure_addresses(admin);
-        set_swap_outputs(&[900_000, 800_000]);
+        test_mock::set_cross_call_responses(Vec::from([
+            pool_info_response(ta, token_c()),
+            pool_info_response(token_c(), tb),
+            u64_to_bytes(900_000).to_vec(),
+            u64_to_bytes(800_000).to_vec(),
+        ]));
         register_route(
             admin.as_ptr(),
             ta.as_ptr(),
@@ -1577,7 +2043,7 @@ mod tests {
             tb.as_ptr(),
             ROUTE_DIRECT_AMM,
             1,
-            0,
+            1,
             0,
         );
         emergency_pause(admin.as_ptr());
@@ -1602,7 +2068,7 @@ mod tests {
             tb.as_ptr(),
             ROUTE_DIRECT_AMM,
             1,
-            0,
+            1,
             0,
         );
         assert_eq!(
@@ -1626,7 +2092,7 @@ mod tests {
             tb.as_ptr(),
             ROUTE_DIRECT_AMM,
             1,
-            0,
+            1,
             0,
         );
         // min_out = input amount (impossible with fees)
@@ -1656,7 +2122,7 @@ mod tests {
             tb.as_ptr(),
             ROUTE_DIRECT_AMM,
             1,
-            0,
+            1,
             0,
         );
         assert_eq!(swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 0, 0, 0), 6);
@@ -1677,7 +2143,7 @@ mod tests {
             tb.as_ptr(),
             ROUTE_DIRECT_AMM,
             1,
-            0,
+            1,
             0,
         );
         set_route_enabled(admin.as_ptr(), 1, false);
@@ -1705,7 +2171,7 @@ mod tests {
             tb.as_ptr(),
             ROUTE_DIRECT_AMM,
             1,
-            0,
+            1,
             0,
         );
         test_mock::set_caller(trader);
@@ -1721,15 +2187,51 @@ mod tests {
         let admin = setup();
         let ta = token_a();
         let tb = token_b();
+        configure_addresses(admin);
         register_route(
             admin.as_ptr(),
             ta.as_ptr(),
             tb.as_ptr(),
             ROUTE_DIRECT_AMM,
             1,
-            0,
+            1,
             0,
         );
+        set_swap_output(750_000);
+        assert_eq!(get_best_route(ta.as_ptr(), tb.as_ptr(), 1_000_000), 1);
+    }
+
+    #[test]
+    fn test_get_best_route_uses_live_direct_quotes() {
+        let admin = setup();
+        let ta = token_a();
+        let tb = token_b();
+        configure_addresses(admin);
+        assert_eq!(
+            register_route(
+                admin.as_ptr(),
+                ta.as_ptr(),
+                tb.as_ptr(),
+                ROUTE_DIRECT_CLOB,
+                7,
+                0,
+                0,
+            ),
+            0
+        );
+        assert_eq!(
+            register_route(
+                admin.as_ptr(),
+                ta.as_ptr(),
+                tb.as_ptr(),
+                ROUTE_DIRECT_AMM,
+                9,
+                1,
+                0,
+            ),
+            0
+        );
+        set_swap_outputs(&[900_000, 850_000]);
         assert_eq!(get_best_route(ta.as_ptr(), tb.as_ptr(), 1_000_000), 1);
     }
 
@@ -1752,7 +2254,7 @@ mod tests {
             tb.as_ptr(),
             ROUTE_DIRECT_AMM,
             1,
-            0,
+            1,
             0,
         );
         assert_eq!(get_route_info(1), 1);

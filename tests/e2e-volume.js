@@ -27,7 +27,12 @@ const pq = require('./helpers/pq-node');
 const { loadFundedWallets, findGenesisAdminKeypair } = require('./helpers/funded-wallets');
 const { waitForSuccessfulTransaction } = require('./helpers/tx-receipt');
 const { encodeNativeTransactionBase64, signNativeTransaction } = require('./helpers/tx-wire');
-const { setupDexEnvironment, refreshMarginMarkPrice } = require('./helpers/dex-setup');
+const {
+    setupDexEnvironment,
+    refreshMarginMarkPrice,
+    getTokenBalanceRaw,
+    getTokenAllowanceRaw,
+} = require('./helpers/dex-setup');
 
 let WebSocket;
 try { WebSocket = require('ws'); }
@@ -38,6 +43,8 @@ const REST_BASE = `${RPC_URL}/api/v1`;
 const WS_URL = process.env.LICHEN_WS || RPC_URL.replace('https://', 'wss://').replace('http://', 'ws://').replace(':8899', ':8900');
 const PRICE_SCALE = 1_000_000_000;  // 1 LICN = 1e9 spores
 const PM_SCALE = 1_000_000_000;     // 1 lUSD = 10^9 base units
+const DIAGNOSTIC_LOG_LIMIT = 4;
+const DIAGNOSTIC_LOG_CHAR_LIMIT = 256;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Test harness
@@ -112,6 +119,16 @@ async function restPost(path, body) {
     return res.json();
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function boundedSimulationLogs(logs) {
+    if (!Array.isArray(logs)) return '';
+    return logs
+        .slice(-DIAGNOSTIC_LOG_LIMIT)
+        .map(log => String(log)
+            .replace(/[\u0000-\u001f\u007f]/g, ' ')
+            .slice(0, DIAGNOSTIC_LOG_CHAR_LIMIT))
+        .join(' | ');
+}
 
 function apiRows(payload, nestedKey = null) {
     if (Array.isArray(payload)) return payload;
@@ -209,7 +226,7 @@ function encodeMsg(instructions, blockhash, signer) {
         parts.push(d);
     }
     parts.push(hexToBytes(blockhash));
-    parts.push(new Uint8Array([0x00]));  // compute_budget: None
+    parts.push(new Uint8Array([0x00])); // compute_budget: None
     parts.push(new Uint8Array([0x00]));  // compute_unit_price: None
     const total = parts.reduce((s, a) => s + a.length, 0);
     const out = new Uint8Array(total); let off = 0;
@@ -217,7 +234,7 @@ function encodeMsg(instructions, blockhash, signer) {
     return out;
 }
 
-async function sendTx(keypair, instructions) {
+async function sendTx(keypair, instructions, options = {}) {
     const bhRes = await rpc('getRecentBlockhash');
     const bh = typeof bhRes === 'string' ? bhRes : bhRes.blockhash;
     const nix = instructions.map(ix => ({
@@ -231,6 +248,20 @@ async function sendTx(keypair, instructions) {
         [pqSig],
         { instructions: nix, blockhash: bh },
     );
+    if (options.simulateFirst) {
+        const sim = await rpc('simulateTransaction', [b64]);
+        if (!sim?.success) {
+            const logs = boundedSimulationLogs(sim?.logs);
+            const diagnostics = `${sim?.error || 'transaction simulation failed'}`
+                + `; returnCode=${sim?.returnCode ?? 'none'}`
+                + `; compute=${sim?.computeUsed ?? 'unknown'}/${sim?.computeBudget ?? 'unknown'}`
+                + `${logs ? `; logs=${logs}` : ''}`;
+            throw new Error(diagnostics);
+        }
+        console.log(
+            `    Contract simulation passed: compute=${sim.computeUsed}/${sim.computeBudget}`,
+        );
+    }
     const txSig = await rpc('sendTransaction', [b64]);
     await waitForSuccessfulTransaction(rpc, txSig, 60_000, 250);
     return txSig;
@@ -371,19 +402,29 @@ async function discoverContracts() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // Helper: Place order and wait
 // ═══════════════════════════════════════════════════════════════════════════════
-async function placeOrder(wallet, pairId, side, price, qty, label = '') {
+async function placeOrder(wallet, pairId, side, price, qty, label = '', options = {}) {
     const args = buildPlaceOrder(wallet.address, pairId, side, 'limit', price, qty);
     try {
         const pair = (await rest(`/pairs/${pairId}`))?.data || {};
         const base = String(pair.baseSymbol || pair.base || '').toUpperCase();
         const quote = String(pair.quoteSymbol || pair.quote || '').toUpperCase();
-        const notional = Number((BigInt(price) * BigInt(qty) + BigInt(PRICE_SCALE - 1)) / BigInt(PRICE_SCALE));
+        const notional = BigInt(price) * BigInt(qty) / BigInt(PRICE_SCALE);
         const takerFeeBps = BigInt(Number(pair.takerFeeBps ?? pair.taker_fee_bps ?? 0));
-        const takerFee = Number((BigInt(notional) * takerFeeBps) / 10_000n) || 1;
+        const rawLotSize = Number(pair.lotSize ?? pair.lot_size ?? 1);
+        const lotSize = BigInt(Math.max(
+            1,
+            Math.round(rawLotSize >= 1 ? rawLotSize : rawLotSize * PRICE_SCALE),
+        ));
+        const proportionalFee = notional * takerFeeBps / 10_000n;
+        const buyEscrow = notional + proportionalFee + BigInt(qty) / lotSize;
         const value = side === 'sell' && base === 'LICN'
             ? qty
-            : (side === 'buy' && quote === 'LICN' ? notional + takerFee : 0);
-        const sig = await sendTx(wallet, [contractIx(wallet.address, CONTRACTS.dex_core, args, value)]);
+            : (side === 'buy' && quote === 'LICN' ? Number(buyEscrow) : 0);
+        const sig = await sendTx(
+            wallet,
+            [contractIx(wallet.address, CONTRACTS.dex_core, args, value)],
+            options,
+        );
         assert(typeof sig === 'string' && sig.length > 0, `${label || side} order placed: ${sig.slice(0, 16)}...`);
         return sig;
     } catch (e) {
@@ -1102,6 +1143,24 @@ async function runTests() {
     // Connect WS, subscribe to DEX channels, verify events arrive
     // ══════════════════════════════════════════════════════════════════════
     section('Phase 11: WebSocket Live Events');
+    try {
+        const refreshed = await refreshMarginMarkPrice(
+            RPC_URL,
+            CONTRACTS,
+            findGenesisAdminKeypair(),
+            1,
+            Math.round(0.106 * PRICE_SCALE),
+        );
+        assert(
+            typeof refreshed.signature === 'string'
+                && refreshed.validatorCount >= 2
+                && refreshed.dexBandSourceSlot === refreshed.sourceSlot,
+            `DEX pair 1 price band refreshed by ${refreshed.validatorCount}`
+            + ` validator attestations at slot ${refreshed.dexBandSourceSlot}`,
+        );
+    } catch (e) {
+        assert(false, `DEX price-band refresh failed: ${e.message}`);
+    }
     if (WebSocket) {
         const wsResult = await new Promise((resolve) => {
             const ws = new WebSocket(WS_URL);
@@ -1130,7 +1189,43 @@ async function runTests() {
                     const qty = Math.round(2 * PRICE_SCALE);
                     const sell = await placeOrder(eve, 1, 'sell', price, qty, 'WS trigger: Eve sell');
                     await sleep(500);
-                    const buy = await placeOrder(dave, 1, 'buy', price, qty, 'WS trigger: Dave buy');
+                    const wsPair = (await rest('/pairs/1'))?.data || {};
+                    const wsNotional = BigInt(price) * BigInt(qty) / BigInt(PRICE_SCALE);
+                    const wsTakerFee = wsNotional
+                        * BigInt(Number(wsPair.takerFeeBps ?? wsPair.taker_fee_bps ?? 0))
+                        / 10_000n;
+                    const rawWsLotSize = Number(wsPair.lotSize ?? wsPair.lot_size ?? 1);
+                    const wsLotSize = BigInt(Math.max(
+                        1,
+                        Math.round(rawWsLotSize >= 1
+                            ? rawWsLotSize
+                            : rawWsLotSize * PRICE_SCALE),
+                    ));
+                    const requiredEscrow = wsNotional + wsTakerFee + BigInt(qty) / wsLotSize;
+                    const [lusdBalance, lusdAllowance] = await Promise.all([
+                        getTokenBalanceRaw(RPC_URL, CONTRACTS.lusd_token, dave.address),
+                        getTokenAllowanceRaw(
+                            RPC_URL,
+                            CONTRACTS.lusd_token,
+                            dave.address,
+                            CONTRACTS.dex_core,
+                        ),
+                    ]);
+                    console.log(
+                        `    WS Dave lUSD escrow preflight: required=${requiredEscrow}`
+                        + ` balance=${lusdBalance} allowance=${lusdAllowance}`,
+                    );
+                    assert(lusdBalance >= requiredEscrow, 'WS Dave has sufficient lUSD balance');
+                    assert(lusdAllowance >= requiredEscrow, 'WS Dave has sufficient DEX lUSD allowance');
+                    const buy = await placeOrder(
+                        dave,
+                        1,
+                        'buy',
+                        price,
+                        qty,
+                        'WS trigger: Dave buy',
+                        { simulateFirst: true },
+                    );
                     if (!sell || !buy) {
                         finish('failed to submit matched WS trigger trade');
                         return;

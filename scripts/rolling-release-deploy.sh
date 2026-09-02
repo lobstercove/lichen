@@ -7,6 +7,7 @@ set -euo pipefail
 #   LICHEN_RELEASE_TAG=vX.Y.Z bash scripts/rolling-release-deploy.sh testnet
 #   LICHEN_RELEASE_TAG=vX.Y.Z bash scripts/rolling-release-deploy.sh mainnet
 #   LICHEN_RELEASE_TAG=vX.Y.Z LICHEN_COORDINATED_RELEASE=1 bash scripts/rolling-release-deploy.sh testnet
+#   LICHEN_RELEASE_TAG=vX.Y.Z LICHEN_COORDINATED_RELEASE=1 LICHEN_REPAIR_TESTNET_DEX_CONTRACTS=1 bash scripts/rolling-release-deploy.sh testnet
 #   LICHEN_RELEASE_TAG=vX.Y.Z LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh testnet
 #
 # This script installs an exact GitHub Release archive on each validator. Its
@@ -57,6 +58,7 @@ ARTIFACT_DIR="${LICHEN_RELEASE_ARTIFACT_DIR:-/tmp/lichen-rolling-${NETWORK}-${RE
 RELEASE_SIGNING_ADDRESS="${LICHEN_RELEASE_SIGNING_ADDRESS:-8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk}"
 REMOTE_RELEASE_DOWNLOAD="${LICHEN_REMOTE_RELEASE_DOWNLOAD:-auto}"
 COORDINATED_RELEASE="${LICHEN_COORDINATED_RELEASE:-0}"
+REPAIR_TESTNET_DEX_CONTRACTS="${LICHEN_REPAIR_TESTNET_DEX_CONTRACTS:-0}"
 MOSS_SERVICE="lichen-moss-provider.service"
 MOSS_HEALTH_URL="${LICHEN_MOSS_HEALTH_URL:-http://127.0.0.1:9120/readyz}"
 
@@ -67,6 +69,18 @@ case "$COORDINATED_RELEASE" in
     exit 2
     ;;
 esac
+case "$REPAIR_TESTNET_DEX_CONTRACTS" in
+  0|1) ;;
+  *)
+    echo "LICHEN_REPAIR_TESTNET_DEX_CONTRACTS must be 0 or 1." >&2
+    exit 2
+    ;;
+esac
+if [ "$REPAIR_TESTNET_DEX_CONTRACTS" = "1" ] &&
+  { [ "$NETWORK" != "testnet" ] || [ "$COORDINATED_RELEASE" != "1" ]; }; then
+  echo "DEX contract repair is testnet-only and requires LICHEN_COORDINATED_RELEASE=1." >&2
+  exit 2
+fi
 
 is_consensus_critical_release() {
   if [ "${LICHEN_FORCE_CONSENSUS_CRITICAL:-0}" = "1" ]; then
@@ -514,7 +528,7 @@ REMOTE
   else
     scp_to "$ARTIFACT_DIR/$archive" "$host" "/tmp/$archive"
   fi
-  ssh_run_script "$host" "NETWORK='$NETWORK' SERVICE='$SERVICE' CUSTODY_SERVICE='$CUSTODY_SERVICE' MOSS_SERVICE='$MOSS_SERVICE' RELEASE_TAG='$RELEASE_TAG' ARCHIVE='/tmp/$archive' EXPECTED_ROOT='$root' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_ARCHIVE_V2_SHA='$expected_archive_v2_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha' EXPECTED_MOSS_SHA='$expected_moss_sha' EXPECTED_MOSS_UNIT_SHA='$expected_moss_unit_sha' DEFER_START='$COORDINATED_RELEASE'" <<'REMOTE'
+  ssh_run_script "$host" "NETWORK='$NETWORK' SERVICE='$SERVICE' CUSTODY_SERVICE='$CUSTODY_SERVICE' MOSS_SERVICE='$MOSS_SERVICE' RELEASE_TAG='$RELEASE_TAG' ARCHIVE='/tmp/$archive' EXPECTED_ROOT='$root' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_ARCHIVE_V2_SHA='$expected_archive_v2_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha' EXPECTED_MOSS_SHA='$expected_moss_sha' EXPECTED_MOSS_UNIT_SHA='$expected_moss_unit_sha' DEFER_START='$COORDINATED_RELEASE' DEX_REPAIR='$REPAIR_TESTNET_DEX_CONTRACTS'" <<'REMOTE'
 set -euo pipefail
 sudo() { command sudo -n "$@" </dev/null; }
 tmp="$(mktemp -d)"
@@ -711,6 +725,57 @@ stop_optional_service lichen-faucet.service "$faucet_service_required"
 stop_optional_service "$MOSS_SERVICE" "$moss_service_required"
 stop_service_unit "$SERVICE"
 
+if [ "$DEX_REPAIR" = "1" ]; then
+  source_contracts="$root/contracts"
+  wasm_count="$(find "$source_contracts" -mindepth 2 -maxdepth 2 -type f -name '*.wasm' | wc -l)"
+  abi_count="$(find "$source_contracts" -mindepth 2 -maxdepth 2 -type f -name 'abi.json' | wc -l)"
+  if [ "$wasm_count" -eq 0 ] || [ "$abi_count" -ne "$wasm_count" ]; then
+    echo "Signed release contract bundle is incomplete: wasm=${wasm_count} abi=${abi_count}."
+    exit 1
+  fi
+
+  bundle_digest() {
+    local directory="$1"
+    sudo -n find "$directory" -type f \( -name '*.wasm' -o -name 'abi.json' \) -printf '%P\n' |
+      LC_ALL=C sort |
+      while IFS= read -r artifact; do
+        artifact_sha="$(sudo -n sha256sum "$directory/$artifact" | awk '{print $1}')"
+        printf '%s %s\n' "$artifact" "$artifact_sha"
+      done |
+      sha256sum |
+      awk '{print $1}'
+  }
+
+  release_root="/var/lib/lichen/releases/${RELEASE_TAG}"
+  release_contracts="$release_root/contracts"
+  source_digest="$(bundle_digest "$source_contracts")"
+  if sudo -n test -e "$release_contracts"; then
+    installed_digest="$(bundle_digest "$release_contracts")"
+    if [ "$installed_digest" != "$source_digest" ]; then
+      echo "Existing immutable release contract bundle differs for ${RELEASE_TAG}."
+      exit 1
+    fi
+  else
+    staged_contracts="${release_contracts}.staging-${backup_suffix}"
+    if sudo -n test -e "$staged_contracts"; then
+      echo "Refusing to reuse stale contract staging path: ${staged_contracts}"
+      exit 1
+    fi
+    sudo -n install -d -m 755 "$release_root"
+    sudo -n cp -a "$source_contracts" "$staged_contracts"
+    sudo -n chown -R root:root "$staged_contracts"
+    sudo -n find "$staged_contracts" -type d -exec chmod 755 {} +
+    sudo -n find "$staged_contracts" -type f -exec chmod 644 {} +
+    staged_digest="$(bundle_digest "$staged_contracts")"
+    if [ "$staged_digest" != "$source_digest" ]; then
+      echo "Staged release contract bundle hash mismatch."
+      exit 1
+    fi
+    sudo -n mv "$staged_contracts" "$release_contracts"
+  fi
+  echo "Installed signed contract bundle ${RELEASE_TAG}: ${source_digest}"
+fi
+
 install_staged_bin() {
   local bin="$1"
   local expected_sha="${2:-required}"
@@ -809,6 +874,41 @@ for _ in $(seq 1 30); do
 done
 echo "${SERVICE} did not become active during coordinated start."
 exit 1
+REMOTE
+}
+
+repair_testnet_dex_contracts_host() {
+  local host="$1"
+  echo "Repair preserved Testnet DEX contracts on ${host}"
+  ssh_run "$host" "SERVICE='$SERVICE' RELEASE_TAG='$RELEASE_TAG' bash -s" <<'REMOTE'
+set -euo pipefail
+sudo() { command sudo -n "$@" </dev/null; }
+if systemctl is-active --quiet "$SERVICE"; then
+  echo "Refusing DEX repair while ${SERVICE} is active."
+  exit 1
+fi
+
+state_dir="/var/lib/lichen/state-testnet"
+contracts_dir="/var/lib/lichen/releases/${RELEASE_TAG}/contracts"
+if ! sudo -n test -d "$state_dir" || ! sudo -n test -d "$contracts_dir"; then
+  echo "DEX repair requires preserved Testnet state and the installed signed contract bundle."
+  exit 1
+fi
+
+repair_args=(
+  --repair-testnet-dex-contracts
+  --network testnet
+  --data-dir "$state_dir"
+  --contracts-dir "$contracts_dir"
+  --cache-size-mb 256
+)
+sudo -n -u lichen /usr/local/bin/lichen-validator "${repair_args[@]}" --dry-run
+sudo -n -u lichen /usr/local/bin/lichen-validator "${repair_args[@]}" \
+  --confirm repair-dex-contracts:testnet:v0.5.270
+postcheck="$(sudo -n -u lichen /usr/local/bin/lichen-validator "${repair_args[@]}" --dry-run)"
+printf '%s\n' "$postcheck"
+printf '%s\n' "$postcheck" | grep -Fxq 'contracts=17'
+printf '%s\n' "$postcheck" | grep -Fxq 'changed=0'
 REMOTE
 }
 
@@ -1221,6 +1321,12 @@ if [ "$COORDINATED_RELEASE" = "1" ]; then
   for host in $HOSTS; do
     install_host "$host"
   done
+  if [ "$REPAIR_TESTNET_DEX_CONTRACTS" = "1" ]; then
+    echo "Coordinated mode: all validators are stopped; applying the signed Testnet DEX code/ABI repair."
+    for host in $HOSTS; do
+      repair_testnet_dex_contracts_host "$host"
+    done
+  fi
   echo "Coordinated mode: all hosts staged and stopped; starting the complete fleet."
   for host in $HOSTS; do
     start_coordinated_validator "$host"

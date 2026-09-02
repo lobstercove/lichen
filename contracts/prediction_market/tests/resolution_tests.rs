@@ -979,12 +979,49 @@ fn test_voided_reclaim_with_mint_position() {
     lichen_sdk::test_mock::set_caller(admin);
     dao_void(admin.as_ptr(), mid);
 
-    // Reclaim should return the sum of the cost basis across both outcomes.
+    // A complete set is backed by one collateral deposit, so its cost basis is
+    // allocated across outcomes and refunded exactly once.
     lichen_sdk::test_mock::set_caller(t);
     let result = reclaim_collateral(t.as_ptr(), mid);
     assert_eq!(result, 1, "Reclaim should succeed");
     let refund = lichen_sdk::bytes_to_u64(&lichen_sdk::test_mock::get_return_data());
-    assert_eq!(refund, 2 * TEN_LUSD, "Mint refund = sum of cost_basis");
+    assert_eq!(
+        refund, TEN_LUSD,
+        "Mint refund must equal deposited collateral"
+    );
+}
+
+#[test]
+fn test_voided_refunds_are_independent_of_lp_claim_order() {
+    fn run(lp_first: bool) -> (u64, u64) {
+        let (lp, mid) = setup_large_market();
+        let trader = [2u8; 32];
+        lichen_sdk::test_mock::set_caller(trader);
+        assert!(buy_shares(trader.as_ptr(), mid, 0, FIVE_LUSD) > 0);
+        lichen_sdk::test_mock::set_caller(lp);
+        assert_eq!(dao_void(lp.as_ptr(), mid), 1);
+
+        let claim = |account: [u8; 32]| {
+            lichen_sdk::test_mock::set_caller(account);
+            assert_eq!(reclaim_collateral(account.as_ptr(), mid), 1);
+            lichen_sdk::bytes_to_u64(&lichen_sdk::test_mock::get_return_data())
+        };
+        if lp_first {
+            let lp_refund = claim(lp);
+            let trader_refund = claim(trader);
+            (lp_refund, trader_refund)
+        } else {
+            let trader_refund = claim(trader);
+            let lp_refund = claim(lp);
+            (lp_refund, trader_refund)
+        }
+    }
+
+    let forward = run(true);
+    let reverse = run(false);
+    assert_eq!(forward, reverse);
+    assert_eq!(forward.0, HUNDRED_LUSD);
+    assert_eq!(forward.1, FIVE_LUSD);
 }
 
 // ============================================================================
