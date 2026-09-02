@@ -79,6 +79,19 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.269 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.269</span>
+                    <span class="changelog-date">September 2, 2026</span>
+                </div>
+                <h3>Load-tolerant Archive V2 finality gate</h3>
+                <ul>
+                    <li>Publishes the authoritative finalized frontier in the always-available health response and samples all four validator frontiers concurrently with bounded retries.</li>
+                    <li>Retains the strict finalized-spread and tip-lag requirements; immutable v0.5.268 failed closed before release artifacts or deployment.</li>
+                </ul>
+            </article>
+
             <!-- ============ v0.5.268 ============ -->
             <article class="changelog-entry">
                 <div class="changelog-header">

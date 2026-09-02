@@ -150,10 +150,13 @@ const finalizedSpreadFunction = finalizedSpreadStart >= 0 && finalizedSpreadEnd 
 const finalizedSpreadCalls = harness.match(/^\s{4}wait_for_cluster_finalized_spread /gm) || [];
 assert(
     harness.includes('rpc_query_params "$1" "getSlot" \'["finalized"]\'')
+        && harness.includes('get_health_frontier_with_retry() {')
+        && finalizedSpreadFunction.includes('get_health_frontier_with_retry')
+        && finalizedSpreadFunction.includes('probe_pids[validator_num]=$!')
         && finalizedSpreadFunction.includes('finalized_spread <= max_spread')
         && finalizedSpreadFunction.includes('maximum_lag <= max_spread')
         && finalizedSpreadCalls.length >= 4,
-    'every Archive V2 stop path converges authoritative finalized frontiers and tip lag, not only processed RPC tips',
+    'every Archive V2 stop path concurrently converges health-published authoritative finalized frontiers and tip lag',
 );
 assert(
     harness.includes('managed process ${managed_pid} exited while waiting for cluster readiness')

@@ -5,6 +5,24 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.269] - 2026-09-02
+
+### Fixed
+
+- Publish the validator's authoritative finalized frontier in `getHealth`,
+  using the same live finality tracker or durable fallback already exposed by
+  `getSlot("finalized")`.
+- Sample all four validators' processed and finalized frontiers concurrently
+  with bounded retries in the Archive V2 release gate. This prevents one
+  transiently starved RPC from consuming the serial polling window while
+  retaining the exact finalized-spread and tip-lag requirements.
+
+### Safety
+
+- Immutable `v0.5.268` failed closed in both Archive V2 workflow attempts
+  before platform artifacts or deployment. The validators were not mutated,
+  and the tag is not rerun or rewritten.
+
 ## [0.5.268] - 2026-09-02
 
 ### Fixed
