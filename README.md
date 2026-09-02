@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Candidate release line:** `v0.5.270`; the current signed testnet release is
+**Candidate release line:** `v0.5.271`; the current signed testnet release is
 `v0.5.265`. Official installable artifacts are the published
 GitHub release archives whose checksums, detached ML-DSA signature, release
 trust anchor, and provenance attestations all verify. The candidate adds the
@@ -15,6 +15,13 @@ coherent hot-to-Archive-V2 checkpoint path, certificate-normalized public
 history, fail-closed role bootstrap, and signed range-bound retirement tooling
 needed to move an existing network fully onto Archive V2. Treat those changes
 as unreleased until the exact tag, signature, provenance, and release gates pass.
+
+The `v0.5.271` candidate also accepts the legacy deployed contract ABI field
+`name` while continuing to serialize the canonical `contract` field. Its
+coordinated preserved-chain repair targets the real validator `--db-path`, and
+its bounded service stop verifies that the complete systemd control group is
+empty before installing a signed binary. These compatibility changes preserve
+the existing Testnet chain and do not authorize a reset or state copy.
 
 **Network status:** the public network is testnet. Mainnet has not launched and
 is not approved. The current 200 GB validator fleet is not approved for mainnet

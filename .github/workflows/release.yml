@@ -156,7 +156,6 @@ jobs:
 
   contract-bundle:
     name: Test and build genesis contract bundle
-    needs: release-quality-gate
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -193,7 +192,6 @@ jobs:
 
   archive-parity-local-gate:
     name: Four-validator hot/cold archive parity gate
-    needs: release-quality-gate
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -238,7 +236,6 @@ jobs:
 
   compiler-sandbox-gate:
     name: Compiler sandbox non-root language gate
-    needs: release-quality-gate
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -253,7 +250,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.target }}
-    needs: [contract-bundle, archive-parity-local-gate, compiler-sandbox-gate]
+    needs: [contract-bundle, compiler-sandbox-gate]
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -426,7 +423,9 @@ jobs:
 
   checksums:
     name: Generate SHA256SUMS
-    needs: build
+    # Independent hard gates start together; checksums remain impossible until
+    # quality, Archive V2 parity, and every platform build have all passed.
+    needs: [release-quality-gate, archive-parity-local-gate, build]
     runs-on: ubuntu-latest
     permissions:
       contents: read

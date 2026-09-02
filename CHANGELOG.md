@@ -5,6 +5,45 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.271] - 2026-09-02
+
+### Fixed
+
+- Accept the legacy deployed contract ABI key `name` when decoding preserved
+  contract accounts while continuing to serialize the canonical `contract`
+  key. This restores backward compatibility without changing canonical output.
+- Target the validator's real `--db-path` during the guarded Testnet DEX
+  contract repair. The repair still dry-runs first, requires an exact
+  version-bound confirmation, and proves `contracts=17` and `changed=0` before
+  any validator starts.
+- Make coordinated service shutdown nonblocking and bounded, verify the entire
+  systemd control group is empty, attempt a control-group SIGKILL after the
+  grace period, and fail closed if an uninterruptible process remains.
+- Start independent signed-release gates in parallel while retaining the
+  quality, Archive V2 parity, contract, compiler, and all-platform build gates
+  as mandatory checksum and release prerequisites.
+
+### Safety
+
+- Signed `v0.5.270` passed its complete release matrix and produced verified
+  artifacts, but its preserved-chain deployment stopped before repair or
+  restart when the deployment command used the wrong state-path flag and the
+  real Testnet database exposed the legacy ABI key. All four validators were
+  left stopped, their own state/WAL/identities and Archive V2 inputs were
+  preserved, and the signed `v0.5.265` rollback anchors remain available.
+- No chain reset, cross-validator RocksDB copy, legacy-history deletion, R2
+  deletion, or locally built production binary is authorized by this release.
+
+### Verified
+
+- A production-shaped core regression decodes the legacy `name` ABI and proves
+  canonical reserialization. The guarded repair regression loads that same
+  shape, updates code and ABI, and proves owner and storage preservation.
+- The complete `v0.5.270` four-validator DEX, AMM, CLOB, prediction,
+  governance, launchpad, outage/restart, and Archive V2 evidence remains valid
+  for unchanged code. The `v0.5.271` release must additionally pass its signed
+  tag gates and exact live-fleet acceptance before it is declared deployed.
+
 ## [0.5.270] - 2026-09-02
 
 ### Fixed
