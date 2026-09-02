@@ -170,6 +170,7 @@ docs/audits/*
 !docs/audits/V0.5.266_PRODUCTION_READINESS_2026-09-01.md
 !docs/audits/V0.5.267_PRODUCTION_READINESS_2026-09-01.md
 !docs/audits/V0.5.269_PRODUCTION_READINESS_2026-09-02.md
+!docs/audits/V0.5.271_PRODUCTION_READINESS_2026-09-02.md
 !docs/deployment/
 docs/deployment/*
 !docs/deployment/ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md
@@ -177,6 +178,7 @@ docs/deployment/*
 !docs/deployment/STORAGE_PHYSICAL_AND_CODE_AUDIT_2026-07-23.md
 !docs/deployment/ARCHIVE_V2_RELEASE_READINESS_2026-07-27.md
 !docs/deployment/ARCHIVE_V2_ACTIVATION_CADENCE_AND_VALIDATOR_LIVENESS_PLAN_2026-08-18.md
+!docs/deployment/V0_5_270_TESTNET_DEPLOYMENT_INCIDENT_2026-09-02.md
 !docs/deployment/LICHENAUCTION_V3_MIGRATION.md
 infra/
 internal-docs/

@@ -196,7 +196,7 @@ pub struct ContractAbi {
     /// ABI schema version
     pub version: String,
     /// Contract name
-    #[serde(rename = "contract")]
+    #[serde(rename = "contract", alias = "name")]
     pub name: String,
     /// Contract template/standard (e.g., "mt20", "mt721", "custom")
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -4421,6 +4421,29 @@ mod tests {
         assert_eq!(contract.lifecycle_status, ContractLifecycleStatus::Active);
         assert_eq!(contract.lifecycle_updated_slot, 0);
         assert_eq!(contract.lifecycle_restriction_id, None);
+    }
+
+    #[test]
+    fn test_contract_account_accepts_legacy_abi_name_and_serializes_canonical_contract() {
+        let json = serde_json::json!({
+            "code": [0, 0x61, 0x73, 0x6D],
+            "storage": {},
+            "owner": vec![1u8; 32],
+            "code_hash": vec![0u8; 32],
+            "abi": {
+                "version": "1.0",
+                "name": "legacy_contract",
+                "functions": []
+            },
+            "version": 1
+        });
+        let contract: ContractAccount = serde_json::from_value(json).unwrap();
+
+        assert_eq!(contract.abi.as_ref().unwrap().name, "legacy_contract");
+        let canonical = serde_json::to_value(&contract).unwrap();
+        let abi = canonical.get("abi").unwrap();
+        assert_eq!(abi.get("contract").unwrap(), "legacy_contract");
+        assert!(abi.get("name").is_none());
     }
 
     #[test]

@@ -447,7 +447,7 @@ const SHOW_STATE_COMMITMENT_SCHEMA_FLAG: &str = "--show-state-commitment-schema"
 const SPARSE_STATE_COMMITMENT_CONFIRMATION: &str = "sparse-state-commitment:v1";
 const SHIELDED_STATE_COMMITMENT_CONFIRMATION: &str = "shielded-state-commitment:v2";
 const REPAIR_TESTNET_DEX_CONTRACTS_FLAG: &str = "--repair-testnet-dex-contracts";
-const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.270";
+const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.271";
 const SHOW_CONTRACT_STORAGE_DIGEST_FLAG: &str = "--show-contract-storage-digest";
 const SHOW_STAKE_POOL_DIGEST_FLAG: &str = "--show-stake-pool-digest";
 const PREPARE_CONSENSUS_V1_ACTIVATION_FLAG: &str = "--prepare-consensus-v1-activation";
@@ -48932,10 +48932,28 @@ mod tests {
         let program = Pubkey([8u8; 32]);
         let mut contract = ContractAccount::new(vec![0, 1, 2], owner);
         contract.storage.insert(b"keep".to_vec(), b"value".to_vec());
+        contract.abi = Some(ContractAbi {
+            version: "1".to_string(),
+            name: "legacy_fixture".to_string(),
+            template: None,
+            description: None,
+            functions: Vec::new(),
+            events: Vec::new(),
+            errors: Vec::new(),
+        });
         let old_hash = contract.code_hash;
         let mut account = Account::new(0, program);
         account.executable = true;
-        account.data = serde_json::to_vec(&contract).expect("encode contract");
+        let mut legacy_contract = serde_json::to_value(&contract).expect("encode contract");
+        let legacy_abi = legacy_contract
+            .get_mut("abi")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("contract ABI object");
+        let legacy_name = legacy_abi
+            .remove("contract")
+            .expect("canonical contract name");
+        legacy_abi.insert("name".to_string(), legacy_name);
+        account.data = serde_json::to_vec(&legacy_contract).expect("encode legacy contract");
         state
             .put_account(&program, &account)
             .expect("store contract account");

@@ -79,6 +79,22 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.271 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.271</span>
+                    <span class="changelog-date">September 2, 2026</span>
+                </div>
+                <h3>Preserved-chain compatibility and bounded deployment recovery</h3>
+                <ul>
+                    <li>Accepts the legacy deployed contract ABI key <code>name</code> while continuing to emit the canonical <code>contract</code> key.</li>
+                    <li>Targets the validator's actual <code>--db-path</code> for the guarded Testnet DEX repair and requires a version-bound dry-run, repair, and idempotence proof before restart.</li>
+                    <li>Makes coordinated systemd shutdown nonblocking, verifies the complete service control group is empty, and fails closed if a process cannot be terminated.</li>
+                    <li>Runs independent release gates concurrently while retaining quality, Archive V2 parity, contract, compiler, and every platform build as release prerequisites.</li>
+                    <li>Preserves the existing Testnet chain, validator identities, WAL, state, archives, and signed <code>v0.5.265</code> rollback anchor; it does not authorize a reset or cross-validator state copy.</li>
+                </ul>
+            </article>
+
             <!-- ============ v0.5.270 ============ -->
             <article class="changelog-entry">
                 <div class="changelog-header">

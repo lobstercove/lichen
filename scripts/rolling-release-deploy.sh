@@ -568,20 +568,30 @@ optional_service_required() {
 
 stop_service_unit() {
   local unit="$1"
-  sudo -n systemctl stop "$unit" || true
+  local control_group
+  control_group="$(systemctl show "$unit" -p ControlGroup --value || true)"
+  unit_has_processes() {
+    [ -n "$control_group" ] &&
+      [ -r "/sys/fs/cgroup${control_group}/cgroup.procs" ] &&
+      grep -Eq '^[0-9]+$' "/sys/fs/cgroup${control_group}/cgroup.procs"
+  }
+  sudo -n systemctl stop --no-block "$unit" || true
   for _ in $(seq 1 20); do
-    if ! systemctl is-active --quiet "$unit"; then
+    if ! systemctl is-active --quiet "$unit" && ! unit_has_processes; then
       return 0
     fi
     sleep 1
   done
   echo "Service ${unit} remained active after stop; killing its control group."
   sudo -n systemctl kill --kill-who=control-group -s SIGKILL "$unit" || true
-  sleep 2
-  if systemctl is-active --quiet "$unit"; then
-    echo "Service ${unit} is still active after control-group kill."
-    exit 1
-  fi
+  for _ in $(seq 1 20); do
+    if ! systemctl is-active --quiet "$unit" && ! unit_has_processes; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Service ${unit} still has an active unit or control-group process after kill."
+  exit 1
 }
 
 stop_optional_service() {
@@ -898,13 +908,13 @@ fi
 repair_args=(
   --repair-testnet-dex-contracts
   --network testnet
-  --data-dir "$state_dir"
+  --db-path "$state_dir"
   --contracts-dir "$contracts_dir"
   --cache-size-mb 256
 )
 sudo -n -u lichen /usr/local/bin/lichen-validator "${repair_args[@]}" --dry-run
 sudo -n -u lichen /usr/local/bin/lichen-validator "${repair_args[@]}" \
-  --confirm repair-dex-contracts:testnet:v0.5.270
+  --confirm repair-dex-contracts:testnet:v0.5.271
 postcheck="$(sudo -n -u lichen /usr/local/bin/lichen-validator "${repair_args[@]}" --dry-run)"
 printf '%s\n' "$postcheck"
 printf '%s\n' "$postcheck" | grep -Fxq 'contracts=17'

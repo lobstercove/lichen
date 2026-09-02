@@ -141,6 +141,12 @@ assert(script.includes('all hosts staged and stopped; starting the complete flee
   'coordinated mode must finish the stopped install phase before any validator starts');
 assert(indexOfOrThrow('stop_service_unit "$SERVICE"') < indexOfOrThrow('install_staged_bin "$bin"'),
   'validator service must stop before staged binaries replace live paths');
+assert(script.includes('systemctl stop --no-block "$unit"'),
+  'service stop must be nonblocking so the bounded SIGKILL fallback remains reachable');
+assert(script.includes("grep -Eq '^[0-9]+$' \"/sys/fs/cgroup${control_group}/cgroup.procs\""),
+  'service stop must inspect cgroupfs PID contents instead of its unreliable pseudo-file size');
+assert(script.includes('still has an active unit or control-group process after kill'),
+  'service stop must fail closed if an uninterruptible process remains after SIGKILL');
 assert(script.includes('if [ "$DEFER_START" = "1" ]; then'),
   'coordinated install must defer validator start on every host');
 assert(script.includes('unit is enabled but inactive'), 'release verification must fail enabled inactive optional services');

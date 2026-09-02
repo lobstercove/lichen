@@ -625,6 +625,7 @@ const rollingReleaseDeploy = fs.readFileSync(repoPath('scripts/rolling-release-d
 const archiveJob = extractWorkflowJob(releaseWorkflow, 'archive-parity-local-gate');
 const contractBundleJob = extractWorkflowJob(releaseWorkflow, 'contract-bundle');
 const releaseBuildJob = extractWorkflowJob(releaseWorkflow, 'build');
+const checksumJob = extractWorkflowJob(releaseWorkflow, 'checksums');
 const setupNodeOffset = archiveJob.indexOf('actions/setup-node@');
 const npmCiOffset = archiveJob.indexOf('npm ci --ignore-scripts');
 const harnessOffset = archiveJob.indexOf('bash tests/local-multi-validator-test.sh 4');
@@ -632,6 +633,16 @@ const contractDownloadOffset = releaseBuildJob.indexOf('name: Download genesis c
 const contractStageOffset = releaseBuildJob.indexOf('name: Stage the tested genesis contracts for binary embedding');
 const releaseBinaryBuildOffset = releaseBuildJob.indexOf('name: Build release binary');
 assert(archiveJob.length > 0, 'release workflow defines the archive parity job');
+assert(
+    !archiveJob.includes('needs: release-quality-gate')
+        && !contractBundleJob.includes('needs: release-quality-gate'),
+    'independent release hard gates start in parallel instead of extending deployment downtime',
+);
+assert(
+    releaseBuildJob.includes('needs: [contract-bundle, compiler-sandbox-gate]')
+        && checksumJob.includes('needs: [release-quality-gate, archive-parity-local-gate, build]'),
+    'checksums remain fail-closed behind quality, Archive V2 parity, contract, compiler, and platform gates',
+);
 assert(setupNodeOffset >= 0, 'archive parity job installs pinned Node.js');
 assert(archiveJob.includes('node-version: "22"'), 'archive parity job uses Node.js 22');
 assert(npmCiOffset >= 0, 'archive parity job installs locked journey dependencies');
@@ -680,8 +691,10 @@ assert(
 assert(
     rollingReleaseDeploy.includes("grep -Fxq 'contracts=17'")
         && rollingReleaseDeploy.includes("grep -Fxq 'changed=0'")
-        && rollingReleaseDeploy.includes('--confirm repair-dex-contracts:testnet:v0.5.270'),
-    'coordinated DEX repair dry-runs, writes explicitly, and proves idempotent completion',
+        && rollingReleaseDeploy.includes('--db-path "$state_dir"')
+        && !rollingReleaseDeploy.includes('--data-dir "$state_dir"')
+        && rollingReleaseDeploy.includes('--confirm repair-dex-contracts:testnet:v0.5.271'),
+    'coordinated DEX repair targets preserved state, writes explicitly, and proves idempotent completion',
 );
 assert(
     releaseWorkflow.includes('--bin lichen-archive-v2')
