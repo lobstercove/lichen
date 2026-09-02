@@ -97,7 +97,8 @@
       "result_semantics": {
         "kind": "return_code",
         "success_codes": [
-          0
+          0,
+          4
         ]
       }
     },

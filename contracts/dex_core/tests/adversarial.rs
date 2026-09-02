@@ -150,10 +150,9 @@ fn test_user_order_count_after_cancel() {
     }
     assert_eq!(cancel_order(trader.as_ptr(), 1), 0);
     let result = place_order(trader.as_ptr(), pair_id, 0, 0, P + 501_000_000, Q, 0, 0);
-    assert!(
-        result == 0 || result == 5,
-        "cancel count: result={}",
-        result
+    assert_eq!(
+        result, 0,
+        "cancelled orders must release live-order capacity"
     );
 }
 

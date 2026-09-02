@@ -2884,10 +2884,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function calculateSpotEscrowRaw(side, priceRaw, quantityRaw, pair = state.activePair) {
         if (side === 'sell') return quantityRaw;
-        const notional = Math.floor((Number(priceRaw) * Number(quantityRaw)) / PRICE_SCALE);
-        const takerBps = Number(pair?.takerFeeBps ?? pair?.taker_fee_bps ?? 5);
-        const fee = Math.max(1, Math.floor(notional * takerBps / 10_000));
-        return notional + fee;
+        const price = BigInt(Math.round(Number(priceRaw)));
+        const quantity = BigInt(Math.round(Number(quantityRaw)));
+        const notional = price * quantity / BigInt(PRICE_SCALE);
+        const takerBps = BigInt(Number(pair?.takerFeeBps ?? pair?.taker_fee_bps ?? 5));
+        const rawLotSize = Number(pair?.lotSize ?? pair?.lot_size ?? 1);
+        const lotSize = BigInt(Math.max(
+            1,
+            Math.round(rawLotSize >= 1 ? rawLotSize : rawLotSize * PRICE_SCALE),
+        ));
+        const proportionalFee = notional * takerBps / 10_000n;
+        // Core charges a one-unit minimum fee for every fill. A buy can be
+        // fragmented into one fill per lot, so reserve that exact safe bound.
+        const escrow = notional + proportionalFee + quantity / lotSize;
+        if (escrow > BigInt(Number.MAX_SAFE_INTEGER)) {
+            throw new Error('Order escrow exceeds the wallet precision limit');
+        }
+        return Number(escrow);
     }
 
     function spotEscrowSymbol(side, pair = state.activePair) {
@@ -2926,7 +2939,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const price = getEffectiveOrderPrice(state.orderSide, state.orderType);
         const stopPriceInput = document.getElementById('stopPrice');
         const stopPrice = Math.max(0, readDexDecimal(stopPriceInput));
-        const feeRate = 0.0005;
 
         let disabledReason = '';
         let disabledHtml = '';
@@ -2964,7 +2976,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             } else if (state.orderSide === 'buy') {
                 const quoteSymbol = state.activePair.quote;
-                const requiredQuote = notional * (1 + feeRate);
+                const requiredQuote = calculateSpotEscrowRaw(
+                    'buy',
+                    Math.round(price * PRICE_SCALE),
+                    Math.round(amount * PRICE_SCALE),
+                    state.activePair,
+                ) / PRICE_SCALE;
                 const availableQuote = getAvailableBalance(quoteSymbol);
                 if (requiredQuote > availableQuote) disabledReason = `Insufficient ${quoteSymbol}`;
             } else {
@@ -3355,7 +3372,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 ? (state.marginType === 'cross'
                     ? requiredCrossDepositRaw(Math.round(effectivePrice * amount * PRICE_SCALE), leverageValue) / PRICE_SCALE
                     : ((effectivePrice * amount) / leverageValue))
-                : (side === 'buy' ? (effectivePrice * amount) : amount);
+                : (side === 'buy'
+                    ? calculateSpotEscrowRaw(
+                        'buy',
+                        Math.round(effectivePrice * PRICE_SCALE),
+                        Math.round(amount * PRICE_SCALE),
+                        pair,
+                    ) / PRICE_SCALE
+                    : amount);
             const available = getAvailableBalance(neededToken);
             if (neededAmount > available) {
                 return { ok: false, error: `Insufficient ${neededToken}: need ${formatAmount(neededAmount)}, have ${formatAmount(available)}`, code: 'BALANCE' };
@@ -6995,8 +7019,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const makerFee = readDexDecimal(document.getElementById('propMakerFee'));
             const takerFee = readDexDecimal(document.getElementById('propTakerFee'));
             if (!pair) return { ok: false, message: 'Select a trading pair' };
-            if (makerFee < -100 || makerFee > 100 || takerFee < 0 || takerFee > 100) {
-                return { ok: false, message: 'Fee changes must stay within configured bps bounds' };
+            if (makerFee < -100 || makerFee > 0 || takerFee < 0 || takerFee > 100 || Math.abs(makerFee) > takerFee) {
+                return { ok: false, message: 'Maker fee must be a rebate no larger than the taker fee; both must stay within configured bps bounds' };
             }
         } else if (ptype === 'delist') {
             return { ok: false, message: 'Delist proposals are not supported by the current governance contract' };

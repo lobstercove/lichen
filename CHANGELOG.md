@@ -5,6 +5,74 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.270] - 2026-09-02
+
+### Fixed
+
+- Refresh the controlled LICN/USD oracle price through signed attestations from
+  the active validator quorum immediately before the strict WebSocket trade,
+  then read back and require the exact DEX band price and source slot. This
+  keeps the 750-slot stale-price rejection intact while making the gate
+  independent of runner slot throughput.
+- Include bounded return-code, compute-use, and final contract-log diagnostics
+  when RPC transaction preflight rejects a contract call.
+- Make CLOB custody settlement atomic: pull taker escrow before matching, abort
+  every failed settlement, refund expired/self-trading makers and filled-order
+  residuals, fund maker rebates from taker fees, reject unfunded positive maker
+  fees, and replace the lifetime order cap with a migrated live-order count.
+- Make CLOB market-sell quotes report only executable depth, bind stop triggers
+  to the canonical last trade, and expose a read-only exact-input quote for
+  venue selection.
+- Make the production DEX client and volume journey reserve Core's exact
+  fragmented-fill buy bound: aggregate proportional fee plus one minimal unit
+  per possible lot. This prevents correctly backed native-quote orders from
+  being rejected a few base units short after custody enforcement became real.
+- Make concentrated-liquidity quotes read-only, use the same tick-crossing
+  curve for exact-output swaps, reject accounting overflow before custody
+  moves, and authorize only the trader or the immutable configured router.
+- Make the router direction-aware and venue-aware. It now supports both sides
+  of each pair, permits one CLOB and one AMM route per direction, validates
+  split/multi-hop token continuity, quotes both direct venues live, selects the
+  best output, and rejects route/counter arithmetic overflow.
+- Bind the router into DEX Core and DEX AMM at fresh genesis, and register all
+  13 launch pairs in both directions on both venues. SporePump graduation now
+  registers directional AMM routes after its existing atomic liquidity checks.
+- Make DEX governance reject invalid pairs, unfunded maker fees, and rebates
+  larger than taker fees; make emergency delisting fail closed on Core pause;
+  stop advertising an unsupported requirements-only listing path; and preserve
+  finalized rejected proposals with declared ABI success semantics.
+- Cap referral and trading rewards against one shared epoch emission budget so
+  referral payouts cannot bypass the monthly ceiling.
+- Correct prediction-market complete-set cost allocation, maintain exact
+  aggregate trader cost, snapshot immutable trader/LP void pools, make reclaim
+  order-independent and pro-rata, and close the exact-slot trading boundary.
+- Preserve the prior governed ABI during immediate and timelocked contract
+  upgrades until an explicit `SetContractAbi` action replaces it, preventing an
+  upgrade transaction gap from dropping declared child-call failure semantics.
+- Align DEX UI governance validation and delisting text with the actual custody
+  and venue boundaries, and document all newly exposed DEX ABI functions.
+
+### Safety
+
+- Immutable `v0.5.269` passed protected CI and the complete Archive V2 release
+  matrix, then failed closed after that matrix when its controlled DEX price
+  band expired on the faster hosted runner. It produced no artifacts and was
+  not deployed. A matching successful local order used 47,543 of the default
+  200,000 compute units, ruling out compute exhaustion.
+- Existing Testnet DEX, wrapped-asset, oracle, prediction, and launchpad
+  contracts are updated only while all validators are stopped, from the signed
+  release's contract bundle. The guarded Testnet-only repair is additive and
+  idempotent: it preserves addresses, owners, balances, storage, and chain
+  history while replacing code and ABI consistently on every validator.
+
+### Verified
+
+- Passed the exact clean-build four-validator release gate through slot 30,000.
+  Volume and prediction/DEX journeys passed 144/144, launchpad/governance
+  passed 104/104, fresh full/cache/consensus joins and failure recovery passed,
+  and all four final public-history manifests matched
+  `27b5825f7635945d7b63e649015b3c9c85d642cc18225d1bdfcbf527a09bc397`.
+
 ## [0.5.269] - 2026-09-02
 
 ### Fixed

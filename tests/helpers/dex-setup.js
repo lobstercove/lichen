@@ -529,6 +529,19 @@ async function readMarginMarkState(rpcUrl, dexMarginAddr, pairId) {
     };
 }
 
+async function readDexBandState(rpcUrl, dexCoreAddr, pairId) {
+    const storage = await rpcCall(rpcUrl, 'getProgramStorage', [dexCoreAddr, { limit: 1000 }]);
+    const entry = (storage.entries || []).find((row) => row.key_decoded === `dex_band_${pairId}`);
+    const value = entry?.value_hex || entry?.value || '';
+    const bytes = typeof value === 'string' && /^[0-9a-fA-F]{32,}$/.test(value)
+        ? Buffer.from(value, 'hex')
+        : Buffer.alloc(0);
+    return {
+        price: bytes.length >= 8 ? bytes.readBigUInt64LE(0) : 0n,
+        sourceSlot: bytes.length >= 16 ? bytes.readBigUInt64LE(8) : 0n,
+    };
+}
+
 async function waitForFreshMarginMark(rpcUrl, dexMarginAddr, pairId, minimumSourceSlot, timeoutMs = 30_000) {
     const deadline = Date.now() + timeoutMs;
     let last = { price: 0n, sourceSlot: 0n };
@@ -551,9 +564,32 @@ async function waitForFreshMarginMark(rpcUrl, dexMarginAddr, pairId, minimumSour
     );
 }
 
+async function waitForFreshDexBand(rpcUrl, dexCoreAddr, pairId, minimumSourceSlot, timeoutMs = 30_000) {
+    const deadline = Date.now() + timeoutMs;
+    let last = { price: 0n, sourceSlot: 0n };
+    while (Date.now() < deadline) {
+        last = await readDexBandState(rpcUrl, dexCoreAddr, pairId);
+        const currentSlot = BigInt(await rpcCall(rpcUrl, 'getSlot'));
+        if (
+            last.price > 0n
+            && last.sourceSlot >= minimumSourceSlot
+            && last.sourceSlot <= currentSlot
+            && currentSlot - last.sourceSlot <= 750n
+        ) {
+            return { ...last, currentSlot };
+        }
+        await sleep(250);
+    }
+    throw new Error(
+        `DEX price band did not become fresh from controlled consensus attestations; `
+        + `price=${last.price} source_slot=${last.sourceSlot} minimum=${minimumSourceSlot}`,
+    );
+}
+
 async function refreshMarginMarkPrice(rpcUrl, contracts, _fallbackKeypair, pairId, price) {
     const dexMarginAddr = contracts.dex_margin;
-    if (!dexMarginAddr) throw new Error('dex_margin contract missing');
+    const dexCoreAddr = contracts.dex_core;
+    if (!dexMarginAddr || !dexCoreAddr) throw new Error('dex_margin or dex_core contract missing');
     if (pairId !== 1) throw new Error('controlled consensus oracle refresh currently supports pair 1 only');
 
     const marginPrice = typeof price === 'bigint' ? price : BigInt(price);
@@ -563,9 +599,11 @@ async function refreshMarginMarkPrice(rpcUrl, contracts, _fallbackKeypair, pairI
 
     // Pair 1 is LICN/USD. The native consensus oracle stores USD prices with
     // eight decimals and the deterministic post-block mirror converts them to
-    // dex_margin's fixed9 representation. Submit the same controlled quote
-    // from every active local validator so the canonical stake quorum—not an
-    // admin-only storage override—advances the source slot.
+    // dex_margin's fixed9 representation. The deterministic post-block mirror
+    // writes the same source slot into dex_margin and dex_core's spot band.
+    // Submit the same controlled quote from every active local validator so
+    // the canonical stake quorum—not an admin-only storage override—advances
+    // both consumers.
     const validators = await activeLocalValidatorKeypairs(rpcUrl);
     await fundWalletsWithLicn(rpcUrl, validators, 1);
     const minimumSourceSlot = BigInt(await rpcCall(rpcUrl, 'getSlot'));
@@ -586,12 +624,31 @@ async function refreshMarginMarkPrice(rpcUrl, contracts, _fallbackKeypair, pairI
         pairId,
         minimumSourceSlot,
     );
+    const band = await waitForFreshDexBand(
+        rpcUrl,
+        dexCoreAddr,
+        pairId,
+        minimumSourceSlot,
+    );
+    if (
+        mark.price !== marginPrice
+        || band.price !== marginPrice
+        || mark.sourceSlot !== band.sourceSlot
+    ) {
+        throw new Error(
+            `controlled pair-1 oracle mirror mismatch; requested=${marginPrice}`
+            + ` margin=${mark.price}@${mark.sourceSlot}`
+            + ` dex_band=${band.price}@${band.sourceSlot}`,
+        );
+    }
     return {
         signature: signatures[signatures.length - 1],
         signatures,
         validatorCount: validators.length,
         price: mark.price,
         sourceSlot: mark.sourceSlot,
+        dexBandPrice: band.price,
+        dexBandSourceSlot: band.sourceSlot,
     };
 }
 
@@ -1124,6 +1181,7 @@ module.exports = {
     buildOracleAttestationData,
     bootstrapMarginInsurance,
     refreshMarginMarkPrice,
+    readDexBandState,
     buildCreateMarketArgs,
     getTokenBalanceRaw,
     getTokenAllowanceRaw,

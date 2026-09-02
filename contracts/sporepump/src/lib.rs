@@ -2601,7 +2601,7 @@ pub extern "C" fn finalize_migration(keeper_ptr: *const u8, token_id: u64) -> u3
     forward_route_args.extend_from_slice(&native_licn);
     forward_route_args.push(1);
     forward_route_args.extend_from_slice(&u64_to_bytes(pool_id));
-    forward_route_args.extend_from_slice(&u64_to_bytes(0));
+    forward_route_args.extend_from_slice(&u64_to_bytes(1)); // token A input
     forward_route_args.push(0);
     let forward_route_id = match cross_call_id(dex_router, "register_route", forward_route_args) {
         Some(route_id) => route_id,
@@ -2614,7 +2614,7 @@ pub extern "C" fn finalize_migration(keeper_ptr: *const u8, token_id: u64) -> u3
     reverse_route_args.extend_from_slice(&candidate);
     reverse_route_args.push(1);
     reverse_route_args.extend_from_slice(&u64_to_bytes(pool_id));
-    reverse_route_args.extend_from_slice(&u64_to_bytes(0));
+    reverse_route_args.extend_from_slice(&u64_to_bytes(2)); // token B input
     reverse_route_args.push(0);
     let reverse_route_id = match cross_call_id(dex_router, "register_route", reverse_route_args) {
         Some(route_id) => route_id,

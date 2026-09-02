@@ -79,6 +79,24 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.270 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.270</span>
+                    <span class="changelog-date">September 2, 2026</span>
+                </div>
+                <h3>DEX custody, routing, launchpad, and prediction hardening</h3>
+                <ul>
+                    <li>Refreshes the controlled LICN/USD price through signed active-validator quorum attestations immediately before the strict WebSocket trade and verifies the exact DEX band source slot.</li>
+                    <li>Adds bounded return-code, compute-use, and contract-log details to rejected transaction preflight diagnostics without weakening the 750-slot stale-price rule.</li>
+                    <li>Makes CLOB escrow and settlement atomic, makes concentrated-liquidity quotes read-only, and gives the router live direction-aware CLOB/AMM venue selection.</li>
+                    <li>Aligns browser and journey buy escrow with Core's fragmented-fill fee bound so native-quote orders are funded to the exact base unit.</li>
+                    <li>Registers every launch pair in both directions on both venues, hardens graduation and governance listing boundaries, and enforces one shared rewards emission cap.</li>
+                    <li>Corrects prediction complete-set cost allocation and order-independent void refunds, and retains governed ABI failure semantics across contract upgrades.</li>
+                    <li>Passed the exact four-validator Archive V2 gate through slot 30,000: volume/prediction 144/144 and launchpad/governance 104/104.</li>
+                </ul>
+            </article>
+
             <!-- ============ v0.5.269 ============ -->
             <article class="changelog-entry">
                 <div class="changelog-header">

@@ -63,8 +63,8 @@ const MAX_OPEN_ORDERS_PER_USER: u64 = 500;
 const DEFAULT_MAKER_FEE_BPS: i64 = -1; // rebate
 const DEFAULT_TAKER_FEE_BPS: u64 = 5; // 0.05%
 const MAX_FEE_BPS: u64 = 100; // 1% max
-                              // AUDIT-FIX CLOB-1: 100% of taker fee goes to protocol treasury on settlement.
-                              // LP/staker incentives are handled by the separate dex_rewards contract via token emissions.
+                              // Taker fees fund any configured maker rebate first; the remainder is
+                              // protocol revenue. LP/staker incentives are separate token emissions.
 const MIN_FEE_PER_TRADE: u64 = 1; // 1 spore minimum
 const ORDERBOOK_INDEX_VERSION: u8 = 1;
 const ORDER_EXPIRY_MAX: u64 = 2_592_000; // ~30 days in slots
@@ -118,6 +118,7 @@ const FEE_TREASURY_ADDR_KEY: &[u8] = b"dex_fee_treasury_addr";
 const FEE_TREASURY_EXPLICIT_KEY: &[u8] = b"dex_fee_treasury_explicit";
 const GOVERNANCE_ADDRESS_KEY: &[u8] = b"dex_governance_addr";
 const SPOREPUMP_AUTHORITY_KEY: &[u8] = b"dex_sporepump_authority";
+const ROUTER_ADDRESS_KEY: &[u8] = b"dex_router_addr";
 const PREFERRED_QUOTE_KEY: &[u8] = b"dex_preferred_quote";
 const ALLOWED_QUOTE_COUNT_KEY: &[u8] = b"dex_aq_count";
 const MAX_ALLOWED_QUOTES: u64 = 8;
@@ -259,10 +260,70 @@ fn band_key(pair_id: u64) -> Vec<u8> {
     k
 }
 
+fn last_trade_price_key(pair_id: u64) -> Vec<u8> {
+    let mut k = Vec::from(&b"dex_last_trade_price_"[..]);
+    k.extend_from_slice(&u64_to_decimal(pair_id));
+    k
+}
+
 fn user_order_count_key(addr: &[u8; 32]) -> Vec<u8> {
     let mut k = Vec::from(&b"dex_uoc_"[..]);
     k.extend_from_slice(&hex_encode(addr));
     k
+}
+
+fn user_open_order_count_key(addr: &[u8; 32]) -> Vec<u8> {
+    let mut k = Vec::from(&b"dex_user_open_count_"[..]);
+    k.extend_from_slice(&hex_encode(addr));
+    k
+}
+
+fn user_open_order_count_initialized_key(addr: &[u8; 32]) -> Vec<u8> {
+    let mut k = Vec::from(&b"dex_user_open_count_v1_"[..]);
+    k.extend_from_slice(&hex_encode(addr));
+    k
+}
+
+fn user_open_order_count(addr: &[u8; 32]) -> u64 {
+    let initialized_key = user_open_order_count_initialized_key(addr);
+    if storage_get(&initialized_key).is_some() {
+        return load_u64(&user_open_order_count_key(addr));
+    }
+
+    // The legacy implementation capped this historical index at 500, so the
+    // one-time migration scan is bounded. New orders maintain a separate live
+    // count and no longer turn a lifetime history index into a trading ban.
+    let history_count = load_u64(&user_order_count_key(addr));
+    let mut open = 0u64;
+    for index in 1..=history_count {
+        let order_id = load_u64(&user_order_key(addr, index));
+        if let Some(order) =
+            storage_get(&order_key(order_id)).filter(|data| data.len() >= ORDER_SIZE)
+        {
+            if matches!(
+                decode_order_status(&order),
+                STATUS_OPEN | STATUS_PARTIAL | STATUS_DORMANT
+            ) {
+                open = open.saturating_add(1);
+            }
+        }
+    }
+    save_u64(&user_open_order_count_key(addr), open);
+    storage_set(&initialized_key, &[1]);
+    open
+}
+
+fn increment_user_open_order_count(addr: &[u8; 32]) -> Result<(), u32> {
+    let next = user_open_order_count(addr).checked_add(1).ok_or(13u32)?;
+    save_u64(&user_open_order_count_key(addr), next);
+    Ok(())
+}
+
+fn decrement_user_open_order_count(addr: &[u8; 32]) -> Result<(), u32> {
+    let current = user_open_order_count(addr);
+    let next = current.checked_sub(1).ok_or(13u32)?;
+    save_u64(&user_open_order_count_key(addr), next);
+    Ok(())
 }
 
 fn user_order_key(addr: &[u8; 32], idx: u64) -> Vec<u8> {
@@ -803,9 +864,21 @@ fn quote_exact_input(
                 }
 
                 let fill_qty = remaining.min(available);
-                amount_out = amount_out.saturating_add(
-                    (best_bid as u128 * fill_qty as u128 / 1_000_000_000u128) as u64,
-                );
+                let notional = match checked_notional(best_bid, fill_qty) {
+                    Some(value) => value,
+                    None => {
+                        return ExactInputQuote {
+                            amount_out: 0,
+                            taker_quantity: 0,
+                            price_bound: 0,
+                        };
+                    }
+                };
+                let net_quote = notional.saturating_sub(calculate_taker_fee(
+                    notional,
+                    decode_pair_taker_fee(pair_data),
+                ));
+                amount_out = amount_out.saturating_add(net_quote);
                 remaining = remaining.saturating_sub(fill_qty);
                 price_bound = best_bid;
             }
@@ -822,7 +895,7 @@ fn quote_exact_input(
 
         return ExactInputQuote {
             amount_out,
-            taker_quantity: amount_in,
+            taker_quantity: amount_in.saturating_sub(remaining),
             price_bound,
         };
     }
@@ -870,14 +943,13 @@ fn quote_exact_input(
                 continue;
             }
 
-            let mut affordable =
-                ((quote_budget as u128 * 1_000_000_000u128) / best_ask as u128) as u64;
-            if lot_size > 0 {
-                affordable = affordable
-                    .checked_div(lot_size)
-                    .unwrap_or(0)
-                    .saturating_mul(lot_size);
-            }
+            let affordable = max_affordable_buy_quantity(
+                quote_budget,
+                best_ask,
+                available,
+                lot_size,
+                decode_pair_taker_fee(pair_data),
+            );
             if affordable == 0 {
                 return ExactInputQuote {
                     amount_out,
@@ -887,8 +959,18 @@ fn quote_exact_input(
             }
 
             let fill_qty = available.min(affordable);
-            let spent_quote = (best_ask as u128 * fill_qty as u128 / 1_000_000_000u128) as u64;
-            if spent_quote == 0 {
+            let spent_quote =
+                match checked_buy_cost(best_ask, fill_qty, decode_pair_taker_fee(pair_data)) {
+                    Some(value) => value,
+                    None => {
+                        return ExactInputQuote {
+                            amount_out: 0,
+                            taker_quantity: 0,
+                            price_bound: 0,
+                        };
+                    }
+                };
+            if spent_quote == 0 || spent_quote > quote_budget {
                 continue;
             }
 
@@ -922,9 +1004,10 @@ fn execute_market_order(
     quantity: u64,
     current_slot: u64,
     pair_data: &[u8],
-) {
-    let order_count = load_u64(ORDER_COUNT_KEY);
-    let new_order_id = order_count + 1;
+    escrow_locked: u64,
+) -> Result<u64, u32> {
+    let _ = user_open_order_count(trader);
+    let new_order_id = load_u64(ORDER_COUNT_KEY).checked_add(1).ok_or(13u32)?;
     let order_data = encode_order(
         trader,
         pair_id,
@@ -938,15 +1021,16 @@ fn execute_market_order(
         0,
         new_order_id,
         0,
-        0, // escrow_locked: 0 for internal market orders (swap_exact_in handles its own escrow)
+        escrow_locked,
     );
     storage_set(&order_key(new_order_id), &order_data);
     save_u64(ORDER_COUNT_KEY, new_order_id);
 
     let user_count = load_u64(&user_order_count_key(trader));
-    let new_user_count = user_count + 1;
+    let new_user_count = user_count.checked_add(1).ok_or(13u32)?;
     save_u64(&user_order_count_key(trader), new_user_count);
     save_u64(&user_order_key(trader, new_user_count), new_order_id);
+    increment_user_open_order_count(trader)?;
 
     let remaining = match_order(
         new_order_id,
@@ -956,13 +1040,16 @@ fn execute_market_order(
         quantity,
         trader,
         pair_data,
-    );
+    )?;
     if remaining > 0 {
         let mut order_data = match storage_get(&order_key(new_order_id)) {
             Some(data) => data,
-            None => return,
+            None => return Err(13),
         };
         let filled = quantity.saturating_sub(remaining);
+        if !refund_order_escrow(&mut order_data, pair_data) {
+            return Err(14);
+        }
         update_order_filled(&mut order_data, filled);
         update_order_status(
             &mut order_data,
@@ -973,7 +1060,9 @@ fn execute_market_order(
             },
         );
         storage_set(&order_key(new_order_id), &order_data);
+        decrement_user_open_order_count(trader)?;
     }
+    Ok(remaining)
 }
 
 fn sum_taker_output(
@@ -982,6 +1071,7 @@ fn sum_taker_output(
     pair_id: u64,
     taker: &[u8; 32],
     side: u8,
+    taker_fee_bps: u16,
 ) -> u64 {
     let mut amount_out = 0u64;
     for trade_id in start_trade_id + 1..=end_trade_id {
@@ -994,10 +1084,13 @@ fn sum_taker_output(
             continue;
         }
         if side == SIDE_SELL {
+            let notional = checked_notional(
+                decode_trade_price(&trade_data),
+                decode_trade_quantity(&trade_data),
+            )
+            .unwrap_or(0);
             amount_out = amount_out.saturating_add(
-                (decode_trade_price(&trade_data) as u128
-                    * decode_trade_quantity(&trade_data) as u128
-                    / 1_000_000_000u128) as u64,
+                notional.saturating_sub(calculate_taker_fee(notional, taker_fee_bps)),
             );
         } else {
             amount_out = amount_out.saturating_add(decode_trade_quantity(&trade_data));
@@ -1017,6 +1110,48 @@ fn calculate_taker_fee(notional: u64, fee_bps: u16) -> u64 {
     } else {
         fee
     }
+}
+
+fn checked_notional(price: u64, quantity: u64) -> Option<u64> {
+    let value = price as u128 * quantity as u128 / 1_000_000_000u128;
+    u64::try_from(value).ok()
+}
+
+fn checked_buy_cost(price: u64, quantity: u64, taker_fee_bps: u16) -> Option<u64> {
+    let notional = checked_notional(price, quantity)?;
+    notional.checked_add(calculate_taker_fee(notional, taker_fee_bps))
+}
+
+fn max_affordable_buy_quantity(
+    quote_budget: u64,
+    price: u64,
+    available: u64,
+    lot_size: u64,
+    taker_fee_bps: u16,
+) -> u64 {
+    if quote_budget == 0 || price == 0 || available == 0 || lot_size == 0 {
+        return 0;
+    }
+    let max_lots = available / lot_size;
+    let mut low = 0u64;
+    let mut high = max_lots;
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        let quantity = match mid.checked_mul(lot_size) {
+            Some(value) => value,
+            None => {
+                high = mid - 1;
+                continue;
+            }
+        };
+        if checked_buy_cost(price, quantity, taker_fee_bps).is_some_and(|cost| cost <= quote_budget)
+        {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    low.saturating_mul(lot_size)
 }
 
 fn calculate_maker_rebate(notional: u64, fee_bps: i16) -> u64 {
@@ -1103,6 +1238,32 @@ pub extern "C" fn set_sporepump_authority(caller: *const u8, sporepump: *const u
         return 3;
     }
     storage_set(SPOREPUMP_AUTHORITY_KEY, &s);
+    0
+}
+
+/// Bind the router allowed to execute exact-input swaps on behalf of the
+/// transaction signer. The router is immutable once configured.
+#[no_mangle]
+pub extern "C" fn set_router_address(caller: *const u8, router: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut r = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(router, r.as_mut_ptr(), 32);
+    }
+    if get_caller().0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if is_zero(&r) {
+        return 2;
+    }
+    if has_configured_address(ROUTER_ADDRESS_KEY) {
+        return 3;
+    }
+    storage_set(ROUTER_ADDRESS_KEY, &r);
     0
 }
 
@@ -1240,16 +1401,45 @@ fn release_tokens(token_addr: &[u8; 32], to: &[u8; 32], amount: u64) -> bool {
     }
 }
 
-/// Calculate the escrow amount for a BUY order (notional + max taker fee)
-fn calculate_buy_escrow(price: u64, quantity: u64, taker_fee_bps: u16) -> u64 {
-    let notional = (price as u128 * quantity as u128 / 1_000_000_000) as u64;
-    let max_fee = (notional as u128 * taker_fee_bps as u128 / 10_000) as u64;
-    let max_fee = if max_fee < MIN_FEE_PER_TRADE {
-        MIN_FEE_PER_TRADE
+fn refund_order_escrow(order_data: &mut Vec<u8>, pair_data: &[u8]) -> bool {
+    let amount = decode_order_escrow_locked(order_data);
+    if amount == 0 {
+        return true;
+    }
+    let token = if decode_order_side(order_data) == SIDE_SELL {
+        decode_pair_base_token(pair_data)
     } else {
-        max_fee
+        decode_pair_quote_token(pair_data)
     };
-    notional.saturating_add(max_fee)
+    let trader = decode_order_trader(order_data);
+    if !release_tokens(&token, &trader, amount) {
+        return false;
+    }
+    update_order_escrow(order_data, 0);
+    true
+}
+
+/// Calculate BUY escrow using a conservative fee bound. Taker fees are charged
+/// per fill and each fill has a one-unit minimum, so reserving only the fee on
+/// aggregate notional can underfund an order when many makers fill it. Every
+/// fill is lot-aligned; aggregate proportional fee plus one unit per possible
+/// lot safely bounds all valid fragmentations. Unused escrow is refunded.
+fn calculate_buy_escrow(
+    price: u64,
+    quantity: u64,
+    taker_fee_bps: u16,
+    lot_size: u64,
+) -> Option<u64> {
+    if lot_size == 0 || quantity % lot_size != 0 {
+        return None;
+    }
+    let notional = checked_notional(price, quantity)?;
+    let proportional_fee =
+        u64::try_from(notional as u128 * taker_fee_bps as u128 / 10_000u128).ok()?;
+    let max_fill_count = quantity / lot_size;
+    notional
+        .checked_add(proportional_fee)?
+        .checked_add(max_fill_count)
 }
 
 // ============================================================================
@@ -1548,10 +1738,17 @@ pub fn update_pair_fees(
     if taker_fee_bps > MAX_FEE_BPS as u16 {
         return 3;
     }
-    if maker_fee_bps > MAX_FEE_BPS as i16 {
+    // Settlement currently supports zero maker fees or a rebate funded from
+    // the taker fee. Reject positive maker fees instead of advertising a fee
+    // that is never collected from the maker.
+    if maker_fee_bps > 0 {
         return 3;
     }
     if maker_fee_bps < -(MAX_FEE_BPS as i16) {
+        return 3;
+    }
+    if maker_fee_bps < 0 && maker_fee_bps.unsigned_abs() > taker_fee_bps {
+        // Maker rebates are funded from the taker fee for the same fill.
         return 3;
     }
     // Update fee fields
@@ -1614,7 +1811,10 @@ pub fn unpause_pair(caller: *const u8, pair_id: u64) -> u32 {
 /// Returns: 0=success, 1=paused, 2=pair not found, 3=pair not active,
 ///          4=invalid params, 5=too many orders, 6=reentrancy,
 ///          7=post-only would cross, 8=expired order,
-///          9=market order slippage exceeded (zero fills at worst-price bound)
+///          9=market order slippage exceeded (zero fills at worst-price bound),
+///          10=outside oracle band, 11=oracle/escrow unavailable,
+///          12=invalid reduce-only order, 13=accounting overflow,
+///          14=settlement/refund failed, 200=caller mismatch
 ///
 /// AUDIT-FIX M10: For market orders (order_type == ORDER_MARKET), the `price`
 /// field serves as a worst-price bound:
@@ -1719,7 +1919,7 @@ pub fn place_order(
 
     // Check user open order limit
     let user_count = load_u64(&user_order_count_key(&t));
-    if user_count >= MAX_OPEN_ORDERS_PER_USER {
+    if user_open_order_count(&t) >= MAX_OPEN_ORDERS_PER_USER {
         reentrancy_exit();
         return 5;
     }
@@ -1758,26 +1958,26 @@ pub fn place_order(
                 reentrancy_exit();
                 return 11;
             }
-                let ref_price = u64::from_le_bytes([
-                    band_data[0],
-                    band_data[1],
-                    band_data[2],
-                    band_data[3],
-                    band_data[4],
-                    band_data[5],
-                    band_data[6],
-                    band_data[7],
-                ]);
-                let band_slot = u64::from_le_bytes([
-                    band_data[8],
-                    band_data[9],
-                    band_data[10],
-                    band_data[11],
-                    band_data[12],
-                    band_data[13],
-                    band_data[14],
-                    band_data[15],
-                ]);
+            let ref_price = u64::from_le_bytes([
+                band_data[0],
+                band_data[1],
+                band_data[2],
+                band_data[3],
+                band_data[4],
+                band_data[5],
+                band_data[6],
+                band_data[7],
+            ]);
+            let band_slot = u64::from_le_bytes([
+                band_data[8],
+                band_data[9],
+                band_data[10],
+                band_data[11],
+                band_data[12],
+                band_data[13],
+                band_data[14],
+                band_data[15],
+            ]);
 
             if ref_price == 0
                 || band_slot > current_slot
@@ -1808,7 +2008,7 @@ pub fn place_order(
             if check_price < lower || check_price > upper {
                 reentrancy_exit();
                 return 10; // price outside oracle band
-                }
+            }
         }
     }
 
@@ -1867,12 +2067,24 @@ pub fn place_order(
     // worst-price for notional estimation (more accurate than raw quantity).
     let notional = if base_order_type == ORDER_MARKET {
         if price > 0 {
-            (price as u128 * quantity as u128 / 1_000_000_000) as u64
+            match checked_notional(price, quantity) {
+                Some(value) => value,
+                None => {
+                    reentrancy_exit();
+                    return 13;
+                }
+            }
         } else {
             quantity
         }
     } else {
-        (price as u128 * quantity as u128 / 1_000_000_000) as u64
+        match checked_notional(price, quantity) {
+            Some(value) => value,
+            None => {
+                reentrancy_exit();
+                return 13;
+            }
+        }
     };
     if notional < min_ord {
         reentrancy_exit();
@@ -1913,7 +2125,13 @@ pub fn place_order(
                 return 11;
             }
         } else {
-            escrow_amount = calculate_buy_escrow(price, quantity, taker_fee_bps);
+            escrow_amount = match calculate_buy_escrow(price, quantity, taker_fee_bps, lot) {
+                Some(amount) => amount,
+                None => {
+                    reentrancy_exit();
+                    return 13;
+                }
+            };
             if !escrow_tokens(&quote_token, &t, escrow_amount) {
                 log_info("Buy escrow failed — insufficient balance or allowance");
                 reentrancy_exit();
@@ -1951,6 +2169,10 @@ pub fn place_order(
     // Track user orders
     save_u64(&user_order_count_key(&t), new_user_count);
     save_u64(&user_order_key(&t, new_user_count), new_order_id);
+    if increment_user_open_order_count(&t).is_err() {
+        reentrancy_exit();
+        return 13;
+    }
 
     // Dormant orders skip matching — they wait for trigger activation
     if initial_status == STATUS_DORMANT {
@@ -1959,7 +2181,14 @@ pub fn place_order(
     }
 
     // Try matching
-    let remaining = match_order(new_order_id, pair_id, side, price, quantity, &t, &pair_data);
+    let remaining = match match_order(new_order_id, pair_id, side, price, quantity, &t, &pair_data)
+    {
+        Ok(remaining) => remaining,
+        Err(code) => {
+            reentrancy_exit();
+            return code;
+        }
+    };
 
     // If not fully filled and limit-type, rest on book
     if remaining > 0 && base_order_type != ORDER_MARKET {
@@ -1992,11 +2221,18 @@ pub fn place_order(
             } else {
                 decode_pair_quote_token(&pair_data)
             };
-            release_tokens(&refund_token, &t, escrow_remaining);
+            if !release_tokens(&refund_token, &t, escrow_remaining) {
+                reentrancy_exit();
+                return 14;
+            }
             update_order_escrow(&mut od, 0);
         }
 
         storage_set(&order_key(new_order_id), &od);
+        if decrement_user_open_order_count(&t).is_err() {
+            reentrancy_exit();
+            return 13;
+        }
 
         // AUDIT-FIX M10: If market order got zero fills and had a worst-price
         // bound, return slippage error so caller knows the bound was hit.
@@ -2012,7 +2248,8 @@ pub fn place_order(
 
 /// Execute an exact-input swap against the CLOB.
 /// Returns: 0=success, 1=paused, 2=pair not found, 3=deadline expired,
-///          4=insufficient output or invalid route token, 5=reentrancy, 6=zero amount
+///          4=insufficient output or invalid route token, 5=reentrancy, 6=zero amount,
+///          7=input escrow failed, 14=settlement/refund failed
 pub fn swap_exact_in(
     trader: *const u8,
     pair_id: u64,
@@ -2040,8 +2277,9 @@ pub fn swap_exact_in(
         core::ptr::copy_nonoverlapping(token_in, token_in_addr.as_mut_ptr(), 32);
     }
 
-    let real_caller = get_caller();
-    if real_caller.0 != trader_addr {
+    let real_caller = get_caller().0;
+    let router = load_addr(ROUTER_ADDRESS_KEY);
+    if real_caller != trader_addr && (is_zero(&router) || real_caller != router) {
         reentrancy_exit();
         return 200;
     }
@@ -2092,26 +2330,90 @@ pub fn swap_exact_in(
         reentrancy_exit();
         return 4;
     }
+    if quote.taker_quantity == 0 {
+        reentrancy_exit();
+        return 4;
+    }
+
+    if !escrow_tokens(&token_in_addr, &trader_addr, amount_in) {
+        log_info("DEX Core exact-input swap escrow failed");
+        reentrancy_exit();
+        return 7;
+    }
 
     let trade_start = load_u64(TRADE_COUNT_KEY);
-    if quote.taker_quantity > 0 {
-        execute_market_order(
-            &trader_addr,
-            pair_id,
-            side,
-            quote.price_bound,
-            quote.taker_quantity,
-            current_slot,
-            &pair_data,
-        );
+    if let Err(code) = execute_market_order(
+        &trader_addr,
+        pair_id,
+        side,
+        quote.price_bound,
+        quote.taker_quantity,
+        current_slot,
+        &pair_data,
+        amount_in,
+    ) {
+        reentrancy_exit();
+        return code;
     }
     let trade_end = load_u64(TRADE_COUNT_KEY);
-    let actual_out = sum_taker_output(trade_start, trade_end, pair_id, &trader_addr, side);
+    let actual_out = sum_taker_output(
+        trade_start,
+        trade_end,
+        pair_id,
+        &trader_addr,
+        side,
+        decode_pair_taker_fee(&pair_data),
+    );
+    if actual_out < min_out {
+        reentrancy_exit();
+        return 4;
+    }
 
     lichen_sdk::set_return_data(&u64_to_bytes(actual_out));
     log_info("DEX Core exact-input swap executed");
     reentrancy_exit();
     0
+}
+
+/// Quote an exact-input CLOB swap without moving custody.
+pub fn quote_swap_exact_in(
+    trader: *const u8,
+    pair_id: u64,
+    token_in: *const u8,
+    amount_in: u64,
+) -> u64 {
+    if amount_in == 0 {
+        return 0;
+    }
+    let mut trader_addr = [0u8; 32];
+    let mut token_in_addr = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(trader, trader_addr.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(token_in, token_in_addr.as_mut_ptr(), 32);
+    }
+    let pair_data = match storage_get(&pair_key(pair_id)) {
+        Some(data) if data.len() >= PAIR_SIZE && decode_pair_status(&data) == PAIR_ACTIVE => data,
+        _ => return 0,
+    };
+    let side = if token_in_addr == decode_pair_base_token(&pair_data) {
+        if amount_in % decode_pair_lot_size(&pair_data) != 0 {
+            return 0;
+        }
+        SIDE_SELL
+    } else if token_in_addr == decode_pair_quote_token(&pair_data) {
+        SIDE_BUY
+    } else {
+        return 0;
+    };
+    quote_exact_input(
+        pair_id,
+        side,
+        amount_in,
+        &trader_addr,
+        &pair_data,
+        get_slot(),
+    )
+    .amount_out
 }
 
 /// Match an incoming order against the book (internal)
@@ -2123,7 +2425,7 @@ fn match_order(
     mut remaining: u64,
     taker: &[u8; 32],
     pair_data: &[u8],
-) -> u64 {
+) -> Result<u64, u32> {
     let current_slot = get_slot();
     let taker_fee_bps = decode_pair_taker_fee(pair_data);
     let maker_fee_bps = decode_pair_maker_fee(pair_data);
@@ -2143,7 +2445,8 @@ fn match_order(
                 taker_fee_bps,
                 maker_fee_bps,
                 current_slot,
-            );
+                pair_data,
+            )?;
             // Check if level is exhausted
             let level_count = load_u64(&ask_count_key(pair_id, best_ask));
             if level_count == 0 {
@@ -2167,7 +2470,8 @@ fn match_order(
                 taker_fee_bps,
                 maker_fee_bps,
                 current_slot,
-            );
+                pair_data,
+            )?;
             let level_count = load_u64(&bid_count_key(pair_id, best_bid));
             if level_count == 0 {
                 if remaining == 0 {
@@ -2180,8 +2484,8 @@ fn match_order(
     }
 
     // Update taker order state
-    if let Some(mut od) = storage_get(&order_key(taker_order_id))
-        .filter(|order| order.len() >= ORDER_SIZE)
+    if let Some(mut od) =
+        storage_get(&order_key(taker_order_id)).filter(|order| order.len() >= ORDER_SIZE)
     {
         let orig_qty = decode_order_quantity(&od);
         if remaining < orig_qty {
@@ -2194,9 +2498,16 @@ fn match_order(
             }
             storage_set(&order_key(taker_order_id), &od);
         }
+        if remaining == 0 {
+            if !refund_order_escrow(&mut od, pair_data) {
+                return Err(14);
+            }
+            storage_set(&order_key(taker_order_id), &od);
+            decrement_user_open_order_count(taker)?;
+        }
     }
 
-    remaining
+    Ok(remaining)
 }
 
 /// AUDIT-FIX CLOB-6: Compact a price level by shifting non-zero entries down to fill gaps.
@@ -2256,7 +2567,8 @@ fn fill_at_price_level(
     taker_fee_bps: u16,
     maker_fee_bps: i16,
     current_slot: u64,
-) -> u64 {
+    pair_data: &[u8],
+) -> Result<u64, u32> {
     let level_key = if maker_side == SIDE_BUY {
         bid_count_key(pair_id, price)
     } else {
@@ -2295,11 +2607,21 @@ fn fill_at_price_level(
             continue;
         }
 
+        let maker_trader = decode_order_trader(&maker_data);
+        // Initialize the bounded legacy live-count migration while this order
+        // is still open. Initializing after changing it to a terminal state
+        // would omit this order and then underflow on the decrement below.
+        let _ = user_open_order_count(&maker_trader);
+
         // Check expiry
         let expiry = decode_order_expiry_slot(&maker_data);
         if expiry != 0 && expiry <= current_slot {
+            if !refund_order_escrow(&mut maker_data, pair_data) {
+                return Err(14);
+            }
             update_order_status(&mut maker_data, STATUS_EXPIRED);
             storage_set(&ok, &maker_data);
+            decrement_user_open_order_count(&maker_trader)?;
             save_u64(&lk, 0);
             new_level_count = new_level_count.saturating_sub(1);
             continue;
@@ -2307,24 +2629,13 @@ fn fill_at_price_level(
 
         // Self-trade prevention: cancel maker (cancel-oldest)
         // AUDIT-FIX CLOB-4: Log self-trade cancellation for transparency
-        let maker_trader = decode_order_trader(&maker_data);
         if maker_trader == *taker {
-            update_order_status(&mut maker_data, STATUS_CANCELLED);
-            // Refund maker's escrowed tokens before cancellation
-            let maker_escrow = decode_order_escrow_locked(&maker_data);
-            if maker_escrow > 0 {
-                let maker_side = decode_order_side(&maker_data);
-                if let Some(pd) = storage_get(&pair_key(pair_id)) {
-                    let refund_token = if maker_side == SIDE_SELL {
-                        decode_pair_base_token(&pd)
-                    } else {
-                        decode_pair_quote_token(&pd)
-                    };
-                    release_tokens(&refund_token, &maker_trader, maker_escrow);
-                }
-                update_order_escrow(&mut maker_data, 0);
+            if !refund_order_escrow(&mut maker_data, pair_data) {
+                return Err(14);
             }
+            update_order_status(&mut maker_data, STATUS_CANCELLED);
             storage_set(&ok, &maker_data);
+            decrement_user_open_order_count(&maker_trader)?;
             save_u64(&lk, 0);
             new_level_count = new_level_count.saturating_sub(1);
             log_info("Self-trade prevented: maker order cancelled and escrowed tokens refunded");
@@ -2333,7 +2644,10 @@ fn fill_at_price_level(
 
         let maker_qty = decode_order_quantity(&maker_data);
         let maker_filled = decode_order_filled(&maker_data);
-        let available = maker_qty - maker_filled;
+        let available = match maker_qty.checked_sub(maker_filled) {
+            Some(value) if value > 0 => value,
+            _ => return Err(13),
+        };
         let fill_qty = if remaining > available {
             available
         } else {
@@ -2341,15 +2655,17 @@ fn fill_at_price_level(
         };
 
         // Execute trade
-        let notional = (price as u128 * fill_qty as u128 / 1_000_000_000) as u64;
+        let notional = checked_notional(price, fill_qty).ok_or(13u32)?;
         let taker_fee = calculate_taker_fee(notional, taker_fee_bps);
         let maker_rebate = calculate_maker_rebate(notional, maker_fee_bps);
+        let protocol_fee = taker_fee.checked_sub(maker_rebate).ok_or(13u32)?;
 
-        // AUDIT-FIX CLOB-1: Track full taker fee as protocol revenue.
-        // 100% of taker fee is transferred to treasury wallet during settlement.
-        // LP/staker incentives are handled by the separate dex_rewards contract.
-        let current_treasury = load_u64(FEE_TREASURY_KEY);
-        save_u64(FEE_TREASURY_KEY, current_treasury.saturating_add(taker_fee));
+        // Maker rebates are funded from the same fill's taker fee. Only the
+        // remainder is protocol revenue; the rebate stays in DEX custody until
+        // its maker claims it.
+        let new_protocol_fees = load_u64(FEE_TREASURY_KEY)
+            .checked_add(protocol_fee)
+            .ok_or(13u32)?;
 
         // ── Settlement: transfer tokens between counterparties ──
         // Base tokens: from seller's escrow (held by DEX) → buyer
@@ -2376,7 +2692,8 @@ fn fill_at_price_level(
 
                     // 1. Transfer base tokens: DEX → buyer
                     if !release_tokens(&base_token, buyer, fill_qty) {
-                        log_info("WARNING: Base token settlement transfer failed");
+                        log_info("Base token settlement transfer failed");
+                        return Err(14);
                     }
 
                     // 2. Transfer quote tokens: DEX → seller (minus fee if seller is taker)
@@ -2389,15 +2706,17 @@ fn fill_at_price_level(
                     };
                     if seller_receives > 0 {
                         if !release_tokens(&quote_token, seller, seller_receives) {
-                            log_info("WARNING: Quote token settlement transfer failed");
+                            log_info("Quote token settlement transfer failed");
+                            return Err(14);
                         }
                     }
 
                     // 3. Transfer taker fee to treasury
                     let recipient = fee_recipient_addr();
-                    if !is_zero(&recipient) && taker_fee > 0 {
-                        if !release_tokens(&quote_token, &recipient, taker_fee) {
-                            log_info("WARNING: Fee transfer to treasury failed");
+                    if !is_zero(&recipient) && protocol_fee > 0 {
+                        if !release_tokens(&quote_token, &recipient, protocol_fee) {
+                            log_info("Fee transfer to treasury failed");
+                            return Err(14);
                         }
                     }
 
@@ -2410,7 +2729,8 @@ fn fill_at_price_level(
                     };
                     if let Some(mut sod) = storage_get(&order_key(seller_order_id)) {
                         let old_escrow = decode_order_escrow_locked(&sod);
-                        update_order_escrow(&mut sod, old_escrow.saturating_sub(fill_qty));
+                        let next_escrow = old_escrow.checked_sub(fill_qty).ok_or(13u32)?;
+                        update_order_escrow(&mut sod, next_escrow);
                         storage_set(&order_key(seller_order_id), &sod);
                         if seller_order_id == maker_order_id {
                             maker_data = sod;
@@ -2430,21 +2750,32 @@ fn fill_at_price_level(
                     };
                     if let Some(mut bod) = storage_get(&order_key(buyer_order_id)) {
                         let old_escrow = decode_order_escrow_locked(&bod);
-                        update_order_escrow(&mut bod, old_escrow.saturating_sub(buyer_escrow_used));
+                        let next_escrow = old_escrow.checked_sub(buyer_escrow_used).ok_or(13u32)?;
+                        update_order_escrow(&mut bod, next_escrow);
                         storage_set(&order_key(buyer_order_id), &bod);
                         if buyer_order_id == maker_order_id {
                             maker_data = bod;
                         }
                     }
+                } else {
+                    return Err(13);
                 }
+            } else {
+                return Err(13);
             }
         }
+
+        save_u64(FEE_TREASURY_KEY, new_protocol_fees);
 
         // Update maker
         let new_maker_filled = maker_filled + fill_qty;
         update_order_filled(&mut maker_data, new_maker_filled);
         if new_maker_filled >= maker_qty {
             update_order_status(&mut maker_data, STATUS_FILLED);
+            if !refund_order_escrow(&mut maker_data, pair_data) {
+                return Err(14);
+            }
+            decrement_user_open_order_count(&maker_trader)?;
             save_u64(&lk, 0);
             new_level_count = new_level_count.saturating_sub(1);
         } else {
@@ -2454,7 +2785,7 @@ fn fill_at_price_level(
 
         // Record trade
         let trade_count = load_u64(TRADE_COUNT_KEY);
-        let trade_id = trade_count + 1;
+        let trade_id = trade_count.checked_add(1).ok_or(13u32)?;
         let trade_data = encode_trade(
             trade_id,
             pair_id,
@@ -2466,6 +2797,7 @@ fn fill_at_price_level(
         );
         storage_set(&trade_key(trade_id), &trade_data);
         save_u64(TRADE_COUNT_KEY, trade_id);
+        save_u64(&last_trade_price_key(pair_id), price);
 
         // Track global cumulative volume
         let total_vol = load_u64(TOTAL_VOLUME_KEY);
@@ -2524,7 +2856,7 @@ fn fill_at_price_level(
             rk.push(b'_');
             rk.extend_from_slice(&maker_trader);
             let accrued = load_u64(&rk);
-            save_u64(&rk, accrued.saturating_add(maker_rebate));
+            save_u64(&rk, accrued.checked_add(maker_rebate).ok_or(13u32)?);
         }
     }
 
@@ -2540,7 +2872,7 @@ fn fill_at_price_level(
         compact_price_level(pair_id, maker_side, price);
     }
 
-    remaining
+    Ok(remaining)
 }
 
 fn empty_price_level(side: u8) -> u64 {
@@ -2814,7 +3146,7 @@ fn remove_from_book_level(pair_id: u64, side: u8, price: u64, order_id: u64) {
 
 /// Cancel an order
 /// Returns: 0=success, 1=not found, 2=not owner, 3=already filled/cancelled, 4=reentrancy,
-///          5=refund failed
+///          5=refund failed, 6=open-order count inconsistency
 pub fn cancel_order(caller: *const u8, order_id: u64) -> u32 {
     if !reentrancy_enter() {
         return 4;
@@ -2851,6 +3183,10 @@ pub fn cancel_order(caller: *const u8, order_id: u64) -> u32 {
         return 3;
     }
 
+    // Complete any bounded legacy count migration before making this order
+    // terminal, so the migration sees and counts the still-live order.
+    let _ = user_open_order_count(&c);
+
     // Refund remaining escrow to trader
     let escrow_remaining = decode_order_escrow_locked(&data);
     if escrow_remaining > 0 {
@@ -2880,6 +3216,10 @@ pub fn cancel_order(caller: *const u8, order_id: u64) -> u32 {
     update_order_status(&mut data, STATUS_CANCELLED);
 
     storage_set(&ok, &data);
+    if decrement_user_open_order_count(&c).is_err() {
+        reentrancy_exit();
+        return 6;
+    }
 
     // AUDIT-FIX CLOB-6: Remove cancelled order from book level and compact
     let order_pair = decode_order_pair_id(&data);
@@ -2893,7 +3233,7 @@ pub fn cancel_order(caller: *const u8, order_id: u64) -> u32 {
 }
 
 /// Cancel all open orders for a trader on a pair
-/// Returns: 0=success, 1=reentrancy, 5=one or more refunds failed
+/// Returns: 0=success, 1=reentrancy, 5=one or more refunds/count updates failed
 pub fn cancel_all_orders(caller: *const u8, pair_id: u64) -> u32 {
     if !reentrancy_enter() {
         return 1;
@@ -2908,6 +3248,8 @@ pub fn cancel_all_orders(caller: *const u8, pair_id: u64) -> u32 {
         reentrancy_exit();
         return 200;
     }
+
+    let _ = user_open_order_count(&c);
 
     let user_count = load_u64(&user_order_count_key(&c));
     let mut refund_failed = false;
@@ -2943,6 +3285,10 @@ pub fn cancel_all_orders(caller: *const u8, pair_id: u64) -> u32 {
                     }
                     update_order_status(&mut data, STATUS_CANCELLED);
                     storage_set(&ok, &data);
+                    if decrement_user_open_order_count(&c).is_err() {
+                        refund_failed = true;
+                        continue;
+                    }
                     remove_from_book_level(op, order_side, order_price, oid);
                 }
             }
@@ -2958,7 +3304,7 @@ pub fn cancel_all_orders(caller: *const u8, pair_id: u64) -> u32 {
 
 /// Modify an existing order (cancel + replace)
 /// Returns: 0=success, 1=not found, 2=not owner, 3=not modifiable, 4=reentrancy,
-///          5=refund failed
+///          5=refund failed, 6=open-order count inconsistency
 pub fn modify_order(caller: *const u8, order_id: u64, new_price: u64, new_quantity: u64) -> u32 {
     if !reentrancy_enter() {
         return 4;
@@ -2995,6 +3341,8 @@ pub fn modify_order(caller: *const u8, order_id: u64, new_price: u64, new_quanti
         return 3;
     }
 
+    let _ = user_open_order_count(&c);
+
     // Cancel old order and refund its escrow
     let mut data_mut = data.clone();
     let escrow_remaining = decode_order_escrow_locked(&data_mut);
@@ -3017,6 +3365,16 @@ pub fn modify_order(caller: *const u8, order_id: u64, new_price: u64, new_quanti
     }
     update_order_status(&mut data_mut, STATUS_CANCELLED);
     storage_set(&ok, &data_mut);
+    if decrement_user_open_order_count(&c).is_err() {
+        reentrancy_exit();
+        return 6;
+    }
+    remove_from_book_level(
+        pair_id,
+        decode_order_side(&data),
+        decode_order_price(&data),
+        order_id,
+    );
 
     // Place new order with same parameters but new price/quantity
     let side = decode_order_side(&data);
@@ -3292,22 +3650,24 @@ pub fn get_preferred_quote() -> u64 {
 ///   - Sell-stop: triggers when last_price <= trigger_price (price falling)
 ///   - Buy-stop:  triggers when last_price >= trigger_price (price rising)
 ///
-/// When triggered the order is set to STATUS_OPEN and immediately sent through
-/// the matching engine. Any unfilled remainder rests on the order book at the
-/// order's limit price.
+/// When triggered the order is activated on the book. Settlement is performed
+/// by the next return-code order transaction so transfer failures can revert
+/// atomically.
 ///
 /// Returns the number of orders that were triggered.
 pub fn check_triggers(pair_id: u64, last_price: u64) -> u64 {
-    if last_price == 0 {
+    let canonical_last_price = load_u64(&last_trade_price_key(pair_id));
+    if last_price == 0 || last_price != canonical_last_price {
         return 0;
     }
 
-    // Load pair data for matching
+    // The caller-supplied price must match canonical on-chain trade state and
+    // the pair must still be active.
     let pk = pair_key(pair_id);
-    let pair_data = match storage_get(&pk) {
-        Some(d) if d.len() >= PAIR_SIZE => d,
+    match storage_get(&pk) {
+        Some(data) if data.len() >= PAIR_SIZE && decode_pair_status(&data) == PAIR_ACTIVE => {}
         _ => return 0,
-    };
+    }
 
     let order_count = load_u64(ORDER_COUNT_KEY);
     let mut triggered: u64 = 0;
@@ -3347,32 +3707,22 @@ pub fn check_triggers(pair_id: u64, last_price: u64) -> u64 {
             continue;
         }
 
-        // Activate the order
+        let expiry = decode_order_expiry_slot(&data);
+        if expiry != 0 && expiry <= get_slot() {
+            // Leave custody untouched; the owner can cancel and reclaim. This
+            // return-value entry point never performs fallible token transfers.
+            continue;
+        }
+
+        // Activation is deliberately storage-only. The next normal order runs
+        // matching through the return-code ABI, where any failed settlement
+        // rolls the whole transaction back atomically.
         let mut od = data;
         update_order_status(&mut od, STATUS_OPEN);
         storage_set(&ok, &od);
 
         let price = decode_order_price(&od);
-        let quantity = decode_order_quantity(&od);
-        let filled = decode_order_filled(&od);
-        let remaining_qty = quantity - filled;
-        let trader = decode_order_trader(&od);
-
-        // Run through matching engine
-        let remaining = match_order(
-            oid,
-            pair_id,
-            side,
-            price,
-            remaining_qty,
-            &trader,
-            &pair_data,
-        );
-
-        // Rest unfilled portion on book (stop-limit acts as limit once triggered)
-        if remaining > 0 {
-            add_to_book(pair_id, side, price, oid);
-        }
+        add_to_book(pair_id, side, price, oid);
 
         triggered += 1;
     }
@@ -3398,13 +3748,14 @@ fn dispatch_min_len(args: &[u8]) -> Option<usize> {
         1 => Some(121),
         2 => Some(67),
         3 | 17 | 18 | 19 | 33 => Some(41),
-        4 | 21 | 22 | 28 | 30 | 32 | 34 | 35 => Some(65),
+        4 | 21 | 22 | 28 | 30 | 32 | 34 | 35 | 36 => Some(65),
         5 | 6 | 14 | 15 | 23 | 25 => Some(1),
         7 => Some(45),
         10 | 11 | 12 | 13 | 20 => Some(9),
         16 => Some(57),
         29 => Some(17),
         31 => Some(97),
+        37 => Some(81),
         _ => None,
     }
 }
@@ -3649,7 +4000,7 @@ pub extern "C" fn call() -> u32 {
             lichen_sdk::set_return_data(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
         }
         26 => {
-            // get_user_orders — returns all open order IDs for a user address
+            // get_user_orders — returns the append-only order ID history
             if args.len() >= 33 {
                 let addr: [u8; 32] = args[1..33].try_into().unwrap_or([0u8; 32]);
                 let count = load_u64(&user_order_count_key(&addr));
@@ -3666,10 +4017,10 @@ pub extern "C" fn call() -> u32 {
             }
         }
         27 => {
-            // get_open_order_count — returns user's order count
+            // get_open_order_count — returns the live order count
             if args.len() >= 33 {
                 let addr: [u8; 32] = args[1..33].try_into().unwrap_or([0u8; 32]);
-                let count = load_u64(&user_order_count_key(&addr));
+                let count = user_open_order_count(&addr);
                 lichen_sdk::set_return_data(&u64_to_bytes(count));
             }
         }
@@ -3748,6 +4099,26 @@ pub extern "C" fn call() -> u32 {
                 _rc = r as u32;
             }
         }
+        36 => {
+            // set_router_address(caller[32], router[32])
+            if args.len() >= 65 {
+                let r = set_router_address(args[1..33].as_ptr(), args[33..65].as_ptr());
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r;
+            }
+        }
+        37 => {
+            // quote_swap_exact_in(trader[32], pair_id[8], token_in[32], amount_in[8])
+            if args.len() >= 81 {
+                let out = quote_swap_exact_in(
+                    args[1..33].as_ptr(),
+                    bytes_to_u64(&args[33..41]),
+                    args[41..73].as_ptr(),
+                    bytes_to_u64(&args[73..81]),
+                );
+                lichen_sdk::set_return_data(&u64_to_bytes(out));
+            }
+        }
         _ => {
             lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
             _rc = 255;
@@ -3764,6 +4135,7 @@ pub extern "C" fn call() -> u32 {
 mod tests {
     extern crate std;
     use super::*;
+    use alloc::vec;
     use lichen_sdk::test_mock;
 
     fn setup() -> [u8; 32] {
@@ -4546,7 +4918,7 @@ mod tests {
             0
         );
         let initial_buy = storage_get(&order_key(1)).unwrap();
-        assert_eq!(decode_order_escrow_locked(&initial_buy), 2001);
+        assert_eq!(decode_order_escrow_locked(&initial_buy), 2021);
 
         test_mock::set_caller(seller);
         assert_eq!(
@@ -4566,7 +4938,7 @@ mod tests {
         let buy_data = storage_get(&order_key(1)).unwrap();
         assert_eq!(decode_order_status(&buy_data), STATUS_PARTIAL);
         assert_eq!(decode_order_filled(&buy_data), 1000);
-        assert_eq!(decode_order_escrow_locked(&buy_data), 1001);
+        assert_eq!(decode_order_escrow_locked(&buy_data), 1021);
     }
 
     #[test]
@@ -4901,6 +5273,33 @@ mod tests {
             3
         );
         assert_eq!(load_addr(REWARDS_ADDRESS_KEY.as_bytes()), first_rewards);
+    }
+
+    #[test]
+    fn test_router_authority_is_immutable_and_can_forward_trader_swaps() {
+        let admin = setup();
+        let router = [91u8; 32];
+        let other = [92u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(set_router_address(admin.as_ptr(), router.as_ptr()), 0);
+        assert_eq!(set_router_address(admin.as_ptr(), other.as_ptr()), 3);
+
+        // A configured router may forward a trader identity; authorization is
+        // accepted and execution reaches the normal pair lookup.
+        test_mock::set_caller(router);
+        let trader = [93u8; 32];
+        let token = [94u8; 32];
+        assert_eq!(
+            swap_exact_in(trader.as_ptr(), 999, token.as_ptr(), 1_000, 0, 0),
+            2
+        );
+
+        // Any other contract remains unable to impersonate that trader.
+        test_mock::set_caller(other);
+        assert_eq!(
+            swap_exact_in(trader.as_ptr(), 999, token.as_ptr(), 1_000, 0, 0),
+            200
+        );
     }
 
     #[test]
@@ -5487,10 +5886,10 @@ mod tests {
 
         test_mock::set_caller(taker);
         assert_eq!(
-            swap_exact_in(taker.as_ptr(), pair_id, base.as_ptr(), 1_000, 1_000, 0),
+            swap_exact_in(taker.as_ptr(), pair_id, base.as_ptr(), 1_000, 999, 0),
             0
         );
-        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 1_000);
+        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 999);
         assert_eq!(get_trade_count(), 1);
     }
 
@@ -5519,11 +5918,263 @@ mod tests {
 
         test_mock::set_caller(taker);
         assert_eq!(
-            swap_exact_in(taker.as_ptr(), pair_id, quote.as_ptr(), 1_000, 1_000, 0),
+            swap_exact_in(taker.as_ptr(), pair_id, quote.as_ptr(), 1_000, 900, 0),
             0
         );
-        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 1_000);
+        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 900);
         assert_eq!(get_trade_count(), 1);
+    }
+
+    #[test]
+    fn test_swap_exact_in_rejects_failed_input_escrow_before_matching() {
+        let (_admin, pair_id) = setup_with_pair();
+        let base = [10u8; 32];
+        let maker = [3u8; 32];
+        let taker = [4u8; 32];
+        test_mock::set_slot(100);
+
+        test_mock::set_caller(maker);
+        assert_eq!(
+            place_order(
+                maker.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1_000,
+                0,
+                0,
+            ),
+            0
+        );
+
+        test_mock::set_caller(taker);
+        test_mock::set_cross_call_should_fail(true);
+        assert_eq!(
+            swap_exact_in(taker.as_ptr(), pair_id, base.as_ptr(), 1_000, 999, 0),
+            7
+        );
+        assert_eq!(get_trade_count(), 0);
+        assert_eq!(load_u64(ORDER_COUNT_KEY), 1);
+        assert_eq!(
+            decode_order_status(&storage_get(&order_key(1)).unwrap()),
+            STATUS_OPEN
+        );
+    }
+
+    #[test]
+    fn test_swap_exact_in_aborts_on_settlement_failure_before_recording_fill() {
+        let (_admin, pair_id) = setup_with_pair();
+        let base = [10u8; 32];
+        let maker = [3u8; 32];
+        let taker = [4u8; 32];
+        test_mock::set_slot(100);
+
+        test_mock::set_caller(maker);
+        assert_eq!(
+            place_order(
+                maker.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1_000,
+                0,
+                0,
+            ),
+            0
+        );
+        let maker_before = storage_get(&order_key(1)).unwrap();
+
+        // transfer_from(input) succeeds, base release succeeds, quote release
+        // fails. The return-code ABI causes the runtime to roll the complete
+        // nested call frame back; the host test also proves no fill is recorded.
+        test_mock::set_cross_call_responses(vec![
+            0u32.to_le_bytes().to_vec(),
+            0u32.to_le_bytes().to_vec(),
+            transfer_failure_response(),
+        ]);
+        test_mock::set_caller(taker);
+        assert_eq!(
+            swap_exact_in(taker.as_ptr(), pair_id, base.as_ptr(), 1_000, 999, 0),
+            14
+        );
+        assert_eq!(get_trade_count(), 0);
+        assert_eq!(storage_get(&order_key(1)).unwrap(), maker_before);
+    }
+
+    #[test]
+    fn test_partial_book_exact_input_refunds_unspent_input() {
+        let (_admin, pair_id) = setup_with_pair();
+        let base = [10u8; 32];
+        let maker = [3u8; 32];
+        let taker = [4u8; 32];
+        test_mock::set_slot(100);
+
+        test_mock::set_caller(maker);
+        assert_eq!(
+            place_order(
+                maker.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1_000,
+                0,
+                0,
+            ),
+            0
+        );
+
+        test_mock::set_caller(taker);
+        assert_eq!(
+            swap_exact_in(taker.as_ptr(), pair_id, base.as_ptr(), 2_000, 999, 0),
+            0
+        );
+        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 999);
+        let taker_order = storage_get(&order_key(2)).unwrap();
+        assert_eq!(decode_order_quantity(&taker_order), 1_000);
+        assert_eq!(decode_order_status(&taker_order), STATUS_FILLED);
+        assert_eq!(decode_order_escrow_locked(&taker_order), 0);
+    }
+
+    #[test]
+    fn test_expired_maker_is_refunded_before_becoming_terminal() {
+        let (_admin, pair_id) = setup_with_pair();
+        let maker = [3u8; 32];
+        let taker = [4u8; 32];
+        test_mock::set_slot(100);
+
+        test_mock::set_caller(maker);
+        assert_eq!(
+            place_order(
+                maker.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1_000,
+                200,
+                0,
+            ),
+            0
+        );
+        test_mock::set_slot(201);
+        test_mock::set_caller(taker);
+        assert_eq!(
+            place_order(
+                taker.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1_000,
+                0,
+                0,
+            ),
+            0
+        );
+
+        let expired = storage_get(&order_key(1)).unwrap();
+        assert_eq!(decode_order_status(&expired), STATUS_EXPIRED);
+        assert_eq!(decode_order_escrow_locked(&expired), 0);
+        assert_eq!(user_open_order_count(&maker), 0);
+    }
+
+    #[test]
+    fn test_full_buy_maker_refunds_reserve_and_funds_rebate() {
+        let (_admin, pair_id) = setup_with_pair();
+        let maker = [3u8; 32];
+        let taker = [4u8; 32];
+        test_mock::set_slot(100);
+
+        test_mock::set_caller(maker);
+        assert_eq!(
+            place_order(
+                maker.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                100_000,
+                0,
+                0,
+            ),
+            0
+        );
+        assert_eq!(
+            decode_order_escrow_locked(&storage_get(&order_key(1)).unwrap()),
+            101_050
+        );
+
+        test_mock::set_caller(taker);
+        assert_eq!(
+            place_order(
+                taker.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT,
+                1_000_000_000,
+                100_000,
+                0,
+                0,
+            ),
+            0
+        );
+
+        let maker_order = storage_get(&order_key(1)).unwrap();
+        assert_eq!(decode_order_status(&maker_order), STATUS_FILLED);
+        assert_eq!(decode_order_escrow_locked(&maker_order), 0);
+        let mut rebate_key = Vec::from(&b"dex_rebate_"[..]);
+        rebate_key.extend_from_slice(&pair_id.to_le_bytes());
+        rebate_key.push(b'_');
+        rebate_key.extend_from_slice(&maker);
+        assert_eq!(load_u64(&rebate_key), 10);
+        assert_eq!(load_u64(FEE_TREASURY_KEY), 40);
+    }
+
+    #[test]
+    fn test_stop_trigger_requires_canonical_trade_price_and_only_activates() {
+        let (_admin, pair_id) = setup_with_pair();
+        let trader = [3u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(trader);
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_STOP_LIMIT,
+                900_000_000,
+                1_200,
+                0,
+                950_000_000,
+            ),
+            0
+        );
+        assert_eq!(
+            decode_order_status(&storage_get(&order_key(1)).unwrap()),
+            STATUS_DORMANT
+        );
+
+        save_u64(&last_trade_price_key(pair_id), 940_000_000);
+        assert_eq!(check_triggers(pair_id, 930_000_000), 0);
+        assert_eq!(
+            decode_order_status(&storage_get(&order_key(1)).unwrap()),
+            STATUS_DORMANT
+        );
+
+        assert_eq!(check_triggers(pair_id, 940_000_000), 1);
+        assert_eq!(
+            decode_order_status(&storage_get(&order_key(1)).unwrap()),
+            STATUS_OPEN
+        );
+        assert_eq!(
+            get_trade_count(),
+            0,
+            "activation must not settle in the query ABI"
+        );
+        assert_eq!(load_u64(&ask_count_key(pair_id, 900_000_000)), 1);
     }
 
     // --- Max pairs limit ---

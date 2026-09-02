@@ -447,7 +447,7 @@ const SHOW_STATE_COMMITMENT_SCHEMA_FLAG: &str = "--show-state-commitment-schema"
 const SPARSE_STATE_COMMITMENT_CONFIRMATION: &str = "sparse-state-commitment:v1";
 const SHIELDED_STATE_COMMITMENT_CONFIRMATION: &str = "shielded-state-commitment:v2";
 const REPAIR_TESTNET_DEX_CONTRACTS_FLAG: &str = "--repair-testnet-dex-contracts";
-const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.77";
+const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.270";
 const SHOW_CONTRACT_STORAGE_DIGEST_FLAG: &str = "--show-contract-storage-digest";
 const SHOW_STAKE_POOL_DIGEST_FLAG: &str = "--show-stake-pool-digest";
 const PREPARE_CONSENSUS_V1_ACTIVATION_FLAG: &str = "--prepare-consensus-v1-activation";
@@ -14887,9 +14887,16 @@ fn repair_testnet_dex_contract(
     let wasm = fs::read(testnet_dex_repair_wasm_path(contracts_dir, dir_name))
         .map_err(|err| format!("{symbol}: read {dir_name}.wasm: {err}"))?;
     let after_hash = Hash::hash(&wasm);
-    let abi = read_testnet_dex_repair_abi(&testnet_dex_repair_abi_path(contracts_dir, dir_name))?;
+    let abi_path = testnet_dex_repair_abi_path(contracts_dir, dir_name);
+    let abi = read_testnet_dex_repair_abi(&abi_path)?.ok_or_else(|| {
+        format!(
+            "{symbol}: required signed ABI is missing: {}",
+            abi_path.display()
+        )
+    })?;
+    let candidate_abi = Some(abi.clone());
     let code_changed = before_hash != after_hash;
-    let abi_changed = testnet_dex_repair_abi_changed(&contract.abi, &abi);
+    let abi_changed = testnet_dex_repair_abi_changed(&contract.abi, &candidate_abi);
     let changed = code_changed || abi_changed;
 
     if changed && !dry_run {
@@ -14900,9 +14907,7 @@ fn repair_testnet_dex_contract(
             contract.version = contract.version.saturating_add(1);
             contract.pending_upgrade = None;
         }
-        if let Some(abi) = abi.clone() {
-            contract.abi = Some(abi);
-        }
+        contract.abi = Some(abi);
         account.data = serde_json::to_vec(&contract)
             .map_err(|err| format!("{symbol}: encode repaired contract: {err}"))?;
         state.put_account(&program, &account)?;
@@ -14923,7 +14928,7 @@ fn repair_testnet_dex_contract(
             before_version
         },
         owner: contract.owner,
-        abi_loaded: abi.is_some(),
+        abi_loaded: true,
     })
 }
 
@@ -48987,6 +48992,50 @@ mod tests {
         assert!(!second_report.abi_changed);
         assert_eq!(second_report.before_version, 2);
         assert_eq!(second_report.after_version, 2);
+    }
+
+    #[test]
+    fn testnet_dex_repair_fails_closed_without_signed_abi() {
+        let state_dir = tempfile::tempdir().expect("create state dir");
+        let contracts_dir = tempfile::tempdir().expect("create contracts dir");
+        let state = StateStore::open(state_dir.path()).expect("open state");
+        let owner = Pubkey([9u8; 32]);
+        let program = Pubkey([10u8; 32]);
+        let mut account = Account::new(0, program);
+        account.executable = true;
+        account.data = serde_json::to_vec(&ContractAccount::new(vec![0, 1, 2], owner))
+            .expect("encode contract");
+        state
+            .put_account(&program, &account)
+            .expect("store contract");
+        state
+            .register_symbol(
+                "DEX",
+                lichen_core::state::SymbolRegistryEntry {
+                    symbol: "DEX".to_string(),
+                    program,
+                    owner,
+                    name: None,
+                    template: None,
+                    metadata: None,
+                    decimals: None,
+                },
+            )
+            .expect("register symbol");
+
+        let contract_dir = contracts_dir.path().join("dex_core");
+        fs::create_dir_all(&contract_dir).expect("create contract dir");
+        fs::write(contract_dir.join("dex_core.wasm"), [3, 4, 5, 6]).expect("write wasm");
+
+        let err =
+            repair_testnet_dex_contract(&state, contracts_dir.path(), "DEX", "dex_core", false)
+                .expect_err("missing ABI must block code replacement");
+        assert!(err.contains("required signed ABI is missing"));
+
+        let unchanged = state.get_account(&program).unwrap().unwrap();
+        let unchanged: ContractAccount = serde_json::from_slice(&unchanged.data).unwrap();
+        assert_eq!(unchanged.code_hash, Hash::hash(&[0, 1, 2]));
+        assert_eq!(unchanged.version, 1);
     }
 
     #[test]

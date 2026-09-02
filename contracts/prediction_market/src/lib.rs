@@ -28,6 +28,10 @@
 //   pm_on_{id}_{outcome}                 → Vec<u8>   Outcome name/label (up to 64)
 //   pm_p_{id}_{addr_hex}_{outcome}       → [u8; 16]  Position (shares + cost_basis)
 //   pm_lp_{id}_{addr_hex}                → u64       LP shares for market
+//   pm_cost_total_{id}                    → u64       Aggregate live trader cost basis
+//   pm_void_trader_pool_{id}              → u64       Immutable trader refund pool at void
+//   pm_void_trader_cost_{id}              → u64       Immutable trader cost denominator at void
+//   pm_void_lp_pool_{id}                  → u64       Immutable LP refund pool at void
 //   pm_cat_{category}_{idx}              → u64       Market ID by category index
 //   pm_catc_{category}                   → u64       Count per category
 //   pm_active_{idx}                      → u64       Active market IDs (frontpage)
@@ -149,6 +153,10 @@ const ORACLE_ADDR_KEY: &[u8] = b"pm_oracle_addr";
 const LUSD_ADDR_KEY: &[u8] = b"pm_lusd_addr";
 const DEX_GOV_ADDR_KEY: &[u8] = b"pm_dex_gov_addr";
 const SELF_ADDR_KEY: &[u8] = b"pm_self_addr";
+const MARKET_COST_TOTAL_PREFIX: &[u8] = b"pm_cost_total_";
+const VOID_TRADER_POOL_PREFIX: &[u8] = b"pm_void_trader_pool_";
+const VOID_TRADER_COST_PREFIX: &[u8] = b"pm_void_trader_cost_";
+const VOID_LP_POOL_PREFIX: &[u8] = b"pm_void_lp_pool_";
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -162,6 +170,16 @@ fn load_u64(key: &[u8]) -> u64 {
 
 fn save_u64(key: &[u8], val: u64) {
     storage_set(key, &u64_to_bytes(val));
+}
+
+fn load_exact_u64(key: &[u8]) -> Option<u64> {
+    storage_get(key).and_then(|data| {
+        if data.len() == 8 {
+            Some(bytes_to_u64(&data))
+        } else {
+            None
+        }
+    })
 }
 
 fn load_u8(key: &[u8]) -> u8 {
@@ -519,6 +537,28 @@ fn lp_key(market_id: u64, addr: &[u8]) -> Vec<u8> {
     k.push(b'_');
     k.extend_from_slice(&hex_encode(addr));
     k
+}
+
+fn market_scoped_key(prefix: &[u8], market_id: u64) -> Vec<u8> {
+    let mut key = Vec::from(prefix);
+    key.extend_from_slice(&u64_to_decimal(market_id));
+    key
+}
+
+fn market_cost_total_key(market_id: u64) -> Vec<u8> {
+    market_scoped_key(MARKET_COST_TOTAL_PREFIX, market_id)
+}
+
+fn void_trader_pool_key(market_id: u64) -> Vec<u8> {
+    market_scoped_key(VOID_TRADER_POOL_PREFIX, market_id)
+}
+
+fn void_trader_cost_key(market_id: u64) -> Vec<u8> {
+    market_scoped_key(VOID_TRADER_COST_PREFIX, market_id)
+}
+
+fn void_lp_pool_key(market_id: u64) -> Vec<u8> {
+    market_scoped_key(VOID_LP_POOL_PREFIX, market_id)
 }
 
 fn category_index_key(category: u8, idx: u64) -> Vec<u8> {
@@ -1834,6 +1874,10 @@ pub fn create_market(
         &[0u8; 8], // oracle_attestation_hash
     );
     save_market(new_id, &record);
+    // Presence of this exact-width key marks order-independent void accounting.
+    // Legacy markets without it fail closed on DAO void rather than guessing at
+    // historical trader liabilities.
+    save_u64(&market_cost_total_key(new_id), 0);
 
     // Store question text
     storage_set(&question_key(new_id), &question);
@@ -2034,7 +2078,6 @@ pub fn add_initial_liquidity(
             return 0;
         }
     };
-
     if !escrow_lusd_in(provider, amount_lusd) {
         reentrancy_exit();
         return 0;
@@ -2274,6 +2317,16 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_lus
             return 0;
         }
     };
+    let new_market_cost_total = match load_exact_u64(&market_cost_total_key(market_id))
+        .and_then(|total| total.checked_add(amount_lusd))
+    {
+        Some(total) => total,
+        None => {
+            log_info("Market trader-cost accounting unavailable or overflowed");
+            reentrancy_exit();
+            return 0;
+        }
+    };
 
     // Load all reserves
     let mut pools = Vec::with_capacity(outcome_count as usize);
@@ -2385,6 +2438,7 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_lus
     let total_vol = load_u64(TOTAL_VOLUME_KEY);
     save_u64(TOTAL_VOLUME_KEY, total_vol.saturating_add(amount_lusd));
     save_u64(TOTAL_COLLATERAL_KEY, new_total_coll);
+    save_u64(&market_cost_total_key(market_id), new_market_cost_total);
     let total_fees = load_u64(FEES_COLLECTED_KEY);
     save_u64(FEES_COLLECTED_KEY, total_fees.saturating_add(protocol_fee));
 
@@ -2492,6 +2546,21 @@ pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_am
             return 0;
         }
     };
+    let cost_basis_reduction = if user_shares > 0 {
+        (user_cost as u128 * shares_amount as u128 / user_shares as u128) as u64
+    } else {
+        0
+    };
+    let new_market_cost_total = match load_exact_u64(&market_cost_total_key(market_id))
+        .and_then(|total| total.checked_sub(cost_basis_reduction))
+    {
+        Some(total) => total,
+        None => {
+            log_info("Market trader-cost accounting unavailable or inconsistent");
+            reentrancy_exit();
+            return 0;
+        }
+    };
 
     // Apply new reserves
     let new_reserves = apply_sell_reserves(&reserves, outcome, shares_amount);
@@ -2542,11 +2611,6 @@ pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_am
     update_market_trader_stats(market_id, trader, total_out);
 
     // Update user position
-    let cost_basis_reduction = if user_shares > 0 {
-        (user_cost as u128 * shares_amount as u128 / user_shares as u128) as u64
-    } else {
-        0
-    };
     save_position(
         market_id,
         trader,
@@ -2570,6 +2634,7 @@ pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_am
     save_u64(TOTAL_VOLUME_KEY, total_vol.saturating_add(total_out));
     let total_coll = load_u64(TOTAL_COLLATERAL_KEY);
     save_u64(TOTAL_COLLATERAL_KEY, total_coll.saturating_sub(total_out));
+    save_u64(&market_cost_total_key(market_id), new_market_cost_total);
     let total_fees = load_u64(FEES_COLLECTED_KEY);
     save_u64(FEES_COLLECTED_KEY, total_fees.saturating_add(protocol_fee));
 
@@ -2620,7 +2685,7 @@ pub fn mint_complete_set(user_ptr: *const u8, market_id: u64, amount_lusd: u64) 
     // Check close slot — no minting after market closes
     let current_slot = lichen_sdk::get_slot();
     let close_slot = market_close_slot(&record);
-    if current_slot > close_slot {
+    if current_slot >= close_slot {
         log_info("Market closed for minting");
         reentrancy_exit();
         return 0;
@@ -2650,6 +2715,18 @@ pub fn mint_complete_set(user_ptr: *const u8, market_id: u64, amount_lusd: u64) 
             return 0;
         }
     };
+    let new_market_cost_total = match load_exact_u64(&market_cost_total_key(market_id))
+        .and_then(|total| total.checked_add(amount_lusd))
+    {
+        Some(total) => total,
+        None => {
+            log_info("Market trader-cost accounting unavailable or overflowed");
+            reentrancy_exit();
+            return 0;
+        }
+    };
+    let per_outcome_cost = amount_lusd / outcome_count as u64;
+    let cost_remainder = amount_lusd % outcome_count as u64;
 
     if !escrow_lusd_in(user, amount_lusd) {
         reentrancy_exit();
@@ -2659,13 +2736,16 @@ pub fn mint_complete_set(user_ptr: *const u8, market_id: u64, amount_lusd: u64) 
     // Mint: for each outcome, give user `amount_lusd` shares
     for i in 0..outcome_count {
         let (existing_shares, existing_cost) = load_position(market_id, user, i);
-        save_position(
-            market_id,
-            user,
-            i,
-            existing_shares.saturating_add(amount_lusd),
-            existing_cost.saturating_add(amount_lusd),
-        );
+        let allocated_cost = per_outcome_cost + u64::from((i as u64) < cost_remainder);
+        let Some(next_shares) = existing_shares.checked_add(amount_lusd) else {
+            reentrancy_exit();
+            return 0;
+        };
+        let Some(next_cost) = existing_cost.checked_add(allocated_cost) else {
+            reentrancy_exit();
+            return 0;
+        };
+        save_position(market_id, user, i, next_shares, next_cost);
 
         // Update pool: increase total shares and open interest
         let mut pool = match load_outcome_pool(market_id, i) {
@@ -2687,6 +2767,7 @@ pub fn mint_complete_set(user_ptr: *const u8, market_id: u64, amount_lusd: u64) 
     save_market(market_id, &record);
 
     save_u64(TOTAL_COLLATERAL_KEY, new_total_coll);
+    save_u64(&market_cost_total_key(market_id), new_market_cost_total);
 
     track_user_market(user, market_id);
 
@@ -2733,9 +2814,12 @@ pub fn redeem_complete_set(user_ptr: *const u8, market_id: u64, amount: u64) -> 
 
     let outcome_count = market_outcome_count(&record);
 
-    // Verify user has at least `amount` of every outcome
+    // Verify user has at least `amount` of every outcome and precompute the
+    // exact cost-basis reduction before any external transfer.
+    let mut cost_reductions = Vec::with_capacity(outcome_count as usize);
+    let mut total_cost_reduction = 0u64;
     for i in 0..outcome_count {
-        let (shares, _) = load_position(market_id, user, i);
+        let (shares, cost) = load_position(market_id, user, i);
         if shares < amount {
             reentrancy_exit();
             return 0;
@@ -2744,7 +2828,30 @@ pub fn redeem_complete_set(user_ptr: *const u8, market_id: u64, amount: u64) -> 
             reentrancy_exit();
             return 0;
         }
+        let reduction = if shares > 0 {
+            (cost as u128 * amount as u128 / shares as u128) as u64
+        } else {
+            0
+        };
+        total_cost_reduction = match total_cost_reduction.checked_add(reduction) {
+            Some(total) => total,
+            None => {
+                reentrancy_exit();
+                return 0;
+            }
+        };
+        cost_reductions.push(reduction);
     }
+    let new_market_cost_total = match load_exact_u64(&market_cost_total_key(market_id))
+        .and_then(|total| total.checked_sub(total_cost_reduction))
+    {
+        Some(total) => total,
+        None => {
+            log_info("Market trader-cost accounting unavailable or inconsistent");
+            reentrancy_exit();
+            return 0;
+        }
+    };
 
     // Return collateral (no fee on redemption per plan). Transfer before
     // mutating positions/pools so failed payouts leave the user retryable.
@@ -2758,11 +2865,7 @@ pub fn redeem_complete_set(user_ptr: *const u8, market_id: u64, amount: u64) -> 
     // Burn shares from each outcome
     for i in 0..outcome_count {
         let (shares, cost) = load_position(market_id, user, i);
-        let cost_reduction = if shares > 0 {
-            (cost as u128 * amount as u128 / shares as u128) as u64
-        } else {
-            0
-        };
+        let cost_reduction = cost_reductions[i as usize];
         save_position(
             market_id,
             user,
@@ -2795,6 +2898,7 @@ pub fn redeem_complete_set(user_ptr: *const u8, market_id: u64, amount: u64) -> 
         TOTAL_COLLATERAL_KEY,
         total_coll.saturating_sub(lusd_returned),
     );
+    save_u64(&market_cost_total_key(market_id), new_market_cost_total);
 
     lichen_sdk::set_return_data(&u64_to_bytes(lusd_returned));
 
@@ -3318,6 +3422,22 @@ pub fn dao_void(caller_ptr: *const u8, market_id: u64) -> u32 {
         return 0;
     }
 
+    // Freeze order-independent refund pools before changing lifecycle state.
+    // New-schema markets track aggregate trader cost exactly. A legacy market
+    // without that marker cannot be made solvent by guessing, so voiding fails
+    // closed until a source-backed migration is available.
+    let tracked_trader_cost = match load_exact_u64(&market_cost_total_key(market_id)) {
+        Some(total) => total,
+        None => {
+            log_info("DAO void rejected: trader-cost accounting is unavailable");
+            reentrancy_exit();
+            return 0;
+        }
+    };
+    let total_collateral = market_total_collateral(&record);
+    let trader_pool = total_collateral.min(tracked_trader_cost);
+    let lp_pool = total_collateral - trader_pool;
+
     if status == STATUS_RESOLVING || status == STATUS_DISPUTED {
         let resolver = market_resolver(&record);
         let resolver_bond = market_resolution_bond(&record);
@@ -3347,6 +3467,9 @@ pub fn dao_void(caller_ptr: *const u8, market_id: u64) -> u32 {
 
     set_market_status(&mut record, STATUS_VOIDED);
     save_market(market_id, &record);
+    save_u64(&void_trader_pool_key(market_id), trader_pool);
+    save_u64(&void_trader_cost_key(market_id), tracked_trader_cost);
+    save_u64(&void_lp_pool_key(market_id), lp_pool);
 
     remove_active_market(market_id);
 
@@ -3479,44 +3602,78 @@ pub fn reclaim_collateral(user_ptr: *const u8, market_id: u64) -> u32 {
     let outcome_count = market_outcome_count(&record);
     let total_coll_market = market_total_collateral(&record);
 
-    // Calculate user's total cost basis across all outcomes
+    let trader_pool = match load_exact_u64(&void_trader_pool_key(market_id)) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
+    let trader_cost_total = match load_exact_u64(&void_trader_cost_key(market_id)) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
+    let lp_pool = match load_exact_u64(&void_lp_pool_key(market_id)) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
+
+    // Calculate user's exact live cost basis across all outcomes.
     let mut user_total_cost: u64 = 0;
     for i in 0..outcome_count {
         let (_, cost) = load_position(market_id, user, i);
-        user_total_cost = user_total_cost.saturating_add(cost);
+        user_total_cost = match user_total_cost.checked_add(cost) {
+            Some(total) => total,
+            None => {
+                reentrancy_exit();
+                return 0;
+            }
+        };
     }
 
     // Also check LP position
     let user_lp = load_u64(&lp_key(market_id, user));
     let total_lp = market_lp_total_shares(&record);
 
-    // Refund = user's market collateral share plus any DAO-voided resolution bond refund.
-    let mut collateral_refund: u64 = 0;
-
-    if total_coll_market > 0 && user_total_cost > 0 {
-        // Pro-rata refund: user's cost basis as proportion of total collateral.
-        // If total collateral is >= sum of all cost bases, users get full refund.
-        // Otherwise, proportional reduction.
-        collateral_refund = user_total_cost;
+    if user_total_cost > trader_cost_total || user_lp > total_lp {
+        log_info("Voided-market claim exceeds immutable accounting snapshot");
+        reentrancy_exit();
+        return 0;
     }
-
-    if total_lp > 0 && user_lp > 0 {
-        // LP's share of remaining collateral
-        let lp_share = (total_coll_market as u128 * user_lp as u128 / total_lp as u128) as u64;
-        // Dual-role users (trader + LP) get both refunds summed;
-        // cost_basis covers share purchases, lp_share covers LP deposits —
-        // these are independent contributions to the pool.
-        collateral_refund = collateral_refund.saturating_add(lp_share);
-    }
-
-    // Cap collateral refund to available market collateral before adding bond refunds.
-    if collateral_refund > total_coll_market {
-        collateral_refund = total_coll_market;
-    }
+    let trader_refund = if trader_cost_total > 0 && user_total_cost > 0 {
+        (trader_pool as u128 * user_total_cost as u128 / trader_cost_total as u128) as u64
+    } else {
+        0
+    };
+    let lp_refund = if total_lp > 0 && user_lp > 0 {
+        (lp_pool as u128 * user_lp as u128 / total_lp as u128) as u64
+    } else {
+        0
+    };
+    let collateral_refund = match trader_refund.checked_add(lp_refund) {
+        Some(value) if value <= total_coll_market => value,
+        _ => {
+            log_info("Voided-market claim exceeds remaining collateral");
+            reentrancy_exit();
+            return 0;
+        }
+    };
 
     let bond_key = bond_refund_key(market_id, user);
     let bond_refund = load_u64(&bond_key);
-    let refund = collateral_refund.saturating_add(bond_refund);
+    let refund = match collateral_refund.checked_add(bond_refund) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
 
     if refund == 0 {
         reentrancy_exit();
@@ -3526,8 +3683,6 @@ pub fn reclaim_collateral(user_ptr: *const u8, market_id: u64) -> u32 {
     // Transfer lUSD to the user
     if !transfer_lusd_out(user, refund) {
         log_info("reclaim_collateral: lUSD transfer to user failed");
-        // Revert position clears — re-save positions so user can try again
-        // (This is a simplification; a full revert would also restore LP)
         reentrancy_exit();
         return 0;
     }
@@ -3551,6 +3706,16 @@ pub fn reclaim_collateral(user_ptr: *const u8, market_id: u64) -> u32 {
         TOTAL_COLLATERAL_KEY,
         total_coll.saturating_sub(collateral_refund),
     );
+    let remaining_cost = match load_exact_u64(&market_cost_total_key(market_id))
+        .and_then(|total| total.checked_sub(user_total_cost))
+    {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
+    save_u64(&market_cost_total_key(market_id), remaining_cost);
 
     // Store full u64 refund in return data (no u32 truncation)
     lichen_sdk::set_return_data(&u64_to_bytes(refund));
@@ -4702,6 +4867,12 @@ mod tests {
     /// Manually transition a market to VOIDED.
     fn force_void_market(market_id: u64) {
         let mut record = load_market(market_id).unwrap();
+        let tracked = load_exact_u64(&market_cost_total_key(market_id)).unwrap();
+        let collateral = market_total_collateral(&record);
+        let trader_pool = collateral.min(tracked);
+        save_u64(&void_trader_pool_key(market_id), trader_pool);
+        save_u64(&void_trader_cost_key(market_id), tracked);
+        save_u64(&void_lp_pool_key(market_id), collateral - trader_pool);
         set_market_status(&mut record, STATUS_VOIDED);
         save_market(market_id, &record);
     }
@@ -5065,6 +5236,23 @@ mod tests {
         let (s1, _) = load_position(mid, &user, 1);
         assert_eq!(s0, TEST_5_LUSD);
         assert_eq!(s1, TEST_5_LUSD);
+    }
+
+    #[test]
+    fn test_mint_complete_set_rejects_exact_close_slot() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let close_slot = 100_000;
+        let mid = create_binary_market(&creator, close_slot);
+        activate_market(&creator, mid, TEST_10_LUSD);
+
+        let user = [3u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_slot(close_slot);
+        assert_eq!(mint_complete_set(user.as_ptr(), mid, TEST_1_LUSD), 0);
+        assert_eq!(load_position(mid, &user, 0), (0, 0));
+        assert_eq!(load_position(mid, &user, 1), (0, 0));
     }
 
     #[test]

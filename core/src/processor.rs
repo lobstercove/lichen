@@ -9896,6 +9896,26 @@ mod tests {
         serde_json::from_slice(&account.data).unwrap()
     }
 
+    fn install_upgrade_abi_marker_for_test(state: &StateStore, contract_addr: Pubkey) {
+        let mut account = state.get_account(&contract_addr).unwrap().unwrap();
+        let mut contract: crate::ContractAccount = serde_json::from_slice(&account.data).unwrap();
+        contract.abi = Some(crate::ContractAbi {
+            version: "1.0".to_string(),
+            name: "upgrade_abi_marker".to_string(),
+            template: None,
+            description: None,
+            functions: vec![abi_result_function(
+                "existing_call",
+                crate::contract::AbiResultKind::ReturnCode,
+                vec![0],
+            )],
+            events: Vec::new(),
+            errors: Vec::new(),
+        });
+        account.data = serde_json::to_vec(&contract).unwrap();
+        state.put_account(&contract_addr, &account).unwrap();
+    }
+
     /// Helper: build and submit a contract instruction tx.
     fn submit_contract_ix(
         processor: &TxProcessor,
@@ -13694,6 +13714,7 @@ mod tests {
             genesis_hash,
             &validator,
         );
+        install_upgrade_abi_marker_for_test(&state, contract_addr);
 
         // No timelock set — upgrade should be instant
         let new_code = valid_wasm_code(0x02);
@@ -13718,6 +13739,11 @@ mod tests {
         assert_eq!(ca.version, 2, "Version should be bumped immediately");
         assert!(ca.pending_upgrade.is_none());
         assert_eq!(ca.code, new_code);
+        assert_eq!(
+            ca.abi.as_ref().map(|abi| abi.name.as_str()),
+            Some("upgrade_abi_marker"),
+            "an upgrade must retain declared result semantics until SetContractAbi replaces them"
+        );
     }
 
     #[test]
@@ -16307,6 +16333,7 @@ mod tests {
             genesis_hash,
             &validator,
         );
+        install_upgrade_abi_marker_for_test(&_state, contract_addr);
 
         // Set 5-epoch timelock (current slot = 0 → epoch 0, needs > epoch 5)
         let r = submit_contract_ix(
@@ -16347,6 +16374,25 @@ mod tests {
             .as_deref()
             .unwrap_or("")
             .contains("Timelock has not expired"));
+
+        let executable_blockhash = advance_test_slot(&_state, SLOTS_PER_EPOCH * 6);
+        let r = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::ExecuteUpgrade,
+            executable_blockhash,
+            &validator,
+        );
+        assert!(r.success, "Expired upgrade should execute: {:?}", r.error);
+        let ca = load_contract_account_for_test(&_state, contract_addr);
+        assert_eq!(ca.version, 2);
+        assert!(ca.pending_upgrade.is_none());
+        assert_eq!(
+            ca.abi.as_ref().map(|abi| abi.name.as_str()),
+            Some("upgrade_abi_marker"),
+            "a timelocked upgrade must retain declared result semantics until SetContractAbi replaces them"
+        );
     }
 
     #[test]

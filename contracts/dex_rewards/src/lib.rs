@@ -381,7 +381,7 @@ pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
     };
 
     // Calculate reward based on tier
-    let tier = get_tier(current_vol.saturating_add(volume));
+    let tier = get_tier(new_vol);
     let multiplier = get_multiplier(tier);
     let base_reward = fee_paid; // 1:1 fee mining
 
@@ -394,8 +394,12 @@ pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
         None => return 7,
     };
 
-    // Handle referral bonus
+    // Handle referral bonus inside the same hard monthly emissions budget.
+    // Previously referral liabilities were added on top of the cap, allowing
+    // the contract to promise more LICN than the configured epoch allocation.
     let mut referral_update: Option<([u8; 32], u64)> = None;
+    let mut referral_bonus = 0u64;
+    let referral_budget = remaining_budget.saturating_sub(reward);
     let referrer_data = storage_get(&referral_key(&t));
     if let Some(ref_data) = referrer_data {
         if ref_data.len() >= 32 {
@@ -408,19 +412,31 @@ pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
                 } else {
                     REFERRAL_RATE_BPS
                 };
-                let ref_bonus = match checked_mul_div_u64(fee_paid, effective_rate, 10_000) {
+                let requested_bonus = match checked_mul_div_u64(fee_paid, effective_rate, 10_000) {
                     Some(value) => value,
                     None => return 7,
                 };
+                let ref_bonus = requested_bonus.min(referral_budget);
                 let ref_earnings = load_u64(&referrer_earnings_key(&referrer));
                 let new_ref_earnings = match ref_earnings.checked_add(ref_bonus) {
                     Some(value) => value,
                     None => return 7,
                 };
-                referral_update = Some((referrer, new_ref_earnings));
+                if ref_bonus > 0 {
+                    referral_bonus = ref_bonus;
+                    referral_update = Some((referrer, new_ref_earnings));
+                }
             }
         }
     }
+    let epoch_increment = match reward.checked_add(referral_bonus) {
+        Some(value) => value,
+        None => return 7,
+    };
+    let new_epoch_dist = match epoch_dist.checked_add(epoch_increment) {
+        Some(value) if value <= REWARD_POOL_PER_MONTH => value,
+        _ => return 7,
+    };
 
     // Apply mutations only after all checked accounting has succeeded.
     if let Some(value) = new_trader_count {
@@ -431,9 +447,9 @@ pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
     save_u64(TRADE_COUNT_KEY, new_trade_count);
     if reset_epoch {
         save_u64(EPOCH_START_SLOT_KEY, current_slot);
-        save_u64(EPOCH_DISTRIBUTED_KEY, reward);
-    } else if reward > 0 {
-        save_u64(EPOCH_DISTRIBUTED_KEY, epoch_dist + reward);
+        save_u64(EPOCH_DISTRIBUTED_KEY, epoch_increment);
+    } else if epoch_increment > 0 {
+        save_u64(EPOCH_DISTRIBUTED_KEY, new_epoch_dist);
     }
     save_u64(&trader_pending_key(&t), new_pending);
     if let Some((referrer, new_ref_earnings)) = referral_update {
@@ -1954,11 +1970,40 @@ mod tests {
             load_u64(&trader_pending_key(&trader)),
             REWARD_POOL_PER_MONTH
         );
-        let expected_referral = ((u64::MAX as u128) * 3000u128 / 10_000u128) as u64;
+        assert_eq!(load_u64(&referrer_earnings_key(&referrer)), 0);
+        assert_eq!(load_u64(EPOCH_DISTRIBUTED_KEY), REWARD_POOL_PER_MONTH);
+    }
+
+    #[test]
+    fn test_trading_and_referral_rewards_share_monthly_cap() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        let referrer = [3u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(trader);
+        assert_eq!(register_referral(trader.as_ptr(), referrer.as_ptr()), 0);
+
+        save_u64(EPOCH_START_SLOT_KEY, 100);
+        save_u64(EPOCH_DISTRIBUTED_KEY, REWARD_POOL_PER_MONTH - 1_500);
+        test_mock::set_caller([0xFFu8; 32]);
+        assert_eq!(record_trade(trader.as_ptr(), 1_000, 10_000), 0);
+        assert_eq!(load_u64(&trader_pending_key(&trader)), 1_000);
+        assert_eq!(load_u64(&referrer_earnings_key(&referrer)), 100);
         assert_eq!(
-            load_u64(&referrer_earnings_key(&referrer)),
-            expected_referral
+            load_u64(EPOCH_DISTRIBUTED_KEY),
+            REWARD_POOL_PER_MONTH - 400
         );
+
+        // The next trade can consume only the exact 400-unit remainder across
+        // both recipient classes and can never exceed the epoch cap.
+        let trader2 = [4u8; 32];
+        test_mock::set_caller(trader2);
+        assert_eq!(register_referral(trader2.as_ptr(), referrer.as_ptr()), 0);
+        test_mock::set_caller([0xFFu8; 32]);
+        assert_eq!(record_trade(trader2.as_ptr(), 1_000, 10_000), 0);
+        assert_eq!(load_u64(&trader_pending_key(&trader2)), 400);
+        assert_eq!(load_u64(&referrer_earnings_key(&referrer)), 100);
+        assert_eq!(load_u64(EPOCH_DISTRIBUTED_KEY), REWARD_POOL_PER_MONTH);
     }
 
     #[test]

@@ -670,6 +670,26 @@
       }
     },
     {
+      "name": "set_router_address",
+      "opcode": 36,
+      "params": [
+        { "name": "caller", "type": "Pubkey" },
+        { "name": "router", "type": "Pubkey" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "quote_swap_exact_in",
+      "opcode": 37,
+      "params": [
+        { "name": "trader", "type": "Pubkey" },
+        { "name": "pair_id", "type": "u64" },
+        { "name": "token_in", "type": "Pubkey" },
+        { "name": "amount_in", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_value" }
+    },
+    {
       "name": "set_sporepump_authority",
       "params": [
         { "name": "caller", "type": "Pubkey" },

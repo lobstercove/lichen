@@ -159,7 +159,13 @@ impl TxProcessor {
         contract.version = contract.version.saturating_add(1);
         contract.code = new_code;
         contract.code_hash = new_hash;
-        contract.abi = None;
+        // Keep the last governed ABI active until the owner replaces it through
+        // SetContractAbi. Clearing it here silently drops declared result
+        // semantics and can make a non-trapping child-call error look
+        // successful during the gap between the code and ABI transactions.
+        // A stale ABI can fail closed for changed return semantics; no ABI
+        // cannot. Testnet's stopped-state DEX repair replaces code and ABI
+        // atomically, while ordinary upgrades retain this safe predecessor.
         contract.pending_upgrade = None;
 
         let mut updated_account = account;
@@ -289,7 +295,8 @@ impl TxProcessor {
         contract.version = contract.version.saturating_add(1);
         contract.code = pending.code;
         contract.code_hash = pending.code_hash;
-        contract.abi = None;
+        // Preserve declared result semantics until an explicit SetContractAbi
+        // update replaces them; see the immediate-upgrade path above.
 
         let mut updated_account = account;
         updated_account.data = serde_json::to_vec(&contract)

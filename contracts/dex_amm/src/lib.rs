@@ -85,6 +85,7 @@ const TOTAL_FEES_KEY: &[u8] = b"amm_total_fees";
 const POOL_PAIR_INDEX_PREFIX: &[u8] = b"amm_pair_idx_";
 const REWARDS_ADDRESS_KEY: &[u8] = b"amm_rewards_addr";
 const SPOREPUMP_AUTHORITY_KEY: &[u8] = b"amm_sporepump_authority";
+const ROUTER_ADDRESS_KEY: &[u8] = b"amm_router_addr";
 
 // ============================================================================
 // HELPERS
@@ -1106,6 +1107,7 @@ fn compute_swap_with_ticks(
     sqrt_price: u64,
     current_tick: i32,
     is_token_a_in: bool,
+    commit_crossings: bool,
 ) -> (u64, u64, i32, u64) {
     let mut remaining = amount_in_after_fee;
     let mut total_out: u64 = 0;
@@ -1160,12 +1162,14 @@ fn compute_swap_with_ticks(
                     let (net, fg_out0, fg_out1) = load_tick_data(&tk);
                     let fg_g0 = load_u128(&fee_growth_global_key(pool_id, true));
                     let fg_g1 = load_u128(&fee_growth_global_key(pool_id, false));
-                    save_tick_data(
-                        &tk,
-                        net,
-                        fg_g0.wrapping_sub(fg_out0),
-                        fg_g1.wrapping_sub(fg_out1),
-                    );
+                    if commit_crossings {
+                        save_tick_data(
+                            &tk,
+                            net,
+                            fg_g0.wrapping_sub(fg_out0),
+                            fg_g1.wrapping_sub(fg_out1),
+                        );
+                    }
                     if going_up {
                         liq = ((liq as i64).saturating_add(net)) as u64;
                         ct = tick_bound;
@@ -1231,6 +1235,32 @@ pub extern "C" fn set_sporepump_authority(caller: *const u8, sporepump: *const u
         return 3;
     }
     storage_set(SPOREPUMP_AUTHORITY_KEY, &s);
+    0
+}
+
+/// Bind the router allowed to execute swaps on behalf of the transaction
+/// signer. The router address is immutable once configured.
+#[no_mangle]
+pub extern "C" fn set_router_address(caller: *const u8, router: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut r = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(router, r.as_mut_ptr(), 32);
+    }
+    if get_caller().0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if is_zero(&r) {
+        return 2;
+    }
+    if has_configured_address(ROUTER_ADDRESS_KEY) {
+        return 3;
+    }
+    storage_set(ROUTER_ADDRESS_KEY, &r);
     0
 }
 
@@ -1783,7 +1813,8 @@ pub fn collect_fees(provider: *const u8, position_id: u64) -> u32 {
 
 /// Swap exact input amount
 /// Returns: 0=success, 1=paused, 2=pool not found, 3=deadline expired,
-///          4=insufficient output, 5=reentrancy, 6=zero amount
+///          4=insufficient output, 5=reentrancy, 6=zero amount,
+///          7=input transfer failed, 8=output transfer failed, 9=accounting overflow
 pub fn swap_exact_in(
     trader: *const u8,
     pool_id: u64,
@@ -1809,8 +1840,9 @@ pub fn swap_exact_in(
         core::ptr::copy_nonoverlapping(trader, tr.as_mut_ptr(), 32);
     }
     // AUDIT-FIX: verify caller matches transaction signer
-    let real_caller = get_caller();
-    if real_caller.0 != tr {
+    let real_caller = get_caller().0;
+    let router = load_addr(ROUTER_ADDRESS_KEY);
+    if real_caller != tr && (is_zero(&router) || real_caller != router) {
         reentrancy_exit();
         return 200;
     }
@@ -1842,6 +1874,30 @@ pub fn swap_exact_in(
     let fee = (amount_in as u128 * fee_bps as u128 / 10_000) as u64;
     let amount_after_fee = amount_in - fee;
 
+    // Fail before any cross-contract custody movement if monotonic accounting
+    // can no longer represent this swap exactly.
+    let new_swap_count = match load_u64(SWAP_COUNT_KEY).checked_add(1) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 9;
+        }
+    };
+    let new_total_volume = match load_u64(TOTAL_VOLUME_KEY).checked_add(amount_in) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 9;
+        }
+    };
+    let new_total_fees = match load_u64(TOTAL_FEES_KEY).checked_add(fee) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 9;
+        }
+    };
+
     // AUDIT-FIX AMM-5: Cross-tick swap with proper liquidity transitions
     let (amount_out, new_sqrt, new_tick, final_liq) = compute_swap_with_ticks(
         pool_id,
@@ -1850,6 +1906,7 @@ pub fn swap_exact_in(
         sqrt_price,
         current_tick,
         is_token_a_in,
+        true,
     );
 
     if amount_out < min_out {
@@ -1882,12 +1939,9 @@ pub fn swap_exact_in(
     accrue_fees_to_positions(pool_id, fee, is_token_a_in);
 
     // Track global swap count, volume, and fees
-    save_u64(SWAP_COUNT_KEY, load_u64(SWAP_COUNT_KEY) + 1);
-    save_u64(
-        TOTAL_VOLUME_KEY,
-        load_u64(TOTAL_VOLUME_KEY).saturating_add(amount_in),
-    );
-    save_u64(TOTAL_FEES_KEY, load_u64(TOTAL_FEES_KEY).saturating_add(fee));
+    save_u64(SWAP_COUNT_KEY, new_swap_count);
+    save_u64(TOTAL_VOLUME_KEY, new_total_volume);
+    save_u64(TOTAL_FEES_KEY, new_total_fees);
 
     // Return amount out
     lichen_sdk::set_return_data(&u64_to_bytes(amount_out));
@@ -1922,8 +1976,9 @@ pub fn swap_exact_out(
         core::ptr::copy_nonoverlapping(trader, tr.as_mut_ptr(), 32);
     }
     // AUDIT-FIX: verify caller matches transaction signer
-    let real_caller = get_caller();
-    if real_caller.0 != tr {
+    let real_caller = get_caller().0;
+    let router = load_addr(ROUTER_ADDRESS_KEY);
+    if real_caller != tr && (is_zero(&router) || real_caller != router) {
         reentrancy_exit();
         return 200;
     }
@@ -1934,8 +1989,9 @@ pub fn swap_exact_out(
         return 3;
     }
 
-    // For exact out, we estimate input needed
-    // Simplified: try increasing amounts until output >= target
+    // Use the same concentrated-liquidity path as execution. The quote pass is
+    // read-only: tick fee-growth checkpoints are flipped exactly once, by the
+    // eventual swap_exact_in execution, never by binary-search probes.
     let pk = pool_key(pool_id);
     let pool_data = match storage_get(&pk) {
         Some(d) if d.len() >= POOL_SIZE => d,
@@ -1949,6 +2005,7 @@ pub fn swap_exact_out(
     let liquidity = decode_pool_liquidity(&pool_data);
     let fee_tier = decode_pool_fee_tier(&pool_data);
     let fee_bps = FEE_VALUES[fee_tier as usize];
+    let current_tick = decode_pool_tick(&pool_data);
 
     // Binary search for required input
     let mut lo: u64 = 1;
@@ -1959,7 +2016,17 @@ pub fn swap_exact_out(
             break;
         }
         let mid = lo + (hi - lo) / 2;
-        let (out, _) = compute_swap_output(mid, liquidity, sqrt_price, fee_bps, !is_token_a_out);
+        let fee = (mid as u128 * fee_bps as u128 / 10_000) as u64;
+        let amount_after_fee = mid - fee;
+        let (out, _, _, _) = compute_swap_with_ticks(
+            pool_id,
+            amount_after_fee,
+            liquidity,
+            sqrt_price,
+            current_tick,
+            !is_token_a_out,
+            false,
+        );
         if out >= amount_out {
             best_in = mid;
             hi = mid - 1;
@@ -2264,6 +2331,7 @@ pub fn quote_swap(pool_id: u64, is_token_a_in: bool, amount_in: u64) -> u64 {
         sqrt_price,
         current_tick,
         is_token_a_in,
+        false,
     );
     out
 }
@@ -2290,7 +2358,7 @@ fn dispatch_min_len(args: &[u8]) -> Option<usize> {
         10 | 11 | 14 => Some(9),
         12 | 13 | 16 | 17 | 18 | 19 => Some(1),
         15 => Some(18),
-        20 | 22 => Some(65),
+        20 | 22 | 24 => Some(65),
         _ => None,
     }
 }
@@ -2540,6 +2608,14 @@ pub extern "C" fn call() -> u32 {
                 let r = sync_lp_rewards(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
                 _rc = r as u32;
+            }
+        }
+        24 => {
+            // set_router_address(caller[32], router[32])
+            if args.len() >= 65 {
+                let r = set_router_address(args[1..33].as_ptr(), args[33..65].as_ptr());
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r;
             }
         }
         _ => {
@@ -3324,6 +3400,36 @@ mod tests {
     }
 
     #[test]
+    fn test_router_authority_is_immutable_and_can_forward_trader_swaps() {
+        let admin = setup();
+        let router = [91u8; 32];
+        let other = [92u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(set_router_address(admin.as_ptr(), router.as_ptr()), 0);
+        assert_eq!(set_router_address(admin.as_ptr(), other.as_ptr()), 3);
+
+        test_mock::set_caller(router);
+        let trader = [93u8; 32];
+        assert_eq!(swap_exact_in(trader.as_ptr(), 999, true, 1_000, 0, 0), 2);
+
+        test_mock::set_caller(other);
+        assert_eq!(
+            swap_exact_in(trader.as_ptr(), 999, true, 1_000, 0, 0),
+            200
+        );
+    }
+
+    #[test]
+    fn test_swap_accounting_overflow_fails_before_execution() {
+        let (_admin, pool_id) = setup_with_pool();
+        let trader = [93u8; 32];
+        save_u64(SWAP_COUNT_KEY, u64::MAX);
+        test_mock::set_caller(trader);
+        assert_eq!(swap_exact_in(trader.as_ptr(), pool_id, true, 1_000, 0, 0), 9);
+        assert!(test_mock::get_last_cross_call().is_none());
+    }
+
+    #[test]
     fn test_sync_lp_rewards_calls_rewards_contract_with_position_state() {
         let (admin, pool_id) = setup_with_pool();
         let provider = [2u8; 32];
@@ -3582,6 +3688,63 @@ mod tests {
                 0
             )),
             4
+        );
+    }
+
+    #[test]
+    fn test_cross_tick_quote_is_storage_read_only() {
+        let (_admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(provider);
+        assert_eq!(
+            add_liquidity(provider.as_ptr(), pool_id, -120, 120, 1_000_000, 1_000_000),
+            0
+        );
+
+        let pool = storage_get(&pool_key(pool_id)).unwrap();
+        let liquidity = decode_pool_liquidity(&pool);
+        let sqrt_price = decode_pool_sqrt_price(&pool);
+        let target = tick_to_sqrt_price(-120);
+        let needed_after_fee = compute_input_to_target(liquidity, sqrt_price, target, true);
+        assert!(needed_after_fee > 0);
+        let amount_in = ((needed_after_fee as u128 * 10_000u128 + 9_969) / 9_970) as u64 + 1;
+
+        let lower_key = tick_data_key(pool_id, -120);
+        let upper_key = tick_data_key(pool_id, 120);
+        let lower_before = storage_get(&lower_key).unwrap();
+        let upper_before = storage_get(&upper_key).unwrap();
+
+        assert!(quote_swap(pool_id, true, amount_in) > 0);
+        assert_eq!(storage_get(&lower_key).unwrap(), lower_before);
+        assert_eq!(storage_get(&upper_key).unwrap(), upper_before);
+    }
+
+    #[test]
+    fn test_exact_out_uses_cross_tick_execution_curve() {
+        let (_admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        let trader = [3u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(provider);
+        assert_eq!(
+            add_liquidity(provider.as_ptr(), pool_id, -120, 120, 1_000_000, 1_000_000),
+            0
+        );
+
+        let pool = storage_get(&pool_key(pool_id)).unwrap();
+        let liquidity = decode_pool_liquidity(&pool);
+        let sqrt_price = decode_pool_sqrt_price(&pool);
+        let needed_after_fee =
+            compute_input_to_target(liquidity, sqrt_price, tick_to_sqrt_price(-120), true);
+        let max_in = ((needed_after_fee as u128 * 10_000u128 + 9_969) / 9_970) as u64 + 10_000;
+        let target_out = quote_swap(pool_id, true, max_in).saturating_sub(1);
+        assert!(target_out > 0);
+
+        test_mock::set_caller(trader);
+        assert_eq!(
+            swap_exact_out(trader.as_ptr(), pool_id, false, target_out, max_in, 0),
+            0
         );
     }
 
