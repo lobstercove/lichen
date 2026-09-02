@@ -2,7 +2,8 @@
 
 Date: 2026-09-02  
 Scope: `lichen-testnet-1` preserved-chain release and Archive V2 activation  
-Status: deployment stopped safely; superseded by the `v0.5.271` candidate
+Status: deployment stopped safely; `v0.5.271` later failed its release gate and
+the current successor is `v0.5.272`
 
 ## Executive record
 
@@ -93,7 +94,7 @@ be started on the preserved Testnet even though its signed artifacts are valid.
 
 ## Completion criteria
 
-The incident is closed only after signed `v0.5.271` is installed and running on
+The incident is closed only after signed `v0.5.272` is installed and running on
 all four validators from each host's own preserved state; block production,
 finality, RPC, WebSocket, DEX/AMM/CLOB, prediction, governance, and launchpad
 smokes pass; all four Archive V2 manifests prove the same genesis-to-tip

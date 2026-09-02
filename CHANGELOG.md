@@ -5,6 +5,37 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.272] - 2026-09-03
+
+### Fixed
+
+- Establish and read back a fresh pair-1 price band from the active validator
+  oracle quorum immediately before every strict CLOB trading phase. This makes
+  release qualification independent of hosted-runner slot throughput without
+  weakening the production 750-slot stale-price rejection.
+- Require at least two validator attestations and an exact DEX-band/margin-mark
+  source-slot match before the volume journey places an order.
+- Add static release QA proving that all three pair-1 trading phases refresh
+  after setup and immediately before their CLOB work.
+
+### Safety
+
+- Immutable `v0.5.271` reached the complete four-validator DEX journey but its
+  release workflow failed closed with six ABI code-11 order rejections after
+  setup consumed the existing oracle freshness window. It produced no
+  deployable release and was not installed on the Testnet fleet.
+- The production stale-oracle guard behaved correctly. This release changes
+  only test readiness and release documentation; it does not bypass oracle
+  quorum, expand the freshness window, reset chain state, copy RocksDB, retire
+  legacy history, or delete R2 objects.
+
+### Verified
+
+- JavaScript syntax and Archive V2 release-asset QA cover the new ordering and
+  quorum/source-slot checks. The immutable tag workflow remains authoritative
+  for the full four-validator Archive V2, DEX, prediction, governance,
+  launchpad, restart, security, contract, and platform matrix.
+
 ## [0.5.271] - 2026-09-02
 
 ### Fixed

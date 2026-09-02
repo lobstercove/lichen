@@ -570,6 +570,26 @@ for (const dependency of Array.from(allDependencies).sort()) {
 
 const volumeE2e = fs.readFileSync(repoPath('tests/e2e-volume.js'), 'utf8');
 const dexSetupHelper = fs.readFileSync(repoPath('tests/helpers/dex-setup.js'), 'utf8');
+const cancelAllOffset = volumeE2e.indexOf('buildCancelAllOrders(wallet.address, pairId)');
+const phaseOneRefreshOffset = volumeE2e.indexOf("await refreshPairOneOracleBand('Phase 1')");
+const phaseOneOffset = volumeE2e.indexOf("section('Phase 1: Multi-Wallet Trading — LICN/lUSD')");
+const phaseTwoRefreshOffset = volumeE2e.indexOf("await refreshPairOneOracleBand('Phase 2')");
+const phaseTwoOffset = volumeE2e.indexOf("section('Phase 2: Orderbook Depth Stress')");
+const phaseThreeRefreshOffset = volumeE2e.indexOf("await refreshPairOneOracleBand('Phase 3')");
+const phaseThreeOffset = volumeE2e.indexOf("section('Phase 3: Multi-Pair Volume Sweep')");
+assert(
+    volumeE2e.includes('async function refreshPairOneOracleBand(phase)')
+        && volumeE2e.includes('refreshed.validatorCount < 2')
+        && volumeE2e.includes('refreshed.dexBandSourceSlot !== refreshed.sourceSlot')
+        && cancelAllOffset >= 0
+        && phaseOneRefreshOffset > cancelAllOffset
+        && phaseOneOffset > phaseOneRefreshOffset
+        && phaseTwoRefreshOffset > phaseOneOffset
+        && phaseTwoOffset > phaseTwoRefreshOffset
+        && phaseThreeRefreshOffset > phaseTwoOffset
+        && phaseThreeOffset > phaseThreeRefreshOffset,
+    'strict volume E2E proves a fresh quorum-backed pair-1 band before every CLOB trading phase',
+);
 const marginRefreshOffset = volumeE2e.indexOf('await refreshMarginMarkPrice(');
 const marginOpenOffset = volumeE2e.indexOf('const args = buildOpenPosition(');
 assert(
@@ -693,7 +713,7 @@ assert(
         && rollingReleaseDeploy.includes("grep -Fxq 'changed=0'")
         && rollingReleaseDeploy.includes('--db-path "$state_dir"')
         && !rollingReleaseDeploy.includes('--data-dir "$state_dir"')
-        && rollingReleaseDeploy.includes('--confirm repair-dex-contracts:testnet:v0.5.271'),
+        && rollingReleaseDeploy.includes('--confirm repair-dex-contracts:testnet:v0.5.272'),
     'coordinated DEX repair targets preserved state, writes explicitly, and proves idempotent completion',
 );
 assert(

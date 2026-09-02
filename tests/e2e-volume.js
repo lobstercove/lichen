@@ -433,6 +433,29 @@ async function placeOrder(wallet, pairId, side, price, qty, label = '', options 
     }
 }
 
+async function refreshPairOneOracleBand(phase) {
+    const refreshed = await refreshMarginMarkPrice(
+        RPC_URL,
+        CONTRACTS,
+        findGenesisAdminKeypair(),
+        1,
+        Math.round(0.106 * PRICE_SCALE),
+    );
+    if (
+        typeof refreshed.signature !== 'string'
+        || refreshed.validatorCount < 2
+        || refreshed.dexBandSourceSlot !== refreshed.sourceSlot
+    ) {
+        throw new Error(`${phase} did not establish a quorum-backed pair-1 oracle band`);
+    }
+    assert(
+        true,
+        `${phase} pair-1 price band refreshed by ${refreshed.validatorCount}`
+        + ` validator attestations at slot ${refreshed.dexBandSourceSlot}`,
+    );
+    return refreshed;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Helper: Fund wallet with airdrop
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -591,6 +614,7 @@ async function runTests() {
     // Simulates 5 traders placing orders at different price levels.
     // Creates a realistic orderbook with depth and executes matches.
     // ══════════════════════════════════════════════════════════════════════
+    await refreshPairOneOracleBand('Phase 1');
     section('Phase 1: Multi-Wallet Trading — LICN/lUSD');
 
     const [alice, bob, carol, dave, eve] = wallets;
@@ -670,6 +694,7 @@ async function runTests() {
     //
     // Place 10 sell orders and 10 buy orders at different prices.
     // ══════════════════════════════════════════════════════════════════════
+    await refreshPairOneOracleBand('Phase 2');
     section('Phase 2: Orderbook Depth Stress');
     {
         // Keep depth inside the pair's ±50% oracle protection band.
@@ -713,6 +738,7 @@ async function runTests() {
     //
     // Execute at least one trade on each available pair.
     // ══════════════════════════════════════════════════════════════════════
+    await refreshPairOneOracleBand('Phase 3');
     section('Phase 3: Multi-Pair Volume Sweep');
     const pairsResp = await rest('/pairs');
     const pairCount = pairsResp?.data?.length || 0;

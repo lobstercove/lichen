@@ -15,11 +15,11 @@ Use this document as the canonical workflow for:
 
 This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
 
-The target testnet release for this runbook is `v0.5.271`; the current signed
+The target testnet release for this runbook is `v0.5.272`; the current signed
 fleet release and immediate restart-safe anchor is `v0.5.265`. Install
-`v0.5.271` only after
+`v0.5.272` only after
 its exact tag workflow, attestations, checksums, detached PQ signature, and
-four-validator Archive V2 gate pass. Once the fleet is proven on `v0.5.271`,
+four-validator Archive V2 gate pass. Once the fleet is proven on `v0.5.272`,
 keep only those two signed release installations on each validator. Historical
 tags and audit records remain in Git; they are not live rollback binaries.
 `v0.5.265` remains Archive V2 dual-reader capable and must be retained until the
@@ -176,11 +176,11 @@ Coordinated signed-release recovery rules for a stalled live height:
   above it have no legacy verification fallback.
 - The recovery is green only when every validator reports the same release, public RPC returns healthy fresh blocks, block height advances for a sustained window, `getMetrics` is available, WebSocket slot subscriptions advance, and explorer-facing endpoints display current data.
 
-For the v0.5.271 preserved-chain Testnet DEX repair, use the single coordinated
+For the v0.5.272 preserved-chain Testnet DEX repair, use the single coordinated
 release entrypoint only after the exact signed release has passed every gate:
 
 ```bash
-LICHEN_RELEASE_TAG=v0.5.271 \
+LICHEN_RELEASE_TAG=v0.5.272 \
 LICHEN_COORDINATED_RELEASE=1 \
 LICHEN_REPAIR_TESTNET_DEX_CONTRACTS=1 \
 bash scripts/rolling-release-deploy.sh testnet
@@ -189,7 +189,7 @@ bash scripts/rolling-release-deploy.sh testnet
 The deployer verifies the signed archive, stages every validator and leaves it
 stopped, installs the archive's paired WASM/ABI bundle under the immutable
 release directory, and only then runs the guarded repair on each independent
-database. The repair dry-runs first, requires the v0.5.271 confirmation, and
+database. The repair dry-runs first, requires the v0.5.272 confirmation, and
 must dry-run afterward with `contracts=17` and `changed=0` before any validator
 starts. It preserves each contract address, owner, balance, storage, prior code
 hash, and version history. Missing ABIs, an active validator, a non-Testnet
@@ -992,7 +992,7 @@ templates plus the approved secret manager. Release upgrades then use the
 coordinated signed-artifact deployer from the operator machine:
 
 ```bash
-LICHEN_RELEASE_TAG=v0.5.271 LICHEN_COORDINATED_RELEASE=1 \
+LICHEN_RELEASE_TAG=v0.5.272 LICHEN_COORDINATED_RELEASE=1 \
   bash scripts/rolling-release-deploy.sh testnet
 ```
 
