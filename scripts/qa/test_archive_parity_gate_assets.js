@@ -473,6 +473,24 @@ assert(
     'hot-repair checkpoint materialization and verification use bounded RocksDB caches',
 );
 assert(
+    snapshotIoSource.includes('fn reserve_hot_repair_materialization_rows(')
+        && snapshotIoSource.includes('HOT_REPAIR_MATERIALIZATION_WRITE_COPIES')
+        && snapshotIoSource.includes('create_checkpoint_with_profile_and_raw_capture_budget(')
+        && snapshotIoSource.includes('hot_repair_materialization_budget_fails_after_raw_capture_without_publication')
+        && validatorSource.includes('.create_checkpoint_with_profile_and_raw_capture_budget(')
+        && validatorSource.includes('.saturating_sub(ARCHIVE_V2_DEFAULT_MUTABLE_WRITE_PEAK_BYTES)')
+        && !validatorSource.includes('state.estimated_hot_repair_checkpoint_compaction_peak_bytes()'),
+    'production hot-repair admission meters bounded writes instead of charging inherited hard-linked history',
+);
+assert(
+    validatorSource.includes('fn checkpoint_profile_interval_slots(')
+        && validatorSource.includes('archive_v2_catalog_root: None')
+        && validatorSource.includes('=> SyncManager::checkpoint_interval()')
+        && validatorSource.includes('checkpoint_profile_interval_slots(catalog_bound_profile)')
+        && validatorSource.includes('checkpoint_profile_interval_slots(preactivation_profile)'),
+    'pre-activation repair is reachable at ordinary checkpoint cadence while catalog-bound compaction remains sparse',
+);
+assert(
     snapshotIoSource.includes('hot_repair_checkpoint_materializes_bounded_cold_history_without_cold_store')
         && snapshotIoSource.includes('.get_block(&block_hash)\n            .unwrap_err()')
         && snapshotIoSource.includes('let restored = reopened.get_hot_block_by_slot(7).unwrap().unwrap();'),
@@ -713,7 +731,7 @@ assert(
         && rollingReleaseDeploy.includes("grep -Fxq 'changed=0'")
         && rollingReleaseDeploy.includes('--db-path "$state_dir"')
         && !rollingReleaseDeploy.includes('--data-dir "$state_dir"')
-        && rollingReleaseDeploy.includes('--confirm repair-dex-contracts:testnet:v0.5.272'),
+        && rollingReleaseDeploy.includes('--confirm repair-dex-contracts:testnet:v0.5.273'),
     'coordinated DEX repair targets preserved state, writes explicitly, and proves idempotent completion',
 );
 assert(

@@ -751,7 +751,7 @@ function validateExchangesPublicPortal() {
         'exchange-ops@lichen.network',
         'business@lichen.network',
         'https://developers.lichen.network/exchange-integration',
-        'https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.272',
+        'https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.273',
         'https://github.com/lobstercove/lichen/releases/tag/v0.5.265',
     ];
     assert(

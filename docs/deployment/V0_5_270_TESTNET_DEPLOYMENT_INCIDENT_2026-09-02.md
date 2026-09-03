@@ -2,8 +2,9 @@
 
 Date: 2026-09-02  
 Scope: `lichen-testnet-1` preserved-chain release and Archive V2 activation  
-Status: deployment stopped safely; `v0.5.271` later failed its release gate and
-the current successor is `v0.5.272`
+Status: deployment stopped safely; `v0.5.271` later failed its release gate,
+signed `v0.5.272` is installed, and the current recovery successor is
+`v0.5.273`
 
 ## Executive record
 
@@ -92,9 +93,26 @@ be started on the preserved Testnet even though its signed artifacts are valid.
   artifacts. It requires per-database repair idempotence and cross-validator
   contract/storage evidence before restart.
 
+## v0.5.272 production findings
+
+Signed `v0.5.272` repaired all 17 preserved DEX contracts idempotently and
+restored a three-validator quorum from each host's own state. EU remains
+fail-closed at slot `12,263,310` on a real parent post-state-root mismatch and
+requires an authenticated checkpoint agreed by two independent sources; no
+reset or cross-validator RocksDB copy is authorized.
+
+At slot `12,272,000`, production checkpointing exposed two assumptions absent
+from the 30,000-slot release fixture. Full-archive packaging cannot include the
+legacy cold symlink placement, and the pre-activation hot-repair estimator
+charged twice for `113,117,166,227` bytes of inherited public-history SSTs even
+though the raw checkpoint hard-links those files. Its computed
+`226,234,332,454`-byte write peak can never pass on the current 200 GB roots.
+`v0.5.273` corrects the reachable cadence and meters bounded new writes while
+retaining fail-closed physical headroom and authenticated recovery gates.
+
 ## Completion criteria
 
-The incident is closed only after signed `v0.5.272` is installed and running on
+The incident is closed only after signed `v0.5.273` is installed and running on
 all four validators from each host's own preserved state; block production,
 finality, RPC, WebSocket, DEX/AMM/CLOB, prediction, governance, and launchpad
 smokes pass; all four Archive V2 manifests prove the same genesis-to-tip

@@ -79,6 +79,21 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.273 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.273</span>
+                    <span class="changelog-date">September 3, 2026</span>
+                </div>
+                <h3>Production-scale Archive V2 checkpoint admission</h3>
+                <ul>
+                    <li>Makes explicit pre-activation hot repair reachable every 1,000 slots while retaining the 10,000-slot cadence for catalog-bound compaction.</li>
+                    <li>Meters newly materialized bounded rows, WAL, and compaction output instead of charging twice for inherited hard-linked SSTs.</li>
+                    <li>Fails closed before each import page and never publishes a checkpoint whose physical-write budget is exceeded.</li>
+                    <li>Preserves the existing Testnet chain, each validator's own state and WAL, authenticated checkpoint proofs, and the signed <code>v0.5.265</code> rollback anchor.</li>
+                </ul>
+            </article>
+
             <!-- ============ v0.5.272 ============ -->
             <article class="changelog-entry">
                 <div class="changelog-header">

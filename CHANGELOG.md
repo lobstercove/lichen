@@ -5,6 +5,44 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.273] - 2026-09-03
+
+### Fixed
+
+- Make explicit pre-activation `HotRepairV1` checkpoints reachable at the
+  ordinary 1,000-slot checkpoint boundary while retaining the 10,000-slot
+  cadence for catalog-bound Archive V2 compaction.
+- Replace the production checkpoint preflight that charged twice for every
+  inherited public-history SST with fail-closed per-page accounting for only
+  newly materialized bounded rows, including conservative row, WAL, and
+  compaction overhead.
+- Keep inherited SSTs hard-linked, enforce the physical-write budget before
+  every import page, and remove unpublished staging if the budget is exceeded.
+- Rebind the preserved-chain DEX repair authorization to the exact v0.5.273
+  release and align the deployment, exchange, README, and developer surfaces.
+
+### Safety
+
+- Signed `v0.5.272` restored three-validator production and preserved EU's own
+  state fail-closed at a real parent post-state-root mismatch. It did not reset
+  the chain or copy another validator's RocksDB state.
+- The first production checkpoint exposed two scale/placement assumptions that
+  the 30,000-slot release fixture did not model: legacy cold symlinks cannot be
+  packaged as a full checkpoint, and the old estimator treated 113 GB of
+  hard-linked inputs as 226 GB of new writes. This release fixes those paths;
+  it does not waive authenticated checkpoint proofs or history completeness.
+- No legacy or R2 deletion is authorized before four-validator Archive V2
+  genesis-to-tip parity and signed range-bound retirement evidence exist.
+
+### Verified
+
+- Focused core regressions prove exact bounded-write accounting and ensure a
+  rejected build publishes no checkpoint. Validator regressions prove separate
+  pre-activation and catalog-bound cadence.
+- The immutable tag workflow remains authoritative for the complete quality,
+  security, contracts, four-validator Archive V2, DEX/CLOB/AMM, prediction,
+  governance, launchpad, restart, and platform matrix.
+
 ## [0.5.272] - 2026-09-03
 
 ### Fixed

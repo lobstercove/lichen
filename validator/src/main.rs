@@ -447,7 +447,7 @@ const SHOW_STATE_COMMITMENT_SCHEMA_FLAG: &str = "--show-state-commitment-schema"
 const SPARSE_STATE_COMMITMENT_CONFIRMATION: &str = "sparse-state-commitment:v1";
 const SHIELDED_STATE_COMMITMENT_CONFIRMATION: &str = "shielded-state-commitment:v2";
 const REPAIR_TESTNET_DEX_CONTRACTS_FLAG: &str = "--repair-testnet-dex-contracts";
-const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.272";
+const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.273";
 const SHOW_CONTRACT_STORAGE_DIGEST_FLAG: &str = "--show-contract-storage-digest";
 const SHOW_STAKE_POOL_DIGEST_FLAG: &str = "--show-stake-pool-digest";
 const PREPARE_CONSENSUS_V1_ACTIVATION_FLAG: &str = "--prepare-consensus-v1-activation";
@@ -11699,9 +11699,10 @@ fn prune_state_checkpoints(data_dir: &str, context: &str) {
 /// Periodic checkpoint creation — called after every block to check if
 /// the current slot should trigger a RocksDB checkpoint.
 /// Legacy checkpoints are created every CHECKPOINT_INTERVAL (1,000) slots.
-/// Archive V2 hot-repair checkpoints physically bound public history and are
-/// therefore created every HOT_REPAIR_CHECKPOINT_INTERVAL_SLOTS (10,000)
-/// slots. Both provide state snapshots for new validator catch-up.
+/// Explicit pre-activation hot repair uses the same reachable cadence until it
+/// has a catalog handoff root. Catalog-bound Archive V2 checkpoints physically
+/// rewrite bounded public history every HOT_REPAIR_CHECKPOINT_INTERVAL_SLOTS
+/// (10,000) slots. Both provide state snapshots for new validator catch-up.
 fn preactivation_hot_repair_enabled() -> bool {
     matches!(
         env::var("LICHEN_CHECKPOINT_HOT_REPAIR_PREACTIVATION")
@@ -11711,9 +11712,23 @@ fn preactivation_hot_repair_enabled() -> bool {
     )
 }
 
+fn checkpoint_profile_interval_slots(profile: CheckpointSnapshotProfile) -> u64 {
+    match profile {
+        // Explicit pre-activation repair has no catalog handoff root. Keep it
+        // reachable at the ordinary checkpoint boundary while a preserved
+        // network is waiting for two authenticated recovery sources.
+        CheckpointSnapshotProfile::HotRepairV1 {
+            archive_v2_catalog_root: None,
+            ..
+        } => SyncManager::checkpoint_interval(),
+        CheckpointSnapshotProfile::HotRepairV1 { .. } => HOT_REPAIR_CHECKPOINT_INTERVAL_SLOTS,
+        CheckpointSnapshotProfile::FullArchiveV1 => SyncManager::checkpoint_interval(),
+    }
+}
+
 fn checkpoint_profile_is_due(slot: u64, profile: CheckpointSnapshotProfile) -> bool {
-    !matches!(profile, CheckpointSnapshotProfile::HotRepairV1 { .. })
-        || slot.is_multiple_of(HOT_REPAIR_CHECKPOINT_INTERVAL_SLOTS)
+    let interval = checkpoint_profile_interval_slots(profile);
+    interval > 0 && slot.is_multiple_of(interval)
 }
 
 fn checkpoint_minimum_available_bytes(
@@ -11726,12 +11741,25 @@ fn checkpoint_minimum_available_bytes(
     }
 }
 
-fn hot_repair_checkpoint_peak_reserve(estimated_peak_bytes: u64) -> u64 {
-    // The physical estimate is derived from current hot SST allocation. A
-    // catalog handoff may additionally materialize a bounded unpublished tail
-    // from the legacy cold source, so never reserve less than the same 8 GiB
-    // checkpoint envelope used by the adaptive Archive V2 capacity guard.
-    estimated_peak_bytes.max(ARCHIVE_V2_DEFAULT_CHECKPOINT_PEAK_BYTES)
+fn hot_repair_checkpoint_required_headroom(runtime_minimum_available_bytes: u64) -> u64 {
+    // Admission always reserves the same 8 GiB checkpoint envelope used by
+    // the adaptive Archive V2 capacity guard. Bounded materialization then
+    // accounts every imported row against the remaining physical write budget
+    // before it is written; inherited hard-linked SSTs consume no new blocks.
+    runtime_minimum_available_bytes
+        .saturating_add(ARCHIVE_V2_DEFAULT_CHECKPOINT_PEAK_BYTES)
+        .saturating_add(ARCHIVE_V2_DEFAULT_MUTABLE_WRITE_PEAK_BYTES)
+        .saturating_add(ARCHIVE_V2_DEFAULT_WAL_PEAK_BYTES)
+}
+
+fn hot_repair_checkpoint_peak_bytes_budget(
+    available_bytes: u64,
+    runtime_minimum_available_bytes: u64,
+) -> u64 {
+    available_bytes
+        .saturating_sub(runtime_minimum_available_bytes)
+        .saturating_sub(ARCHIVE_V2_DEFAULT_MUTABLE_WRITE_PEAK_BYTES)
+        .saturating_sub(ARCHIVE_V2_DEFAULT_WAL_PEAK_BYTES)
 }
 
 fn periodic_checkpoint_snapshot_profile(
@@ -11810,27 +11838,15 @@ async fn maybe_create_checkpoint(
     if !checkpoint_profile_is_due(slot, snapshot_profile) {
         return;
     }
-    let required_checkpoint_headroom = checkpoint_minimum_available_bytes(
-        snapshot_profile,
-        RUNTIME_MINIMUM_CHECKPOINT_AVAILABLE_BYTES.load(Ordering::Acquire),
-    );
-    let required_checkpoint_headroom = if matches!(
-        snapshot_profile,
-        CheckpointSnapshotProfile::HotRepairV1 { .. }
-    ) {
-        match state.estimated_hot_repair_checkpoint_compaction_peak_bytes() {
-            Ok(peak_bytes) => required_checkpoint_headroom
-                .saturating_add(hot_repair_checkpoint_peak_reserve(peak_bytes)),
-            Err(err) => {
-                warn!(
-                    "Skipping checkpoint at slot {} because bounded-history compaction headroom cannot be estimated: {}",
-                    slot, err
-                );
-                return;
-            }
+    let runtime_minimum_available_bytes =
+        RUNTIME_MINIMUM_CHECKPOINT_AVAILABLE_BYTES.load(Ordering::Acquire);
+    let required_checkpoint_headroom = match snapshot_profile {
+        CheckpointSnapshotProfile::HotRepairV1 { .. } => {
+            hot_repair_checkpoint_required_headroom(runtime_minimum_available_bytes)
         }
-    } else {
-        required_checkpoint_headroom
+        CheckpointSnapshotProfile::FullArchiveV1 => {
+            checkpoint_minimum_available_bytes(snapshot_profile, runtime_minimum_available_bytes)
+        }
     };
     let Some(active_checkpoint_guard) = ActiveCheckpointGuard::try_begin() else {
         debug!(
@@ -11877,6 +11893,11 @@ async fn maybe_create_checkpoint(
         );
         return;
     }
+    let hot_repair_peak_bytes_budget = matches!(
+        snapshot_profile,
+        CheckpointSnapshotProfile::HotRepairV1 { .. }
+    )
+    .then(|| hot_repair_checkpoint_peak_bytes_budget(available, runtime_minimum_available_bytes));
     let state_for_checkpoint = state.clone();
     let checkpoint_path_for_build = checkpoint_path.clone();
     let data_dir_for_checkpoint = data_dir.to_string();
@@ -11890,14 +11911,16 @@ async fn maybe_create_checkpoint(
             // history materialization outside every consensus task.
             let _checkpoint_guard = checkpoint_guard;
             let _active_checkpoint_guard = active_checkpoint_guard;
-            let result = state_for_checkpoint.create_checkpoint_with_profile_and_raw_capture(
-                &checkpoint_path_for_build,
-                slot,
-                snapshot_profile,
-                move || {
-                    let _ = raw_capture_tx.send(());
-                },
-            );
+            let result = state_for_checkpoint
+                .create_checkpoint_with_profile_and_raw_capture_budget(
+                    &checkpoint_path_for_build,
+                    slot,
+                    snapshot_profile,
+                    hot_repair_peak_bytes_budget,
+                    move || {
+                        let _ = raw_capture_tx.send(());
+                    },
+                );
             if result.is_ok() {
                 prune_state_checkpoints(&data_dir_for_checkpoint, "periodic checkpoint");
             }
@@ -11907,14 +11930,7 @@ async fn maybe_create_checkpoint(
 
         match build_result {
             Ok(Ok(meta)) => {
-                let interval_slots = if matches!(
-                    meta.snapshot_profile,
-                    CheckpointSnapshotProfile::HotRepairV1 { .. }
-                ) {
-                    HOT_REPAIR_CHECKPOINT_INTERVAL_SLOTS
-                } else {
-                    SyncManager::checkpoint_interval()
-                };
+                let interval_slots = checkpoint_profile_interval_slots(meta.snapshot_profile);
                 info!(
                     "📸 Checkpoint created at slot {} ({} accounts, profile={:?}, interval: every {} slots)",
                     meta.slot,
@@ -48140,33 +48156,51 @@ mod tests {
             DEFAULT_MIN_RUNTIME_AVAILABLE_BYTES,
             "mainnet hot checkpoints must retain the mainnet runtime reserve"
         );
+        let required = hot_repair_checkpoint_required_headroom(TESTNET_MIN_RUNTIME_AVAILABLE_BYTES);
         assert_eq!(
-            hot_repair_checkpoint_peak_reserve(1),
-            ARCHIVE_V2_DEFAULT_CHECKPOINT_PEAK_BYTES,
-            "a cold-source handoff must retain the adaptive checkpoint envelope"
+            required,
+            TESTNET_MIN_RUNTIME_AVAILABLE_BYTES
+                + ARCHIVE_V2_DEFAULT_CHECKPOINT_PEAK_BYTES
+                + ARCHIVE_V2_DEFAULT_MUTABLE_WRITE_PEAK_BYTES
+                + ARCHIVE_V2_DEFAULT_WAL_PEAK_BYTES,
+            "hot repair must retain runtime, checkpoint, mutable-write, and WAL reserves"
         );
         assert_eq!(
-            hot_repair_checkpoint_peak_reserve(ARCHIVE_V2_DEFAULT_CHECKPOINT_PEAK_BYTES + 1),
-            ARCHIVE_V2_DEFAULT_CHECKPOINT_PEAK_BYTES + 1,
-            "a larger measured physical rewrite must remain authoritative"
+            hot_repair_checkpoint_peak_bytes_budget(required, TESTNET_MIN_RUNTIME_AVAILABLE_BYTES,),
+            ARCHIVE_V2_DEFAULT_CHECKPOINT_PEAK_BYTES,
+            "the minimum admitted headroom must expose the full checkpoint write budget"
         );
     }
 
     #[test]
     fn hot_repair_checkpoint_cadence_bounds_physical_compaction_frequency() {
-        let hot_profile = CheckpointSnapshotProfile::HotRepairV1 {
+        let catalog_bound_profile = CheckpointSnapshotProfile::HotRepairV1 {
             history_start_slot: 1,
             archive_v2_catalog_root: Some([7u8; 32]),
         };
+        let preactivation_profile = CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot: 1,
+            archive_v2_catalog_root: None,
+        };
         assert!(checkpoint_profile_is_due(
             HOT_REPAIR_CHECKPOINT_INTERVAL_SLOTS,
-            hot_profile,
+            catalog_bound_profile,
         ));
-        assert!(!checkpoint_profile_is_due(1_000, hot_profile));
+        assert!(!checkpoint_profile_is_due(1_000, catalog_bound_profile));
+        assert!(checkpoint_profile_is_due(1_000, preactivation_profile));
+        assert!(!checkpoint_profile_is_due(999, preactivation_profile));
         assert!(checkpoint_profile_is_due(
             1_000,
             CheckpointSnapshotProfile::FullArchiveV1,
         ));
+        assert_eq!(
+            checkpoint_profile_interval_slots(preactivation_profile),
+            sync::SyncManager::checkpoint_interval(),
+        );
+        assert_eq!(
+            checkpoint_profile_interval_slots(catalog_bound_profile),
+            HOT_REPAIR_CHECKPOINT_INTERVAL_SLOTS,
+        );
         assert!(HOT_REPAIR_CHECKPOINT_INTERVAL_SLOTS
             .is_multiple_of(sync::SyncManager::checkpoint_interval()));
     }
