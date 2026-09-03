@@ -79,6 +79,24 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.276 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.276</span>
+                    <span class="changelog-date">September 3, 2026</span>
+                </div>
+                <h3>Serialized fresh-sync Archive V2 admission</h3>
+                <ul>
+                    <li>Holds canonical block application stable while a fresh checkpoint join verifies and binds its deferred Archive V2 role.</li>
+                    <li>Keeps cold migration paused until role admission succeeds and clears the pause only after the capability is active.</li>
+                    <li>Emits the fatal reason synchronously and exits nonzero if deferred admission fails.</li>
+                    <li>Restores catalog cadence state in checkpoint-resumed release verification so post-journey parity waits for a reachable 10,000-slot boundary.</li>
+                    <li>Completed local four-validator fresh-role, outage, restart, DEX/prediction (147/147), launchpad/governance (104/104), and post-journey Archive V2 parity checks.</li>
+                    <li>Documents that immutable <code>v0.5.275</code> failed the exact four-validator fresh full-archive join gate and was not signed, published, or deployed.</li>
+                    <li>Does not change consensus, checkpoint or catalog schema, Archive V2 objects, retention, or preserved testnet state.</li>
+                </ul>
+            </article>
+
             <!-- ============ v0.5.275 ============ -->
             <article class="changelog-entry">
                 <div class="changelog-header">

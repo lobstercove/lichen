@@ -5,6 +5,47 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.276] - 2026-09-03
+
+### Fixed
+
+- Serialize deferred Archive V2 role admission after a fresh checkpoint import
+  against canonical block application, so admission verifies one stable
+  hot/cold handoff instead of racing the live block receiver.
+- Keep cold migration paused until deferred role admission succeeds. The
+  pending flag is cleared only after the capability has been admitted.
+- Terminate with a synchronous diagnostic and nonzero status when deferred
+  admission fails, preventing the release harness from receiving a silent
+  successful exit.
+- Restore the admitted Archive V2 catalog end when the exact gate resumes from
+  an already-proven checkpoint, so later checkpoint selection retains the
+  10,000-slot catalog-bound cadence instead of selecting an unreachable
+  preactivation boundary.
+
+### Safety
+
+- Immutable `v0.5.275` passed protected CI and every tag-workflow job except
+  the exact four-validator Archive V2 gate. Fresh full-archive V3 imported and
+  verified its slot-10,000 checkpoint, rebuilt bounded categories, and then
+  exited with status 0 during deferred role admission. It was not signed,
+  published, or deployed.
+- This correction changes lifecycle serialization and failure reporting only.
+  It does not change consensus, migration data, checkpoint schema, catalog
+  schema, Archive V2 object format, retention, or the preserved testnet state.
+
+### Verified
+
+- A focused regression proves cold migration remains paused through network
+  catch-up until deferred Archive V2 admission completes.
+- Preserved-state four-validator verification completed the retention and
+  migration boundary, loaded backlog, outage and own-state restart matrix,
+  independent Archive V2 build/restore, fresh full/cache/consensus role joins,
+  source-outage behavior, strict DEX/prediction journey (147/147), strict
+  launchpad/governance/graduation journey (104/104), and post-activity restart.
+- All four independently composed Archive V2 plus hot-checkpoint public-history
+  manifests matched at post-journey slot 40,000. The immutable tag workflow's
+  uninterrupted exact gate remains mandatory before signing or deployment.
+
 ## [0.5.275] - 2026-09-03
 
 ### Fixed

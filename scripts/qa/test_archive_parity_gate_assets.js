@@ -241,6 +241,8 @@ assert(
         && checkpointResume.includes('checkpoint_catalog_rebuild_required=1')
         && checkpointResume.includes('rebuild_archive_v2_checkpoint_catalog_evidence')
         && checkpointResume.includes('[[ "$handoff_root" == "$baseline_handoff_root" ]]')
+        && checkpointResume.includes('&& "$catalog_end" == "$baseline_archive_catalog_end"')
+        && checkpointResume.includes('ARCHIVE_V2_CHECKPOINT_CATALOG_END="$baseline_archive_catalog_end"')
         && checkpointResume.includes('profile_start > required_profile_start')
         && checkpointResume.includes('insufficient_profile_count > 0')
         && checkpointResume.includes('COMMON_CHECKPOINT_SLOT="$RESUME_PUBLIC_PARITY_CHECKPOINT"')
