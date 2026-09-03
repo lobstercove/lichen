@@ -1398,10 +1398,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // State
     // ═══════════════════════════════════════════════════════════════════════
-    // F10E.6: LICN genesis price — $0.10 per LICN at network launch.
+    // LICN bootstrap price — $0.15 per LICN for new networks.
     // Used ONLY as bootstrap fallback before any on-chain trading data exists.
     // Once the oracle or first trade provides a real price, this value is never used.
-    const LICHEN_GENESIS_PRICE = 0.10;
+    const LICHEN_GENESIS_PRICE = 0.15;
     let _genesisOverridden = false;
     const MAX_OPEN_ORDERS_PER_USER = 500;
     const GOVERNANCE_SLOT_SECONDS = 0.4;

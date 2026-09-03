@@ -176,7 +176,7 @@ if (typeof window !== 'undefined') {
 
 // Live token prices — fetched from DEX oracle via RPC, with offline fallbacks.
 // Fallback values used ONLY when RPC is unreachable (never displayed as "live").
-const _OFFLINE_FALLBACK_PRICES = { LICN: 0.10, lUSD: 1.0, wSOL: 150.0, wETH: 3000.0, wBNB: 600.0, wNEO: 3.0, wGAS: 1.5, wBTC: 100000.0 };
+const _OFFLINE_FALLBACK_PRICES = { LICN: 0.15, lUSD: 1.0, wSOL: 150.0, wETH: 3000.0, wBNB: 600.0, wNEO: 3.0, wGAS: 1.5, wBTC: 100000.0 };
 const livePrices = { LICN: 0, lUSD: 1.0, wSOL: 0, wETH: 0, wBNB: 0, wNEO: 0, wGAS: 0, wBTC: 0 };
 const priceMetadata = {
     LICN: { source: 'unavailable', timestamp: 0, fallback: false },

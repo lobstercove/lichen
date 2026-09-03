@@ -69,7 +69,7 @@ async def main():
 
     # Pool 6: wBNB/lUSD
     bnb = 617.08
-    licn = 0.10
+    licn = float(os.environ.get('LICHEN_USD_PRICE', '0.15'))
 
     # Pool 6
     low6 = bnb * 0.7

@@ -79,6 +79,24 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.275 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.275</span>
+                    <span class="changelog-date">September 3, 2026</span>
+                </div>
+                <h3>Bounded production-scale checkpoint account history</h3>
+                <ul>
+                    <li>Derives hot-repair account transaction history from canonical blocks only inside the advertised recent-history window.</li>
+                    <li>Processes that window in 1,000-slot chunks instead of traversing the full legacy account-first index.</li>
+                    <li>Retains source-index point checks, conflict and missing-row failure, physical-write budgets, and atomic checkpoint publication.</li>
+                    <li>Forces migration after one successful reclaim pass, safely splits oversized legacy compaction ranges, and avoids a co-located checkpoint maintenance-lock convoy.</li>
+                    <li>The preserved four-validator gate produced identical slot-70,000 checkpoint manifests and admitted clean full-archive, verified-cache, and consensus-role joins.</li>
+                    <li>Addresses the unpublished <code>v0.5.274</code> live staging bottleneck without changing consensus, checkpoint schema, or Archive V2 object format.</li>
+                    <li>Aligns the controlled LICN/USD reference at <code>$0.15</code> for validator attestations, future genesis, DEX/wallet fallbacks, and liquidity tooling.</li>
+                </ul>
+            </article>
+
             <!-- ============ v0.5.274 ============ -->
             <article class="changelog-entry">
                 <div class="changelog-header">

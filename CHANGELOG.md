@@ -5,6 +5,54 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.275] - 2026-09-03
+
+### Fixed
+
+- Build bounded hot-repair `account_txs` checkpoint rows directly from the
+  canonical blocks in the advertised recent-history window, reusing the same
+  source-backed derivation and conflict checks as Archive V2 segment export.
+- Process the block window in 1,000-slot chunks so checkpoint memory remains
+  bounded and no out-of-window account-history row can trigger a legacy cold
+  block lookup.
+- Guarantee maintenance fairness by forcing Archive V2 migration after one
+  successful reclaim pass, so a non-empty reclaim queue cannot starve
+  migration indefinitely.
+- Split oversized legacy reclaim ranges at real RocksDB live-file boundaries
+  before bounded compaction, while refusing non-reducing splits.
+- Release the node-local archive-maintenance lock while a checkpoint waits for
+  the shared-disk materialization lock, then reacquire it before reading the
+  durable hot/cold source. This prevents co-located validators from forming a
+  maintenance-lock convoy.
+- Set the controlled LICN/USD reference to `$0.15` across validator
+  attestations, future testnet/mainnet genesis defaults, DEX and wallet
+  fallbacks, liquidity tooling, and operator documentation. Genesis now honors
+  the launchers' `GENESIS_LICN_USD` input instead of silently replacing it with
+  the compiled default.
+
+### Safety
+
+- The first live `v0.5.274` checkpoint reached slot `12,298,000` and remained
+  on category 7 while each active validator traversed about 6.7 million
+  account-history rows and performed old-block validation through the
+  emergency R2/FUSE bridge. Consensus continued advancing and no state was
+  reset, but this unbounded pre-activation I/O is not accepted for production.
+- The output is unchanged: every derived account-history key must exist in the
+  hot or legacy-cold source, identical duplicates are accepted, conflicts and
+  missing rows fail closed, and the checkpoint remains budgeted and atomically
+  published.
+
+### Verified
+
+- Focused checkpoint regressions prove that corrupt out-of-window block data is
+  never consulted, bounded account-history rows remain source-backed, missing
+  canonical keys fail closed, and existing hot-repair budget/publication tests
+  continue to pass. A preserved-state four-validator run also passed bounded
+  migration, loaded backlog, outage/restart, common catalog parity, identical
+  slot-70,000 checkpoints, authenticated source outage, and clean
+  full/cache/consensus joins. The immutable tag workflow remains authoritative
+  for the complete release and four-validator Archive V2 matrix.
+
 ## [0.5.274] - 2026-09-03
 
 ### Fixed

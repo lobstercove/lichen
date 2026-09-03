@@ -44,8 +44,11 @@ REUSE_EXISTING_CLUSTER="${LICHEN_REUSE_EXISTING_CLUSTER:-0}"
 REUSE_HEALTH_TIMEOUT_SECS="${LICHEN_REUSE_HEALTH_TIMEOUT_SECS:-120}"
 USING_EXISTING_CLUSTER=false
 RESUME_AFTER_PHASE2="${LICHEN_RESUME_LOCAL_GATE_AFTER_PHASE2:-0}"
+RESUME_AFTER_RETENTION="${LICHEN_RESUME_LOCAL_GATE_AFTER_RETENTION:-0}"
+RESUME_AFTER_RESILIENCE="${LICHEN_RESUME_LOCAL_GATE_AFTER_RESILIENCE:-0}"
 RESUME_AFTER_PUBLIC_PARITY="${LICHEN_RESUME_LOCAL_GATE_AFTER_PUBLIC_PARITY:-0}"
 RESUME_AFTER_ARCHIVE_V2_OFFLINE_MATRIX="${LICHEN_RESUME_LOCAL_GATE_AFTER_ARCHIVE_V2_OFFLINE_MATRIX:-0}"
+RESUME_AFTER_ARCHIVE_V2_RUNTIME_MATRIX="${LICHEN_RESUME_LOCAL_GATE_AFTER_ARCHIVE_V2_RUNTIME_MATRIX:-0}"
 RESUME_AFTER_ARCHIVE_V2_COMMON_CATALOG="${LICHEN_RESUME_LOCAL_GATE_AFTER_ARCHIVE_V2_COMMON_CATALOG:-0}"
 RESUME_AFTER_ARCHIVE_V2_CHECKPOINT="${LICHEN_RESUME_LOCAL_GATE_AFTER_ARCHIVE_V2_CHECKPOINT:-0}"
 RESUME_PUBLIC_PARITY_CHECKPOINT="${LICHEN_RESUME_LOCAL_GATE_CHECKPOINT_SLOT:-}"
@@ -100,14 +103,19 @@ fi
 # within the validator's validated maximum and is local-gate-only.
 export LICHEN_CHECKPOINT_KEEP_COUNT="${LICHEN_CHECKPOINT_KEEP_COUNT:-8}"
 # The gate explicitly opts into the bounded hot-repair profile before Archive
-# V2 role admission. Those checkpoints physically compact their public-history
-# window and intentionally use the validator's 10,000-slot production cadence.
+# V2 role admission. Preactivation checkpoints remain reachable on the legacy
+# 1,000-slot cadence; catalog-bound checkpoints use the 10,000-slot production
+# cadence to bound physical compaction frequency.
+PREACTIVATION_CHECKPOINT_INTERVAL_SLOTS=1000
 CHECKPOINT_INTERVAL_SLOTS=10000
 ARCHIVE_V2_PUBLIC_MIN_RECENT_HISTORY_SLOTS=50000
 ARCHIVE_V2_RETENTION_PROOF_SLOT=$((LICHEN_COLD_RETENTION_SLOTS + 2500))
 ARCHIVE_V2_TEST_CATALOG_HEADROOM_SLOTS="${LICHEN_ARCHIVE_V2_TEST_CATALOG_HEADROOM_SLOTS:-10000}"
 ARCHIVE_V2_FRESH_JOIN_CATALOG_HEADROOM_SLOTS="${LICHEN_ARCHIVE_V2_FRESH_JOIN_CATALOG_HEADROOM_SLOTS:-40000}"
-ARCHIVE_V2_FRESH_JOIN_RECENT_HISTORY_SLOTS="${LICHEN_ARCHIVE_V2_FRESH_JOIN_RECENT_HISTORY_SLOTS:-50000}"
+# Production validators retain the 50,000-slot default. This accelerated
+# local-dev gate scales the same overlap invariant to half of one 10,000-slot
+# catalog-bound checkpoint interval unless a caller requests a larger window.
+ARCHIVE_V2_FRESH_JOIN_RECENT_HISTORY_SLOTS="${LICHEN_ARCHIVE_V2_FRESH_JOIN_RECENT_HISTORY_SLOTS:-5000}"
 ARCHIVE_V2_RETENTION_TIMEOUT_SECS="${LICHEN_ARCHIVE_V2_RETENTION_TIMEOUT_SECS:-21600}"
 ARCHIVE_V2_FRESH_ROLE_TIMEOUT_SECS="${LICHEN_ARCHIVE_V2_FRESH_ROLE_TIMEOUT_SECS:-1800}"
 ARCHIVE_V2_CHECKPOINT_MATERIALIZATION_TIMEOUT_SECS="${LICHEN_ARCHIVE_V2_CHECKPOINT_MATERIALIZATION_TIMEOUT_SECS:-1800}"
@@ -134,12 +142,24 @@ if [[ "$RESUME_AFTER_PHASE2" != "0" && "$RESUME_AFTER_PHASE2" != "1" ]]; then
     echo "LICHEN_RESUME_LOCAL_GATE_AFTER_PHASE2 must be 0 or 1" >&2
     exit 2
 fi
+if [[ "$RESUME_AFTER_RETENTION" != "0" && "$RESUME_AFTER_RETENTION" != "1" ]]; then
+    echo "LICHEN_RESUME_LOCAL_GATE_AFTER_RETENTION must be 0 or 1" >&2
+    exit 2
+fi
+if [[ "$RESUME_AFTER_RESILIENCE" != "0" && "$RESUME_AFTER_RESILIENCE" != "1" ]]; then
+    echo "LICHEN_RESUME_LOCAL_GATE_AFTER_RESILIENCE must be 0 or 1" >&2
+    exit 2
+fi
 if [[ "$RESUME_AFTER_PUBLIC_PARITY" != "0" && "$RESUME_AFTER_PUBLIC_PARITY" != "1" ]]; then
     echo "LICHEN_RESUME_LOCAL_GATE_AFTER_PUBLIC_PARITY must be 0 or 1" >&2
     exit 2
 fi
 if [[ "$RESUME_AFTER_ARCHIVE_V2_OFFLINE_MATRIX" != "0" && "$RESUME_AFTER_ARCHIVE_V2_OFFLINE_MATRIX" != "1" ]]; then
     echo "LICHEN_RESUME_LOCAL_GATE_AFTER_ARCHIVE_V2_OFFLINE_MATRIX must be 0 or 1" >&2
+    exit 2
+fi
+if [[ "$RESUME_AFTER_ARCHIVE_V2_RUNTIME_MATRIX" != "0" && "$RESUME_AFTER_ARCHIVE_V2_RUNTIME_MATRIX" != "1" ]]; then
+    echo "LICHEN_RESUME_LOCAL_GATE_AFTER_ARCHIVE_V2_RUNTIME_MATRIX must be 0 or 1" >&2
     exit 2
 fi
 if [[ "$RESUME_AFTER_ARCHIVE_V2_COMMON_CATALOG" != "0" && "$RESUME_AFTER_ARCHIVE_V2_COMMON_CATALOG" != "1" ]]; then
@@ -150,8 +170,13 @@ if [[ "$RESUME_AFTER_ARCHIVE_V2_CHECKPOINT" != "0" && "$RESUME_AFTER_ARCHIVE_V2_
     echo "LICHEN_RESUME_LOCAL_GATE_AFTER_ARCHIVE_V2_CHECKPOINT must be 0 or 1" >&2
     exit 2
 fi
-if (( 10#$RESUME_AFTER_PHASE2 + 10#$RESUME_AFTER_PUBLIC_PARITY + 10#$RESUME_AFTER_ARCHIVE_V2_OFFLINE_MATRIX + 10#$RESUME_AFTER_ARCHIVE_V2_COMMON_CATALOG + 10#$RESUME_AFTER_ARCHIVE_V2_CHECKPOINT > 1 )); then
+if (( 10#$RESUME_AFTER_PHASE2 + 10#$RESUME_AFTER_RETENTION + 10#$RESUME_AFTER_RESILIENCE + 10#$RESUME_AFTER_PUBLIC_PARITY + 10#$RESUME_AFTER_ARCHIVE_V2_OFFLINE_MATRIX + 10#$RESUME_AFTER_ARCHIVE_V2_RUNTIME_MATRIX + 10#$RESUME_AFTER_ARCHIVE_V2_COMMON_CATALOG + 10#$RESUME_AFTER_ARCHIVE_V2_CHECKPOINT > 1 )); then
     echo "Only one exact-gate resume boundary may be selected" >&2
+    exit 2
+fi
+if [[ ( "$RESUME_AFTER_RETENTION" == "1" || "$RESUME_AFTER_RESILIENCE" == "1" )
+    && "$MAX_VALIDATORS" -ne 4 ]]; then
+    echo "Post-retention and post-resilience resumes require exactly four validators" >&2
     exit 2
 fi
 if [[ ( "$RESUME_AFTER_PUBLIC_PARITY" == "1" || "$RESUME_AFTER_ARCHIVE_V2_CHECKPOINT" == "1" )
@@ -164,6 +189,10 @@ if [[ ( "$RESUME_AFTER_ARCHIVE_V2_OFFLINE_MATRIX" == "1" || "$RESUME_AFTER_ARCHI
     && ( ! "$RESUME_EXPECTED_ARCHIVE_V2_ROOT" =~ ^[0-9a-f]{64}$
         || "$MAX_VALIDATORS" -ne 4 ) ]]; then
     echo "Archive V2 catalog resume requires four validators and an exact lowercase 64-hex LICHEN_RESUME_LOCAL_GATE_EXPECTED_ARCHIVE_V2_ROOT" >&2
+    exit 2
+fi
+if [[ "$RESUME_AFTER_ARCHIVE_V2_RUNTIME_MATRIX" == "1" && "$MAX_VALIDATORS" -ne 4 ]]; then
+    echo "Post-Archive-V2-runtime-matrix resume requires exactly four validators" >&2
     exit 2
 fi
 if [[ ! "$ARCHIVE_V2_FRESH_ROLE_TIMEOUT_SECS" =~ ^[1-9][0-9]*$ \
@@ -2662,6 +2691,7 @@ reconcile_archive_v2_checkpoint_catalogs() {
     local finalized_slot stopped_spread finality_depth common_end
     local planned_checkpoint_slot minimum_checkpoint_slot
     local archive_root replica_root stage_root stage_replica status_json catalog_root catalog_end
+    local existing_catalog_root existing_network existing_genesis existing_start existing_end
     local common_catalog_root=""
 
     log "Stopping all validators to publish one immutable Archive V2 checkpoint catalog..."
@@ -2728,6 +2758,64 @@ reconcile_archive_v2_checkpoint_catalogs() {
         stage_root="${archive_root}.checkpoint-stage"
         stage_replica="${replica_root}.checkpoint-stage"
         rm -rf "$stage_root" "$stage_replica"
+
+        # A capacity-gated or interrupted multi-node publication may already
+        # have atomically promoted this exact deterministic range for an
+        # earlier validator. Authenticate and reuse that node instead of
+        # rebuilding a second temporary copy and consuming the same bounded
+        # disk envelope again. Mixed or incomplete roots are never accepted.
+        if [[ -f "$archive_root/catalog.av2" ]] \
+            && status_json="$("$av2" status --root "$archive_root" 2>/dev/null)" \
+            && read -r existing_catalog_root existing_network existing_genesis existing_start existing_end < <(python3 -c '
+import json
+import sys
+status = json.load(sys.stdin)
+slot_range = status.get("slot_range")
+if not isinstance(slot_range, list) or len(slot_range) != 2:
+    raise SystemExit(1)
+print(
+    status.get("catalog_root", ""),
+    status.get("network_id", ""),
+    status.get("genesis_hash", ""),
+    slot_range[0],
+    slot_range[1],
+)
+' <<< "$status_json") \
+            && [[ "$existing_network" == "lichen-testnet-1"
+                && "$existing_genesis" == "$genesis_hash"
+                && "$existing_start" == "0"
+                && "$existing_end" == "$common_end" ]]; then
+            case "$V_NUM" in
+                1)
+                    "$av2" verify --root "$archive_root" --max-objects 10000 >/dev/null \
+                        || fail "V1 existing common Archive V2 node copy failed resumed verification"
+                    ;;
+                2)
+                    [[ -f "$replica_root/catalog.av2" ]] \
+                        || fail "V2 existing common Archive V2 catalog has no source replica"
+                    "$av2" verify --root "$replica_root" --max-objects 10000 >/dev/null \
+                        || fail "V2 existing common Archive V2 replica failed resumed verification"
+                    ;;
+                3)
+                    ;;
+                4)
+                    [[ -f "$replica_root/catalog.av2" ]] \
+                        || fail "V4 existing common Archive V2 catalog has no repair replica"
+                    "$av2" verify --root "$archive_root" --max-objects 10000 >/dev/null \
+                        || fail "V4 existing common Archive V2 node copy failed resumed verification"
+                    "$av2" verify --root "$replica_root" --max-objects 10000 >/dev/null \
+                        || fail "V4 existing common Archive V2 replica failed resumed verification"
+                    ;;
+            esac
+            if [[ -z "$common_catalog_root" ]]; then
+                common_catalog_root="$existing_catalog_root"
+            elif [[ "$existing_catalog_root" != "$common_catalog_root" ]]; then
+                fail "V${V_NUM} existing common Archive V2 root ${existing_catalog_root} differs from ${common_catalog_root}"
+            fi
+            ok "V${V_NUM} reused fully verified common Archive V2 catalog ${existing_catalog_root}"
+            continue
+        fi
+
         "$av2" build \
             --state-dir "$(db_path "$V_NUM")" \
             --cold-store "$(cold_path "$V_NUM")" \
@@ -2820,12 +2908,21 @@ print(status["catalog_root"], slot_range[1])
 
 wait_for_common_checkpoint() {
     local phase="${1:-parity}"
-    local current_slot target_slot minimum_target remaining_slots slot_budget_secs deadline all_ready all_captured
+    local current_slot target_slot target_interval minimum_target remaining_slots slot_budget_secs deadline all_ready all_captured
     local materialization_deadline_armed=0
     local validator_pid validator_log log_size log_start
     local -a checkpoint_log_offsets=()
     current_slot="$(get_slot "$V1_RPC")"
-    target_slot=$(( ((current_slot / CHECKPOINT_INTERVAL_SLOTS) + 1) * CHECKPOINT_INTERVAL_SLOTS ))
+    target_interval="$CHECKPOINT_INTERVAL_SLOTS"
+    if [[ ! "$ARCHIVE_V2_CHECKPOINT_CATALOG_END" =~ ^[0-9]+$ ]]; then
+        # Before a catalog handoff, the validator deliberately emits reachable
+        # hot-repair checkpoints every 1,000 slots. Select that actual cadence
+        # so the accelerated shared-disk gate does not wait for a 10,000-slot
+        # boundary that individual nodes may skip while an earlier bounded
+        # materialization is still active.
+        target_interval="$PREACTIVATION_CHECKPOINT_INTERVAL_SLOTS"
+    fi
+    target_slot=$(( ((current_slot / target_interval) + 1) * target_interval ))
     # A checkpoint older than its configured hot suffix can never satisfy a
     # fresh join. Select a valid checkpoint before the long wait instead of
     # discovering the impossible combination after materialization. Public
@@ -3228,10 +3325,69 @@ SLOT=0
 STAKED_CNT=0
 mkdir -p /tmp/lichen-testnet
 
-if [[ "$RESUME_AFTER_ARCHIVE_V2_COMMON_CATALOG" == "1" ]]; then
+if [[ "$RESUME_AFTER_ARCHIVE_V2_RUNTIME_MATRIX" == "1" ]]; then
+    log "Resuming after the exact Archive V2 runtime role and failure-recovery matrix..."
+    stop_local_processes
+    baseline_genesis_hash=""
+
+    for validator_num in $(seq 1 "$MAX_VALIDATORS"); do
+        state_dir="$(db_path "$validator_num")"
+        archive_root="/tmp/lichen-testnet/archive-v2-v${validator_num}"
+        [[ -f "$state_dir/CURRENT" && -f "$state_dir/validator-keypair.json" ]] \
+            || fail "Runtime-matrix resume requires V${validator_num}'s owned state and identity"
+        [[ -f "$archive_root/catalog.av2" ]] \
+            || fail "Runtime-matrix resume requires V${validator_num}'s authenticated Archive V2 catalog"
+
+        read -r archive_network archive_genesis_hash < <(
+            "$RELEASE_BIN_DIR/lichen-archive-v2" status --root "$archive_root" \
+                | python3 -c '
+import json
+import sys
+status = json.load(sys.stdin)
+print(status["network_id"], status["genesis_hash"])
+'
+        ) || fail "V${validator_num} runtime-matrix resume catalog status is invalid"
+        [[ "$archive_network" == "lichen-testnet-1" ]] \
+            || fail "V${validator_num} runtime-matrix resume catalog has the wrong network"
+        if [[ -z "$baseline_genesis_hash" ]]; then
+            baseline_genesis_hash="$archive_genesis_hash"
+        else
+            [[ "$archive_genesis_hash" == "$baseline_genesis_hash" ]] \
+                || fail "V${validator_num} Archive V2 genesis identity drifted after the runtime matrix"
+        fi
+
+        validator_pubkey="$(
+            grep -m1 '"publicKeyBase58"' "$state_dir/validator-keypair.json" \
+                | sed -E 's/.*"publicKeyBase58"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'
+        )"
+        [[ -n "$validator_pubkey" ]] \
+            || fail "Runtime-matrix resume could not read V${validator_num}'s validator identity"
+        for existing in "${ALL_PUBKEYS[@]:-}"; do
+            [[ -z "$existing" || "$existing" != "$validator_pubkey" ]] \
+                || fail "Runtime-matrix resume found duplicate validator identity $validator_pubkey"
+        done
+        ALL_PUBKEYS+=("$validator_pubkey")
+    done
+    V1_PUBKEY="${ALL_PUBKEYS[0]}"
+    ARCHIVE_V2_GENESIS_HASH="$baseline_genesis_hash"
+
+    reconcile_archive_v2_checkpoint_catalogs "$ARCHIVE_V2_GENESIS_HASH"
+    verify_archive_v2_hot_checkpoint_profile
+    prepare_archive_v2_fresh_join_roots
+    verify_fresh_archive_v2_role_rejoins
+    run_requested_user_journeys_and_post_parity
+
+    echo ""
+    ok "═══════════════════════════════════════════════════════════"
+    ok "ALL RUNTIME-MATRIX-RESUMED TESTS PASSED: common catalog, stable checkpoint, fresh roles, and journeys"
+    ok "═══════════════════════════════════════════════════════════"
+    LOCAL_GATE_SUCCESS=1
+    exit 0
+elif [[ "$RESUME_AFTER_ARCHIVE_V2_COMMON_CATALOG" == "1" ]]; then
     log "Resuming from an exact four-way common Archive V2 catalog proof..."
     stop_local_processes
     baseline_genesis_hash=""
+    baseline_catalog_end=""
 
     for validator_num in $(seq 1 "$MAX_VALIDATORS"); do
         state_dir="$(db_path "$validator_num")"
@@ -3246,22 +3402,28 @@ if [[ "$RESUME_AFTER_ARCHIVE_V2_COMMON_CATALOG" == "1" ]]; then
                 || fail "Common-catalog resume requires V${validator_num}'s retained role replica"
         fi
 
-        read -r archive_catalog_root archive_genesis_hash < <(
+        read -r archive_catalog_root archive_genesis_hash archive_catalog_end < <(
             "$RELEASE_BIN_DIR/lichen-archive-v2" status --root "$archive_root" \
                 | python3 -c '
 import json
 import sys
 status = json.load(sys.stdin)
-print(status["catalog_root"], status["genesis_hash"])
+slot_range = status.get("slot_range")
+if not isinstance(slot_range, list) or len(slot_range) != 2 or slot_range[0] != 0:
+    raise SystemExit(1)
+print(status["catalog_root"], status["genesis_hash"], slot_range[1])
 '
         ) || fail "V${validator_num} common Archive V2 catalog status is invalid"
         [[ "$archive_catalog_root" == "$RESUME_EXPECTED_ARCHIVE_V2_ROOT" ]] \
             || fail "V${validator_num} Archive V2 root ${archive_catalog_root} differs from resumed common proof ${RESUME_EXPECTED_ARCHIVE_V2_ROOT}"
         if [[ -z "$baseline_genesis_hash" ]]; then
             baseline_genesis_hash="$archive_genesis_hash"
+            baseline_catalog_end="$archive_catalog_end"
         else
             [[ "$archive_genesis_hash" == "$baseline_genesis_hash" ]] \
                 || fail "V${validator_num} Archive V2 genesis identity drifted at common-catalog resume"
+            [[ "$archive_catalog_end" == "$baseline_catalog_end" ]] \
+                || fail "V${validator_num} Archive V2 catalog end drifted at common-catalog resume"
         fi
 
         case "$validator_num" in
@@ -3299,6 +3461,7 @@ print(status["catalog_root"], status["genesis_hash"])
     done
     V1_PUBKEY="${ALL_PUBKEYS[0]}"
     ARCHIVE_V2_GENESIS_HASH="$baseline_genesis_hash"
+    ARCHIVE_V2_CHECKPOINT_CATALOG_END="$baseline_catalog_end"
 
     for validator_num in $(seq 1 "$MAX_VALIDATORS"); do
         bootstrap_established_archive_v2_role "$validator_num"
@@ -3706,6 +3869,86 @@ elif [[ "$RESUME_AFTER_PUBLIC_PARITY" == "1" ]]; then
     ok "═══════════════════════════════════════════════════════════"
     LOCAL_GATE_SUCCESS=1
     exit 0
+elif [[ "$RESUME_AFTER_RETENTION" == "1" || "$RESUME_AFTER_RESILIENCE" == "1" ]]; then
+    if [[ "$RESUME_AFTER_RESILIENCE" == "1" ]]; then
+        log "Resuming the exact gate from four independently owned post-resilience states..."
+    else
+        log "Resuming the exact gate from four independently owned post-retention states..."
+    fi
+    stop_local_processes
+
+    for validator_num in $(seq 1 "$MAX_VALIDATORS"); do
+        state_dir="$(db_path "$validator_num")"
+        [[ -f "$state_dir/CURRENT" ]] \
+            || fail "Post-retention resume requires V${validator_num}'s RocksDB CURRENT file"
+        [[ -f "$state_dir/validator-keypair.json" ]] \
+            || fail "Post-retention resume requires V${validator_num}'s node-owned validator identity"
+
+        validator_pubkey="$(
+            grep -m1 '"publicKeyBase58"' "$state_dir/validator-keypair.json" \
+                | sed -E 's/.*"publicKeyBase58"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'
+        )"
+        [[ -n "$validator_pubkey" ]] \
+            || fail "Post-retention resume could not read V${validator_num}'s validator identity"
+        for existing in "${ALL_PUBKEYS[@]:-}"; do
+            [[ -z "$existing" || "$existing" != "$validator_pubkey" ]] \
+                || fail "Post-retention resume found duplicate validator identity $validator_pubkey"
+        done
+        ALL_PUBKEYS+=("$validator_pubkey")
+
+        resume_log="/tmp/lichen-testnet/v${validator_num}-post-retention-resume.log"
+        LICHEN_DISABLE_SUPERVISOR=1 "$REPO_ROOT/run-validator.sh" testnet "$validator_num" \
+            > "$resume_log" 2>&1 &
+        VALIDATOR_PIDS[$validator_num]=$!
+        VALIDATOR_LOGS[$validator_num]="$resume_log"
+    done
+    V1_PUBKEY="${ALL_PUBKEYS[0]}"
+
+    if ! wait_for_existing_cluster_healthy "$ARCHIVE_V2_FRESH_ROLE_TIMEOUT_SECS"; then
+        for validator_num in $(seq 1 "$MAX_VALIDATORS"); do
+            tail -100 "${VALIDATOR_LOGS[$validator_num]}"
+        done
+        fail "Post-retention resume did not restore a healthy four-validator cluster"
+    fi
+
+    baseline_genesis_hash="$(archive_v2_rpc_block_hash "$(rpc_port 1)" 0)"
+    [[ -n "$baseline_genesis_hash" ]] \
+        || fail "Post-retention resume could not read V1 genesis hash"
+    MIN_SLOT=999999999999
+    MAX_SLOT=0
+    for validator_num in $(seq 1 "$MAX_VALIDATORS"); do
+        resume_genesis_hash="$(archive_v2_rpc_block_hash "$(rpc_port "$validator_num")" 0)"
+        [[ "$resume_genesis_hash" == "$baseline_genesis_hash" ]] \
+            || fail "Post-retention resume found a V${validator_num} genesis mismatch"
+        validator_slot="$(get_slot "$(rpc_port "$validator_num")")"
+        (( validator_slot < MIN_SLOT )) && MIN_SLOT="$validator_slot"
+        (( validator_slot > MAX_SLOT )) && MAX_SLOT="$validator_slot"
+    done
+    STAKED_CNT="$(get_staked_validator_count "$V1_RPC")"
+    EPOCH_ACTIVE_CNT="$(get_epoch_active_validator_count "$V1_RPC")"
+    VCNT="$(get_validator_count "$V1_RPC")"
+    [[ "$STAKED_CNT" -eq "$MAX_VALIDATORS"
+        && "$EPOCH_ACTIVE_CNT" -eq "$MAX_VALIDATORS"
+        && "$VCNT" -eq "$MAX_VALIDATORS" ]] \
+        || fail "Post-retention resume requires four staked, epoch-active, registered validators"
+    [[ "$MIN_SLOT" -ge "$ARCHIVE_V2_RETENTION_PROOF_SLOT" ]] \
+        || fail "Post-retention resume minimum slot ${MIN_SLOT} is below required ${ARCHIVE_V2_RETENTION_PROOF_SLOT}"
+    [[ $((MAX_SLOT - MIN_SLOT)) -le 20 ]] \
+        || fail "Post-retention resume head spread exceeds 20 slots: min=${MIN_SLOT} max=${MAX_SLOT}"
+    verify_chain_producing "after post-retention exact-gate resume" "$V1_RPC" 10
+    ok "Resumed four owned states at min=${MIN_SLOT} max=${MAX_SLOT} with matching genesis and healthy consensus"
+
+    if [[ "$RESUME_AFTER_RESILIENCE" == "1" ]]; then
+        # The preserved state has already passed loaded-backlog recovery,
+        # one-validator live catch-up, own-state restarts, and a coordinated
+        # all-validator restart. Continue at parity/checkpoint qualification
+        # without replaying those confirmed phases.
+        GENESIS_QUORUM_BOOTSTRAP=0
+        SKIP_JOINER_RESTART_CHECK=1
+    else
+        GENESIS_QUORUM_BOOTSTRAP=1
+    fi
+    JOIN_START=$((MAX_VALIDATORS + 1))
 elif [[ "$RESUME_AFTER_PHASE2" == "1" ]]; then
     log "Resuming the exact gate from independently owned V1/V2 state after proven Phase 2..."
     stop_local_processes

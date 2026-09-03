@@ -3112,7 +3112,7 @@ pub fn genesis_seed_oracle(
         return Err("oracle feeder authorization failed for LICN".to_string());
     }
 
-    // Step 2: Submit initial LICN price ($0.10 with 8 decimals = 10_000_000)
+    // Step 2: Submit initial LICN price ($0.15 with 8 decimals = 15_000_000)
     // submit_price(feeder_ptr: 32, asset_ptr: N, asset_len: u32, price: u64, decimals: u8) -> u32
     let launch_price: u64 = prices.licn_usd_8dec;
     let price_args = oracle_submit_price_args(&primary_feeder, asset, launch_price);
@@ -3123,9 +3123,9 @@ pub fn genesis_seed_oracle(
         &primary_feeder,
         "submit_price",
         &price_args,
-        "lichenoracle.submit_price(LICN=$0.10)",
+        "lichenoracle.submit_price(LICN=$0.15)",
     ) {
-        info!("  PRICE submitted: LICN = $0.10 (launch price)");
+        info!("  PRICE submitted: LICN = $0.15 (launch price)");
     } else {
         return Err("initial LICN oracle price submission failed".to_string());
     }
@@ -4155,7 +4155,7 @@ mod tests {
         assert_eq!(pair_prices[0].0, 1);
         assert_eq!(pair_prices[11].0, 12);
         assert_eq!(pair_prices[12].0, 13);
-        assert!((pair_prices[0].1 - 0.10).abs() < f64::EPSILON);
+        assert!((pair_prices[0].1 - 0.15).abs() < f64::EPSILON);
         assert!((pair_prices[1].1 - 81.84).abs() < f64::EPSILON);
         assert!((pair_prices[2].1 - 1999.34).abs() < f64::EPSILON);
         assert!((pair_prices[5].1 - 609.78).abs() < f64::EPSILON);
@@ -4170,10 +4170,10 @@ mod tests {
         let pair_prices = genesis_margin_pair_prices(&prices).unwrap();
 
         assert_eq!(pair_prices.len(), 13);
-        assert_eq!(pair_prices[0], (1, 100_000_000, "LICN"));
+        assert_eq!(pair_prices[0], (1, 150_000_000, "LICN"));
         assert_eq!(pair_prices[1], (2, 81_840_000_000, "wSOL"));
-        assert_eq!(pair_prices[3], (4, 818_400_000_000, "wSOL/LICN"));
-        assert_eq!(pair_prices[12], (13, 1_000_000_000_000_000, "wBTC/LICN"));
+        assert_eq!(pair_prices[3], (4, 545_600_000_000, "wSOL/LICN"));
+        assert_eq!(pair_prices[12], (13, 666_666_666_666_666, "wBTC/LICN"));
 
         let mut invalid = prices;
         invalid.licn_usd_8dec = 0;

@@ -474,6 +474,11 @@ const cleanSlateRedeploy = fs.existsSync(cleanSlateRedeployPath)
   : '';
 const rollingReleaseDeploy = read('scripts/rolling-release-deploy.sh');
 assert(
+  productionDeployment.includes('export GENESIS_LICN_USD=0.15') &&
+    productionDeployment.includes('export GENESIS_BTC_USD=100000.00'),
+  'production runbook should document the complete $0.15 LICN genesis price environment set',
+);
+assert(
   custodyRouteProfile.includes('mandatory CLOB pairs, AMM pools, and router') &&
     mainnetRunbook.includes('not a DEX market optionality switch') &&
     mainnetRunbookDoc.includes('not a DEX market optionality switch') &&
@@ -505,7 +510,7 @@ assert(
 assert(
   productionReleasePair &&
     productionReleasePair[1] === `v${validatorVersion}` &&
-    productionReleasePair[2] === 'v0.5.272' &&
+    productionReleasePair[2] === 'v0.5.274' &&
     productionReleasePair[3] === 'v0.5.265' &&
     /Historical\s+tags and audit records remain in Git/.test(productionDeployment) &&
     productionDeployment.includes('This destructive checklist does not apply to the current July testnet') &&

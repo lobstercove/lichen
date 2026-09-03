@@ -1,17 +1,22 @@
 # Archive V2 Activation, Cadence Recovery, And Validator Liveness Plan
 
 **Date:** 2026-08-18
-**Last updated:** 2026-09-02
-**Status:** Authoritative execution plan. Signed `v0.5.265` is installed on all
-four validators from its release-workflow artifact. A read-only 2026-08-30
-sample found the same installed validator SHA-256 on every host,
-`7ea2159569cd1cf1ae2ce3eca9d483a2c337580fd34862c3b378cd0d0b3f3afc`.
-US and Singapore are active but stale at slot `12,271,149`; EU is active and
-quarantined behind at slot `12,263,310`; India is failed with no RPC. The
-network is halted below quorum. Root-space availability is 21,401,096,192 bytes
-US, 5,633,310,720 EU, 8,808,546,304 Singapore, and 5,346,226,176 India.
-Keys, signers, environments, WAL, state, archives, and rollback evidence remain
-preserved.
+**Last updated:** 2026-09-03
+**Status:** Authoritative execution plan. Signed `v0.5.274` is installed on all
+four validators from release workflow `33723898975`; its validator SHA-256 is
+`322ee57337a6549e71827ced49aada05bb6ce5fc69bcc1c00dfaee6e3747abde`.
+At the latest read-only sample, US, Singapore, and India were healthy and
+finalized together at slot `12,299,322`. EU remained intentionally fail-closed
+on its own preserved state at slot `12,263,310` pending two matching
+authenticated checkpoints. Archive V2 was still disabled on all four nodes and
+reported zero reclaimed physical bytes. Root-space availability was
+17,581,338,624 bytes US, 12,738,080,768 EU, 24,227,704,832 Singapore, and
+17,489,784,832 India while the three active nodes retained unpublished
+approximately 2.18 GB staging checkpoints. Keys, signers, environments, WAL,
+state, archives, and rollback evidence remain preserved.
+
+The release chronology below is retained as incident evidence. Its older fleet
+snapshots are historical and do not override the status above.
 
 Immutable tag `v0.5.266` failed closed in the release quality job because its
 clean runner audited wallet code before building the JavaScript SDK distribution
@@ -86,7 +91,9 @@ reset or receive another validator's RocksDB state.
 Immutable `v0.5.273` corrected the production-scale checkpoint cadence and
 accounting defects but failed its first strict Archive V2 tag gate after fresh
 verified-cache V3 activated verified checkpoint slot `20,000` and exited. It
-was neither signed nor deployed. `v0.5.274` is the only successor candidate.
+was neither signed nor deployed. Signed `v0.5.274` corrected that lifecycle,
+passed its protected and tag-workflow gates, and was installed on all four
+validators without resetting or copying state.
 The earlier production-scale checkpoint at slot `12,272,000` proved that
 full-archive packaging cannot carry the legacy cold symlink placement. The
 explicit pre-activation hot-repair path in `v0.5.272` was then blocked by a
@@ -100,6 +107,27 @@ is cleaned and makes the gate preserve exact exit diagnostics. It retains the
 10,000-slot cadence after a catalog root is bound and preserves every
 authenticated checkpoint and disk-safety gate.
 
+The first live `v0.5.274` hot-repair build at slot `12,298,000` exposed one
+further production-scale path that the 30,000-slot release fixture did not
+model. The account-first `account_txs` index scanned roughly 6.7 million rows
+per validator and validated old blocks through the emergency R2/FUSE bridge
+before applying the 50,000-slot window. The chain continued finalizing and the
+staging checkpoints remained unpublished, but that unbounded pre-activation
+I/O is not accepted. `v0.5.275` is the only successor candidate: it derives the
+same source-backed account-history keys directly from canonical blocks in the
+advertised window, in 1,000-slot chunks, and retains fail-closed missing-row,
+conflict, budget, and atomic-publication checks.
+
+The preserved-state release gate additionally proved that a continuously
+non-empty reclaim queue could starve migration, an oversized SST-derived
+legacy reclaim range could block the queue head, and co-located checkpoint
+workers could queue on a shared-disk lock while retaining node-local archive
+maintenance locks. `v0.5.275` forces one migration turn after a successful
+reclaim, splits oversized ranges only at verified live-file boundaries, and
+releases/reacquires the node-local lock around the shared-disk wait. The same
+four owned states subsequently passed common catalog parity, identical
+slot-70,000 hot-repair manifests, and clean full/cache/consensus role joins.
+
 Archive V2 roles and irreversible retirement remain incomplete on the live
 fleet. The complete US source-backed recovery tail is preserved at
 `/var/lib/lichen/recovery/v265-archive-tail-20260829`; its 381 segments cover
@@ -110,7 +138,7 @@ temporary replicated recovery/archive source, not the permanent mainnet
 storage design, and deletion of any R2 object remains unauthorized.
 
 The signed `v0.5.265` release is the sole immediate rollback anchor for
-`v0.5.274`. Once `v0.5.274` is running and four-way V2 parity plus rollback
+`v0.5.275`. Once `v0.5.275` is running and four-way V2 parity plus rollback
 rehearsal are recorded, validator hosts keep only those two signed release
 installations. Legacy history is retired only by signed, source-backed,
 range-bound Archive V2 retirement and compaction; low disk space does not
@@ -135,10 +163,10 @@ ad-hoc production change.
 ## 1. Executive Decision
 
 The fleet state and rollback artifacts remain preserved, three signed
-`v0.5.272` validators maintain quorum, and EU is fail-closed pending
+`v0.5.274` validators maintain quorum, and EU is fail-closed pending
 authenticated checkpoint recovery. The testnet is not mainnet-ready. Archive V2
 roles and legacy retirement remain open, current 200 GB root volumes are not
-approved for indefinite archive growth, and `v0.5.274` still requires focused and
+approved for indefinite archive growth, and `v0.5.275` still requires focused and
 hosted signed-artifact, coordinated-deployment, and live acceptance gates.
 
 ### 1.1 Current decision
@@ -344,8 +372,8 @@ Accordingly:
 2. Use only the bounded, content-hashed emergency headroom pass required to
    recover a validator that reached the fail-closed disk floor. Do not delete
    R2 objects or treat that temporary bridge as Archive V2 activation.
-3. Preserve the completed `v0.5.270` and `v0.5.272` runtime and signed-gate
-   evidence and publish `v0.5.274` through the
+3. Preserve the signed `v0.5.274` runtime and gate evidence and publish
+   `v0.5.275` through the
    signed release workflow, verify provenance plus its detached post-quantum
    checksum signature, and deploy it through one coordinated four-host
    stop/install/start. Keep signed `v0.5.265` as the only immediate rollback.
@@ -1059,7 +1087,7 @@ This is a testnet exception, not the final production archive policy:
   Archive V2 retirement or larger storage, not another emergency offload;
 - the transition is reversible through the preserved baseline environment and
   signed `v0.5.265` immediate rollback artifact. Older releases remain Git and
-  audit history, not installed rollback binaries after `v0.5.274` acceptance.
+  audit history, not installed rollback binaries after `v0.5.275` acceptance.
 
 The later dedicated archive plane in Section 3.2 replaces this exception. It
 does not block honest Archive V2 role activation on the current testnet once
@@ -1079,7 +1107,7 @@ The 2026-08-27 stopped-node proof found a circular dependency in v0.5.263:
    reserve correctly returned `StopValidator` while legacy cold still occupied
    the disk.
 
-`v0.5.265` introduced the role-bootstrap correction, and `v0.5.274` carries it
+`v0.5.265` introduced the role-bootstrap correction, and `v0.5.275` carries it
 forward without changing consensus, Archive V2 object format, catalog format,
 or capacity policy:
 
@@ -1164,16 +1192,15 @@ Current execution order is fixed:
    US recovery tail, and prior outage/rejoin and RPC/FUSE diagnostics. Do not
    weaken timeouts, history requirements, or storage reserves.
 2. Preserve the completed `v0.5.270` clean and hosted runtime evidence, the
-   exact failed `v0.5.271` release log, and signed `v0.5.272` live evidence,
+   exact failed `v0.5.271` release log, and signed `v0.5.274` live evidence,
    including the green DEX/AMM/CLOB, prediction, governance, launchpad, outage,
-   restart, and Archive V2 matrix. Qualify the narrow `v0.5.274` checkpoint
-   cadence, bounded-write, and rollback-lifecycle corrections with
-   production-scale regressions.
-3. Commit through protected `main`, create the immutable `v0.5.274` tag, wait
+   restart, and Archive V2 matrix. Qualify the narrow `v0.5.275` bounded
+   account-history checkpoint derivation with production-scale regressions.
+3. Commit through protected `main`, create the immutable `v0.5.275` tag, wait
    for every hosted hard gate, attach the detached PQ checksum signature, verify
    provenance and every binary hash, and publish the public validator release.
 4. Capture a stopped preflight on all four hosts, prove identities/WALs/state,
-   preserve `v0.5.265`, install only the signed workflow artifact, and perform
+   preserve `v0.5.265`, install only the signed `v0.5.275` workflow artifact, and perform
    one coordinated four-host stop/install/start. Prove installed/running hash
    parity and four-way own-state convergence before any retirement.
 5. Freeze and audit the selected US recovery source, capture its final WAL
@@ -1193,7 +1220,7 @@ Current execution order is fixed:
    validators to author, measure reclaimed bytes per host, and complete the
    documented stable-observation window.
 9. Publish and deploy the matching wallet `0.1.9`, exchange
-   `exchange-testnet-v0.5.274`, developer portal, README, and frontend surfaces
+   `exchange-testnet-v0.5.275`, developer portal, README, and frontend surfaces
    only after their live readiness evidence is attached. Keep only the new
    signed validator release and signed `v0.5.265` rollback installation on each
    VPS; remove obsolete caches, staging, superseded checkpoints, and redundant

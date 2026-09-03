@@ -15,12 +15,12 @@ Use this document as the canonical workflow for:
 
 This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
 
-The target testnet release for this runbook is `v0.5.274`; the installed signed
-fleet release is `v0.5.272`, and the immediate restart-safe anchor is
-`v0.5.265`. Install `v0.5.274` only after
+The target testnet release for this runbook is `v0.5.275`; the installed signed
+fleet release is `v0.5.274`, and the immediate restart-safe anchor is
+`v0.5.265`. Install `v0.5.275` only after
 its exact tag workflow, attestations, checksums, detached PQ signature, and
-four-validator Archive V2 gate pass. Once the fleet is proven on `v0.5.274`,
-keep only `v0.5.274` and `v0.5.265` installed on each validator. Historical
+four-validator Archive V2 gate pass. Once the fleet is proven on `v0.5.275`,
+keep only `v0.5.275` and `v0.5.265` installed on each validator. Historical
 tags and audit records remain in Git; they are not live rollback binaries.
 `v0.5.265` remains Archive V2 dual-reader capable and must be retained until the
 new release, four-way V2 parity, and rollback rehearsal are recorded. Neither
@@ -992,7 +992,7 @@ templates plus the approved secret manager. Release upgrades then use the
 coordinated signed-artifact deployer from the operator machine:
 
 ```bash
-LICHEN_RELEASE_TAG=v0.5.274 LICHEN_COORDINATED_RELEASE=1 \
+LICHEN_RELEASE_TAG=v0.5.275 LICHEN_COORDINATED_RELEASE=1 \
   bash scripts/rolling-release-deploy.sh testnet
 ```
 
@@ -1113,7 +1113,7 @@ encrypted validator identity, node identity, WAL continuity evidence when
 applicable, and pinned expected public key. Never copy another validator's key
 or RocksDB directory to make a join appear healthy.
 
-`lichen-genesis` fetches live genesis market prices from Binance first, then CoinGecko. Testnet may fall back to compiled defaults if both sources are unavailable; mainnet refuses that fallback. For mainnet or an audited reset, pass `--genesis-prices-file <path>` with `licn_usd_8dec`, `wsol_usd_8dec`, `weth_usd_8dec`, `wbnb_usd_8dec`, `wneo_usd_8dec`, `wgas_usd_8dec`, and `wbtc_usd_8dec` fields, or export `GENESIS_SOL_USD`, `GENESIS_ETH_USD`, `GENESIS_BNB_USD`, `GENESIS_NEO_USD`, `GENESIS_GAS_USD`, and `GENESIS_BTC_USD` from a trusted snapshot.
+`lichen-genesis` fetches live genesis market prices from Binance first, then CoinGecko. Testnet may fall back to compiled defaults if both sources are unavailable; mainnet refuses that fallback. For mainnet or an audited reset, pass `--genesis-prices-file <path>` with `licn_usd_8dec`, `wsol_usd_8dec`, `weth_usd_8dec`, `wbnb_usd_8dec`, `wneo_usd_8dec`, `wgas_usd_8dec`, and `wbtc_usd_8dec` fields, or export `GENESIS_LICN_USD`, `GENESIS_SOL_USD`, `GENESIS_ETH_USD`, `GENESIS_BNB_USD`, `GENESIS_NEO_USD`, `GENESIS_GAS_USD`, and `GENESIS_BTC_USD` from a trusted snapshot. The current controlled LICN reference is `$0.15`; all seven environment values are an atomic override and partial sets fail closed.
 
 ### Step 5: run post-genesis deploy on the genesis VPS (MANDATORY)
 
@@ -1765,15 +1765,19 @@ If the DEX shows static prices that never move:
 
 ### Genesis price seeding
 
-The genesis builder reads `GENESIS_SOL_USD`, `GENESIS_ETH_USD`, and `GENESIS_BNB_USD` env vars to seed initial oracle prices into the genesis state. If `api.binance.com` is blocked on the genesis host, fetch the prices from a trusted fallback before running `lichen-genesis`:
+The genesis builder reads `GENESIS_LICN_USD`, `GENESIS_SOL_USD`, `GENESIS_ETH_USD`, `GENESIS_BNB_USD`, `GENESIS_NEO_USD`, `GENESIS_GAS_USD`, and `GENESIS_BTC_USD` as one complete set to seed initial oracle prices into genesis state. If the configured market-data endpoint is blocked on the genesis host, capture all external prices from a trusted fallback before running `lichen-genesis`:
 
 ```bash
 # From a non-US machine or your local dev box:
 curl -s 'https://api.binance.com/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT","NEOUSDT","GASUSDT","BTCUSDT"]'
 # Then export on the genesis host:
+export GENESIS_LICN_USD=0.15
 export GENESIS_SOL_USD=170.50
 export GENESIS_ETH_USD=2650.00
 export GENESIS_BNB_USD=620.00
+export GENESIS_NEO_USD=3.10
+export GENESIS_GAS_USD=1.65
+export GENESIS_BTC_USD=100000.00
 ```
 
 Bridge and oracle committees are also genesis state. A clean 4-validator deployment must pre-generate all four validator keypairs before `lichen-genesis`, then pass each planned validator pubkey with both `--bridge-validator <pubkey>` and `--oracle-operator <pubkey>`. Do not patch these committees after genesis for a clean reset.
