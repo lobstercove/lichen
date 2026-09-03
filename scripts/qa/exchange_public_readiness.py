@@ -44,14 +44,14 @@ ROLLBACK_RELEASE_API = (
     "https://api.github.com/repos/lobstercove/lichen/releases/tags/" + ROLLBACK_TAG
 )
 ROLLBACK_RELEASE_PAGE = "https://github.com/lobstercove/lichen/releases/tag/" + ROLLBACK_TAG
-EXCHANGE_PACKAGE_TAG = "exchange-testnet-v0.5.273"
+EXCHANGE_PACKAGE_TAG = "exchange-testnet-v0.5.274"
 EXCHANGE_PACKAGE_RELEASE_API = (
     "https://api.github.com/repos/lobstercove/lichen/releases/tags/" + EXCHANGE_PACKAGE_TAG
 )
 EXCHANGE_PACKAGE_RELEASE_PAGE = (
     "https://github.com/lobstercove/lichen/releases/tag/" + EXCHANGE_PACKAGE_TAG
 )
-EXCHANGE_PACKAGE_ARCHIVE = "lichen-exchange-testnet-v0.5.273.tar.gz"
+EXCHANGE_PACKAGE_ARCHIVE = "lichen-exchange-testnet-v0.5.274.tar.gz"
 EXCHANGE_PACKAGE_REPORT = "exchange-public-readiness-report.json"
 EXCHANGE_PACKAGE_CANDIDATE_REQUIRED_ASSETS = (
     "SHA256SUMS",
@@ -72,7 +72,7 @@ DEVELOPER_EXCHANGE_REQUIRED_SNIPPETS = (
     "Withdrawal Cookbook",
     "Canonical JSON-RPC Cookbook",
     "Mainnet Handoff",
-    "exchange-testnet-v0.5.273",
+    "exchange-testnet-v0.5.274",
     "testnet-only",
 )
 DEVELOPER_EXCHANGE_FORBIDDEN_SNIPPETS = (ADMIN_MONITORING_HOST,)

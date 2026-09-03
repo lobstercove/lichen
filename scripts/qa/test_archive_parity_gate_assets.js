@@ -417,6 +417,32 @@ assert(
     'consensus-role denial uses a full-archive-proven migrated slot instead of assuming a retention fraction',
 );
 const validatorSource = fs.readFileSync(repoPath('validator/src/main.rs'), 'utf8');
+const snapshotActivationStart = validatorSource.indexOf('// The durable rollback transaction must be gone before');
+const snapshotActivationEnd = validatorSource.indexOf('\n                        active_snapshot_anchor = None;', snapshotActivationStart);
+const snapshotActivation = snapshotActivationStart >= 0 && snapshotActivationEnd > snapshotActivationStart
+    ? validatorSource.slice(snapshotActivationStart, snapshotActivationEnd)
+    : '';
+const freshRoleWaitStart = harness.indexOf('wait_for_archive_v2_role_catchup() {');
+const freshRoleWaitEnd = harness.indexOf('\nreset_fresh_role_state_with_identity() {', freshRoleWaitStart);
+const freshRoleWait = freshRoleWaitStart >= 0 && freshRoleWaitEnd > freshRoleWaitStart
+    ? harness.slice(freshRoleWaitStart, freshRoleWaitEnd)
+    : '';
+assert(
+    snapshotActivation.includes('cleanup_snapshot_live_rollback_with_retry(')
+        && snapshotActivation.indexOf('cleanup_snapshot_live_rollback_with_retry(')
+            < snapshotActivation.indexOf('sync_mgr_for_snapshot.set_checkpoint(snapshot_slot).await;')
+        && snapshotActivation.includes('eprintln!("{}", fatal_message);')
+        && validatorSource.includes('snapshot_live_rollback_cleanup_retries_before_activation'),
+    'verified snapshot cleanup retries and completes durably before imported state becomes live',
+);
+assert(
+    freshRoleWait.includes('if wait "$pid"; then')
+        && freshRoleWait.includes('exited with status ${exit_status}')
+        && freshRoleWait.includes('.snapshot-live-rollback.json')
+        && freshRoleWait.includes('df -h "$REPO_ROOT" /tmp')
+        && freshRoleWait.includes('assert_fresh_role_original_has_no_snapshot_transaction'),
+    'fresh-role gate preserves child status and transaction/disk diagnostics and rejects pending rollback state',
+);
 const websocketFanoutStart = validatorSource.indexOf('fn emit_dex_events(');
 const websocketFanoutEnd = validatorSource.indexOf('\nstruct SnapshotSync', websocketFanoutStart);
 const websocketFanout = websocketFanoutStart >= 0 && websocketFanoutEnd > websocketFanoutStart
@@ -731,7 +757,7 @@ assert(
         && rollingReleaseDeploy.includes("grep -Fxq 'changed=0'")
         && rollingReleaseDeploy.includes('--db-path "$state_dir"')
         && !rollingReleaseDeploy.includes('--data-dir "$state_dir"')
-        && rollingReleaseDeploy.includes('--confirm repair-dex-contracts:testnet:v0.5.273'),
+        && rollingReleaseDeploy.includes('--confirm repair-dex-contracts:testnet:v0.5.274'),
     'coordinated DEX repair targets preserved state, writes explicitly, and proves idempotent completion',
 );
 assert(
