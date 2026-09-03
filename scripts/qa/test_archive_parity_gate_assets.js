@@ -265,7 +265,7 @@ assert(
         && strictJourneysFunction.includes('after post-activity own-state restart')
         && strictJourneysFunction.includes('wait_for_common_checkpoint "post-journey parity"')
         && strictJourneysFunction.includes('verify_public_history_manifest_parity offline "$POST_JOURNEY_CHECKPOINT_SLOT"')
-        && strictJourneyCalls.length === 5,
+        && strictJourneyCalls.length === 6,
     'normal and exact-resume gates share volume, launchpad, own-state restart, and post-journey parity enforcement',
 );
 assert(
