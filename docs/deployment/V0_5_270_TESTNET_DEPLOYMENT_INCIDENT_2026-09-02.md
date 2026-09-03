@@ -4,7 +4,7 @@ Date: 2026-09-02
 Scope: `lichen-testnet-1` preserved-chain release and Archive V2 activation  
 Status: deployment stopped safely; `v0.5.271` later failed its release gate,
 signed `v0.5.272` is installed, and the current recovery successor is
-`v0.5.273`
+`v0.5.274`
 
 ## Executive record
 
@@ -107,12 +107,16 @@ legacy cold symlink placement, and the pre-activation hot-repair estimator
 charged twice for `113,117,166,227` bytes of inherited public-history SSTs even
 though the raw checkpoint hard-links those files. Its computed
 `226,234,332,454`-byte write peak can never pass on the current 200 GB roots.
-`v0.5.273` corrects the reachable cadence and meters bounded new writes while
-retaining fail-closed physical headroom and authenticated recovery gates.
+Immutable `v0.5.273` corrected those two paths, but its first strict Archive V2
+tag gate failed when fresh verified-cache V3 exited immediately after verified
+checkpoint activation. It was neither signed nor deployed. `v0.5.274` retains
+the production-scale accounting correction, keeps imported state non-live
+until its durable rollback transaction is cleaned, and makes a recurrence
+report the real child exit status, sidecars, and disk state.
 
 ## Completion criteria
 
-The incident is closed only after signed `v0.5.273` is installed and running on
+The incident is closed only after signed `v0.5.274` is installed and running on
 all four validators from each host's own preserved state; block production,
 finality, RPC, WebSocket, DEX/AMM/CLOB, prediction, governance, and launchpad
 smokes pass; all four Archive V2 manifests prove the same genesis-to-tip

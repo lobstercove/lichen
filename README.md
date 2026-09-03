@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Candidate release line:** `v0.5.273`; the installed signed testnet release is
+**Candidate release line:** `v0.5.274`; the installed signed testnet release is
 `v0.5.272`, with `v0.5.265` retained as the restart-safe rollback anchor.
 Official installable artifacts are the published
 GitHub release archives whose checksums, detached ML-DSA signature, release
@@ -29,14 +29,25 @@ immutable `v0.5.271` workflow failed this gate and produced no deployable
 release. These changes preserve the existing Testnet chain and do not authorize
 a reset or state copy.
 
-The `v0.5.273` candidate corrects two production-only Archive V2 checkpoint
-admission failures exposed by the preserved 12-million-block Testnet. Explicit
-pre-activation hot repair is reachable at the ordinary 1,000-slot checkpoint
-boundary, while catalog-bound compaction remains at 10,000 slots. Checkpoint
+The immutable `v0.5.273` candidate corrected two production-only Archive V2
+checkpoint admission failures exposed by the preserved 12-million-block
+Testnet. Explicit pre-activation hot repair is reachable at the ordinary
+1,000-slot checkpoint boundary, while catalog-bound compaction remains at
+10,000 slots. Checkpoint
 headroom meters only newly materialized bounded rows, WAL, and compaction output;
 it no longer charges twice for more than 113 GB of inherited SSTs that RocksDB
 hard-links without allocating new data blocks. The build remains fail-closed,
-budgeted, atomically staged, and unavailable for recovery until published.
+budgeted and atomically staged. Its first tag workflow nevertheless failed
+closed after a fresh verified-cache node imported and checkpointed a verified
+snapshot but exited before role admission. It was not signed or deployed.
+
+The `v0.5.274` candidate keeps that imported state non-live until its durable
+rollback transaction has been removed, retries transient cleanup failures, and
+emits the terminal reason synchronously if cleanup remains impossible. The
+four-validator gate now records the real child exit status, remaining rollback
+sidecars, and disk state, and rejects a role that becomes healthy with a pending
+snapshot transaction. This is recovery-lifecycle hardening; it does not reset,
+copy, or waive validation of existing chain data.
 
 **Network status:** the public network is testnet. Mainnet has not launched and
 is not approved. The current 200 GB validator fleet is not approved for mainnet

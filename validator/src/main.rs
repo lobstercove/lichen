@@ -447,7 +447,7 @@ const SHOW_STATE_COMMITMENT_SCHEMA_FLAG: &str = "--show-state-commitment-schema"
 const SPARSE_STATE_COMMITMENT_CONFIRMATION: &str = "sparse-state-commitment:v1";
 const SHIELDED_STATE_COMMITMENT_CONFIRMATION: &str = "shielded-state-commitment:v2";
 const REPAIR_TESTNET_DEX_CONTRACTS_FLAG: &str = "--repair-testnet-dex-contracts";
-const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.273";
+const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.274";
 const SHOW_CONTRACT_STORAGE_DIGEST_FLAG: &str = "--show-contract-storage-digest";
 const SHOW_STAKE_POOL_DIGEST_FLAG: &str = "--show-stake-pool-digest";
 const PREPARE_CONSENSUS_V1_ACTIVATION_FLAG: &str = "--prepare-consensus-v1-activation";
@@ -1641,6 +1641,8 @@ fn cleanup_snapshot_staging(staging: &mut Option<(u64, String, StateStore)>) {
 const SNAPSHOT_LIVE_ROLLBACK_MARKER_VERSION: u8 = 2;
 const SNAPSHOT_LIVE_ROLLBACK_MARKER_SUFFIX: &str = "snapshot-live-rollback.json";
 const SNAPSHOT_LIVE_ROLLBACK_CHECKPOINT_SUFFIX: &str = "snapshot-live-rollback";
+const SNAPSHOT_LIVE_ROLLBACK_CLEANUP_ATTEMPTS: usize = 5;
+const SNAPSHOT_LIVE_ROLLBACK_CLEANUP_RETRY_MILLIS: u64 = 100;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SnapshotLiveRollbackMarker {
@@ -1793,7 +1795,7 @@ fn read_snapshot_live_rollback_marker(
 fn cleanup_snapshot_live_rollback(data_dir: &str) -> Result<(), String> {
     let rollback_dir = snapshot_live_rollback_checkpoint_dir(data_dir);
     match fs::remove_dir_all(&rollback_dir) {
-        Ok(()) => fsync_parent_dir(&rollback_dir)?,
+        Ok(()) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => {
             return Err(format!(
@@ -1803,13 +1805,16 @@ fn cleanup_snapshot_live_rollback(data_dir: &str) -> Result<(), String> {
             ));
         }
     }
+    // Always sync the parent, including after a retry observes NotFound. A
+    // prior attempt may have removed the entry before its fsync failed.
+    fsync_parent_dir(&rollback_dir)?;
 
     // The durable marker is the transaction indicator and must be removed
     // last. If checkpoint cleanup fails or the host crashes, startup must see
     // the marker and retry instead of silently leaving hard-linked SSTs behind.
     let marker_path = snapshot_live_rollback_marker_path(data_dir);
     match fs::remove_file(&marker_path) {
-        Ok(()) => fsync_parent_dir(&marker_path)?,
+        Ok(()) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => {
             return Err(format!(
@@ -1819,7 +1824,42 @@ fn cleanup_snapshot_live_rollback(data_dir: &str) -> Result<(), String> {
             ));
         }
     }
+    fsync_parent_dir(&marker_path)?;
     Ok(())
+}
+
+async fn cleanup_snapshot_live_rollback_with_retry(
+    data_dir: &str,
+    attempts: usize,
+    retry_delay: Duration,
+) -> Result<(), String> {
+    if attempts == 0 {
+        return Err("snapshot rollback cleanup requires at least one attempt".to_string());
+    }
+
+    for attempt in 1..=attempts {
+        match cleanup_snapshot_live_rollback(data_dir) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                if attempt == attempts {
+                    return Err(format!(
+                        "snapshot rollback cleanup failed after {} attempt(s): {}",
+                        attempts, err
+                    ));
+                }
+                warn!(
+                    "Snapshot rollback cleanup attempt {}/{} failed: {}; retrying in {} ms",
+                    attempt,
+                    attempts,
+                    err,
+                    retry_delay.as_millis()
+                );
+                time::sleep(retry_delay).await;
+            }
+        }
+    }
+
+    Err("snapshot rollback cleanup retry loop exhausted unexpectedly".to_string())
 }
 
 fn prepare_snapshot_live_rollback(
@@ -30068,6 +30108,29 @@ async fn run_validator() {
                             }
                             Err(e) => warn!("⚠️  Failed to create local checkpoint: {}", e),
                         }
+                        // The durable rollback transaction must be gone before
+                        // sync bookkeeping can expose the imported state as
+                        // live. Otherwise a cleanup failure followed by later
+                        // block commits could make startup restore the
+                        // pre-snapshot checkpoint over newer valid state.
+                        if let Err(err) = cleanup_snapshot_live_rollback_with_retry(
+                            &data_dir_for_snapshot_apply,
+                            SNAPSHOT_LIVE_ROLLBACK_CLEANUP_ATTEMPTS,
+                            Duration::from_millis(SNAPSHOT_LIVE_ROLLBACK_CLEANUP_RETRY_MILLIS),
+                        )
+                        .await
+                        {
+                            let fatal_message = format!(
+                                "FATAL: verified snapshot activation could not durably clean its rollback transaction before becoming live: {}",
+                                err
+                            );
+                            // `process::exit` does not run the non-blocking
+                            // tracing writer's guard. Emit the same diagnostic
+                            // synchronously so the failure reason survives.
+                            eprintln!("{}", fatal_message);
+                            error!("{}", fatal_message);
+                            std::process::exit(1);
+                        }
                         sync_mgr_for_snapshot.set_checkpoint(snapshot_slot).await;
                         sync_mgr_for_snapshot
                             .transition_to_initial("verified snapshot activation")
@@ -30095,15 +30158,6 @@ async fn run_validator() {
                             "✅ Snapshot checkpoint slot {} activated for sync catch-up bookkeeping",
                             snapshot_slot
                         );
-                        if let Err(err) =
-                            cleanup_snapshot_live_rollback(&data_dir_for_snapshot_apply)
-                        {
-                            error!(
-                                "FATAL: verified snapshot activation could not durably clean its rollback transaction: {}",
-                                err
-                            );
-                            std::process::exit(1);
-                        }
                         active_snapshot_anchor = None;
                         active_snapshot_source_peer = None;
                         active_snapshot_source = None;
@@ -45848,6 +45902,39 @@ mod tests {
         fs::remove_file(&rollback_dir).expect("remove blocking checkpoint file");
         cleanup_snapshot_live_rollback(&live_path).expect("finish rollback cleanup");
         assert!(!snapshot_live_rollback_marker_path(&live_path).exists());
+    }
+
+    #[tokio::test]
+    async fn snapshot_live_rollback_cleanup_retries_before_activation() {
+        let live_dir = tempfile::tempdir().expect("create live dir");
+        let live_path = live_dir.path().to_string_lossy().to_string();
+        let live = StateStore::open(live_dir.path()).expect("open live state");
+        let rollback_root = live.compute_state_root_cold_start();
+        prepare_snapshot_live_rollback(
+            &live,
+            &live_path,
+            1,
+            rollback_root,
+            CheckpointSnapshotProfile::FullArchiveV1,
+        )
+        .expect("prepare rollback marker");
+
+        let rollback_dir = snapshot_live_rollback_checkpoint_dir(&live_path);
+        fs::remove_dir_all(&rollback_dir).expect("remove checkpoint fixture");
+        fs::write(&rollback_dir, b"temporary cleanup obstruction")
+            .expect("replace checkpoint with file");
+        let obstruction = rollback_dir.clone();
+        let remover = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(25));
+            fs::remove_file(obstruction).expect("remove temporary obstruction");
+        });
+
+        cleanup_snapshot_live_rollback_with_retry(&live_path, 3, Duration::from_millis(50))
+            .await
+            .expect("retry cleanup after temporary obstruction");
+        remover.join().expect("join obstruction remover");
+        assert!(!snapshot_live_rollback_marker_path(&live_path).exists());
+        assert!(!snapshot_live_rollback_checkpoint_dir(&live_path).exists());
     }
 
     #[test]

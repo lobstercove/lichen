@@ -1906,20 +1906,36 @@ print("true" if isinstance(status, dict) and status.get("admitted_after_fresh_sy
 
 wait_for_archive_v2_role_catchup() {
     local validator_num=$1 expected_role=$2 pid=$3 output_log=$4
-    local rpc network_slot local_slot drift observed_role attempts
+    local rpc network_slot local_slot drift observed_role attempts exit_status
     rpc="$(rpc_port "$validator_num")"
     attempts=$(((ARCHIVE_V2_FRESH_ROLE_TIMEOUT_SECS + 1) / 2))
     for i in $(seq 1 "$attempts"); do
         sleep 2
         if ! kill -0 "$pid" 2>/dev/null; then
+            if wait "$pid"; then
+                exit_status=0
+            else
+                exit_status=$?
+            fi
             tail -100 "$output_log"
-            fail "V${validator_num} exited during fresh ${expected_role} join"
+            for sidecar in \
+                "$(db_path "$validator_num").snapshot-live-rollback.json" \
+                "$(db_path "$validator_num").snapshot-live-rollback"; do
+                if [[ -e "$sidecar" ]]; then
+                    ls -ld "$sidecar" || true
+                    du -sh "$sidecar" || true
+                fi
+            done
+            df -h "$REPO_ROOT" /tmp || true
+            fail "V${validator_num} exited with status ${exit_status} during fresh ${expected_role} join"
         fi
         network_slot="$(get_slot "$V1_RPC")"
         local_slot="$(get_slot "$rpc")"
         drift=$((network_slot - local_slot))
         observed_role="$(archive_v2_health_role "$rpc")"
         if [[ "$local_slot" -gt 0 && "$drift" -le 20 && "$observed_role" == "$expected_role" ]]; then
+            assert_fresh_role_original_has_no_snapshot_transaction \
+                "$(db_path "$validator_num")"
             ok "Fresh V${validator_num} ${expected_role} role admitted at slot ${local_slot} (network=${network_slot}, drift=${drift})"
             return 0
         fi

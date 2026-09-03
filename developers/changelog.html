@@ -79,6 +79,21 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.274 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.274</span>
+                    <span class="changelog-date">September 3, 2026</span>
+                </div>
+                <h3>Fail-closed verified-snapshot activation cleanup</h3>
+                <ul>
+                    <li>Keeps imported state out of live sync bookkeeping until the durable pre-import rollback transaction is removed.</li>
+                    <li>Retries transient cleanup failures and writes the final fatal reason synchronously before exit.</li>
+                    <li>Records fresh-join exit status, rollback sidecars, and disk headroom in the four-validator Archive V2 gate.</li>
+                    <li>Documents that immutable <code>v0.5.273</code> failed its first strict Archive V2 tag gate and was neither signed nor deployed.</li>
+                </ul>
+            </article>
+
             <!-- ============ v0.5.273 ============ -->
             <article class="changelog-entry">
                 <div class="changelog-header">

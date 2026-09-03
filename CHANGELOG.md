@@ -5,6 +5,38 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.274] - 2026-09-03
+
+### Fixed
+
+- Keep an imported verified snapshot out of live sync bookkeeping until its
+  durable pre-import rollback checkpoint and marker have been removed.
+- Retry transient rollback-cleanup failures five times before failing closed,
+  and synchronously emit the final error so `process::exit` cannot lose it in
+  the non-blocking tracing buffer.
+- Make the four-validator Archive V2 gate capture a fresh joiner's exact exit
+  status, rollback sidecars, and filesystem headroom, and reject admission if a
+  snapshot transaction remains pending.
+
+### Safety
+
+- Immutable `v0.5.273` passed its protected PR and all release quality,
+  security, contract, compiler, and platform-build jobs, but its first strict
+  Archive V2 tag gate failed when fresh verified-cache V3 exited immediately
+  after checkpoint activation. It was not signed or deployed.
+- Snapshot import remains source-authenticated, root-verified, transactionally
+  rollback-protected, and restart-recoverable. This release does not reset or
+  copy validator state and does not authorize legacy or R2 deletion before
+  four-way Archive V2 parity.
+
+### Verified
+
+- Focused rollback tests cover temporary cleanup obstruction and prove the
+  durable marker remains until checkpoint removal succeeds. The immutable tag
+  workflow remains authoritative for the complete four-validator Archive V2,
+  DEX/CLOB/AMM, prediction, governance, launchpad, restart, security, contract,
+  and platform matrix.
+
 ## [0.5.273] - 2026-09-03
 
 ### Fixed
