@@ -244,7 +244,7 @@ except Exception:
 		fi
 		if [[ -n "$PRICE_EXPORTS" ]]; then
 			eval "$PRICE_EXPORTS"
-			export GENESIS_LICN_USD="${GENESIS_LICN_USD:-0.10}"
+			export GENESIS_LICN_USD="${GENESIS_LICN_USD:-0.15}"
 			echo "  Genesis prices: SOL=\$${GENESIS_SOL_USD} ETH=\$${GENESIS_ETH_USD} BNB=\$${GENESIS_BNB_USD} NEO=\$${GENESIS_NEO_USD} GAS=\$${GENESIS_GAS_USD} BTC=\$${GENESIS_BTC_USD} LICN=\$${GENESIS_LICN_USD}"
 		else
 			echo "  Could not prefetch complete SOL/ETH/BNB/NEO/GAS/BTC prices; lichen-genesis will try live sources"

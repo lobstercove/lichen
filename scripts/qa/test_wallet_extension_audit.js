@@ -914,10 +914,10 @@ test('CC-14 window.ethereum shim is namespace-restricted (no broad lichenwallet 
   assert.ok(inpageProviderSrc.includes('Unsupported window.ethereum method'), 'window.ethereum should reject unsupported method names');
 });
 
-test('CC-15 popup uses live oracle feed for LICN USD display (no fixed $0.10)', () => {
+test('CC-15 popup uses live oracle feed for LICN USD display (no fixed multiplier)', () => {
   assert.ok(popupSrc.includes('/oracle/prices'), 'popup should fetch oracle prices endpoint');
   assert.ok(popupSrc.includes("String(feed?.asset || '').toUpperCase() === 'LICN'"), 'popup should select LICN oracle feed');
-  assert.ok(!popupSrc.includes('(balanceLicn * 0.10)'), 'popup should not use hardcoded 0.10 LICN price');
+  assert.ok(!popupSrc.includes('(balanceLicn * 0.15)'), 'popup should not use a hardcoded LICN multiplier');
 });
 
 test('CC-16 provider router prunes expired pending approvals and stale finalized requests', () => {
@@ -1239,7 +1239,7 @@ test('CC-28 extension USD valuations expose source, timestamp, and fallback stat
   for (const [label, src] of [['full page', fullSrc], ['popup', popupSrc]]) {
     assert.ok(src.includes('const LICN_USD_PRICE_STALE_MS = 5 * 60 * 1000;'),
       `${label} should define a stale window for LICN USD quotes`);
-    assert.ok(src.includes("let _licnUsdPriceCache = { value: 0.10, ts: 0, source: 'offline-fallback', fallback: true };"),
+    assert.ok(src.includes("let _licnUsdPriceCache = { value: 0.15, ts: 0, source: 'offline-fallback', fallback: true };"),
       `${label} should initialize the default price as an offline fallback`);
     assert.ok(src.includes('function normalizeLicnUsdQuote('),
       `${label} should normalize price responses into quote metadata`);
@@ -1252,6 +1252,8 @@ test('CC-28 extension USD valuations expose source, timestamp, and fallback stat
   }
   assert.ok(fullSrc.includes(" $('balanceUsd').title = licnUsdQuoteTitle(licnUsdQuote);") || fullSrc.includes("$('balanceUsd').title = licnUsdQuoteTitle(licnUsdQuote);"),
     'full page balance USD display should include quote source details');
+  assert.ok(fullSrc.includes('licn * licnUsdQuote.value'),
+    'full-page asset list should use the live LICN quote instead of a fixed multiplier');
   assert.ok(popupSrc.includes('usdEl.title = licnUsdQuoteTitle(licnUsdQuote);'),
     'popup balance USD display should include quote source details');
 });

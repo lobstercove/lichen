@@ -265,7 +265,7 @@ pub fn genesis_block_declares_mossstake_slot_only(block: &Block) -> Result<bool,
 /// genesis — these defaults only affect the first few startup liveness blocks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenesisPrices {
-    /// LICN/USD price with 8 decimals (e.g. 10_000_000 = $0.10)
+    /// LICN/USD price with 8 decimals (e.g. 15_000_000 = $0.15)
     pub licn_usd_8dec: u64,
     /// wSOL/USD price with 8 decimals
     pub wsol_usd_8dec: u64,
@@ -283,6 +283,11 @@ pub struct GenesisPrices {
     #[serde(default = "default_wbtc_usd_8dec")]
     pub wbtc_usd_8dec: u64,
 }
+
+/// Controlled LICN/USD bootstrap and stale-oracle reference for every new
+/// network. Existing chains update their live value through validator-attested
+/// oracle consensus rather than by rewriting genesis.
+pub const DEFAULT_LICN_USD_8DEC: u64 = 15_000_000;
 
 fn default_wneo_usd_8dec() -> u64 {
     307_500_000
@@ -303,7 +308,7 @@ fn default_state_commitment_schema() -> String {
 impl Default for GenesisPrices {
     fn default() -> Self {
         Self {
-            licn_usd_8dec: 10_000_000,              // $0.10
+            licn_usd_8dec: DEFAULT_LICN_USD_8DEC,   // $0.15
             wsol_usd_8dec: 8_184_000_000,           // $81.84
             weth_usd_8dec: 199_934_000_000,         // $1,999.34
             wbnb_usd_8dec: 60_978_000_000,          // $609.78
@@ -1321,12 +1326,20 @@ mod tests {
     fn test_default_testnet_valid() {
         let genesis = GenesisConfig::default_testnet();
         assert!(genesis.validate().is_ok());
+        assert_eq!(genesis.genesis_prices.licn_usd_8dec, 15_000_000);
         assert!(genesis.initial_restrictions.is_empty());
         let json = serde_json::to_string(&genesis).unwrap();
         assert!(
             !json.contains("initial_restrictions"),
             "empty initial restrictions should be omitted from genesis JSON"
         );
+    }
+
+    #[test]
+    fn test_default_mainnet_uses_current_licn_reference_price() {
+        let genesis = GenesisConfig::default_mainnet();
+        assert!(genesis.validate().is_ok());
+        assert_eq!(genesis.genesis_prices.licn_usd_8dec, 15_000_000);
     }
 
     #[test]

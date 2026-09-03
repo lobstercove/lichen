@@ -941,7 +941,7 @@ impl StateStore {
         Ok(categories)
     }
 
-    fn archive_v2_account_tx_rows_from_blocks(
+    pub(super) fn archive_v2_account_tx_rows_from_blocks(
         &self,
         start_slot: u64,
         end_slot: u64,

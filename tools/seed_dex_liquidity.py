@@ -92,7 +92,7 @@ def fetch_external_prices():
             continue
     for sym, fallback in defaults.items():
         prices[sym] = prices.get(sym, fallback)
-    prices['LICN'] = 0.10
+    prices['LICN'] = 0.15
     return prices
 
 
@@ -127,7 +127,7 @@ def apply_price_overrides(prices):
         env_key = f"LICHEN_{sym}_USD_PRICE"
         if env_key in os.environ:
             prices[sym] = float(os.environ[env_key])
-    prices['LICN'] = float(os.environ.get('LICHEN_USD_PRICE', prices.get('LICN', 0.10)))
+    prices['LICN'] = float(os.environ.get('LICHEN_USD_PRICE', prices.get('LICN', 0.15)))
     return prices
 
 
@@ -484,11 +484,11 @@ async def main():
 
     pair_id = PAIR_IDS["LICN/lUSD"]
 
-    # ── Sell wall: 25 levels from $0.100 to $0.148 ($0.002 increments) ──
-    # Dense near genesis price, thinner further out (~8.6M LICN total)
+    # Dense 25-level walls around the active LICN oracle price.
+    price_step = 0.002
     sell_levels = []
     for i in range(25):
-        p = 0.100 + i * 0.002
+        p = licn + i * price_step
         if i < 6:
             q = 700_000      # ~4.2M LICN in tight zone
         elif i < 13:
@@ -497,10 +497,9 @@ async def main():
             q = 183_000      # ~2.2M LICN in upper zone
         sell_levels.append((p, q))
 
-    # ── Buy wall: 25 levels from $0.098 to $0.050 ($0.002 decrements) ──
     buy_levels = []
     for i in range(25):
-        p = 0.098 - i * 0.002
+        p = licn - price_step - i * price_step
         if p <= 0:
             break
         if i < 6:

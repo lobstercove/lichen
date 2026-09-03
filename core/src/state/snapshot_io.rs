@@ -1444,18 +1444,20 @@ impl StateStore {
                     );
                 }
                 CheckpointSnapshotProfile::HotRepairV1 { .. } => {
-                    // Cold migration deletes hot rows only after their cold
-                    // writes are durable. Hold the same boundary while the hot
-                    // checkpoint hard-links its state and while every bounded
-                    // public-history row is materialized from the coherent
-                    // hot/cold view. The published checkpoint remains a single
-                    // hot database and never pins the legacy cold directory.
-                    let _archive_guard = self.lock_archive_maintenance();
-                    self.create_hot_raw_checkpoint(staging)?;
-                    on_raw_capture
-                        .take()
-                        .expect("raw checkpoint callback is called exactly once")(
-                    );
+                    // Capture the exact hot snapshot inside the archive
+                    // boundary, then release that boundary before waiting for
+                    // the shared-disk materialization lock. Otherwise every
+                    // co-located validator can hold its own archive lock while
+                    // queued behind one long checkpoint rewrite, starving all
+                    // cold migration and reclaim work at once.
+                    {
+                        let _archive_guard = self.lock_archive_maintenance();
+                        self.create_hot_raw_checkpoint(staging)?;
+                        on_raw_capture
+                            .take()
+                            .expect("raw checkpoint callback is called exactly once")(
+                        );
+                    }
                     tracing::info!(
                         checkpoint_slot = slot,
                         checkpoint_dir = staging,
@@ -1468,6 +1470,14 @@ impl StateStore {
                         checkpoint_dir = staging,
                         "Acquired shared-disk hot-repair checkpoint materialization lock"
                     );
+                    // Cold migration writes cold rows durably before deleting
+                    // their hot copies. Reacquiring the boundary after the
+                    // disk queue therefore gives materialization a coherent
+                    // live hot/cold source even if migration advanced while
+                    // this validator waited. The published checkpoint remains
+                    // a single hot database and never pins the legacy cold
+                    // directory.
+                    let _archive_guard = self.lock_archive_maintenance();
                     self.materialize_hot_repair_checkpoint_history(
                         staging,
                         slot,
@@ -1533,6 +1543,7 @@ impl StateStore {
         peak_bytes_budget: Option<u64>,
     ) -> Result<(), String> {
         const PAGE_ROWS: u64 = 10_000;
+        const ACCOUNT_TX_BLOCK_CHUNK_SLOTS: u64 = 1_000;
 
         if let Some(budget) =
             peak_bytes_budget.filter(|budget| *budget < HOT_REPAIR_MATERIALIZATION_FIXED_BYTES)
@@ -1620,43 +1631,98 @@ impl StateStore {
                         format!("Failed to restore checkpoint slot metadata: {error}")
                     })?;
             }
-            let mut cursor: Option<Vec<u8>> = None;
             let mut materialized_rows = 0u64;
-            loop {
-                let page = self.export_checkpoint_snapshot_category_cursor_untracked(
-                    category,
-                    cursor.as_deref(),
-                    PAGE_ROWS,
-                    snapshot_slot,
-                    profile,
-                )?;
-                if !page.entries.is_empty() {
-                    reserve_hot_repair_materialization_rows(
-                        &mut materialized_upper_bytes,
-                        &page.entries,
-                        peak_bytes_budget,
+            if *category == "account_txs" {
+                let CheckpointSnapshotProfile::HotRepairV1 {
+                    history_start_slot, ..
+                } = profile
+                else {
+                    return Err(
+                        "bounded account_txs derivation requires a hot-repair checkpoint profile"
+                            .to_string(),
+                    );
+                };
+                let mut chunk_start = history_start_slot;
+                while chunk_start <= snapshot_slot {
+                    let chunk_end = chunk_start
+                        .saturating_add(ACCOUNT_TX_BLOCK_CHUNK_SLOTS.saturating_sub(1))
+                        .min(snapshot_slot);
+                    let blocks = (chunk_start..=chunk_end)
+                        .map(|slot| {
+                            self.get_hot_or_legacy_cold_block_by_slot_for_checkpoint(slot)?
+                                .ok_or_else(|| {
+                                    format!(
+                                        "canonical block {slot} is missing from the checkpoint source"
+                                    )
+                                })
+                        })
+                        .collect::<Result<Vec<_>, String>>()?;
+                    let entries = self
+                        .archive_v2_account_tx_rows_from_blocks(chunk_start, chunk_end, &blocks)?
+                        .into_iter()
+                        .map(|row| (row.key, row.value))
+                        .collect::<Vec<_>>();
+                    if !entries.is_empty() {
+                        reserve_hot_repair_materialization_rows(
+                            &mut materialized_upper_bytes,
+                            &entries,
+                            peak_bytes_budget,
+                        )?;
+                        materialized_rows = materialized_rows.saturating_add(entries.len() as u64);
+                        checkpoint
+                            .import_snapshot_category(category, &entries)
+                            .map_err(|error| {
+                                format!(
+                                    "Failed to materialize hot-repair checkpoint category {category}: {error}"
+                                )
+                            })?;
+                    }
+                    let Some(next_start) = chunk_end.checked_add(1) else {
+                        break;
+                    };
+                    chunk_start = next_start;
+                }
+            } else {
+                let mut cursor: Option<Vec<u8>> = None;
+                loop {
+                    let page = self.export_checkpoint_snapshot_category_cursor_untracked(
+                        category,
+                        cursor.as_deref(),
+                        PAGE_ROWS,
+                        snapshot_slot,
+                        profile,
                     )?;
-                    materialized_rows = materialized_rows.saturating_add(page.entries.len() as u64);
-                    checkpoint
-                        .import_snapshot_category(category, &page.entries)
-                        .map_err(|error| {
-                            format!(
-                                "Failed to materialize hot-repair checkpoint category {category}: {error}"
-                            )
-                        })?;
+                    if !page.entries.is_empty() {
+                        reserve_hot_repair_materialization_rows(
+                            &mut materialized_upper_bytes,
+                            &page.entries,
+                            peak_bytes_budget,
+                        )?;
+                        materialized_rows =
+                            materialized_rows.saturating_add(page.entries.len() as u64);
+                        checkpoint
+                            .import_snapshot_category(category, &page.entries)
+                            .map_err(|error| {
+                                format!(
+                                    "Failed to materialize hot-repair checkpoint category {category}: {error}"
+                                )
+                            })?;
+                    }
+                    if !page.has_more {
+                        break;
+                    }
+                    let next_cursor = page.next_cursor.ok_or_else(|| {
+                        format!(
+                            "Hot-repair checkpoint category {category} has more rows but no cursor"
+                        )
+                    })?;
+                    if cursor.as_deref() == Some(next_cursor.as_slice()) {
+                        return Err(format!(
+                            "Hot-repair checkpoint category {category} did not advance its cursor"
+                        ));
+                    }
+                    cursor = Some(next_cursor);
                 }
-                if !page.has_more {
-                    break;
-                }
-                let next_cursor = page.next_cursor.ok_or_else(|| {
-                    format!("Hot-repair checkpoint category {category} has more rows but no cursor")
-                })?;
-                if cursor.as_deref() == Some(next_cursor.as_slice()) {
-                    return Err(format!(
-                        "Hot-repair checkpoint category {category} did not advance its cursor"
-                    ));
-                }
-                cursor = Some(next_cursor);
             }
             checkpoint.db.flush_wal(true).map_err(|error| {
                 format!("Failed to sync hot-repair checkpoint category {category}: {error}")
@@ -5550,6 +5616,7 @@ impl StateStore {
 #[cfg(test)]
 mod manifest_tests {
     use super::*;
+    use crate::{Instruction, Message};
     use std::sync::mpsc;
     use std::time::Duration;
     use tempfile::tempdir;
@@ -5756,6 +5823,89 @@ mod manifest_tests {
     }
 
     #[test]
+    fn hot_repair_checkpoint_derives_account_txs_only_from_bounded_blocks() {
+        let state_dir = tempdir().unwrap();
+        let checkpoint_parent = tempdir().unwrap();
+        let checkpoint = checkpoint_parent.path().join("slot-2");
+        let state = StateStore::open(state_dir.path()).unwrap();
+        let make_transaction = |seed: u8| {
+            Transaction::new(Message::new(
+                vec![Instruction {
+                    program_id: Pubkey([seed; 32]),
+                    accounts: vec![Pubkey([seed.wrapping_add(1); 32])],
+                    data: vec![seed],
+                }],
+                Hash::hash(&[seed]),
+            ))
+        };
+        let old = Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::hash(b"hot-repair-account-txs-old"),
+            [0x81; 32],
+            vec![make_transaction(0x82)],
+            1,
+        );
+        let boundary = Block::new_with_timestamp(
+            1,
+            old.hash(),
+            Hash::hash(b"hot-repair-account-txs-boundary"),
+            [0x83; 32],
+            vec![make_transaction(0x84)],
+            2,
+        );
+        let recent = Block::new_with_timestamp(
+            2,
+            boundary.hash(),
+            Hash::hash(b"hot-repair-account-txs-recent"),
+            [0x85; 32],
+            vec![make_transaction(0x86)],
+            3,
+        );
+        for block in [&old, &boundary, &recent] {
+            state
+                .put_block_atomic(block, Some(block.header.slot), Some(block.header.slot))
+                .unwrap();
+        }
+
+        // A checkpoint whose window starts at slot 2 must never consult the
+        // old block body while reconstructing account_txs. Before the bounded
+        // derivation path, scanning account-first index keys decoded this
+        // deliberately corrupt out-of-window body and aborted publication.
+        let blocks_cf = state.db.cf_handle(CF_BLOCKS).unwrap();
+        state
+            .db
+            .put_cf(&blocks_cf, old.hash().0, b"corrupt")
+            .unwrap();
+        state.db.flush_wal(true).unwrap();
+
+        state
+            .create_checkpoint_with_profile(
+                checkpoint.to_str().unwrap(),
+                2,
+                CheckpointSnapshotProfile::HotRepairV1 {
+                    history_start_slot: 2,
+                    archive_v2_catalog_root: None,
+                },
+            )
+            .unwrap();
+
+        let reopened = StateStore::open_checkpoint(checkpoint.to_str().unwrap()).unwrap();
+        assert!(reopened.get_hot_block_by_slot(0).unwrap().is_none());
+        assert!(reopened.get_hot_block_by_slot(1).unwrap().is_none());
+        assert_eq!(
+            reopened.get_hot_block_by_slot(2).unwrap().unwrap().hash(),
+            recent.hash()
+        );
+        let account_txs_cf = reopened.db.cf_handle(CF_ACCOUNT_TXS).unwrap();
+        let expected = super::super::secondary_indexes::account_tx_index_entries_for_block(&recent);
+        assert!(!expected.is_empty());
+        for (_, key) in expected {
+            assert!(reopened.db.get_cf(&account_txs_cf, key).unwrap().is_some());
+        }
+    }
+
+    #[test]
     fn atomic_checkpoint_publication_never_exposes_a_failed_build() {
         let temp = tempdir().unwrap();
         let final_path = temp.path().join("checkpoints/slot-42");
@@ -5806,6 +5956,62 @@ mod manifest_tests {
         assert_eq!(meta.slot, 0);
         assert!(checkpoint.join("checkpoint_meta.json").is_file());
         assert!(!staging.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn queued_hot_repair_materialization_does_not_hold_archive_maintenance_lock() {
+        let temp = tempdir().unwrap();
+        let state_dir = temp.path().join("state-7001");
+        let checkpoint = state_dir.join("checkpoints/slot-0");
+        let staging = checkpoint_staging_path(&checkpoint).unwrap();
+        let state = StateStore::open(&state_dir).unwrap();
+        let genesis = Block::genesis(Hash::hash(b"queued-hot-repair-state"), 1, Vec::new());
+        state.put_block_atomic(&genesis, Some(0), Some(0)).unwrap();
+
+        // Simulate another co-located validator actively materializing on the
+        // same physical disk. This checkpoint must capture its raw state and
+        // then wait without pinning its node-local archive-maintenance lock.
+        let shared_disk_guard = HotRepairMaterializationLock::acquire(&staging).unwrap();
+        let checkpoint_state = state.clone();
+        let checkpoint_path = checkpoint.clone();
+        let (captured_tx, captured_rx) = mpsc::channel();
+        let (completed_tx, completed_rx) = mpsc::channel();
+        let checkpoint_worker = std::thread::spawn(move || {
+            let result = checkpoint_state.create_checkpoint_with_profile_and_raw_capture(
+                checkpoint_path.to_str().unwrap(),
+                0,
+                CheckpointSnapshotProfile::HotRepairV1 {
+                    history_start_slot: 0,
+                    archive_v2_catalog_root: None,
+                },
+                || captured_tx.send(()).unwrap(),
+            );
+            completed_tx.send(result).unwrap();
+        });
+
+        captured_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("raw checkpoint capture must precede the shared-disk wait");
+        let archive_probe = state.clone();
+        let (archive_tx, archive_rx) = mpsc::channel();
+        let archive_worker = std::thread::spawn(move || {
+            let _guard = archive_probe.lock_archive_maintenance();
+            archive_tx.send(()).unwrap();
+        });
+        let archive_was_available = archive_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+
+        drop(shared_disk_guard);
+        completed_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("queued checkpoint must complete after the disk lock is released")
+            .unwrap();
+        checkpoint_worker.join().unwrap();
+        archive_worker.join().unwrap();
+        assert!(
+            archive_was_available,
+            "a checkpoint queued for the shared disk must not block cold maintenance"
+        );
     }
 
     #[test]

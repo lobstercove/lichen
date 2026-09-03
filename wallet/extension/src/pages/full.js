@@ -76,7 +76,7 @@ let createdMnemonic = '';
 let createdKeypair = null;
 const LICN_USD_PRICE_CACHE_MS = 60 * 1000;
 const LICN_USD_PRICE_STALE_MS = 5 * 60 * 1000;
-let _licnUsdPriceCache = { value: 0.10, ts: 0, source: 'offline-fallback', fallback: true };
+let _licnUsdPriceCache = { value: 0.15, ts: 0, source: 'offline-fallback', fallback: true };
 let extensionRestrictionStatusCache = {
   address: null,
   network: null,
@@ -518,7 +518,7 @@ function normalizeLicnUsdQuote(cache = _licnUsdPriceCache, now = Date.now()) {
   const timestamp = Number(cache?.ts || 0);
   const source = cache?.source || (timestamp > 0 ? 'oracle' : 'offline-fallback');
   return {
-    value: Number.isFinite(value) && value > 0 ? value : 0.10,
+    value: Number.isFinite(value) && value > 0 ? value : 0.15,
     source,
     timestamp,
     stale: timestamp > 0 && now - timestamp > LICN_USD_PRICE_STALE_MS,
@@ -3712,9 +3712,10 @@ async function loadAssets() {
   list.innerHTML = '<div class="empty-state"><span class="spinner"></span></div>';
 
   try {
-    const [result, neoGasRewards] = await Promise.all([
+    const [result, neoGasRewards, licnUsdQuote] = await Promise.all([
       rpc().getBalance(wallet.address),
-      loadNeoGasRewardsSnapshot(wallet.address)
+      loadNeoGasRewardsSnapshot(wallet.address),
+      getLiveLicnUsdPrice()
     ]);
     const raw = Number(result?.spores ?? result?.spendable ?? 0);
     const licn = raw / 1_000_000_000;
@@ -3732,7 +3733,7 @@ async function loadAssets() {
         </div>
         <div class="asset-balance">
           <div class="asset-amount">${licn.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 })}</div>
-          <div class="asset-value">$${(licn * 0.10).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })}</div>
+          <div class="asset-value" title="${escapeHtmlExt(licnUsdQuoteTitle(licnUsdQuote))}">$${(licn * licnUsdQuote.value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })}${escapeHtmlExt(licnUsdQuoteSuffix(licnUsdQuote))}</div>
         </div>
       </div>
       ${renderNeoGasRewardsAsset(neoGasRewards)}

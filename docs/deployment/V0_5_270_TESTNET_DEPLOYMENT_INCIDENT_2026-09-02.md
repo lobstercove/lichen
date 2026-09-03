@@ -2,9 +2,9 @@
 
 Date: 2026-09-02  
 Scope: `lichen-testnet-1` preserved-chain release and Archive V2 activation  
-Status: deployment stopped safely; `v0.5.271` later failed its release gate,
-signed `v0.5.272` is installed, and the current recovery successor is
-`v0.5.274`
+Status: original deployment stopped safely; signed `v0.5.274` is now installed
+on all four validators, and the current bounded checkpoint-I/O successor is
+`v0.5.275`
 
 ## Executive record
 
@@ -114,9 +114,20 @@ the production-scale accounting correction, keeps imported state non-live
 until its durable rollback transaction is cleaned, and makes a recurrence
 report the real child exit status, sidecars, and disk state.
 
+Signed `v0.5.274` passed that matrix and was installed on all four validators.
+US, Singapore, and India resumed finality; EU remains fail-closed on its own
+preserved state pending two matching authenticated checkpoints. The first live
+hot-repair build at slot `12,298,000` then exposed an unbounded account-history
+scan that traversed roughly 6.7 million account-first rows per active validator
+and performed out-of-window block validation through the emergency R2/FUSE
+bridge. The checkpoints remained unpublished and the chain kept advancing.
+`v0.5.275` bounds this work to canonical blocks in the advertised 50,000-slot
+window while preserving source checks, budget enforcement, and atomic
+publication.
+
 ## Completion criteria
 
-The incident is closed only after signed `v0.5.274` is installed and running on
+The incident is closed only after signed `v0.5.275` is installed and running on
 all four validators from each host's own preserved state; block production,
 finality, RPC, WebSocket, DEX/AMM/CLOB, prediction, governance, and launchpad
 smokes pass; all four Archive V2 manifests prove the same genesis-to-tip

@@ -40,7 +40,7 @@ let state = null;
 let pendingGeneratedMnemonic = '';
 const LICN_USD_PRICE_CACHE_MS = 60 * 1000;
 const LICN_USD_PRICE_STALE_MS = 5 * 60 * 1000;
-let _licnUsdPriceCache = { value: 0.10, ts: 0, source: 'offline-fallback', fallback: true };
+let _licnUsdPriceCache = { value: 0.15, ts: 0, source: 'offline-fallback', fallback: true };
 let extensionRestrictionStatusCache = {
   address: null,
   network: null,
@@ -721,7 +721,7 @@ function normalizeLicnUsdQuote(cache = _licnUsdPriceCache, now = Date.now()) {
   const timestamp = Number(cache?.ts || 0);
   const source = cache?.source || (timestamp > 0 ? 'oracle' : 'offline-fallback');
   return {
-    value: Number.isFinite(value) && value > 0 ? value : 0.10,
+    value: Number.isFinite(value) && value > 0 ? value : 0.15,
     source,
     timestamp,
     stale: timestamp > 0 && now - timestamp > LICN_USD_PRICE_STALE_MS,

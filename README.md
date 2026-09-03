@@ -7,8 +7,8 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Candidate release line:** `v0.5.274`; the installed signed testnet release is
-`v0.5.272`, with `v0.5.265` retained as the restart-safe rollback anchor.
+**Candidate release line:** `v0.5.275`; the installed signed testnet release is
+`v0.5.274`, with `v0.5.265` retained as the restart-safe rollback anchor.
 Official installable artifacts are the published
 GitHub release archives whose checksums, detached ML-DSA signature, release
 trust anchor, and provenance attestations all verify. The candidate adds the
@@ -49,6 +49,27 @@ sidecars, and disk state, and rejects a role that becomes healthy with a pending
 snapshot transaction. This is recovery-lifecycle hardening; it does not reset,
 copy, or waive validation of existing chain data.
 
+The first production-scale `v0.5.274` hot-repair checkpoint then exposed an
+unbounded pre-activation read path: the account-first transaction-history index
+was scanned across the entire 12-million-block legacy layout, and every old row
+could trigger a block lookup through the emergency R2/FUSE bridge before the
+recent-history filter ran. The `v0.5.275` candidate derives exactly the same
+source-backed account-history keys from canonical blocks in the bounded
+checkpoint window, in 1,000-slot chunks. Missing source rows and hot/cold
+conflicts still fail closed; this removes out-of-window reads without changing
+checkpoint contents, consensus, or the Archive V2 format.
+
+The same preserved-state qualification found and corrected two maintenance
+fairness boundaries and one co-located checkpoint lock-order boundary. Reclaim
+can no longer starve migration, an oversized legacy compaction range is split
+at verified RocksDB live-file boundaries instead of blocking the queue, and a
+checkpoint waiting for the shared-disk materializer no longer holds its
+node-local archive-maintenance lock. These are lifecycle and scheduling fixes;
+they do not reset state or alter consensus, wire, checkpoint, or Archive V2
+formats. The exact four-validator gate subsequently produced identical
+slot-70,000 checkpoint manifests and admitted clean full-archive,
+verified-cache, and consensus-role joins.
+
 **Network status:** the public network is testnet. Mainnet has not launched and
 is not approved. The current 200 GB validator fleet is not approved for mainnet
 or indefinite archive growth. The testnet-only historical-loss waiver cannot be
@@ -79,8 +100,10 @@ release gates:
   stake quorum. This is a target, not a latency guarantee.
 - Rust/WASM contracts, EVM transaction execution, JavaScript/Python/Rust SDKs,
   and on-chain identity share one deterministic settlement layer.
-- The base transfer fee is denominated by the protocol as 0.001 LICN. No USD
-  price is implied because LICN does not have a protocol-defined exchange rate.
+- The base transfer fee is denominated by the protocol as 0.001 LICN. LICN is
+  not USD-pegged; new networks initialize the validator-attested LICN/USD
+  oracle at the current $0.15 reference, and public USD valuations identify
+  live, stale, or offline-fallback provenance.
 
 External HTTPS, source-chain bridge accounts, operating systems, and other
 third-party infrastructure retain their own cryptographic assumptions. “Post

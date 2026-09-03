@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rocksdb::{
-    BottommostLevelCompaction, CompactOptions, Direction, FlushOptions, ReadOptions, WriteBatch,
-    WriteOptions,
+    BottommostLevelCompaction, CompactOptions, Direction, FlushOptions, LiveFile, ReadOptions,
+    WriteBatch, WriteOptions,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -20,6 +20,7 @@ const MAX_CURSOR_RECORD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PENDING_ROWS: usize = 100_000;
 const MAX_PENDING_KEY_BYTES: usize = 4 * 1024;
 const MAX_RECLAIM_RANGES: usize = 4_096;
+const MAX_RECLAIM_SPLITS_PER_PASS: u64 = 64;
 type MigrationRows = BTreeMap<(String, Vec<u8>), Vec<u8>>;
 
 const BLOCK_CATEGORY: &str = "canonical_blocks";
@@ -76,6 +77,78 @@ struct ReclaimRange {
     cf_name: String,
     start_key: Vec<u8>,
     end_key: Vec<u8>,
+}
+
+fn reclaim_live_file_overlaps_range(file: &LiveFile, range: &ReclaimRange) -> bool {
+    if file.column_family_name != range.cf_name {
+        return false;
+    }
+    match (file.start_key.as_deref(), file.end_key.as_deref()) {
+        (Some(file_start), Some(file_end)) => {
+            file_end >= range.start_key.as_slice() && file_start < range.end_key.as_slice()
+        }
+        _ => true,
+    }
+}
+
+fn estimated_reclaim_input_bytes_from_files(files: &[LiveFile], range: &ReclaimRange) -> u64 {
+    files
+        .iter()
+        .filter(|file| reclaim_live_file_overlaps_range(file, range))
+        .fold(0u64, |total, file| total.saturating_add(file.size as u64))
+}
+
+fn split_reclaim_range(
+    range: &ReclaimRange,
+    files: &[LiveFile],
+) -> Option<(ReclaimRange, ReclaimRange)> {
+    let parent_estimate = estimated_reclaim_input_bytes_from_files(files, range);
+    let mut boundaries = files
+        .iter()
+        .filter(|file| reclaim_live_file_overlaps_range(file, range))
+        .flat_map(|file| {
+            [
+                file.start_key.clone(),
+                file.end_key.as_deref().map(StateStore::reclaim_range_end),
+            ]
+        })
+        .flatten()
+        .filter(|boundary| {
+            boundary.as_slice() > range.start_key.as_slice()
+                && boundary.as_slice() < range.end_key.as_slice()
+        })
+        .collect::<Vec<_>>();
+    boundaries.sort();
+    boundaries.dedup();
+
+    boundaries
+        .into_iter()
+        .filter_map(|boundary| {
+            let left = ReclaimRange {
+                cf_name: range.cf_name.clone(),
+                start_key: range.start_key.clone(),
+                end_key: boundary.clone(),
+            };
+            let right = ReclaimRange {
+                cf_name: range.cf_name.clone(),
+                start_key: boundary,
+                end_key: range.end_key.clone(),
+            };
+            let left_estimate = estimated_reclaim_input_bytes_from_files(files, &left);
+            let right_estimate = estimated_reclaim_input_bytes_from_files(files, &right);
+            if left_estimate >= parent_estimate || right_estimate >= parent_estimate {
+                return None;
+            }
+            Some((
+                left_estimate.max(right_estimate),
+                left_estimate.saturating_add(right_estimate),
+                left.end_key.clone(),
+                left,
+                right,
+            ))
+        })
+        .min_by(|left, right| (left.0, left.1, &left.2).cmp(&(right.0, right.1, &right.2)))
+        .map(|(_, _, _, left, right)| (left, right))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,6 +248,7 @@ pub struct ColdReclaimReport {
     pub queued_ranges_before: u64,
     pub queued_ranges_after: u64,
     pub compacted_ranges: u64,
+    pub split_ranges: u64,
     pub estimated_input_bytes: u64,
     pub reclaimed_physical_bytes: u64,
     pub compaction_duration_millis: u64,
@@ -475,22 +549,7 @@ impl StateStore {
             .db
             .live_files()
             .map_err(|err| format!("failed inspecting hot SSTs for bounded reclaim: {err}"))?;
-        let mut total = 0u64;
-        for file in files {
-            if file.column_family_name != range.cf_name {
-                continue;
-            }
-            let overlaps = match (file.start_key.as_deref(), file.end_key.as_deref()) {
-                (Some(file_start), Some(file_end)) => {
-                    file_end >= range.start_key.as_slice() && file_start < range.end_key.as_slice()
-                }
-                _ => true,
-            };
-            if overlaps {
-                total = total.saturating_add(file.size as u64);
-            }
-        }
-        Ok(total)
+        Ok(estimated_reclaim_input_bytes_from_files(&files, range))
     }
 
     fn hot_family_physical_bytes(&self, cf_name: &str) -> Result<u64, String> {
@@ -1860,13 +1919,52 @@ impl StateStore {
             let Some(range) = cursor.reclaim_queue.first().cloned() else {
                 break;
             };
-            let initial_estimate = self.estimated_reclaim_input_bytes(&range)?;
+            let live_files = self
+                .db
+                .live_files()
+                .map_err(|err| format!("failed inspecting hot SSTs for bounded reclaim: {err}"))?;
+            let initial_estimate = estimated_reclaim_input_bytes_from_files(&live_files, &range);
             let initial_peak = initial_estimate.saturating_mul(2);
             if initial_estimate > limits.max_estimated_input_bytes {
-                report.paused_reason = Some(format!(
-                    "compaction_input_too_large:family={}:estimated_bytes={}:limit_bytes={}",
-                    range.cf_name, initial_estimate, limits.max_estimated_input_bytes
-                ));
+                // An SST-derived range can later overlap additional lower-level
+                // files and grow beyond the configured compaction envelope.
+                // Persistently split it at a real live-file key boundary so a
+                // safe child can be admitted on this or a later pass. Keeping
+                // the oversized parent at queue index zero would otherwise
+                // block physical reclaim forever.
+                if report.split_ranges < MAX_RECLAIM_SPLITS_PER_PASS
+                    && cursor.reclaim_queue.len() < MAX_RECLAIM_RANGES
+                {
+                    if let Some((left, right)) = split_reclaim_range(&range, &live_files) {
+                        cursor.reclaim_queue.remove(0);
+                        cursor.reclaim_queue.push(left);
+                        cursor.reclaim_queue.push(right);
+                        cursor.reclaim_queue.sort();
+                        cursor.reclaim_queue.dedup();
+                        self.persist_cold_migration_cursor(&cursor)?;
+                        report.split_ranges = report.split_ranges.saturating_add(1);
+                        report.queued_ranges_after = cursor.reclaim_queue.len() as u64;
+                        continue;
+                    }
+                }
+                report.paused_reason = Some(
+                    if report.split_ranges >= MAX_RECLAIM_SPLITS_PER_PASS {
+                        format!(
+                        "reclaim_split_limit:split_ranges={}:limit={MAX_RECLAIM_SPLITS_PER_PASS}",
+                        report.split_ranges
+                    )
+                    } else if cursor.reclaim_queue.len() >= MAX_RECLAIM_RANGES {
+                        format!(
+                            "reclaim_split_queue_capacity:ranges={}:limit={MAX_RECLAIM_RANGES}",
+                            cursor.reclaim_queue.len()
+                        )
+                    } else {
+                        format!(
+                        "compaction_input_too_large_unsplittable:family={}:estimated_bytes={}:limit_bytes={}",
+                        range.cf_name, initial_estimate, limits.max_estimated_input_bytes
+                    )
+                    },
+                );
                 break;
             }
             if available_bytes < limits.required_reserve_bytes.saturating_add(initial_peak) {
@@ -2461,6 +2559,64 @@ mod tests {
                 .highest_fully_migrated_slot,
             Some(0)
         );
+    }
+
+    fn reclaim_test_live_file(
+        name: &str,
+        size: usize,
+        start: Option<u8>,
+        end: Option<u8>,
+    ) -> LiveFile {
+        LiveFile {
+            column_family_name: CF_BLOCKS.to_string(),
+            name: name.to_string(),
+            size,
+            level: 1,
+            start_key: start.map(|key| vec![key]),
+            end_key: end.map(|key| vec![key]),
+            num_entries: 1,
+            num_deletions: 1,
+        }
+    }
+
+    #[test]
+    fn oversized_reclaim_range_splits_at_balanced_live_file_boundary() {
+        let range = ReclaimRange {
+            cf_name: CF_BLOCKS.to_string(),
+            start_key: vec![0],
+            end_key: vec![100],
+        };
+        let files = vec![
+            reclaim_test_live_file("one.sst", 200, Some(0), Some(30)),
+            reclaim_test_live_file("two.sst", 200, Some(31), Some(60)),
+            reclaim_test_live_file("three.sst", 200, Some(61), Some(99)),
+        ];
+
+        let (left, right) = split_reclaim_range(&range, &files).unwrap();
+        assert_eq!(left.start_key, range.start_key);
+        assert_eq!(left.end_key, right.start_key);
+        assert_eq!(right.end_key, range.end_key);
+        assert_eq!(left.end_key, vec![31]);
+        assert_eq!(estimated_reclaim_input_bytes_from_files(&files, &left), 200);
+        assert_eq!(
+            estimated_reclaim_input_bytes_from_files(&files, &right),
+            400
+        );
+    }
+
+    #[test]
+    fn oversized_reclaim_range_refuses_non_reducing_split() {
+        let range = ReclaimRange {
+            cf_name: CF_BLOCKS.to_string(),
+            start_key: vec![0],
+            end_key: vec![100],
+        };
+        let files = vec![
+            reclaim_test_live_file("spanning.sst", 100, Some(0), Some(99)),
+            reclaim_test_live_file("unbounded.sst", 50, None, None),
+        ];
+
+        assert_eq!(split_reclaim_range(&range, &files), None);
     }
 
     #[test]

@@ -637,7 +637,8 @@ pub const PERFORMANCE_BONUS_BPS: u64 = 15000;
 pub const MIGRATION_COOLDOWN_SLOTS: u64 = 432_000;
 
 /// Reference LICN price used when no consensus oracle price is available.
-const REFERENCE_LICN_PRICE_USD: f64 = 0.10;
+pub const REFERENCE_LICN_PRICE_USD: f64 =
+    crate::genesis::DEFAULT_LICN_USD_8DEC as f64 / 100_000_000.0;
 
 // ============================================================================
 // PRICE-BASED REWARDS - Dynamic reward adjustment
@@ -649,7 +650,7 @@ pub trait PriceOracle: Send + Sync {
 }
 
 /// On-chain oracle that reads validator-attested consensus prices.
-/// Falls back to the reference price ($0.10) if the oracle has no data or is stale.
+/// Falls back to the reference price ($0.15) if the oracle has no data or is stale.
 pub struct StateOracle {
     state: Arc<crate::state::StateStore>,
 }
@@ -708,7 +709,7 @@ pub fn consensus_oracle_price_from_state(
 }
 
 /// Read the current LICN price in USD from the validator-attested consensus oracle.
-/// Falls back to $0.10 (launch reference price) if oracle data is unavailable or stale.
+/// Falls back to $0.15 (current reference price) if oracle data is unavailable or stale.
 pub fn licn_price_from_state(state: &crate::state::StateStore) -> f64 {
     consensus_oracle_price_from_state(state, "LICN").unwrap_or(REFERENCE_LICN_PRICE_USD)
 }
@@ -719,7 +720,7 @@ pub fn licn_price_from_state(state: &crate::state::StateStore) -> f64 {
 /// Price adjustment scales it up/down to maintain consistent USD value.
 #[derive(Debug, Clone)]
 pub struct RewardConfig {
-    /// Reference USD price ($0.10 launch target)
+    /// Reference USD price ($0.15 current target)
     pub reference_price_usd: f64,
     /// Maximum reward multiplier (10x when price drops to $0.01)
     pub max_adjustment_multiplier: f64,
@@ -730,7 +731,7 @@ pub struct RewardConfig {
 impl RewardConfig {
     pub fn new() -> Self {
         Self {
-            reference_price_usd: 0.10,
+            reference_price_usd: REFERENCE_LICN_PRICE_USD,
             max_adjustment_multiplier: 10.0,
             min_adjustment_multiplier: 0.1,
         }
@@ -10818,7 +10819,7 @@ mod tests {
             .put_oracle_consensus_price("LICN", 12_500_000, 8, 0, 3)
             .unwrap();
 
-        assert_eq!(licn_price_from_state(&state), 0.10);
+        assert_eq!(licn_price_from_state(&state), REFERENCE_LICN_PRICE_USD);
     }
 
     #[test]

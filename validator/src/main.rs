@@ -410,6 +410,24 @@ fn cold_migration_sync_pause_reason(
     }
 }
 
+fn cold_migration_due_this_pass(
+    current_slot: u64,
+    retention_slots: u64,
+    force_migration: bool,
+    reclaimed_ranges: u64,
+) -> bool {
+    current_slot > retention_slots && (force_migration || reclaimed_ranges == 0)
+}
+
+fn force_cold_migration_next_pass(
+    current_slot: u64,
+    retention_slots: u64,
+    reclaimed_ranges: u64,
+    migration_ran: bool,
+) -> bool {
+    current_slot > retention_slots && reclaimed_ranges > 0 && !migration_ran
+}
+
 fn compact_block_full_block_fallback_request(slot: u64, local_addr: SocketAddr) -> P2PMessage {
     P2PMessage::new(MessageType::BlockRequest { slot }, local_addr)
 }
@@ -30689,6 +30707,12 @@ async fn run_validator() {
                 );
                 tokio::spawn(async move {
                     time::sleep(initial_delay).await;
+                    // Reclaim and migration are independently bounded, but a
+                    // non-empty reclaim queue must not monopolize every
+                    // scheduler turn. One successful reclaim pass may defer
+                    // migration once; the next eligible turn skips reclaim and
+                    // advances the durable migration cursor.
+                    let mut force_migration = false;
                     loop {
                         let current_slot = state_for_cold.get_last_slot().unwrap_or(0);
                         let network_tip_caught_up =
@@ -30711,23 +30735,32 @@ async fn run_validator() {
                             let available_bytes =
                                 filesystem_available_bytes(&data_dir_for_cold).unwrap_or(0);
                             let pass_state = state_for_cold.clone();
+                            let force_migration_this_pass = force_migration;
                             match tokio::task::spawn_blocking(move || {
                                 // Refresh archival telemetry only inside the
                                 // bounded maintenance blocking pool. The
                                 // cache-only RPC status path must never inspect
                                 // local or FUSE-backed SST metadata.
                                 pass_state.refresh_cold_migration_storage_metrics();
-                                let reclaim = pass_state.reclaim_migrated_hot_ranges(
-                                    lichen_core::state::ColdReclaimLimits {
-                                        max_ranges: config.reclaim_max_ranges,
-                                        max_estimated_input_bytes: config.reclaim_max_input_bytes,
-                                        available_bytes,
-                                        required_reserve_bytes: config.minimum_headroom_bytes,
-                                    },
-                                )?;
-                                if reclaim.compacted_ranges > 0
-                                    || current_slot <= config.retention_slots
-                                {
+                                let reclaim = if force_migration_this_pass {
+                                    lichen_core::state::ColdReclaimReport::default()
+                                } else {
+                                    pass_state.reclaim_migrated_hot_ranges(
+                                        lichen_core::state::ColdReclaimLimits {
+                                            max_ranges: config.reclaim_max_ranges,
+                                            max_estimated_input_bytes: config
+                                                .reclaim_max_input_bytes,
+                                            available_bytes,
+                                            required_reserve_bytes: config.minimum_headroom_bytes,
+                                        },
+                                    )?
+                                };
+                                if !cold_migration_due_this_pass(
+                                    current_slot,
+                                    config.retention_slots,
+                                    force_migration_this_pass,
+                                    reclaim.compacted_ranges,
+                                ) {
                                     return Ok((reclaim, None));
                                 }
                                 let migration =
@@ -30737,9 +30770,16 @@ async fn run_validator() {
                             .await
                             {
                                 Ok(Ok((reclaim, migration))) => {
-                                    if reclaim.compacted_ranges > 0 {
+                                    force_migration = force_cold_migration_next_pass(
+                                        current_slot,
+                                        config.retention_slots,
+                                        reclaim.compacted_ranges,
+                                        migration.is_some(),
+                                    );
+                                    if reclaim.compacted_ranges > 0 || reclaim.split_ranges > 0 {
                                         info!(
                                             compacted_ranges = reclaim.compacted_ranges,
+                                            split_ranges = reclaim.split_ranges,
                                             estimated_input_bytes = reclaim.estimated_input_bytes,
                                             reclaimed_physical_bytes =
                                                 reclaim.reclaimed_physical_bytes,
@@ -35330,6 +35370,22 @@ mod tests {
             Some("network_catchup_in_progress")
         );
         assert_eq!(cold_migration_sync_pause_reason(false, true), None);
+    }
+
+    #[test]
+    fn cold_maintenance_reclaim_cannot_starve_migration() {
+        assert!(!cold_migration_due_this_pass(50_000, 50_000, false, 0));
+        assert!(cold_migration_due_this_pass(50_001, 50_000, false, 0));
+
+        // A bounded reclaim may consume one eligible scheduler turn.
+        assert!(!cold_migration_due_this_pass(50_001, 50_000, false, 1));
+        let force_next = force_cold_migration_next_pass(50_001, 50_000, 1, false);
+        assert!(force_next);
+
+        // The following turn skips reclaim and must run migration. A
+        // successful migration then restores the normal reclaim-first turn.
+        assert!(cold_migration_due_this_pass(50_002, 50_000, force_next, 0));
+        assert!(!force_cold_migration_next_pass(50_002, 50_000, 0, true));
     }
 
     #[test]

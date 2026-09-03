@@ -18990,7 +18990,11 @@ async fn handle_get_reward_adjustment_info(
         "slotsPerEpoch": SLOTS_PER_EPOCH,
         "epochsPerYear": epochs_per_year,
         "priceAdjustmentMultiplier": if licn_price > 0.0 {
-            format!("{:.4}", (0.10 / licn_price).clamp(0.1, 10.0))
+            format!(
+                "{:.4}",
+                (lichen_core::consensus::REFERENCE_LICN_PRICE_USD / licn_price)
+                    .clamp(0.1, 10.0)
+            )
         } else {
             "1.0000".to_string()
         },

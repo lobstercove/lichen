@@ -439,7 +439,7 @@ async function refreshPairOneOracleBand(phase) {
         CONTRACTS,
         findGenesisAdminKeypair(),
         1,
-        Math.round(0.106 * PRICE_SCALE),
+        Math.round(0.15 * PRICE_SCALE),
     );
     if (
         typeof refreshed.signature !== 'string'
@@ -621,57 +621,57 @@ async function runTests() {
 
     let expectedMatches = 0;
 
-    // Round 1: Alice sells, Bob buys → match at $0.105
+    // Round 1: Alice sells, Bob buys → match at $0.145
     {
-        const price = Math.round(0.105 * PRICE_SCALE);
+        const price = Math.round(0.145 * PRICE_SCALE);
         const qty = Math.round(10 * PRICE_SCALE);
-        const sellSig = await placeOrder(alice, 1, 'sell', price, qty, 'Alice sell @0.105');
+        const sellSig = await placeOrder(alice, 1, 'sell', price, qty, 'Alice sell @0.145');
         await sleep(1500);
-        const buySig = await placeOrder(bob, 1, 'buy', price, qty, 'Bob buy @0.105');
+        const buySig = await placeOrder(bob, 1, 'buy', price, qty, 'Bob buy @0.145');
         if (sellSig && buySig) expectedMatches++;
         await sleep(2000);
     }
 
-    // Round 2: Carol sells, Dave buys → match at $0.11
+    // Round 2: Carol sells, Dave buys → match at $0.15
     {
-        const price = Math.round(0.11 * PRICE_SCALE);
+        const price = Math.round(0.15 * PRICE_SCALE);
         const qty = Math.round(8 * PRICE_SCALE);
-        const sellSig = await placeOrder(carol, 1, 'sell', price, qty, 'Carol sell @0.11');
+        const sellSig = await placeOrder(carol, 1, 'sell', price, qty, 'Carol sell @0.15');
         await sleep(1500);
-        const buySig = await placeOrder(dave, 1, 'buy', price, qty, 'Dave buy @0.11');
+        const buySig = await placeOrder(dave, 1, 'buy', price, qty, 'Dave buy @0.15');
         if (sellSig && buySig) expectedMatches++;
         await sleep(2000);
     }
 
-    // Round 3: Eve sells, Alice buys → match at $0.115
+    // Round 3: Eve sells, Alice buys → match at $0.155
     {
-        const price = Math.round(0.115 * PRICE_SCALE);
+        const price = Math.round(0.155 * PRICE_SCALE);
         const qty = Math.round(6 * PRICE_SCALE);
-        const sellSig = await placeOrder(eve, 1, 'sell', price, qty, 'Eve sell @0.115');
+        const sellSig = await placeOrder(eve, 1, 'sell', price, qty, 'Eve sell @0.155');
         await sleep(1500);
-        const buySig = await placeOrder(alice, 1, 'buy', price, qty, 'Alice buy @0.115');
+        const buySig = await placeOrder(alice, 1, 'buy', price, qty, 'Alice buy @0.155');
         if (sellSig && buySig) expectedMatches++;
         await sleep(2000);
     }
 
-    // Round 4: Bob sells, Carol buys → match at $0.108
+    // Round 4: Bob sells, Carol buys → match at $0.148
     {
-        const price = Math.round(0.108 * PRICE_SCALE);
+        const price = Math.round(0.148 * PRICE_SCALE);
         const qty = Math.round(12 * PRICE_SCALE);
-        const sellSig = await placeOrder(bob, 1, 'sell', price, qty, 'Bob sell @0.108');
+        const sellSig = await placeOrder(bob, 1, 'sell', price, qty, 'Bob sell @0.148');
         await sleep(1500);
-        const buySig = await placeOrder(carol, 1, 'buy', price, qty, 'Carol buy @0.108');
+        const buySig = await placeOrder(carol, 1, 'buy', price, qty, 'Carol buy @0.148');
         if (sellSig && buySig) expectedMatches++;
         await sleep(2000);
     }
 
-    // Round 5: Dave sells, Eve buys → match at $0.112
+    // Round 5: Dave sells, Eve buys → match at $0.152
     {
-        const price = Math.round(0.112 * PRICE_SCALE);
+        const price = Math.round(0.152 * PRICE_SCALE);
         const qty = Math.round(15 * PRICE_SCALE);
-        const sellSig = await placeOrder(dave, 1, 'sell', price, qty, 'Dave sell @0.112');
+        const sellSig = await placeOrder(dave, 1, 'sell', price, qty, 'Dave sell @0.152');
         await sleep(1500);
-        const buySig = await placeOrder(eve, 1, 'buy', price, qty, 'Eve buy @0.112');
+        const buySig = await placeOrder(eve, 1, 'buy', price, qty, 'Eve buy @0.152');
         if (sellSig && buySig) expectedMatches++;
         await sleep(2000);
     }
@@ -700,7 +700,7 @@ async function runTests() {
         // Keep depth inside the pair's ±50% oracle protection band.
         for (let i = 0; i < 10; i++) {
             const seller = wallets[i % wallets.length];
-            const displayPrice = 0.105 + i * 0.004;
+            const displayPrice = 0.15 + i * 0.004;
             const price = Math.round(displayPrice * PRICE_SCALE);
             const qty = Math.round((0.2 + i * 0.1) * PRICE_SCALE);
             await placeOrder(seller, 1, 'sell', price, qty, `Sell wall ${i + 1} @${displayPrice.toFixed(3)}`);
@@ -709,7 +709,7 @@ async function runTests() {
 
         for (let i = 0; i < 10; i++) {
             const buyer = wallets[i % wallets.length];
-            const displayPrice = 0.095 - i * 0.004;
+            const displayPrice = 0.146 - i * 0.004;
             const price = Math.round(displayPrice * PRICE_SCALE);
             const qty = Math.round((0.2 + i * 0.1) * PRICE_SCALE);
             await placeOrder(buyer, 1, 'buy', price, qty, `Buy wall ${i + 1} @${displayPrice.toFixed(3)}`);
@@ -746,11 +746,11 @@ async function runTests() {
 
     // Define prices per pair (approximate genesis/oracle prices)
     const pairPrices = {
-        1: 0.10,     // LICN/lUSD
+        1: 0.15,     // LICN/lUSD
         2: 80.0,     // wSOL/lUSD
         3: 1950.0,   // wETH/lUSD
-        4: 800.0,    // wSOL/LICN
-        5: 19000.0,  // wETH/LICN
+        4: 533.0,    // wSOL/LICN
+        5: 13000.0,  // wETH/LICN
     };
 
     for (let pid = 1; pid <= Math.min(pairCount, 5); pid++) {
@@ -1175,7 +1175,7 @@ async function runTests() {
             CONTRACTS,
             findGenesisAdminKeypair(),
             1,
-            Math.round(0.106 * PRICE_SCALE),
+            Math.round(0.15 * PRICE_SCALE),
         );
         assert(
             typeof refreshed.signature === 'string'
@@ -1211,7 +1211,7 @@ async function runTests() {
                 ws.send(JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'subscribeDex', params: { channel: 'orderbook:1' } }));
                 try {
                     await sleep(1500);
-                    const price = Math.round(0.106 * PRICE_SCALE);
+                    const price = Math.round(0.15 * PRICE_SCALE);
                     const qty = Math.round(2 * PRICE_SCALE);
                     const sell = await placeOrder(eve, 1, 'sell', price, qty, 'WS trigger: Eve sell');
                     await sleep(500);

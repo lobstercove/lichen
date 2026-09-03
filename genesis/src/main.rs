@@ -493,13 +493,28 @@ fn load_genesis_prices_file(path: &Path) -> Result<GenesisPrices, String> {
 }
 
 fn genesis_prices_from_env() -> Result<Option<GenesisPrices>, String> {
-    let sol = std::env::var("GENESIS_SOL_USD").ok();
-    let eth = std::env::var("GENESIS_ETH_USD").ok();
-    let bnb = std::env::var("GENESIS_BNB_USD").ok();
-    let neo = std::env::var("GENESIS_NEO_USD").ok();
-    let gas = std::env::var("GENESIS_GAS_USD").ok();
-    let btc = std::env::var("GENESIS_BTC_USD").ok();
-    if sol.is_none()
+    genesis_prices_from_values(
+        std::env::var("GENESIS_LICN_USD").ok(),
+        std::env::var("GENESIS_SOL_USD").ok(),
+        std::env::var("GENESIS_ETH_USD").ok(),
+        std::env::var("GENESIS_BNB_USD").ok(),
+        std::env::var("GENESIS_NEO_USD").ok(),
+        std::env::var("GENESIS_GAS_USD").ok(),
+        std::env::var("GENESIS_BTC_USD").ok(),
+    )
+}
+
+fn genesis_prices_from_values(
+    licn: Option<String>,
+    sol: Option<String>,
+    eth: Option<String>,
+    bnb: Option<String>,
+    neo: Option<String>,
+    gas: Option<String>,
+    btc: Option<String>,
+) -> Result<Option<GenesisPrices>, String> {
+    if licn.is_none()
+        && sol.is_none()
         && eth.is_none()
         && bnb.is_none()
         && neo.is_none()
@@ -512,7 +527,7 @@ fn genesis_prices_from_env() -> Result<Option<GenesisPrices>, String> {
     let parse_env_price = |name: &str, value: Option<String>| -> Result<u64, String> {
         let value = value.ok_or_else(|| {
             format!(
-                "partial genesis price environment override: {name} is missing; set GENESIS_SOL_USD, GENESIS_ETH_USD, GENESIS_BNB_USD, GENESIS_NEO_USD, GENESIS_GAS_USD, and GENESIS_BTC_USD together"
+                "partial genesis price environment override: {name} is missing; set GENESIS_LICN_USD, GENESIS_SOL_USD, GENESIS_ETH_USD, GENESIS_BNB_USD, GENESIS_NEO_USD, GENESIS_GAS_USD, and GENESIS_BTC_USD together"
             )
         })?;
         let usd = value
@@ -522,7 +537,7 @@ fn genesis_prices_from_env() -> Result<Option<GenesisPrices>, String> {
     };
 
     let prices = GenesisPrices {
-        licn_usd_8dec: GenesisPrices::default().licn_usd_8dec,
+        licn_usd_8dec: parse_env_price("GENESIS_LICN_USD", licn)?,
         wsol_usd_8dec: parse_env_price("GENESIS_SOL_USD", sol)?,
         weth_usd_8dec: parse_env_price("GENESIS_ETH_USD", eth)?,
         wbnb_usd_8dec: parse_env_price("GENESIS_BNB_USD", bnb)?,
@@ -654,7 +669,7 @@ fn resolve_genesis_prices(
             Ok(prices)
         }
         Err(err) if network == "mainnet" => Err(format!(
-            "Mainnet genesis requires explicit or live market prices. Provide --genesis-prices-file or GENESIS_SOL_USD/GENESIS_ETH_USD/GENESIS_BNB_USD/GENESIS_NEO_USD/GENESIS_GAS_USD/GENESIS_BTC_USD, or fix live price access. Live fetch errors: {err}"
+            "Mainnet genesis requires explicit or live market prices. Provide --genesis-prices-file or GENESIS_LICN_USD/GENESIS_SOL_USD/GENESIS_ETH_USD/GENESIS_BNB_USD/GENESIS_NEO_USD/GENESIS_GAS_USD/GENESIS_BTC_USD, or fix live price access. Live fetch errors: {err}"
         )),
         Err(err) => {
             warn!(
@@ -1788,13 +1803,47 @@ mod tests {
     }
 
     #[test]
+    fn complete_environment_prices_include_the_licn_reference() {
+        let prices = genesis_prices_from_values(
+            Some("0.15".to_string()),
+            Some("86.50".to_string()),
+            Some("2000".to_string()),
+            Some("610".to_string()),
+            Some("3.10".to_string()),
+            Some("1.65".to_string()),
+            Some("100000".to_string()),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(prices.licn_usd_8dec, 15_000_000);
+        assert_eq!(prices.wbtc_usd_8dec, 10_000_000_000_000);
+    }
+
+    #[test]
+    fn partial_environment_prices_fail_closed_when_licn_is_missing() {
+        let error = genesis_prices_from_values(
+            None,
+            Some("86.50".to_string()),
+            Some("2000".to_string()),
+            Some("610".to_string()),
+            Some("3.10".to_string()),
+            Some("1.65".to_string()),
+            Some("100000".to_string()),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("GENESIS_LICN_USD"));
+    }
+
+    #[test]
     fn load_genesis_prices_file_accepts_raw_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("genesis-prices.json");
         std::fs::write(
             &path,
             serde_json::json!({
-                "licn_usd_8dec": 10_000_000u64,
+                "licn_usd_8dec": 15_000_000u64,
                 "wsol_usd_8dec": 8_678_000_000u64,
                 "weth_usd_8dec": 199_934_000_000u64,
                 "wbnb_usd_8dec": 60_978_000_000u64,
@@ -1867,7 +1916,7 @@ mod tests {
         std::fs::write(
             &path,
             serde_json::json!({
-                "licn_usd_8dec": 10_000_000u64,
+                "licn_usd_8dec": 15_000_000u64,
                 "wsol_usd_8dec": 0u64,
                 "weth_usd_8dec": 199_934_000_000u64,
                 "wbnb_usd_8dec": 60_978_000_000u64,
@@ -1890,7 +1939,7 @@ mod tests {
         std::fs::write(
             &path,
             serde_json::json!({
-                "licn_usd_8dec": 10_000_000u64,
+                "licn_usd_8dec": 15_000_000u64,
                 "wsol_usd_8dec": 8_678_000_000u64,
                 "weth_usd_8dec": 199_934_000_000u64,
                 "wbnb_usd_8dec": 60_978_000_000u64,
