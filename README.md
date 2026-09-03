@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Candidate release line:** `v0.5.275`; the installed signed testnet release is
+**Candidate release line:** `v0.5.276`; the installed signed testnet release is
 `v0.5.274`, with `v0.5.265` retained as the restart-safe rollback anchor.
 Official installable artifacts are the published
 GitHub release archives whose checksums, detached ML-DSA signature, release
@@ -53,7 +53,7 @@ The first production-scale `v0.5.274` hot-repair checkpoint then exposed an
 unbounded pre-activation read path: the account-first transaction-history index
 was scanned across the entire 12-million-block legacy layout, and every old row
 could trigger a block lookup through the emergency R2/FUSE bridge before the
-recent-history filter ran. The `v0.5.275` candidate derives exactly the same
+recent-history filter ran. The `v0.5.276` candidate derives exactly the same
 source-backed account-history keys from canonical blocks in the bounded
 checkpoint window, in 1,000-slot chunks. Missing source rows and hot/cold
 conflicts still fail closed; this removes out-of-window reads without changing

@@ -400,8 +400,11 @@ fn terminal_checkpoint_creation_pause_reason(error: &str) -> Option<&'static str
 fn cold_migration_sync_pause_reason(
     genesis_sync_in_progress: bool,
     network_tip_caught_up: bool,
+    deferred_archive_v2_admission_pending: bool,
 ) -> Option<&'static str> {
-    if genesis_sync_in_progress {
+    if deferred_archive_v2_admission_pending {
+        Some("archive_v2_deferred_admission_pending")
+    } else if genesis_sync_in_progress {
         Some("genesis_sync_in_progress")
     } else if !network_tip_caught_up {
         Some("network_catchup_in_progress")
@@ -22731,6 +22734,7 @@ async fn run_validator() {
     };
     let archive_v2_capability = Arc::new(RwLock::new(None));
     let mut deferred_archive_v2_config = None;
+    let deferred_archive_v2_admission_pending = Arc::new(AtomicBool::new(false));
     if let Some(config) = archive_v2_config {
         let marker_authorizes_no_genesis_start = if startup_genesis_block.is_none() {
             match archive_v2_role_marker_authorizes_no_genesis_start(
@@ -22763,6 +22767,7 @@ async fn run_validator() {
                 "🗄️  Deferring Archive V2 {} role admission until fresh state sync is complete",
                 config.role_config.role
             );
+            deferred_archive_v2_admission_pending.store(true, Ordering::Release);
             deferred_archive_v2_config = Some(config);
         } else {
             if marker_authorizes_no_genesis_start {
@@ -30692,6 +30697,8 @@ async fn run_validator() {
                 let data_dir_for_cold = data_dir_path.clone();
                 let genesis_sync_in_progress_for_cold = genesis_sync_in_progress.clone();
                 let sync_manager_for_cold = sync_manager.clone();
+                let deferred_archive_v2_admission_pending_for_cold =
+                    deferred_archive_v2_admission_pending.clone();
                 let jitter = stable_cold_migration_jitter(&validator_pubkey, config.interval);
                 let initial_delay = config.startup_delay.saturating_add(jitter);
                 info!(
@@ -30720,6 +30727,7 @@ async fn run_validator() {
                         if let Some(reason) = cold_migration_sync_pause_reason(
                             genesis_sync_in_progress_for_cold.load(Ordering::Acquire),
                             network_tip_caught_up,
+                            deferred_archive_v2_admission_pending_for_cold.load(Ordering::Acquire),
                         ) {
                             state_for_cold.set_cold_migration_paused(reason);
                             debug!("🗄️  Cold migration deferred: {reason}");
@@ -31983,25 +31991,38 @@ async fn run_validator() {
                 let config = deferred_archive_v2_config
                     .take()
                     .expect("deferred Archive V2 configuration was just checked");
-                match activate_deferred_archive_v2_after_fresh_sync(
+                // A checkpoint activation and the immediately following role
+                // admission are one storage handoff. Exclude canonical block
+                // application while admission verifies the imported hot/cold
+                // suffix; the cold-maintenance scheduler remains paused by
+                // `deferred_archive_v2_admission_pending` until this succeeds.
+                let deferred_archive_v2_apply_guard = block_apply_lock.lock().await;
+                let activation_result = activate_deferred_archive_v2_after_fresh_sync(
                     &state,
                     config,
                     &genesis_config.chain_id,
                     &data_dir_path,
                     dev_mode,
-                ) {
+                );
+                drop(deferred_archive_v2_apply_guard);
+                match activation_result {
                     Ok(capability) => {
+                        deferred_archive_v2_admission_pending.store(false, Ordering::Release);
                         info!(
                             "🗄️  Activated deferred Archive V2 after bounded fresh checkpoint apply and before the genesis readiness gate"
                         );
                         *archive_v2_capability.write().await = Some(capability);
                     }
                     Err(error) => {
-                        error!(
-                            "FATAL: Archive V2 role admission failed after bounded fresh checkpoint apply: {}",
-                            error
+                        let fatal_message = format!(
+                            "FATAL: Archive V2 role admission failed after bounded fresh checkpoint apply: {error}"
                         );
-                        return;
+                        // This path terminates the validator. Write the same
+                        // diagnostic synchronously because the non-blocking
+                        // tracing guard cannot flush after process::exit.
+                        eprintln!("{fatal_message}");
+                        error!("{fatal_message}");
+                        std::process::exit(1);
                     }
                 }
             }
@@ -32337,22 +32358,30 @@ async fn run_validator() {
             }
 
             if let Some(config) = deferred_archive_v2_config.take() {
-                match activate_deferred_archive_v2_after_fresh_sync(
+                // Keep the imported canonical suffix stable while deferred
+                // Archive V2 admission verifies and binds it. Cold maintenance
+                // remains independently paused until successful admission.
+                let deferred_archive_v2_apply_guard = block_apply_lock.lock().await;
+                let activation_result = activate_deferred_archive_v2_after_fresh_sync(
                     &state,
                     config,
                     &genesis_config.chain_id,
                     &data_dir_path,
                     dev_mode,
-                ) {
+                );
+                drop(deferred_archive_v2_apply_guard);
+                match activation_result {
                     Ok(capability) => {
+                        deferred_archive_v2_admission_pending.store(false, Ordering::Release);
                         *archive_v2_capability.write().await = Some(capability);
                     }
                     Err(error) => {
-                        error!(
-                            "FATAL: Archive V2 role admission failed after fresh state sync: {}",
-                            error
+                        let fatal_message = format!(
+                            "FATAL: Archive V2 role admission failed after fresh state sync: {error}"
                         );
-                        return;
+                        eprintln!("{fatal_message}");
+                        error!("{fatal_message}");
+                        std::process::exit(1);
                     }
                 }
             }
@@ -35360,16 +35389,21 @@ mod tests {
     }
 
     #[test]
-    fn cold_migration_is_deferred_until_network_tip_catchup() {
+    fn cold_migration_is_deferred_until_network_tip_and_archive_v2_admission() {
         assert_eq!(
-            cold_migration_sync_pause_reason(true, false),
+            cold_migration_sync_pause_reason(true, false, false),
             Some("genesis_sync_in_progress")
         );
         assert_eq!(
-            cold_migration_sync_pause_reason(false, false),
+            cold_migration_sync_pause_reason(false, false, false),
             Some("network_catchup_in_progress")
         );
-        assert_eq!(cold_migration_sync_pause_reason(false, true), None);
+        assert_eq!(cold_migration_sync_pause_reason(false, true, false), None);
+        assert_eq!(
+            cold_migration_sync_pause_reason(false, true, true),
+            Some("archive_v2_deferred_admission_pending"),
+            "cold migration must not race the fresh-sync Archive V2 handoff"
+        );
     }
 
     #[test]

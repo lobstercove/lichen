@@ -3603,6 +3603,7 @@ elif [[ "$RESUME_AFTER_ARCHIVE_V2_CHECKPOINT" == "1" ]]; then
     baseline_profile_root=""
     baseline_handoff_root=""
     baseline_archive_genesis_hash=""
+    baseline_archive_catalog_end=""
     baseline_profile_start=""
     legacy_profile_count=0
     insufficient_profile_count=0
@@ -3689,6 +3690,7 @@ print(status["catalog_root"], handoff_root, slot_range[1], status["genesis_hash"
             baseline_profile_root="$profile_root"
             baseline_handoff_root="$handoff_root"
             baseline_archive_genesis_hash="$archive_genesis_hash"
+            baseline_archive_catalog_end="$catalog_end"
             baseline_profile_start="$profile_start"
         else
             [[ "$manifest_root" == "$baseline_manifest_root" ]] \
@@ -3698,11 +3700,17 @@ print(status["catalog_root"], handoff_root, slot_range[1], status["genesis_hash"
             [[ "$handoff_root" == "$baseline_handoff_root" ]] \
                 || fail "Archive-checkpoint resume found V${validator_num} append-stable handoff-root drift"
             [[ "$archive_genesis_hash" == "$baseline_archive_genesis_hash" \
+                && "$catalog_end" == "$baseline_archive_catalog_end" \
                 && "$profile_start" == "$baseline_profile_start" ]] \
-                || fail "Archive-checkpoint resume found V${validator_num} genesis or history-start drift"
+                || fail "Archive-checkpoint resume found V${validator_num} genesis, catalog-end, or history-start drift"
         fi
     done
     V1_PUBKEY="${ALL_PUBKEYS[0]}"
+    # The admitted roles are already catalog-bound. Restore the catalog end
+    # that a from-scratch run records during reconciliation so later checkpoint
+    # selection keeps using the production 10,000-slot cadence instead of the
+    # preactivation 1,000-slot cadence.
+    ARCHIVE_V2_CHECKPOINT_CATALOG_END="$baseline_archive_catalog_end"
     ok "Revalidated four-way checkpoint ${RESUME_PUBLIC_PARITY_CHECKPOINT}: manifest=${baseline_manifest_root} profile=${baseline_profile_root} current_handoff=${baseline_handoff_root} legacy_extensions=${legacy_profile_count} insufficient_profiles=${insufficient_profile_count}"
     if [[ "$checkpoint_catalog_rebuild_required" == "1" ]]; then
         rebuild_archive_v2_checkpoint_catalog_evidence \

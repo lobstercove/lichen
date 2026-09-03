@@ -4,7 +4,7 @@ Date: 2026-09-02
 Scope: `lichen-testnet-1` preserved-chain release and Archive V2 activation  
 Status: original deployment stopped safely; signed `v0.5.274` is now installed
 on all four validators, and the current bounded checkpoint-I/O successor is
-`v0.5.275`
+`v0.5.276`
 
 ## Executive record
 
@@ -121,13 +121,19 @@ hot-repair build at slot `12,298,000` then exposed an unbounded account-history
 scan that traversed roughly 6.7 million account-first rows per active validator
 and performed out-of-window block validation through the emergency R2/FUSE
 bridge. The checkpoints remained unpublished and the chain kept advancing.
-`v0.5.275` bounds this work to canonical blocks in the advertised 50,000-slot
+`v0.5.275` bounded this work to canonical blocks in the advertised 50,000-slot
 window while preserving source checks, budget enforcement, and atomic
-publication.
+publication. Its protected PR passed, but immutable release workflow
+`33786039404` stopped before signing when the exact four-validator gate's fresh
+full-archive V3 imported and verified its checkpoint and then exited with
+status 0 during deferred Archive V2 role admission. It was not published or
+deployed. `v0.5.276` serializes that admission against canonical block apply,
+keeps cold migration paused until admission succeeds, and fails synchronously
+with a nonzero status if it cannot admit the role.
 
 ## Completion criteria
 
-The incident is closed only after signed `v0.5.275` is installed and running on
+The incident is closed only after signed `v0.5.276` is installed and running on
 all four validators from each host's own preserved state; block production,
 finality, RPC, WebSocket, DEX/AMM/CLOB, prediction, governance, and launchpad
 smokes pass; all four Archive V2 manifests prove the same genesis-to-tip
