@@ -121,7 +121,7 @@ const requiredText = [
     ['docs/deployment/PRODUCTION_DEPLOYMENT.md', 'LICHEN_RELEASE_TAG=v0.5.275', 'production runbook uses the candidate release line'],
     ['deploy/mainnet-launch-runbook.md', 'export LICHEN_RELEASE_TAG=v0.5.275', 'launch runbook uses the candidate release line'],
     ['docs/deployment/ARCHIVE_V2_ACTIVATION_CADENCE_AND_VALIDATOR_LIVENESS_PLAN_2026-08-18.md', '`v0.5.275` is the only successor candidate', 'Archive V2 execution plan identifies the candidate release line'],
-    ['developers/exchange-integration.html', 'exchange-testnet-v0.5.274', 'exchange portal identifies the candidate package line'],
+    ['developers/exchange-integration.html', 'exchange-testnet-v0.5.275', 'exchange portal identifies the candidate package line'],
     ['developers/architecture.html', 'ignored for ordering', 'architecture states reputation-neutral mempool ordering'],
     ['developers/architecture.html', 'application-layer\n                ML-DSA-65 and ML-KEM-768 handshake', 'architecture documents the native PQ P2P handshake'],
     ['developers/contract-reference.html', 'machine-checked Source Export Matrix is authoritative', 'contract reference separates source from live activation'],
