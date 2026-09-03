@@ -94,6 +94,39 @@ const PORTABLE_SNAPSHOT_OMITTED_STATS_KEYS: &[&[u8]] = &[
 /// default into avoidable memory pressure.
 const HOT_REPAIR_CHECKPOINT_CACHE_MB: usize = 128;
 
+/// Conservative physical-write accounting for bounded checkpoint rows. The
+/// raw checkpoint hard-links existing SSTs, so inherited history consumes no
+/// new data blocks. Rebuilt rows can temporarily exist once in WAL/import SSTs
+/// and once in compaction output; fixed metadata and manifest work receives a
+/// separate one-GiB envelope.
+const HOT_REPAIR_MATERIALIZATION_FIXED_BYTES: u64 = 1024 * 1024 * 1024;
+const HOT_REPAIR_MATERIALIZATION_ROW_OVERHEAD_BYTES: u64 = 128;
+const HOT_REPAIR_MATERIALIZATION_WRITE_COPIES: u64 = 2;
+
+fn reserve_hot_repair_materialization_rows(
+    materialized_upper_bytes: &mut u64,
+    entries: &[(Vec<u8>, Vec<u8>)],
+    peak_bytes_budget: Option<u64>,
+) -> Result<u64, String> {
+    let page_upper_bytes = entries.iter().fold(0u64, |total, (key, value)| {
+        total
+            .saturating_add(key.len() as u64)
+            .saturating_add(value.len() as u64)
+            .saturating_add(HOT_REPAIR_MATERIALIZATION_ROW_OVERHEAD_BYTES)
+    });
+    let projected_materialized_bytes = materialized_upper_bytes.saturating_add(page_upper_bytes);
+    let projected_peak_bytes = HOT_REPAIR_MATERIALIZATION_FIXED_BYTES.saturating_add(
+        projected_materialized_bytes.saturating_mul(HOT_REPAIR_MATERIALIZATION_WRITE_COPIES),
+    );
+    if let Some(budget) = peak_bytes_budget.filter(|budget| projected_peak_bytes > *budget) {
+        return Err(format!(
+            "bounded hot-repair checkpoint requires at least {projected_peak_bytes} peak write bytes, exceeding its {budget} byte budget"
+        ));
+    }
+    *materialized_upper_bytes = projected_materialized_bytes;
+    Ok(projected_peak_bytes)
+}
+
 /// Serializes the I/O-heavy bounded-history rewrite when multiple validators
 /// share one physical disk. Every validator captures its exact raw checkpoint
 /// before taking this lock, so consensus is never held behind another node's
@@ -1355,6 +1388,27 @@ impl StateStore {
         snapshot_profile: CheckpointSnapshotProfile,
         on_raw_capture: impl FnOnce(),
     ) -> Result<CheckpointMeta, String> {
+        self.create_checkpoint_with_profile_and_raw_capture_budget(
+            checkpoint_dir,
+            slot,
+            snapshot_profile,
+            None,
+            on_raw_capture,
+        )
+    }
+
+    /// Create an atomically published checkpoint with a fail-closed physical
+    /// write budget for bounded hot-repair materialization. The budget does not
+    /// count inherited hard-linked SST bytes; it bounds new WAL, SST, and
+    /// compaction output before each page is imported.
+    pub fn create_checkpoint_with_profile_and_raw_capture_budget(
+        &self,
+        checkpoint_dir: &str,
+        slot: u64,
+        snapshot_profile: CheckpointSnapshotProfile,
+        hot_repair_peak_bytes_budget: Option<u64>,
+        on_raw_capture: impl FnOnce(),
+    ) -> Result<CheckpointMeta, String> {
         if let CheckpointSnapshotProfile::HotRepairV1 {
             history_start_slot,
             archive_v2_catalog_root,
@@ -1418,6 +1472,7 @@ impl StateStore {
                         staging,
                         slot,
                         snapshot_profile,
+                        hot_repair_peak_bytes_budget,
                     )?;
                 }
             }
@@ -1475,8 +1530,19 @@ impl StateStore {
         checkpoint_dir: &str,
         snapshot_slot: u64,
         profile: CheckpointSnapshotProfile,
+        peak_bytes_budget: Option<u64>,
     ) -> Result<(), String> {
         const PAGE_ROWS: u64 = 10_000;
+
+        if let Some(budget) =
+            peak_bytes_budget.filter(|budget| *budget < HOT_REPAIR_MATERIALIZATION_FIXED_BYTES)
+        {
+            return Err(format!(
+                "bounded hot-repair checkpoint budget {budget} is below its {} byte fixed write envelope",
+                HOT_REPAIR_MATERIALIZATION_FIXED_BYTES
+            ));
+        }
+        let mut materialized_upper_bytes = 0u64;
 
         let checkpoint =
             Self::open_with_cache_mb(checkpoint_dir, Some(HOT_REPAIR_CHECKPOINT_CACHE_MB))
@@ -1543,6 +1609,11 @@ impl StateStore {
                     format!("Failed to clear hot-repair checkpoint category {category}: {error}")
                 })?;
             if !preserved_slot_metadata.is_empty() {
+                reserve_hot_repair_materialization_rows(
+                    &mut materialized_upper_bytes,
+                    &preserved_slot_metadata,
+                    peak_bytes_budget,
+                )?;
                 checkpoint
                     .import_snapshot_category(category, &preserved_slot_metadata)
                     .map_err(|error| {
@@ -1560,6 +1631,11 @@ impl StateStore {
                     profile,
                 )?;
                 if !page.entries.is_empty() {
+                    reserve_hot_repair_materialization_rows(
+                        &mut materialized_upper_bytes,
+                        &page.entries,
+                        peak_bytes_budget,
+                    )?;
                     materialized_rows = materialized_rows.saturating_add(page.entries.len() as u64);
                     checkpoint
                         .import_snapshot_category(category, &page.entries)
@@ -1602,6 +1678,7 @@ impl StateStore {
                 checkpoint_slot = snapshot_slot,
                 category = *category,
                 materialized_rows,
+                materialized_upper_bytes,
                 "Completed bounded hot-repair checkpoint category"
             );
         }
@@ -1675,10 +1752,11 @@ impl StateStore {
         Ok(())
     }
 
-    /// Conservative temporary-space estimate for physically rebuilding every
-    /// public-history column family in a bounded hot-repair checkpoint. The
-    /// source SSTs are hard-linked into staging, while compaction writes new
-    /// bounded SSTs before unlinking the old checkpoint references.
+    /// Diagnostic whole-input worst-case estimate retained for callers that
+    /// cannot meter bounded writes during materialization. Production
+    /// checkpoint admission uses the per-page budget above because raw
+    /// checkpoints hard-link inherited SSTs and only bounded output rows create
+    /// new data blocks.
     pub fn estimated_hot_repair_checkpoint_compaction_peak_bytes(&self) -> Result<u64, String> {
         let mut input_bytes = 0u64;
         for category in PUBLIC_HISTORY_SNAPSHOT_CATEGORIES {
@@ -5476,6 +5554,39 @@ mod manifest_tests {
     use std::time::Duration;
     use tempfile::tempdir;
 
+    #[test]
+    fn hot_repair_materialization_budget_counts_only_new_bounded_rows() {
+        let entries = vec![(vec![1u8; 8], vec![2u8; 256])];
+        let row_upper_bytes = 8 + 256 + HOT_REPAIR_MATERIALIZATION_ROW_OVERHEAD_BYTES;
+        let exact_peak = HOT_REPAIR_MATERIALIZATION_FIXED_BYTES
+            + row_upper_bytes * HOT_REPAIR_MATERIALIZATION_WRITE_COPIES;
+        let mut materialized_upper_bytes = 0;
+
+        assert_eq!(
+            reserve_hot_repair_materialization_rows(
+                &mut materialized_upper_bytes,
+                &entries,
+                Some(exact_peak),
+            )
+            .unwrap(),
+            exact_peak,
+        );
+        assert_eq!(materialized_upper_bytes, row_upper_bytes);
+
+        let mut rejected_upper_bytes = 0;
+        let error = reserve_hot_repair_materialization_rows(
+            &mut rejected_upper_bytes,
+            &entries,
+            Some(exact_peak - 1),
+        )
+        .unwrap_err();
+        assert!(error.contains("exceeding its"));
+        assert_eq!(
+            rejected_upper_bytes, 0,
+            "a rejected page must not consume materialization budget"
+        );
+    }
+
     fn write_checkpoint_meta(path: &std::path::Path, slot: u64) {
         let meta = CheckpointMeta {
             slot,
@@ -5694,6 +5805,36 @@ mod manifest_tests {
         assert!(notified.get());
         assert_eq!(meta.slot, 0);
         assert!(checkpoint.join("checkpoint_meta.json").is_file());
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn hot_repair_materialization_budget_fails_after_raw_capture_without_publication() {
+        let temp = tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let checkpoint = state_dir.join("checkpoints/slot-0");
+        let staging = checkpoint_staging_path(&checkpoint).unwrap();
+        let state = StateStore::open(&state_dir).unwrap();
+        let genesis = Block::genesis(Hash::hash(b"budgeted-raw-capture-state"), 1, Vec::new());
+        state.put_block_atomic(&genesis, Some(0), Some(0)).unwrap();
+        let notified = std::cell::Cell::new(false);
+
+        let error = state
+            .create_checkpoint_with_profile_and_raw_capture_budget(
+                checkpoint.to_str().unwrap(),
+                0,
+                CheckpointSnapshotProfile::HotRepairV1 {
+                    history_start_slot: 0,
+                    archive_v2_catalog_root: None,
+                },
+                Some(HOT_REPAIR_MATERIALIZATION_FIXED_BYTES - 1),
+                || notified.set(true),
+            )
+            .unwrap_err();
+
+        assert!(notified.get(), "raw capture must release consensus first");
+        assert!(error.contains("below its"), "unexpected error: {error}");
+        assert!(!checkpoint.exists());
         assert!(!staging.exists());
     }
 

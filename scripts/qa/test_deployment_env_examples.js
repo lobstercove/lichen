@@ -463,7 +463,7 @@ const mainnetRunbook = read('deploy/mainnet-launch-runbook.md');
 const mainnetRunbookDoc = read('docs/deployment/MAINNET_LAUNCH_RUNBOOK.md');
 const productionDeployment = read('docs/deployment/PRODUCTION_DEPLOYMENT.md');
 const productionReleasePair = productionDeployment.match(
-  /The target testnet release for this runbook is `(v\d+\.\d+\.\d+)`; the current signed\s+fleet release and immediate restart-safe anchor is `(v\d+\.\d+\.\d+)`\./,
+  /The target testnet release for this runbook is `(v\d+\.\d+\.\d+)`; the installed signed\s+fleet release is `(v\d+\.\d+\.\d+)`, and the immediate restart-safe anchor is\s+`(v\d+\.\d+\.\d+)`\./,
 );
 const validatorVersion = read('validator/Cargo.toml').match(/^version = "(\d+\.\d+\.\d+)"/m)?.[1];
 const dexLiquidityStrategy = read('docs/strategy/DEX_LIQUIDITY_STRATEGY.md');
@@ -505,7 +505,8 @@ assert(
 assert(
   productionReleasePair &&
     productionReleasePair[1] === `v${validatorVersion}` &&
-    productionReleasePair[2] === 'v0.5.265' &&
+    productionReleasePair[2] === 'v0.5.272' &&
+    productionReleasePair[3] === 'v0.5.265' &&
     /Historical\s+tags and audit records remain in Git/.test(productionDeployment) &&
     productionDeployment.includes('This destructive checklist does not apply to the current July testnet') &&
     productionDeployment.includes('in-place archive repair and coordinated resume') &&

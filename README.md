@@ -7,8 +7,9 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Candidate release line:** `v0.5.272`; the current signed testnet release is
-`v0.5.265`. Official installable artifacts are the published
+**Candidate release line:** `v0.5.273`; the installed signed testnet release is
+`v0.5.272`, with `v0.5.265` retained as the restart-safe rollback anchor.
+Official installable artifacts are the published
 GitHub release archives whose checksums, detached ML-DSA signature, release
 trust anchor, and provenance attestations all verify. The candidate adds the
 coherent hot-to-Archive-V2 checkpoint path, certificate-normalized public
@@ -16,7 +17,7 @@ history, fail-closed role bootstrap, and signed range-bound retirement tooling
 needed to move an existing network fully onto Archive V2. Treat those changes
 as unreleased until the exact tag, signature, provenance, and release gates pass.
 
-The `v0.5.272` candidate also accepts the legacy deployed contract ABI field
+The signed `v0.5.272` release accepts the legacy deployed contract ABI field
 `name` while continuing to serialize the canonical `contract` field. Its
 coordinated preserved-chain repair targets the real validator `--db-path`, and
 its bounded service stop verifies that the complete systemd control group is
@@ -27,6 +28,15 @@ intact while removing runner-speed timing from release qualification. The
 immutable `v0.5.271` workflow failed this gate and produced no deployable
 release. These changes preserve the existing Testnet chain and do not authorize
 a reset or state copy.
+
+The `v0.5.273` candidate corrects two production-only Archive V2 checkpoint
+admission failures exposed by the preserved 12-million-block Testnet. Explicit
+pre-activation hot repair is reachable at the ordinary 1,000-slot checkpoint
+boundary, while catalog-bound compaction remains at 10,000 slots. Checkpoint
+headroom meters only newly materialized bounded rows, WAL, and compaction output;
+it no longer charges twice for more than 113 GB of inherited SSTs that RocksDB
+hard-links without allocating new data blocks. The build remains fail-closed,
+budgeted, atomically staged, and unavailable for recovery until published.
 
 **Network status:** the public network is testnet. Mainnet has not launched and
 is not approved. The current 200 GB validator fleet is not approved for mainnet
