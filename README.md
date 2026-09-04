@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Candidate release line:** `v0.5.276`; the installed signed testnet release is
+**Candidate release line:** `v0.5.277`; the installed signed testnet release is
 `v0.5.274`, with `v0.5.265` retained as the restart-safe rollback anchor.
 Official installable artifacts are the published
 GitHub release archives whose checksums, detached ML-DSA signature, release
@@ -69,6 +69,16 @@ they do not reset state or alter consensus, wire, checkpoint, or Archive V2
 formats. The exact four-validator gate subsequently produced identical
 slot-70,000 checkpoint manifests and admitted clean full-archive,
 verified-cache, and consensus-role joins.
+
+The immutable `v0.5.276` release workflow then exposed one final role-boundary
+error and was not signed or deployed. A fresh full-archive node correctly
+imported a catalog-bound checkpoint containing slots `7,999..10,000`, while its
+local Archive V2 catalog already owned `0..7,998`; admission nevertheless
+demanded duplicate legacy hot/cold rows beginning at slot `5,001`. The
+`v0.5.277` candidate verifies a full archive at the actual first catalog-
+uncovered slot while retaining the stricter configured hot-window requirement
+for verified-cache and consensus roles. No consensus, migration, compaction,
+checkpoint, catalog, or Archive V2 format changes are involved.
 
 **Network status:** the public network is testnet. Mainnet has not launched and
 is not approved. The current 200 GB validator fleet is not approved for mainnet
