@@ -7,8 +7,8 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Candidate release line:** `v0.5.277`; the installed signed testnet release is
-`v0.5.274`, with `v0.5.265` retained as the restart-safe rollback anchor.
+**Candidate release line:** `v0.5.278`; the installed signed testnet release is
+`v0.5.277`, with `v0.5.265` retained as the restart-safe rollback anchor.
 Official installable artifacts are the published
 GitHub release archives whose checksums, detached ML-DSA signature, release
 trust anchor, and provenance attestations all verify. The candidate adds the
@@ -75,7 +75,7 @@ error and was not signed or deployed. A fresh full-archive node correctly
 imported a catalog-bound checkpoint containing slots `7,999..10,000`, while its
 local Archive V2 catalog already owned `0..7,998`; admission nevertheless
 demanded duplicate legacy hot/cold rows beginning at slot `5,001`. The
-`v0.5.277` candidate verifies a full archive at the actual first catalog-
+The signed `v0.5.277` release verifies a full archive at the actual first catalog-
 uncovered slot while retaining the stricter configured hot-window requirement
 for verified-cache and consensus roles.
 
@@ -84,7 +84,7 @@ The live signed `v0.5.274` fleet later stalled while building height
 speculative execution repeated duplicate detection through the complete
 hot/cold lookup. With legacy cold SSTs mounted through the emergency R2/FUSE
 bridge, new-transaction misses blocked proposal execution for minutes. The
-`v0.5.277` candidate keeps speculative duplicate detection on the batch overlay
+The signed `v0.5.277` release keeps speculative duplicate detection on the batch overlay
 and hot transaction family; complete hot/cold reads remain available to
 canonical execution and public history queries. Valid recent-blockhash
 transactions remain hot beyond the replay window, and durable-nonce and EVM
@@ -93,6 +93,20 @@ startup now fails if configured hot retention is less than 301 slots; the live
 and Archive V2 default remains 50,000 slots. This does not change deterministic
 state transitions, wire compatibility, migration, compaction,
 checkpoint/catalog schemas, or Archive V2 formats.
+
+The first preserved-state `v0.5.277` recovery then exposed a separate legacy
+MossStake compatibility boundary. Two independent authenticated
+slot-12,324,000 checkpoints agree on one historical zero-share position and a
+276-spore active-backing rounding remainder. Current strict snapshot validation
+correctly rejects that accounting shape, but doing so before staging-root
+verification prevents the lagging validator from consuming the otherwise
+matching checkpoint. The `v0.5.278` candidate permits structurally valid legacy
+MossStake bytes only inside the quorum-authenticated checkpoint path, where the
+full manifest and state root still must match. A separate stopped-validator,
+Testnet-only command then removes the exact stale row and deterministically
+assigns the remainder under pinned pre/post roots and hashes. Normal imports,
+fresh testnets, and mainnet remain strict. This is a preserved-state repair,
+not an Archive V2 format change or a reset.
 
 **Network status:** the public network is testnet. Mainnet has not launched and
 is not approved. The current 200 GB validator fleet is not approved for mainnet

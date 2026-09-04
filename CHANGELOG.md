@@ -5,6 +5,53 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.278] - 2026-09-04
+
+### Fixed
+
+- Preserve a structurally valid legacy MossStake pool while staging a
+  quorum-authenticated hot-repair checkpoint. This compatibility decoder is
+  reachable only from the authenticated network checkpoint path; ordinary
+  snapshot imports continue to enforce all current accounting invariants.
+- Add a stopped-validator, Testnet-only repair for the exact legacy MossStake
+  zero-share row and its source-proven pending exit. The repair removes stale
+  position metadata, preserves stLICN supply, active backing, and pending-exit
+  value, and assigns the 276-spore historical rounding remainder to the
+  lexicographically final active position.
+- Require the repair write to match operator-supplied tip, tip block, pre/post
+  state roots, pre/post MossStake hashes, remainder, and a derived confirmation
+  string. The write updates the current-tip post-state anchor, records an
+  idempotency marker, synchronizes the WAL, and refuses fresh networks and
+  mainnet.
+
+### Safety
+
+- Signed `v0.5.277` remains installed on all four preserved Testnet validators.
+  US, Singapore, and India produced matching authenticated slot-12,324,000
+  checkpoints. EU imported every large category into staging, then rejected
+  `mossstake_pool` before live-state apply because the preserved pool predates
+  current zero-share and aggregate-backing invariants. EU's own state, keys,
+  identity, WAL, and service remained intact.
+- The source checkpoints agree byte-for-byte. They contain one stale zero-share
+  position for `7PC2p47EGiUCzbkwyenh6tVH5Z73nd5wcFVYiZGnWks`, an unchanged
+  pending exit of 9,999,999,724 spores, and 276 spores of active-backing
+  rounding remainder after the stale row is excluded. This is legacy Testnet
+  state, not transfer corruption or an Archive V2 segment-format defect.
+- No reset, state clone, history waiver, consensus-format change, wire change,
+  checkpoint-format change, or Archive V2-format change is introduced.
+
+### Verified
+
+- Regression tests prove strict snapshot import rejects the invalid pool while
+  authenticated staging preserves its canonical bytes and exact state root.
+- Repair tests prove value conservation, deterministic remainder ownership,
+  exact before/after guards, mainnet refusal, idempotence, and recovery when a
+  process stops after committing the pool but before writing its marker.
+- Focused MossStake, checkpoint-manifest, hot-repair-manifest, formatting, and
+  changed-crate Clippy gates pass. Protected CI, immutable tag gates, signed
+  artifacts, coordinated four-host deployment, live convergence, and Archive
+  V2 activation remain mandatory.
+
 ## [0.5.277] - 2026-09-04
 
 ### Fixed

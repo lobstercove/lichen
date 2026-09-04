@@ -79,6 +79,23 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.278 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.278</span>
+                    <span class="changelog-date">September 4, 2026</span>
+                </div>
+                <h3>Authenticated legacy checkpoint compatibility and exact MossStake repair</h3>
+                <ul>
+                    <li>Allows structurally canonical legacy MossStake bytes only while staging an already authenticated validator checkpoint; its complete manifest and state root must still verify before activation.</li>
+                    <li>Keeps ordinary snapshot imports strict and rejects unknown zero-share, backing, request, or ownership inconsistencies.</li>
+                    <li>Adds a stopped-validator, Testnet-only repair for the exact historical zero-share row and pending exit found in two matching slot-12,324,000 checkpoints.</li>
+                    <li>Preserves stLICN supply, active backing, exchange-rate math, pending-exit value, and positive-share principal while assigning the 276-spore rounding remainder deterministically.</li>
+                    <li>Requires matching tip, block hash, pre/post state roots, pre/post MossStake hashes, remainder, and confirmation before writing; the repair is idempotent and refuses fresh networks and mainnet.</li>
+                    <li>Does not reset or clone state and does not change consensus, wire, checkpoint, catalog, migration, compaction, or Archive V2 formats.</li>
+                </ul>
+            </article>
+
             <!-- ============ v0.5.277 ============ -->
             <article class="changelog-entry">
                 <div class="changelog-header">
