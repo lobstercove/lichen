@@ -79,6 +79,22 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.279 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.279</span>
+                    <span class="changelog-date">September 4, 2026</span>
+                </div>
+                <h3>Consensus-bound legacy Testnet MossStake activation</h3>
+                <ul>
+                    <li>Restores the exact pre-repair state on the preserved Testnet while leaving every validator's pending consensus WAL unchanged.</li>
+                    <li>Applies the source-proven MossStake correction deterministically at canonical post-block slot <code>12,333,500</code>, before consensus begins the next height.</li>
+                    <li>Requires exact chain, tip, block, state-root, pool-hash, stale-row, pending-exit, value, and 276-spore remainder evidence in both rollback and activation directions.</li>
+                    <li>Refuses any new out-of-band repair write; fresh testnets and mainnet never enter this legacy-only path.</li>
+                    <li>This is a consensus-critical scheduled state transition for the preserved Testnet only; it does not alter the BFT algorithm or wire, block, checkpoint, catalog, migration, compaction, or Archive V2 formats.</li>
+                </ul>
+            </article>
+
             <!-- ============ v0.5.278 ============ -->
             <article class="changelog-entry">
                 <div class="changelog-header">

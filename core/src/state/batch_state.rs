@@ -265,6 +265,28 @@ impl StateBatch {
         }
     }
 
+    /// Store one generic consensus marker in the same atomic batch as the
+    /// state transition it describes.
+    pub fn put_metadata(&mut self, key: &str, value: &[u8]) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        self.batch.put_cf(&cf, key.as_bytes(), value);
+        Ok(())
+    }
+
+    /// Delete one generic consensus marker in the same atomic batch as the
+    /// state transition it describes.
+    pub fn delete_metadata(&mut self, key: &str) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        self.batch.delete_cf(&cf, key.as_bytes());
+        Ok(())
+    }
+
     /// B-7: Check symbol registry against both batch overlay and committed state.
     pub fn symbol_exists(&self, symbol: &str) -> Result<bool, String> {
         let normalized = StateStore::normalize_symbol(symbol)?;

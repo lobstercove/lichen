@@ -124,10 +124,13 @@ incorrect full-archive storage boundary: a catalog-owned range was also
 required in legacy hot/cold storage. Signed `v0.5.277` corrected that handoff
 and is installed on all four validators. Its first production checkpoint
 recovery exposed one structurally valid legacy MossStake pool that predates
-current accounting invariants. `v0.5.278` is the only successor candidate; it
-keeps ordinary imports strict, preserves that pool only through authenticated
-checkpoint staging and root verification, and provides the exact Testnet-only
-stopped-state repair recorded in the v0.5.278 production-readiness addendum.
+current accounting invariants. Signed `v0.5.278` admitted that pool only through
+authenticated checkpoint staging and applied the exact stopped-state repair.
+The restart then proved pending next-height WAL values still bound the old
+parent root. `v0.5.279` is the only successor candidate: it restores the exact
+old state without altering WAL, then activates the source-proven correction at
+canonical post-block slot `12,333,500`. The full boundary is recorded in the
+v0.5.279 production-readiness addendum.
 
 The preserved-state release gate additionally proved that a continuously
 non-empty reclaim queue could starve migration, an oversized SST-derived
@@ -149,7 +152,7 @@ temporary replicated recovery/archive source, not the permanent mainnet
 storage design, and deletion of any R2 object remains unauthorized.
 
 The signed `v0.5.265` release is the immediate restart-safe rollback anchor.
-Once `v0.5.278` is running and four-way V2 parity plus rollback rehearsal are
+Once `v0.5.279` is running and four-way V2 parity plus rollback rehearsal are
 recorded, validator hosts keep only those two signed release
 installations. Legacy history is retired only by signed, source-backed,
 range-bound Archive V2 retirement and compaction; low disk space does not
@@ -173,12 +176,14 @@ ad-hoc production change.
 
 ## 1. Executive Decision
 
-The fleet state and rollback artifacts remain preserved, three signed
-`v0.5.277` validators maintain quorum, and EU is fail-closed pending
-authenticated checkpoint recovery. The testnet is not mainnet-ready. Archive V2
-roles and legacy retirement remain open, current 200 GB root volumes are not
-approved for indefinite archive growth, and `v0.5.278` still requires focused and
-hosted signed-artifact, coordinated-deployment, and live acceptance gates.
+The fleet state and rollback artifacts remain preserved. Signed `v0.5.278` is
+installed on all four validators, which are intentionally stopped at identical
+tip `12,332,757` and repaired state root while their distinct pending consensus
+WALs remain byte-for-byte intact. EU's authenticated checkpoint recovery is
+complete. The testnet is not mainnet-ready. Archive V2 roles and legacy
+retirement remain open, current 200 GB root volumes are not approved for
+indefinite archive growth, and `v0.5.279` still requires hosted signed-artifact,
+coordinated-deployment, deterministic-boundary, and live acceptance gates.
 
 ### 1.1 Current decision
 
@@ -190,9 +195,11 @@ hosted signed-artifact, coordinated-deployment, and live acceptance gates.
 - Publish only tag-workflow artifacts with provenance, checksums, and the
   detached PQ signature. Coordinated-stop/install/start all four validators;
   do not use a mixed-version rolling restart and do not install a local build.
-- Restore four-way own-state convergence first. Repair EU and India only from
-  exact source-backed history and their preserved identities/WALs; do not reset
-  genesis or copy another validator's RocksDB state.
+- Preserve the proven four-way own-state convergence. Roll back only the exact
+  v0.5.278 Testnet repair on each stopped validator, retain every pending WAL,
+  and resume all four together so the same correction occurs inside the
+  deterministic post-block lifecycle; do not reset genesis or copy another
+  validator's RocksDB state.
 - Extend the dual-R2 catalog only from the stopped, immutable, fully audited US
   source-backed tail. Do not perform another genesis rebuild or an unbounded R2
   readback.
@@ -383,11 +390,11 @@ Accordingly:
 2. Use only the bounded, content-hashed emergency headroom pass required to
    recover a validator that reached the fail-closed disk floor. Do not delete
    R2 objects or treat that temporary bridge as Archive V2 activation.
-3. Preserve the signed `v0.5.274` runtime and gate evidence and publish
-   `v0.5.277` through the
-   signed release workflow, verify provenance plus its detached post-quantum
-   checksum signature, and deploy it through one coordinated four-host
-   stop/install/start. Keep signed `v0.5.265` as the only immediate rollback.
+3. Preserve the signed `v0.5.278` runtime and failure evidence and publish
+   `v0.5.279` through the signed release workflow, verify provenance plus its
+   detached post-quantum checksum signature, and deploy it through one
+   coordinated four-host stop/rollback/install/start. Keep signed `v0.5.265` as
+   the only immediate restart-safe rollback.
 4. Restore four-way own-state convergence, extend the canonical Archive V2 tail
    from the stopped immutable US recovery source, activate the exact role
    matrix, prove fixed-tip parity and cadence, and only then retire legacy
@@ -1098,7 +1105,7 @@ This is a testnet exception, not the final production archive policy:
   Archive V2 retirement or larger storage, not another emergency offload;
 - the transition is reversible through the preserved baseline environment and
   signed `v0.5.265` immediate rollback artifact. Older releases remain Git and
-  audit history, not installed rollback binaries after `v0.5.277` acceptance.
+  audit history, not installed rollback binaries after `v0.5.279` acceptance.
 
 The later dedicated archive plane in Section 3.2 replaces this exception. It
 does not block honest Archive V2 role activation on the current testnet once
@@ -1208,15 +1215,18 @@ Current execution order is fixed:
    restart, and Archive V2 matrix. Preserve the green `v0.5.275` PR evidence
    and its exact failed immutable tag log. Preserve the `v0.5.276` failed-tag
    handoff diagnostic and npm-audit HTTP-503 evidence. Preserve signed
-   `v0.5.277` deployment evidence and qualify the narrow `v0.5.278`
-   authenticated MossStake checkpoint compatibility and exact repair.
-3. Commit through protected `main`, create the immutable `v0.5.278` tag, wait
+   `v0.5.277` deployment evidence, signed `v0.5.278` checkpoint recovery and
+   failed restart evidence, and qualify the narrow `v0.5.279` WAL-preserving
+   rollback plus deterministic MossStake activation.
+3. Commit through protected `main`, create the immutable `v0.5.279` tag, wait
    for every hosted hard gate, attach the detached PQ checksum signature, verify
    provenance and every binary hash, and publish the public validator release.
 4. Capture a stopped preflight on all four hosts, prove identities/WALs/state,
-   preserve `v0.5.265`, install only the signed `v0.5.278` workflow artifact, and perform
-   one coordinated four-host stop/install/start. Prove installed/running hash
-   parity and four-way own-state convergence before any retirement.
+   preserve `v0.5.265`, install only the signed `v0.5.279` workflow artifact,
+   restore the exact pre-repair state on all four without modifying WAL, and
+   perform one coordinated four-host start. Prove recovered finality, the
+   matching slot-`12,333,500` deterministic repair, installed/running hash
+   parity, and four-way own-state convergence before any retirement.
 5. Freeze and audit the selected US recovery source, capture its final WAL
    boundary only after stop, and extend only the missing immutable catalog tail.
    Dual-publish objects and manifests with independent temporary credentials,
@@ -1234,7 +1244,7 @@ Current execution order is fixed:
    validators to author, measure reclaimed bytes per host, and complete the
    documented stable-observation window.
 9. Publish and deploy the matching wallet `0.1.9`, exchange
-   `exchange-testnet-v0.5.278`, developer portal, README, and frontend surfaces
+   `exchange-testnet-v0.5.279`, developer portal, README, and frontend surfaces
    only after their live readiness evidence is attached. Keep only the new
    signed validator release and signed `v0.5.265` rollback installation on each
    VPS; remove obsolete caches, staging, superseded checkpoints, and redundant

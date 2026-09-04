@@ -5,6 +5,44 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.279] - 2026-09-04
+
+### Fixed
+
+- Move the legacy Testnet MossStake accounting correction to deterministic
+  post-block activation at slot `12,333,500`. Every validator now commits the
+  same correction inside the canonical block lifecycle before the next height
+  begins, so the next child certificate binds the repaired parent state root.
+- Add an exact, stopped-state rollback for the already-applied `v0.5.278`
+  repair. It restores only the source-proven stale row and 276-spore remainder,
+  requires the unchanged repair tip and marker, reconstructs the exact old
+  state root and pool hash, preserves the consensus WAL byte-for-byte, and is
+  idempotent across interruption.
+- Refuse any new out-of-band repair write from the `v0.5.279` administrative
+  command; it remains available only to verify an existing repair marker.
+
+### Safety
+
+- Signed `v0.5.278` repaired the same source-proven MossStake row on all four
+  Testnet validators at canonical tip `12,332,757`. Each validator then
+  correctly rejected recovered height-`12,332,758` WAL proposals because their
+  parent post-state root was the pre-repair root. No post-repair block was
+  finalized, and Archive V2 role activation remained disabled.
+- The correction and rollback are confined to exact legacy
+  `lichen-testnet-1` state. Fresh testnets and mainnet do not satisfy the
+  legacy-genesis or source-row guards. This is a consensus-critical scheduled
+  state transition for the preserved Testnet only; the BFT algorithm and wire,
+  block, checkpoint, and Archive V2 formats are unchanged.
+
+### Verified
+
+- Regression coverage now proves rollback reconstructs the exact old root and
+  pool, removes the repair marker atomically, leaves a pending proposal and lock
+  WAL byte-for-byte unchanged, and repeats idempotently.
+- Activation coverage proves the correction cannot run before its post-block
+  boundary, commits the exact guarded projection at the boundary, anchors the
+  repaired root, and remains idempotent afterward.
+
 ## [0.5.278] - 2026-09-04
 
 ### Fixed
