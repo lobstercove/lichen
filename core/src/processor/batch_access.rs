@@ -63,12 +63,12 @@ impl TxProcessor {
         }
     }
 
-    pub(super) fn b_has_transaction(&self, sig: &Hash) -> Result<bool, String> {
+    pub(super) fn b_has_consensus_active_transaction(&self, sig: &Hash) -> Result<bool, String> {
         let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(batch) = guard.as_ref() {
-            batch.has_transaction(sig)
+            batch.has_hot_transaction(sig)
         } else {
-            Ok(self.state.get_transaction(sig)?.is_some())
+            self.state.has_hot_transaction(sig)
         }
     }
 

@@ -6695,7 +6695,7 @@ mod tests {
     }
 
     #[test]
-    fn speculative_replay_rejects_transaction_already_migrated_to_cold() {
+    fn speculative_replay_does_not_consult_cold_transaction_history() {
         let hot_dir = tempdir().unwrap();
         let cold_dir = tempdir().unwrap();
         let mut state = StateStore::open(hot_dir.path()).unwrap();
@@ -6721,8 +6721,45 @@ mod tests {
         assert!(!speculative.results[0].receipt_eligible);
         assert_eq!(
             speculative.results[0].error.as_deref(),
+            Some("Blockhash not found or too old")
+        );
+    }
+
+    #[test]
+    fn speculative_replay_still_rejects_hot_and_batch_overlay_duplicates() {
+        let hot_dir = tempdir().unwrap();
+        let state = StateStore::open(hot_dir.path()).unwrap();
+        let transaction = make_test_transaction(0x64);
+        let signature = transaction.signature();
+        let block = Block::new(
+            9,
+            Hash::default(),
+            Hash::default(),
+            [0x64; 32],
+            vec![transaction.clone()],
+        );
+        state.put_block(&block).unwrap();
+        assert!(state.has_hot_transaction(&signature).unwrap());
+
+        let speculative = crate::TxProcessor::new_speculative(state.clone())
+            .process_transactions_speculative_at_slot(
+                std::slice::from_ref(&transaction),
+                &Pubkey([0x65; 32]),
+                10,
+            );
+        assert_eq!(speculative.results.len(), 1);
+        assert!(!speculative.results[0].receipt_eligible);
+        assert_eq!(
+            speculative.results[0].error.as_deref(),
             Some("Transaction already processed")
         );
+
+        let mut batch = state.begin_batch_at_slot(10);
+        let overlay_only = make_test_transaction(0x66);
+        let overlay_signature = overlay_only.signature();
+        assert!(!batch.has_hot_transaction(&overlay_signature).unwrap());
+        batch.put_transaction(&overlay_only).unwrap();
+        assert!(batch.has_hot_transaction(&overlay_signature).unwrap());
     }
 
     #[test]

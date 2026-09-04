@@ -591,6 +591,27 @@ impl StateBatch {
             .map_err(|e| format!("Cold database error: {}", e))
     }
 
+    /// Check only the batch overlay and consensus-active hot transaction store.
+    ///
+    /// Speculative proposal execution must not synchronously consult cold
+    /// history: cold storage may be remote and a cache miss would otherwise
+    /// block the consensus event loop. Transactions with a valid recent
+    /// blockhash remain hot beyond the replay window; durable nonce and EVM
+    /// replay protection is enforced by canonical account nonce state.
+    pub fn has_hot_transaction(&self, sig: &Hash) -> Result<bool, String> {
+        if self.transaction_overlay.contains(sig) {
+            return Ok(true);
+        }
+        let cf = self
+            .db
+            .cf_handle(CF_TRANSACTIONS)
+            .ok_or_else(|| "Transactions CF not found".to_string())?;
+        self.db
+            .get_cf(&cf, sig.0)
+            .map(|value| value.is_some())
+            .map_err(|e| format!("Database error: {}", e))
+    }
+
     pub fn put_tx_meta(&mut self, sig: &Hash, compute_units_used: u64) -> Result<(), String> {
         let cf = self
             .db

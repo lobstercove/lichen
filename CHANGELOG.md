@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a larger recent-history setting than the checkpoint source.
 - Preserve the stricter configured hot-window check for verified-cache and
   consensus roles, whose recent consensus history must remain physically hot.
+- Keep speculative proposal execution on the batch overlay and hot transaction
+  family instead of synchronously probing legacy cold history. Canonical and
+  public historical transaction reads retain their complete hot/cold lookup.
 - Retry npm audits only for bounded, recognized registry/network availability
   failures. Dependency findings still fail immediately, and three unavailable
   audit responses still block the release.
@@ -26,9 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   covering `7,999..10,000`, then incorrectly demanded local legacy copies for
   catalog-covered slots beginning at `5,001`. The quality job separately
   failed closed when npm's audit service returned HTTP 503.
-- This correction changes full-archive admission partitioning only. It does
-  not change consensus, state transitions, checkpoint/catalog schemas,
-  Archive V2 objects, migration, compaction, retention, or preserved state.
+- The signed `v0.5.274` live fleet subsequently stalled at height `12,322,667`.
+  Proposal execution took up to 620 seconds because its nested duplicate check
+  reached R2/FUSE-backed cold transaction SSTs once for each new transaction.
+  Removing unrelated orphan CPU consumers did not restore liveness; an
+  11-transaction proposal still spent 365.649 seconds in speculative execution.
+- These corrections change full-archive admission partitioning and the storage
+  tier consulted by speculative duplicate detection. They do not change
+  deterministic state transitions, replay rules, wire compatibility,
+  checkpoint/catalog schemas, Archive V2 objects, migration, compaction,
+  retention, or preserved state.
 
 ### Verified
 
@@ -38,6 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Archive V2 after admission.
 - Focused Archive V2 validator tests pass. Protected PR and immutable tag gates
   remain mandatory before signing, deployment, or legacy retirement.
+- A cold-only duplicate regression proves speculative execution does not
+  consult cold transaction history: the transaction proceeds to the existing
+  recent-blockhash guard and is rejected as too old. Hot and same-batch
+  duplicates remain protected, while durable-nonce and EVM replay remain
+  protected by canonical account nonce state.
 
 ## [0.5.276] - 2026-09-03
 
