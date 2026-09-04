@@ -4,7 +4,7 @@ Date: 2026-09-02
 Scope: `lichen-testnet-1` preserved-chain release and Archive V2 activation  
 Status: original deployment stopped safely; signed `v0.5.278` is now installed
 on all four validators, and the current consensus-bound legacy-repair successor
-is `v0.5.279`
+is `v0.5.280`
 
 ## Executive record
 
@@ -156,9 +156,15 @@ inside deterministic post-block processing at slot `12,333,500`. This fixes the
 repair lifecycle without changing consensus or Archive V2 formats. See
 `docs/audits/V0.5.279_PRODUCTION_READINESS_2026-09-04.md`.
 
+The immutable `v0.5.279` exact-tag run passed every completed gate and reached
+the former 90-minute Archive V2 job limit during the already-green
+post-activity own-state restart matrix. It created no checksums or release.
+`v0.5.280` carries the same runtime correction and changes only that gate limit
+to 150 minutes.
+
 ## Completion criteria
 
-The incident is closed only after signed `v0.5.279` is installed and running on
+The incident is closed only after signed `v0.5.280` is installed and running on
 all four validators from each host's own preserved state; block production,
 finality, RPC, WebSocket, DEX/AMM/CLOB, prediction, governance, and launchpad
 smokes pass; all four Archive V2 manifests prove the same genesis-to-tip
