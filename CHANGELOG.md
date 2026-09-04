@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keep speculative proposal execution on the batch overlay and hot transaction
   family instead of synchronously probing legacy cold history. Canonical and
   public historical transaction reads retain their complete hot/cold lookup.
+- Fail production startup when configured hot retention does not exceed the
+  300-slot recent-blockhash replay window. Explicit local-development archive
+  stress tests may continue using smaller windows.
 - Retry npm audits only for bounded, recognized registry/network availability
   failures. Dependency findings still fail immediately, and three unavailable
   audit responses still block the release.
@@ -53,6 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recent-blockhash guard and is rejected as too old. Hot and same-batch
   duplicates remain protected, while durable-nonce and EVM replay remain
   protected by canonical account nonce state.
+- A configuration regression proves production retention of 300 slots fails
+  closed, 301 slots is admitted, and the low-retention test exemption requires
+  explicit local-development mode.
 
 ## [0.5.276] - 2026-09-03
 

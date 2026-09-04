@@ -191,12 +191,29 @@ fn parse_bounded_env_u64(
 }
 
 fn runtime_cold_retention_slots() -> Result<u64, String> {
-    parse_bounded_env_u64(
+    let retention_slots = parse_bounded_env_u64(
         "LICHEN_COLD_RETENTION_SLOTS",
         lichen_core::state::COLD_RETENTION_SLOTS,
         1,
         10_000_000,
+    )?;
+    validate_runtime_cold_retention_slots(
+        retention_slots,
+        env::var("LICHEN_LOCAL_DEV").ok().as_deref() == Some("1"),
     )
+}
+
+fn validate_runtime_cold_retention_slots(
+    retention_slots: u64,
+    local_development: bool,
+) -> Result<u64, String> {
+    let replay_safe_minimum = MAX_TX_AGE_BLOCKS.saturating_add(1);
+    if !local_development && retention_slots < replay_safe_minimum {
+        return Err(format!(
+            "LICHEN_COLD_RETENTION_SLOTS must be at least {replay_safe_minimum} outside explicit local development so recent-blockhash replay protection remains in hot storage"
+        ));
+    }
+    Ok(retention_slots)
 }
 
 fn runtime_cold_migration_config(
@@ -35386,6 +35403,16 @@ mod tests {
                 assert!(left.abs_diff(*right) >= Duration::from_millis(100));
             }
         }
+    }
+
+    #[test]
+    fn production_cold_retention_covers_recent_blockhash_replay_window() {
+        assert!(validate_runtime_cold_retention_slots(MAX_TX_AGE_BLOCKS, false).is_err());
+        assert_eq!(
+            validate_runtime_cold_retention_slots(MAX_TX_AGE_BLOCKS + 1, false).unwrap(),
+            MAX_TX_AGE_BLOCKS + 1
+        );
+        assert_eq!(validate_runtime_cold_retention_slots(1, true).unwrap(), 1);
     }
 
     #[test]
