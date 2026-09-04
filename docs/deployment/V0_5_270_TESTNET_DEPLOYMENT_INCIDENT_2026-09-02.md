@@ -2,9 +2,9 @@
 
 Date: 2026-09-02  
 Scope: `lichen-testnet-1` preserved-chain release and Archive V2 activation  
-Status: original deployment stopped safely; signed `v0.5.277` is now installed
-on all four validators, and the current authenticated legacy-checkpoint
-successor is `v0.5.278`
+Status: original deployment stopped safely; signed `v0.5.278` is now installed
+on all four validators, and the current consensus-bound legacy-repair successor
+is `v0.5.279`
 
 ## Executive record
 
@@ -146,9 +146,19 @@ to the authenticated checkpoint path and adds an exact stopped-state,
 Testnet-only accounting repair. The full finding and execution boundary are in
 `docs/audits/V0.5.278_PRODUCTION_READINESS_2026-09-04.md`.
 
+The coordinated `v0.5.278` repair then stopped all four validators at tip
+`12,332,757` while height `12,332,758` already had persisted proposals, locks,
+and votes. The state repair succeeded identically, but restart correctly
+rejected those pending values because they bound the old parent root.
+`v0.5.279` restores the exact old state without modifying the WAL, allows its
+existing lock/commit lifecycle to finish, and activates the same exact repair
+inside deterministic post-block processing at slot `12,333,500`. This fixes the
+repair lifecycle without changing consensus or Archive V2 formats. See
+`docs/audits/V0.5.279_PRODUCTION_READINESS_2026-09-04.md`.
+
 ## Completion criteria
 
-The incident is closed only after signed `v0.5.278` is installed and running on
+The incident is closed only after signed `v0.5.279` is installed and running on
 all four validators from each host's own preserved state; block production,
 finality, RPC, WebSocket, DEX/AMM/CLOB, prediction, governance, and launchpad
 smokes pass; all four Archive V2 manifests prove the same genesis-to-tip

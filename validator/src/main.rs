@@ -498,10 +498,15 @@ const LEGACY_TESTNET_POST_EFFECT_REPLAY_DRIFT_CONFIRMATION: &str =
     "legacy-testnet-post-effect-replay-drift:v2";
 const REPAIR_LEGACY_TESTNET_MOSSSTAKE_ACCOUNTING_FLAG: &str =
     "--repair-legacy-testnet-mossstake-accounting";
+const ROLLBACK_LEGACY_TESTNET_MOSSSTAKE_ACCOUNTING_FLAG: &str =
+    "--rollback-legacy-testnet-mossstake-accounting";
 const LEGACY_TESTNET_MOSSSTAKE_ACCOUNTING_MARKER_KEY: &str =
     "legacy_testnet_mossstake_accounting_repair_v1";
 const LEGACY_TESTNET_MOSSSTAKE_ACCOUNTING_CONFIRMATION_PREFIX: &str =
     "legacy-testnet-mossstake-accounting:v1";
+const LEGACY_TESTNET_MOSSSTAKE_ROLLBACK_CONFIRMATION_PREFIX: &str =
+    "legacy-testnet-mossstake-accounting-rollback:v1";
+const LEGACY_TESTNET_MOSSSTAKE_ACCOUNTING_ACTIVATION_PARENT_SLOT: u64 = 12_333_500;
 const LEGACY_TESTNET_MOSSSTAKE_STALE_OWNER: &str = "7PC2p47EGiUCzbkwyenh6tVH5Z73nd5wcFVYiZGnWks";
 const LEGACY_TESTNET_MOSSSTAKE_STALE_PRINCIPAL: u64 = 10_000_000_000;
 const LEGACY_TESTNET_MOSSSTAKE_STALE_DEPOSIT_SLOT: u64 = 1_459_780;
@@ -9333,6 +9338,14 @@ async fn apply_post_block_effects_after_store(
         error!("Failed post-block MossStake slot-only activation: {}", e);
         std::process::exit(1);
     }
+    if let Err(e) = maybe_activate_legacy_testnet_mossstake_accounting(
+        state,
+        block.header.slot,
+        "post-block boundary",
+    ) {
+        error!("Failed post-block MossStake accounting activation: {}", e);
+        std::process::exit(1);
+    }
     if let Err(e) = maybe_activate_testnet_governed_signer_recovery(
         state,
         block.header.slot,
@@ -16944,6 +16957,35 @@ fn repair_legacy_testnet_mossstake_accounting(
                 marker.version
             ));
         }
+        let current_tip = state.get_last_slot()?;
+        if current_tip < marker.tip {
+            return Err(format!(
+                "legacy MossStake repair marker tip {} is ahead of canonical tip {}",
+                marker.tip, current_tip
+            ));
+        }
+        if current_tip == marker.tip {
+            let current_tip_block = state
+                .get_block_by_slot(current_tip)?
+                .ok_or_else(|| format!("canonical tip block {current_tip} is missing"))?;
+            state.invalidate_merkle_cache();
+            let current_root = state.compute_state_root_cold_start();
+            let current_pool_hash = state.get_mossstake_pool()?.canonical_hash();
+            if current_tip_block.hash() != marker.tip_block_hash
+                || current_root != marker.after_root
+                || current_pool_hash != marker.after_pool_hash
+            {
+                return Err(format!(
+                    "legacy MossStake repair marker does not match its canonical tip image: block={} marker_block={} root={} marker_root={} pool={} marker_pool={}",
+                    current_tip_block.hash().to_hex(),
+                    marker.tip_block_hash.to_hex(),
+                    current_root.to_hex(),
+                    marker.after_root.to_hex(),
+                    current_pool_hash.to_hex(),
+                    marker.after_pool_hash.to_hex(),
+                ));
+            }
+        }
         let stale_owner = Pubkey::from_base58(LEGACY_TESTNET_MOSSSTAKE_STALE_OWNER)
             .map_err(|err| format!("invalid embedded MossStake stale owner: {err}"))?;
         if marker.stale_owner != stale_owner
@@ -17114,6 +17156,23 @@ fn repair_legacy_testnet_mossstake_accounting(
         });
     }
 
+    let marker = LegacyTestnetMossStakeRepairMarker {
+        version: 1,
+        tip,
+        tip_block_hash,
+        before_root,
+        after_root: projected_root,
+        before_pool_hash: projection.before_pool_hash,
+        after_pool_hash: projection.after_pool_hash,
+        stale_owner: projection.stale_owner,
+        remainder_recipient: projection.remainder_recipient,
+        removed_position_value: projection.removed_position_value,
+        remainder_dust: projection.remainder_dust,
+    };
+    batch.put_metadata(
+        LEGACY_TESTNET_MOSSSTAKE_ACCOUNTING_MARKER_KEY,
+        &legacy_testnet_mossstake_marker_bytes(&marker)?,
+    )?;
     state.commit_batch(batch)?;
     state.invalidate_merkle_cache();
     let after_root = state.compute_state_root_cold_start();
@@ -17131,24 +17190,7 @@ fn repair_legacy_testnet_mossstake_accounting(
         ));
     }
 
-    let marker = LegacyTestnetMossStakeRepairMarker {
-        version: 1,
-        tip,
-        tip_block_hash,
-        before_root,
-        after_root,
-        before_pool_hash: projection.before_pool_hash,
-        after_pool_hash,
-        stale_owner: projection.stale_owner,
-        remainder_recipient: projection.remainder_recipient,
-        removed_position_value: projection.removed_position_value,
-        remainder_dust: projection.remainder_dust,
-    };
     state.put_post_state_commitment_anchor(tip, &tip_block_hash, &after_root)?;
-    state.put_metadata(
-        LEGACY_TESTNET_MOSSSTAKE_ACCOUNTING_MARKER_KEY,
-        &legacy_testnet_mossstake_marker_bytes(&marker)?,
-    )?;
     state.sync_hot_wal()?;
     let anchor = state
         .get_post_state_commitment_anchor(tip)?
@@ -17179,6 +17221,339 @@ fn repair_legacy_testnet_mossstake_accounting(
         removed_position_value: projection.removed_position_value,
         remainder_dust: projection.remainder_dust,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LegacyTestnetMossStakeRollbackExpectations {
+    tip: u64,
+    tip_block_hash: Hash,
+    repaired_root: Hash,
+    restored_root: Hash,
+    repaired_pool_hash: Hash,
+    restored_pool_hash: Hash,
+    remainder_dust: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LegacyTestnetMossStakeRollbackReport {
+    execute: bool,
+    already_rolled_back: bool,
+    tip: u64,
+    tip_block_hash: Hash,
+    repaired_root: Hash,
+    projected_root: Hash,
+    after_root: Hash,
+    repaired_pool_hash: Hash,
+    restored_pool_hash: Hash,
+    stale_owner: Pubkey,
+    remainder_recipient: Pubkey,
+    restored_position_value: u64,
+    remainder_dust: u64,
+}
+
+fn validate_legacy_testnet_mossstake_repair_marker(
+    marker: &LegacyTestnetMossStakeRepairMarker,
+) -> Result<(), String> {
+    let stale_owner = Pubkey::from_base58(LEGACY_TESTNET_MOSSSTAKE_STALE_OWNER)
+        .map_err(|err| format!("invalid embedded MossStake stale owner: {err}"))?;
+    if marker.version != 1
+        || marker.stale_owner != stale_owner
+        || marker.removed_position_value != LEGACY_TESTNET_MOSSSTAKE_STALE_PRINCIPAL
+        || marker.remainder_dust > LEGACY_TESTNET_MOSSSTAKE_MAX_REMAINDER_DUST
+    {
+        return Err("legacy MossStake repair marker violates embedded repair bounds".to_string());
+    }
+    Ok(())
+}
+
+fn legacy_testnet_mossstake_rollback_expectations_match(
+    report: &LegacyTestnetMossStakeRollbackReport,
+    expected: &LegacyTestnetMossStakeRollbackExpectations,
+) -> bool {
+    report.tip == expected.tip
+        && report.tip_block_hash == expected.tip_block_hash
+        && report.repaired_root == expected.repaired_root
+        && report.projected_root == expected.restored_root
+        && report.repaired_pool_hash == expected.repaired_pool_hash
+        && report.restored_pool_hash == expected.restored_pool_hash
+        && report.remainder_dust == expected.remainder_dust
+}
+
+fn rollback_legacy_testnet_mossstake_accounting(
+    state: &StateStore,
+    expectations: Option<&LegacyTestnetMossStakeRollbackExpectations>,
+) -> Result<LegacyTestnetMossStakeRollbackReport, String> {
+    let execute = expectations.is_some();
+    let chain_id = state
+        .get_metadata(CHAIN_ID_METADATA_KEY)?
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .ok_or_else(|| "chain-id metadata is missing or invalid".to_string())?;
+    if chain_id != "lichen-testnet-1" {
+        return Err(format!(
+            "legacy MossStake accounting rollback is restricted to lichen-testnet-1, found {chain_id}"
+        ));
+    }
+    if state
+        .get_metadata(MOSSSTAKE_SLOT_ONLY_METADATA_KEY)?
+        .as_deref()
+        != Some(b"1".as_slice())
+    {
+        return Err(format!(
+            "legacy MossStake accounting rollback requires {}=1",
+            MOSSSTAKE_SLOT_ONLY_METADATA_KEY
+        ));
+    }
+
+    let tip = state.get_last_slot()?;
+    let tip_block = state
+        .get_block_by_slot(tip)?
+        .ok_or_else(|| format!("canonical tip block {tip} is missing"))?;
+    let tip_block_hash = tip_block.hash();
+    state.invalidate_merkle_cache();
+    let current_root = state.compute_state_root_cold_start();
+    let current_pool = state.get_mossstake_pool()?;
+    let current_pool_hash = current_pool.canonical_hash();
+
+    let marker_bytes = state.get_metadata(LEGACY_TESTNET_MOSSSTAKE_ACCOUNTING_MARKER_KEY)?;
+    if marker_bytes.is_none() {
+        let expected = expectations.ok_or_else(|| {
+            "legacy MossStake accounting repair marker is absent; nothing to roll back".to_string()
+        })?;
+        if tip != expected.tip
+            || tip_block_hash != expected.tip_block_hash
+            || current_root != expected.restored_root
+            || current_pool_hash != expected.restored_pool_hash
+        {
+            return Err("marker-free legacy MossStake rollback state does not match the requested restored image".to_string());
+        }
+        let forward = project_legacy_testnet_mossstake_accounting_repair(&current_pool)?;
+        let mut projected = state.begin_batch_at_slot(tip);
+        projected.put_mossstake_pool(&forward.repaired_pool)?;
+        let repaired_root = state.compute_state_root_for_batch(&projected);
+        if repaired_root != expected.repaired_root
+            || forward.before_pool_hash != expected.restored_pool_hash
+            || forward.after_pool_hash != expected.repaired_pool_hash
+            || forward.remainder_dust != expected.remainder_dust
+        {
+            return Err("marker-free legacy MossStake rollback image cannot reproduce the exact repaired state".to_string());
+        }
+        state.put_post_state_commitment_anchor(tip, &tip_block_hash, &current_root)?;
+        state.sync_hot_wal()?;
+        return Ok(LegacyTestnetMossStakeRollbackReport {
+            execute: true,
+            already_rolled_back: true,
+            tip,
+            tip_block_hash,
+            repaired_root,
+            projected_root: current_root,
+            after_root: current_root,
+            repaired_pool_hash: forward.after_pool_hash,
+            restored_pool_hash: current_pool_hash,
+            stale_owner: forward.stale_owner,
+            remainder_recipient: forward.remainder_recipient,
+            restored_position_value: forward.removed_position_value,
+            remainder_dust: forward.remainder_dust,
+        });
+    }
+
+    let marker: LegacyTestnetMossStakeRepairMarker = serde_json::from_slice(
+        marker_bytes
+            .as_deref()
+            .expect("repair marker presence checked above"),
+    )
+    .map_err(|err| format!("invalid legacy MossStake repair marker: {err}"))?;
+    validate_legacy_testnet_mossstake_repair_marker(&marker)?;
+    if tip != marker.tip || tip_block_hash != marker.tip_block_hash {
+        return Err(format!(
+            "legacy MossStake rollback is allowed only before a post-repair block commits: tip={tip} marker_tip={} block={} marker_block={}",
+            marker.tip,
+            tip_block_hash.to_hex(),
+            marker.tip_block_hash.to_hex(),
+        ));
+    }
+    if current_root != marker.after_root || current_pool_hash != marker.after_pool_hash {
+        return Err(format!(
+            "legacy MossStake rollback repaired image mismatch: root={} marker_root={} pool={} marker_pool={}",
+            current_root.to_hex(),
+            marker.after_root.to_hex(),
+            current_pool_hash.to_hex(),
+            marker.after_pool_hash.to_hex(),
+        ));
+    }
+    current_pool.validate_invariants()?;
+
+    let mut restored_pool = current_pool.clone();
+    if restored_pool.positions.contains_key(&marker.stale_owner) {
+        return Err(
+            "legacy MossStake stale owner unexpectedly exists in repaired state".to_string(),
+        );
+    }
+    let recipient = restored_pool
+        .positions
+        .get_mut(&marker.remainder_recipient)
+        .ok_or_else(|| "legacy MossStake rollback remainder recipient is missing".to_string())?;
+    recipient.rewards_earned = recipient
+        .rewards_earned
+        .checked_sub(marker.remainder_dust)
+        .ok_or_else(|| {
+            "legacy MossStake rollback remainder exceeds recipient rewards".to_string()
+        })?;
+    restored_pool.positions.insert(
+        marker.stale_owner,
+        lichen_core::mossstake::StakingPosition {
+            owner: marker.stale_owner,
+            st_licn_amount: 0,
+            licn_deposited: LEGACY_TESTNET_MOSSSTAKE_STALE_PRINCIPAL,
+            deposited_at: LEGACY_TESTNET_MOSSSTAKE_STALE_DEPOSIT_SLOT,
+            deposited_at_unix_seconds: 0,
+            rewards_earned: 0,
+            lock_tier: lichen_core::mossstake::LockTier::Flexible,
+            lock_until: 0,
+            lock_until_unix_seconds: 0,
+        },
+    );
+    let restored_pool_hash = restored_pool.canonical_hash();
+    if restored_pool_hash != marker.before_pool_hash {
+        return Err(format!(
+            "legacy MossStake rollback projection has pool hash {}, expected {}",
+            restored_pool_hash.to_hex(),
+            marker.before_pool_hash.to_hex(),
+        ));
+    }
+    let round_trip = project_legacy_testnet_mossstake_accounting_repair(&restored_pool)?;
+    if round_trip.repaired_pool.canonical_snapshot_bytes()?
+        != current_pool.canonical_snapshot_bytes()?
+        || round_trip.before_pool_hash != marker.before_pool_hash
+        || round_trip.after_pool_hash != marker.after_pool_hash
+        || round_trip.stale_owner != marker.stale_owner
+        || round_trip.remainder_recipient != marker.remainder_recipient
+        || round_trip.removed_position_value != marker.removed_position_value
+        || round_trip.remainder_dust != marker.remainder_dust
+    {
+        return Err(
+            "legacy MossStake rollback does not round-trip to the exact repaired image".to_string(),
+        );
+    }
+
+    let mut batch = state.begin_batch_at_slot(tip);
+    batch.put_mossstake_pool(&restored_pool)?;
+    batch.delete_metadata(LEGACY_TESTNET_MOSSSTAKE_ACCOUNTING_MARKER_KEY)?;
+    let projected_root = state.compute_state_root_for_batch(&batch);
+    if projected_root != marker.before_root {
+        return Err(format!(
+            "legacy MossStake rollback projection has state root {}, expected {}",
+            projected_root.to_hex(),
+            marker.before_root.to_hex(),
+        ));
+    }
+    let report = LegacyTestnetMossStakeRollbackReport {
+        execute,
+        already_rolled_back: false,
+        tip,
+        tip_block_hash,
+        repaired_root: marker.after_root,
+        projected_root,
+        after_root: current_root,
+        repaired_pool_hash: marker.after_pool_hash,
+        restored_pool_hash,
+        stale_owner: marker.stale_owner,
+        remainder_recipient: marker.remainder_recipient,
+        restored_position_value: marker.removed_position_value,
+        remainder_dust: marker.remainder_dust,
+    };
+    if let Some(expected) = expectations {
+        if !legacy_testnet_mossstake_rollback_expectations_match(&report, expected) {
+            return Err(
+                "legacy MossStake rollback does not match operator-supplied expectations"
+                    .to_string(),
+            );
+        }
+    } else {
+        return Ok(report);
+    }
+
+    state.commit_batch(batch)?;
+    state.invalidate_merkle_cache();
+    let after_root = state.compute_state_root_cold_start();
+    if after_root != marker.before_root
+        || state.get_mossstake_pool()?.canonical_hash() != marker.before_pool_hash
+        || state
+            .get_metadata(LEGACY_TESTNET_MOSSSTAKE_ACCOUNTING_MARKER_KEY)?
+            .is_some()
+    {
+        return Err("FATAL: committed legacy MossStake rollback verification failed".to_string());
+    }
+    state.put_post_state_commitment_anchor(tip, &tip_block_hash, &after_root)?;
+    state.sync_hot_wal()?;
+    let anchor = state
+        .get_post_state_commitment_anchor(tip)?
+        .ok_or_else(|| "legacy MossStake rollback post-state anchor is missing".to_string())?;
+    if anchor.block_hash != tip_block_hash || anchor.state_root != after_root {
+        return Err("legacy MossStake rollback post-state anchor verification failed".to_string());
+    }
+
+    Ok(LegacyTestnetMossStakeRollbackReport {
+        after_root,
+        ..report
+    })
+}
+
+fn maybe_activate_legacy_testnet_mossstake_accounting(
+    state: &StateStore,
+    parent_slot: u64,
+    context: &str,
+) -> Result<bool, String> {
+    if let Some(marker_bytes) =
+        state.get_metadata(LEGACY_TESTNET_MOSSSTAKE_ACCOUNTING_MARKER_KEY)?
+    {
+        let marker: LegacyTestnetMossStakeRepairMarker = serde_json::from_slice(&marker_bytes)
+            .map_err(|err| format!("invalid legacy MossStake repair marker: {err}"))?;
+        validate_legacy_testnet_mossstake_repair_marker(&marker)?;
+        return Ok(false);
+    }
+    if parent_slot < LEGACY_TESTNET_MOSSSTAKE_ACCOUNTING_ACTIVATION_PARENT_SLOT {
+        return Ok(false);
+    }
+    if !uses_legacy_testnet_mossstake_history(state)? {
+        return Ok(false);
+    }
+    if parent_slot != LEGACY_TESTNET_MOSSSTAKE_ACCOUNTING_ACTIVATION_PARENT_SLOT {
+        return Err(format!(
+            "{context}: legacy Testnet crossed MossStake accounting activation slot {} without its repair marker",
+            LEGACY_TESTNET_MOSSSTAKE_ACCOUNTING_ACTIVATION_PARENT_SLOT
+        ));
+    }
+    let dry_run = repair_legacy_testnet_mossstake_accounting(state, None)?;
+    if dry_run.tip != parent_slot {
+        return Err(format!(
+            "{context}: MossStake accounting activation parent {} does not match canonical tip {}",
+            parent_slot, dry_run.tip
+        ));
+    }
+    let expectations = LegacyTestnetMossStakeExecuteExpectations {
+        tip: dry_run.tip,
+        tip_block_hash: dry_run.tip_block_hash,
+        before_root: dry_run.before_root,
+        after_root: dry_run.projected_root,
+        before_pool_hash: dry_run.before_pool_hash,
+        after_pool_hash: dry_run.after_pool_hash,
+        remainder_dust: dry_run.remainder_dust,
+    };
+    let written = repair_legacy_testnet_mossstake_accounting(state, Some(&expectations))?;
+    if written.already_repaired || written.after_root != dry_run.projected_root {
+        return Err(format!(
+            "{context}: MossStake accounting activation did not commit the exact projected image"
+        ));
+    }
+    warn!(
+        "🔧 {}: activated legacy Testnet MossStake accounting repair at slot {} ({} -> {}, dust={})",
+        context,
+        parent_slot,
+        written.before_pool_hash.to_hex(),
+        written.after_pool_hash.to_hex(),
+        written.remainder_dust,
+    );
+    Ok(true)
 }
 
 fn parse_required_hash_flag(args: &[String], name: &str) -> Result<Hash, String> {
@@ -17257,6 +17632,22 @@ fn maybe_run_legacy_testnet_mossstake_accounting_repair_admin(args: &[String]) -
             return Some(1);
         }
     };
+    if execute {
+        match repair_legacy_testnet_mossstake_accounting(&state, None) {
+            Ok(report) if report.already_repaired => {}
+            Ok(_) => {
+                eprintln!(
+                    "Refusing a new out-of-band MossStake state transition; v0.5.279 activates this repair deterministically at post-block slot {}",
+                    LEGACY_TESTNET_MOSSSTAKE_ACCOUNTING_ACTIVATION_PARENT_SLOT
+                );
+                return Some(1);
+            }
+            Err(err) => {
+                eprintln!("Legacy testnet MossStake accounting repair failed: {err}");
+                return Some(1);
+            }
+        }
+    }
     match repair_legacy_testnet_mossstake_accounting(&state, expectations.as_ref()) {
         Ok(report) => {
             println!("data_dir={}", data_dir.display());
@@ -17290,6 +17681,115 @@ fn maybe_run_legacy_testnet_mossstake_accounting_repair_admin(args: &[String]) -
         }
         Err(err) => {
             eprintln!("Legacy testnet MossStake accounting repair failed: {err}");
+            Some(1)
+        }
+    }
+}
+
+fn maybe_run_legacy_testnet_mossstake_accounting_rollback_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, ROLLBACK_LEGACY_TESTNET_MOSSSTAKE_ACCOUNTING_FLAG) {
+        return None;
+    }
+    let execute = has_flag(args, "--execute");
+    if execute && has_flag(args, "--dry-run") {
+        eprintln!("--execute and --dry-run are mutually exclusive");
+        return Some(2);
+    }
+
+    let expectations = if execute {
+        let parsed = (|| {
+            Ok::<_, String>(LegacyTestnetMossStakeRollbackExpectations {
+                tip: parse_required_u64_flag(args, "--expected-tip")?,
+                tip_block_hash: parse_required_hash_flag(args, "--expected-tip-block-hash")?,
+                repaired_root: parse_required_hash_flag(args, "--expected-repaired-root")?,
+                restored_root: parse_required_hash_flag(args, "--expected-restored-root")?,
+                repaired_pool_hash: parse_required_hash_flag(
+                    args,
+                    "--expected-repaired-mossstake-pool-hash",
+                )?,
+                restored_pool_hash: parse_required_hash_flag(
+                    args,
+                    "--expected-restored-mossstake-pool-hash",
+                )?,
+                remainder_dust: parse_required_u64_flag(args, "--expected-remainder-dust")?,
+            })
+        })();
+        let expected = match parsed {
+            Ok(expected) => expected,
+            Err(err) => {
+                eprintln!("{err}");
+                return Some(2);
+            }
+        };
+        let expected_confirmation = format!(
+            "{}:{}:{}:{}",
+            LEGACY_TESTNET_MOSSSTAKE_ROLLBACK_CONFIRMATION_PREFIX,
+            expected.tip,
+            expected.repaired_pool_hash.to_hex(),
+            expected.restored_root.to_hex(),
+        );
+        if get_flag_value(args, &["--confirm"]) != Some(expected_confirmation.as_str()) {
+            eprintln!("Refusing write without --confirm {expected_confirmation}");
+            return Some(1);
+        }
+        Some(expected)
+    } else {
+        None
+    };
+
+    let data_dir = restriction_schema_data_dir(args);
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!(
+                "Failed to exclusively open stopped state DB at {}: {}",
+                data_dir.display(),
+                err
+            );
+            return Some(1);
+        }
+    };
+    match rollback_legacy_testnet_mossstake_accounting(&state, expectations.as_ref()) {
+        Ok(report) => {
+            println!("data_dir={}", data_dir.display());
+            println!(
+                "mode={}",
+                if report.execute {
+                    "rollback-write"
+                } else {
+                    "rollback-dry-run"
+                }
+            );
+            println!("already_rolled_back={}", report.already_rolled_back);
+            println!("tip={}", report.tip);
+            println!("tip_block_hash={}", report.tip_block_hash.to_hex());
+            println!("repaired_root={}", report.repaired_root.to_hex());
+            println!("projected_root={}", report.projected_root.to_hex());
+            println!("after_root={}", report.after_root.to_hex());
+            println!(
+                "repaired_mossstake_pool_hash={}",
+                report.repaired_pool_hash.to_hex()
+            );
+            println!(
+                "restored_mossstake_pool_hash={}",
+                report.restored_pool_hash.to_hex()
+            );
+            println!("stale_owner={}", report.stale_owner);
+            println!("remainder_recipient={}", report.remainder_recipient);
+            println!("restored_position_value={}", report.restored_position_value);
+            println!("remainder_dust={}", report.remainder_dust);
+            println!(
+                "execute_confirmation={}:{}:{}:{}",
+                LEGACY_TESTNET_MOSSSTAKE_ROLLBACK_CONFIRMATION_PREFIX,
+                report.tip,
+                report.repaired_pool_hash.to_hex(),
+                report.projected_root.to_hex(),
+            );
+            Some(0)
+        }
+        Err(err) => {
+            eprintln!("Legacy testnet MossStake accounting rollback failed: {err}");
             Some(1)
         }
     }
@@ -22668,6 +23168,9 @@ fn main() {
     if let Some(exit_code) = maybe_run_legacy_testnet_mossstake_accounting_repair_admin(&args) {
         std::process::exit(exit_code);
     }
+    if let Some(exit_code) = maybe_run_legacy_testnet_mossstake_accounting_rollback_admin(&args) {
+        std::process::exit(exit_code);
+    }
     if let Some(exit_code) = maybe_run_legacy_testnet_post_effect_replay_drift_admin(&args) {
         std::process::exit(exit_code);
     }
@@ -24670,6 +25173,12 @@ async fn run_validator() {
         maybe_activate_legacy_testnet_mossstake_slot_only(&state, startup_tip, "startup boundary")
     {
         error!("Failed startup MossStake slot-only activation: {}", e);
+        std::process::exit(1);
+    }
+    if let Err(e) =
+        maybe_activate_legacy_testnet_mossstake_accounting(&state, startup_tip, "startup boundary")
+    {
+        error!("Failed startup MossStake accounting activation: {}", e);
         std::process::exit(1);
     }
     if let Err(e) =
@@ -36194,6 +36703,75 @@ mod tests {
             repair_legacy_testnet_mossstake_accounting(&state, Some(&expectations)).unwrap();
         assert!(repeated.already_repaired);
         assert_eq!(repeated.after_root, written.after_root);
+
+        let rollback_dry = rollback_legacy_testnet_mossstake_accounting(&state, None).unwrap();
+        assert!(!rollback_dry.execute);
+        assert!(!rollback_dry.already_rolled_back);
+        assert_eq!(rollback_dry.repaired_root, written.after_root);
+        assert_eq!(rollback_dry.projected_root, dry_run.before_root);
+        let rollback_expectations = LegacyTestnetMossStakeRollbackExpectations {
+            tip: rollback_dry.tip,
+            tip_block_hash: rollback_dry.tip_block_hash,
+            repaired_root: rollback_dry.repaired_root,
+            restored_root: rollback_dry.projected_root,
+            repaired_pool_hash: rollback_dry.repaired_pool_hash,
+            restored_pool_hash: rollback_dry.restored_pool_hash,
+            remainder_dust: rollback_dry.remainder_dust,
+        };
+
+        let pending_height = dry_run.tip + 1;
+        let pending_block = Block::new(
+            pending_height,
+            block.hash(),
+            written.after_root,
+            Pubkey::new([0x43; 32]).0,
+            vec![],
+        );
+        let mut consensus_wal = wal::ConsensusWal::open(temp_dir.path().to_str().unwrap());
+        consensus_wal
+            .log_height_start_result(pending_height)
+            .unwrap();
+        consensus_wal
+            .log_proposal_block_result(pending_height, 0, &pending_block)
+            .unwrap();
+        consensus_wal
+            .log_lock_result(pending_height, 0, pending_block.hash())
+            .unwrap();
+        let pending_wal = std::fs::read(temp_dir.path().join("consensus.wal")).unwrap();
+
+        let rolled_back =
+            rollback_legacy_testnet_mossstake_accounting(&state, Some(&rollback_expectations))
+                .unwrap();
+        assert!(rolled_back.execute);
+        assert!(!rolled_back.already_rolled_back);
+        assert_eq!(rolled_back.after_root, dry_run.before_root);
+        assert_eq!(
+            std::fs::read(temp_dir.path().join("consensus.wal")).unwrap(),
+            pending_wal,
+            "rollback must preserve the pending consensus WAL byte-for-byte"
+        );
+        assert!(state
+            .get_metadata(LEGACY_TESTNET_MOSSSTAKE_ACCOUNTING_MARKER_KEY)
+            .unwrap()
+            .is_none());
+        assert!(state
+            .get_mossstake_pool()
+            .unwrap()
+            .validate_invariants()
+            .is_err());
+        let restored_anchor = state.get_post_state_commitment_anchor(42).unwrap().unwrap();
+        assert_eq!(restored_anchor.block_hash, block.hash());
+        assert_eq!(restored_anchor.state_root, dry_run.before_root);
+
+        let rollback_repeated =
+            rollback_legacy_testnet_mossstake_accounting(&state, Some(&rollback_expectations))
+                .unwrap();
+        assert!(rollback_repeated.already_rolled_back);
+        assert_eq!(rollback_repeated.after_root, dry_run.before_root);
+        assert_eq!(
+            std::fs::read(temp_dir.path().join("consensus.wal")).unwrap(),
+            pending_wal
+        );
     }
 
     #[test]
@@ -36264,6 +36842,72 @@ mod tests {
             .unwrap();
         let error = repair_legacy_testnet_mossstake_accounting(&state, None).unwrap_err();
         assert!(error.contains("restricted to lichen-testnet-1"));
+    }
+
+    #[test]
+    fn legacy_testnet_mossstake_repair_activates_at_a_consensus_post_block_boundary() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        state
+            .put_metadata(CHAIN_ID_METADATA_KEY, b"lichen-testnet-1")
+            .unwrap();
+        state
+            .put_metadata(MOSSSTAKE_SLOT_ONLY_METADATA_KEY, b"1")
+            .unwrap();
+        let activation_slot = LEGACY_TESTNET_MOSSSTAKE_ACCOUNTING_ACTIVATION_PARENT_SLOT;
+        let block = Block::new(
+            activation_slot,
+            Hash::hash(b"legacy-mossstake-activation-parent"),
+            Hash::hash(b"legacy-mossstake-activation-old-root"),
+            Pubkey::new([0x44; 32]).0,
+            vec![],
+        );
+        state
+            .put_block_atomic(&block, Some(activation_slot), Some(activation_slot))
+            .unwrap();
+        state.set_last_slot(activation_slot).unwrap();
+        state
+            .put_mossstake_pool(&legacy_testnet_mossstake_accounting_fixture())
+            .unwrap();
+        let before_root = state.compute_state_root_cold_start();
+
+        assert!(!maybe_activate_legacy_testnet_mossstake_accounting(
+            &state,
+            activation_slot - 1,
+            "test pre-activation",
+        )
+        .unwrap());
+        assert_eq!(state.compute_state_root_cold_start(), before_root);
+
+        assert!(maybe_activate_legacy_testnet_mossstake_accounting(
+            &state,
+            activation_slot,
+            "test activation",
+        )
+        .unwrap());
+        let after_root = state.compute_state_root_cold_start();
+        assert_ne!(after_root, before_root);
+        state
+            .get_mossstake_pool()
+            .unwrap()
+            .validate_invariants()
+            .unwrap();
+        assert!(state
+            .get_metadata(LEGACY_TESTNET_MOSSSTAKE_ACCOUNTING_MARKER_KEY)
+            .unwrap()
+            .is_some());
+        let anchor = state
+            .get_post_state_commitment_anchor(activation_slot)
+            .unwrap()
+            .unwrap();
+        assert_eq!(anchor.block_hash, block.hash());
+        assert_eq!(anchor.state_root, after_root);
+        assert!(!maybe_activate_legacy_testnet_mossstake_accounting(
+            &state,
+            activation_slot + 1,
+            "test post-activation",
+        )
+        .unwrap());
     }
 
     #[test]
@@ -39061,6 +39705,13 @@ mod tests {
                 .count(),
             0,
             "MossStake slot-only activation belongs inside the post-store hook wrapper"
+        );
+        assert_eq!(
+            section
+                .matches("maybe_activate_legacy_testnet_mossstake_accounting(")
+                .count(),
+            0,
+            "MossStake accounting activation belongs inside the post-store hook wrapper"
         );
         assert_eq!(
             section

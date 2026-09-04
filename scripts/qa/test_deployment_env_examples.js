@@ -510,7 +510,7 @@ assert(
 assert(
   productionReleasePair &&
     productionReleasePair[1] === `v${validatorVersion}` &&
-    productionReleasePair[2] === 'v0.5.277' &&
+    productionReleasePair[2] === 'v0.5.278' &&
     productionReleasePair[3] === 'v0.5.265' &&
     /Historical\s+tags and audit records remain in Git/.test(productionDeployment) &&
     productionDeployment.includes('This destructive checklist does not apply to the current July testnet') &&

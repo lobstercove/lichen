@@ -7,8 +7,8 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Candidate release line:** `v0.5.278`; the installed signed testnet release is
-`v0.5.277`, with `v0.5.265` retained as the restart-safe rollback anchor.
+**Candidate release line:** `v0.5.279`; the installed signed testnet release is
+`v0.5.278`, with `v0.5.265` retained as the restart-safe rollback anchor.
 Official installable artifacts are the published
 GitHub release archives whose checksums, detached ML-DSA signature, release
 trust anchor, and provenance attestations all verify. The candidate adds the
@@ -74,8 +74,8 @@ The immutable `v0.5.276` release workflow then exposed one final role-boundary
 error and was not signed or deployed. A fresh full-archive node correctly
 imported a catalog-bound checkpoint containing slots `7,999..10,000`, while its
 local Archive V2 catalog already owned `0..7,998`; admission nevertheless
-demanded duplicate legacy hot/cold rows beginning at slot `5,001`. The
-The signed `v0.5.277` release verifies a full archive at the actual first catalog-
+demanded duplicate legacy hot/cold rows beginning at slot `5,001`. The signed
+`v0.5.277` release verifies a full archive at the actual first catalog-
 uncovered slot while retaining the stricter configured hot-window requirement
 for verified-cache and consensus roles.
 
@@ -84,7 +84,7 @@ The live signed `v0.5.274` fleet later stalled while building height
 speculative execution repeated duplicate detection through the complete
 hot/cold lookup. With legacy cold SSTs mounted through the emergency R2/FUSE
 bridge, new-transaction misses blocked proposal execution for minutes. The
-The signed `v0.5.277` release keeps speculative duplicate detection on the batch overlay
+signed `v0.5.277` release keeps speculative duplicate detection on the batch overlay
 and hot transaction family; complete hot/cold reads remain available to
 canonical execution and public history queries. Valid recent-blockhash
 transactions remain hot beyond the replay window, and durable-nonce and EVM
@@ -100,19 +100,24 @@ slot-12,324,000 checkpoints agree on one historical zero-share position and a
 276-spore active-backing rounding remainder. Current strict snapshot validation
 correctly rejects that accounting shape, but doing so before staging-root
 verification prevents the lagging validator from consuming the otherwise
-matching checkpoint. The `v0.5.278` candidate permits structurally valid legacy
-MossStake bytes only inside the quorum-authenticated checkpoint path, where the
-full manifest and state root still must match. A separate stopped-validator,
-Testnet-only command then removes the exact stale row and deterministically
-assigns the remainder under pinned pre/post roots and hashes. Normal imports,
-fresh testnets, and mainnet remain strict. This is a preserved-state repair,
-not an Archive V2 format change or a reset.
+matching checkpoint. The signed `v0.5.278` release permits structurally valid
+legacy MossStake bytes only inside the quorum-authenticated checkpoint path,
+where the full manifest and state root still must match. Its stopped-state
+repair exposed one lifecycle defect: a pending next-height consensus WAL
+correctly retained the pre-repair parent root. The `v0.5.279` candidate first
+restores that exact old state without changing the WAL, then applies the same
+source-proven correction deterministically at post-block slot `12,333,500`,
+before the next height begins. Normal imports, fresh testnets, and mainnet
+remain strict. This is a preserved-Testnet lifecycle correction, not an
+Archive V2 format change or a reset.
 
 **Network status:** the public network is testnet. Mainnet has not launched and
-is not approved. The current 200 GB validator fleet is not approved for mainnet
-or indefinite archive growth. The testnet-only historical-loss waiver cannot be
-transferred to a fresh network or mainnet; both fail closed on incomplete
-genesis-to-tip public history.
+is not approved. The four Testnet validators are intentionally stopped at the
+same preserved tip while the signed `v0.5.279` recovery package is qualified;
+Archive V2 is not yet active. The current 200 GB validator fleet is not approved
+for mainnet or indefinite archive growth. The testnet-only historical-loss
+waiver cannot be transferred to a fresh network or mainnet; both fail closed on
+incomplete genesis-to-tip public history.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  
