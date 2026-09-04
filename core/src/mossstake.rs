@@ -1597,7 +1597,7 @@ impl MossStakePool {
         serialize_legacy_bincode(&snapshot, "MossStake canonical snapshot")
     }
 
-    pub fn from_canonical_snapshot_bytes(data: &[u8]) -> Result<Self, String> {
+    fn decode_canonical_snapshot_bytes(data: &[u8]) -> Result<Self, String> {
         let snapshot: MossStakePoolSnapshotV1 = deserialize_legacy_bincode_strict(
             data,
             data.len() as u64,
@@ -1629,15 +1629,29 @@ impl MossStakePool {
             }
         }
 
-        let pool = Self {
+        Ok(Self {
             st_licn_token: snapshot.st_licn_token,
             positions: snapshot.positions.into_iter().collect(),
             unstake_requests: snapshot.unstake_requests.into_iter().collect(),
             total_validators: snapshot.total_validators,
             average_apy_bp: snapshot.average_apy_bp,
-        };
+        })
+    }
+
+    pub fn from_canonical_snapshot_bytes(data: &[u8]) -> Result<Self, String> {
+        let pool = Self::decode_canonical_snapshot_bytes(data)?;
         pool.validate_invariants()?;
         Ok(pool)
+    }
+
+    /// Decode structurally valid canonical snapshot bytes without requiring
+    /// current MossStake accounting invariants.
+    ///
+    /// This exists only for importing an already authenticated consensus-state
+    /// checkpoint whose manifest and state root are verified after staging.
+    /// Callers must not use it for untrusted snapshots or normal state writes.
+    pub fn from_authenticated_canonical_snapshot_bytes(data: &[u8]) -> Result<Self, String> {
+        Self::decode_canonical_snapshot_bytes(data)
     }
 
     /// Calculate current APY in basis points (10000 = 100.00%)
@@ -1902,6 +1916,32 @@ mod tests {
 
         let error = MossStakePool::from_canonical_snapshot_bytes(&bytes).unwrap_err();
         assert!(error.contains("duplicate MossStake position owner"));
+    }
+
+    #[test]
+    fn authenticated_snapshot_decode_preserves_legacy_accounting_state() {
+        let owner = Pubkey::new([0x7a; 32]);
+        let position = StakingPosition {
+            owner,
+            st_licn_amount: 0,
+            licn_deposited: 10_000_000_000,
+            deposited_at: 1_459_780,
+            deposited_at_unix_seconds: 0,
+            rewards_earned: 0,
+            lock_tier: LockTier::Flexible,
+            lock_until: 0,
+            lock_until_unix_seconds: 0,
+        };
+        let mut pool = MossStakePool::new();
+        pool.positions.insert(owner, position);
+        let bytes = pool.canonical_snapshot_bytes().unwrap();
+
+        let strict_error = MossStakePool::from_canonical_snapshot_bytes(&bytes).unwrap_err();
+        assert!(strict_error.contains("zero stLICN"));
+
+        let preserved = MossStakePool::from_authenticated_canonical_snapshot_bytes(&bytes).unwrap();
+        assert_eq!(preserved.canonical_snapshot_bytes().unwrap(), bytes);
+        assert!(preserved.validate_invariants().is_err());
     }
 
     #[test]

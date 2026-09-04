@@ -2,9 +2,9 @@
 
 Date: 2026-09-02  
 Scope: `lichen-testnet-1` preserved-chain release and Archive V2 activation  
-Status: original deployment stopped safely; signed `v0.5.274` is now installed
-on all four validators, and the current bounded checkpoint-I/O successor is
-`v0.5.277`
+Status: original deployment stopped safely; signed `v0.5.277` is now installed
+on all four validators, and the current authenticated legacy-checkpoint
+successor is `v0.5.278`
 
 ## Executive record
 
@@ -135,11 +135,20 @@ valid slot-10,000 checkpoint covering `7,999..10,000` beside an authenticated
 catalog covering `0..7,998`, but admission incorrectly required duplicate
 legacy hot/cold rows from slot `5,001`. `v0.5.277` verifies the full-archive
 suffix at the actual catalog handoff while preserving stricter hot retention
-for verified-cache and consensus roles. Neither candidate was deployed.
+for verified-cache and consensus roles. `v0.5.276` was not deployed;
+`v0.5.277` passed the release gates and was deployed as a signed artifact.
+
+The first live `v0.5.277` recovery used matching Singapore and India
+slot-12,324,000 checkpoints. EU staged every large category, then rejected the
+legacy MossStake pool before live apply because one historical zero-share row
+predates current accounting invariants. `v0.5.278` isolates structural decoding
+to the authenticated checkpoint path and adds an exact stopped-state,
+Testnet-only accounting repair. The full finding and execution boundary are in
+`docs/audits/V0.5.278_PRODUCTION_READINESS_2026-09-04.md`.
 
 ## Completion criteria
 
-The incident is closed only after signed `v0.5.277` is installed and running on
+The incident is closed only after signed `v0.5.278` is installed and running on
 all four validators from each host's own preserved state; block production,
 finality, RPC, WebSocket, DEX/AMM/CLOB, prediction, governance, and launchpad
 smokes pass; all four Archive V2 manifests prove the same genesis-to-tip
