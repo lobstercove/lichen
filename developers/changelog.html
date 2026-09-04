@@ -92,6 +92,7 @@
                     <li>Adds the exact catalog <code>0..7,998</code>, checkpoint <code>7,999..10,000</code>, and 5,000-slot fresh-role regression.</li>
                     <li>Keeps speculative transaction duplicate checks on the batch overlay and hot transaction family instead of blocking consensus on R2/FUSE-backed legacy cold SST misses.</li>
                     <li>Preserves complete hot/cold transaction reads for canonical execution and public history; recent-blockhash and canonical account-nonce replay protection is unchanged.</li>
+                    <li>Fails production startup if hot retention does not exceed the 300-slot recent-blockhash replay window; the production and Archive V2 default remains 50,000 slots.</li>
                     <li>Retries npm audit only for bounded registry/network failures; findings and persistent outages still block release.</li>
                     <li>Documents that immutable <code>v0.5.276</code> failed closed, was not signed, and was not deployed.</li>
                     <li>Does not change deterministic state transitions, wire compatibility, migration, compaction, checkpoint/catalog schemas, Archive V2 objects, or preserved state.</li>

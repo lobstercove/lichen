@@ -88,9 +88,11 @@ bridge, new-transaction misses blocked proposal execution for minutes. The
 and hot transaction family; complete hot/cold reads remain available to
 canonical execution and public history queries. Valid recent-blockhash
 transactions remain hot beyond the replay window, and durable-nonce and EVM
-replay protection remains enforced by canonical account nonce state. This does
-not change deterministic state transitions, wire compatibility, migration,
-compaction, checkpoint/catalog schemas, or Archive V2 formats.
+replay protection remains enforced by canonical account nonce state. Production
+startup now fails if configured hot retention is less than 301 slots; the live
+and Archive V2 default remains 50,000 slots. This does not change deterministic
+state transitions, wire compatibility, migration, compaction,
+checkpoint/catalog schemas, or Archive V2 formats.
 
 **Network status:** the public network is testnet. Mainnet has not launched and
 is not approved. The current 200 GB validator fleet is not approved for mainnet
