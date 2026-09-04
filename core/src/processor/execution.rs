@@ -244,7 +244,8 @@ impl TxProcessor {
 
         let tx_hash = tx.hash();
         let already_processed = if self.is_speculative() {
-            self.b_has_transaction(&tx_hash).unwrap_or(false)
+            self.b_has_consensus_active_transaction(&tx_hash)
+                .unwrap_or(false)
         } else {
             self.state
                 .get_transaction(&tx_hash)

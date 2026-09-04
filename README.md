@@ -77,8 +77,20 @@ local Archive V2 catalog already owned `0..7,998`; admission nevertheless
 demanded duplicate legacy hot/cold rows beginning at slot `5,001`. The
 `v0.5.277` candidate verifies a full archive at the actual first catalog-
 uncovered slot while retaining the stricter configured hot-window requirement
-for verified-cache and consensus roles. No consensus, migration, compaction,
-checkpoint, catalog, or Archive V2 format changes are involved.
+for verified-cache and consensus roles.
+
+The live signed `v0.5.274` fleet later stalled while building height
+`12,322,667`: the proposal prefilter used hot transaction state, but nested
+speculative execution repeated duplicate detection through the complete
+hot/cold lookup. With legacy cold SSTs mounted through the emergency R2/FUSE
+bridge, new-transaction misses blocked proposal execution for minutes. The
+`v0.5.277` candidate keeps speculative duplicate detection on the batch overlay
+and hot transaction family; complete hot/cold reads remain available to
+canonical execution and public history queries. Valid recent-blockhash
+transactions remain hot beyond the replay window, and durable-nonce and EVM
+replay protection remains enforced by canonical account nonce state. This does
+not change deterministic state transitions, wire compatibility, migration,
+compaction, checkpoint/catalog schemas, or Archive V2 formats.
 
 **Network status:** the public network is testnet. Mainnet has not launched and
 is not approved. The current 200 GB validator fleet is not approved for mainnet
