@@ -126,7 +126,8 @@ assert(!script.includes('for bin in lichen-custody lichen-faucet; do\n  if [ -x 
   'optional service install must not depend on temp extract executable checks');
 assert(script.includes('systemctl list-unit-files --no-legend "$CUSTODY_SERVICE"'), 'custody refresh must be conditional on network-aware service presence');
 assert(script.includes('sudo -n systemctl stop "$CUSTODY_SERVICE" || true'), 'custody service must be stopped before start');
-assert(script.includes('sudo -n systemctl kill --kill-who=control-group -s SIGKILL "$CUSTODY_SERVICE" || true'), 'custody service stale cgroup must be killed before start');
+assert(script.includes('sudo -n systemctl kill --kill-who=all -s SIGKILL "$CUSTODY_SERVICE" || true'), 'custody service stale cgroup must be killed before start');
+assert(!script.includes('--kill-who=control-group'), 'systemctl kill must use the supported all target, not the unit KillMode value');
 assert(script.includes('sudo -n systemctl start "$CUSTODY_SERVICE"'), 'custody service must be started after RPC is healthy');
 assert(script.includes('curl -fsS "$CUSTODY_HEALTH_URL"'), 'custody health must be verified after restart through network-aware URL');
 assert(script.includes('sudo -n systemctl start lichen-faucet.service'), 'faucet service must be started after RPC is healthy');

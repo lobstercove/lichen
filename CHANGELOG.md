@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   string. The write updates the current-tip post-state anchor, records an
   idempotency marker, synchronizes the WAL, and refuses fresh networks and
   mainnet.
+- Use systemd's supported `--kill-who=all` target in every bounded deployment
+  fallback. The prior `control-group` value is a unit `KillMode`, not a valid
+  `systemctl kill --kill-who` selector.
 
 ### Safety
 

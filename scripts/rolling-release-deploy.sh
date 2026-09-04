@@ -583,7 +583,7 @@ stop_service_unit() {
     sleep 1
   done
   echo "Service ${unit} remained active after stop; killing its control group."
-  sudo -n systemctl kill --kill-who=control-group -s SIGKILL "$unit" || true
+  sudo -n systemctl kill --kill-who=all -s SIGKILL "$unit" || true
   for _ in $(seq 1 20); do
     if ! systemctl is-active --quiet "$unit" && ! unit_has_processes; then
       return 0
@@ -1128,7 +1128,7 @@ for _ in $(seq 1 20); do
   sleep 1
 done
 if systemctl is-active --quiet "$CUSTODY_SERVICE"; then
-  sudo -n systemctl kill --kill-who=control-group -s SIGKILL "$CUSTODY_SERVICE" || true
+  sudo -n systemctl kill --kill-who=all -s SIGKILL "$CUSTODY_SERVICE" || true
   sleep 2
 fi
 sudo -n systemctl reset-failed "$CUSTODY_SERVICE" || true
@@ -1170,7 +1170,7 @@ for _ in $(seq 1 20); do
   sleep 1
 done
 if systemctl is-active --quiet lichen-faucet.service; then
-  sudo -n systemctl kill --kill-who=control-group -s SIGKILL lichen-faucet.service || true
+  sudo -n systemctl kill --kill-who=all -s SIGKILL lichen-faucet.service || true
   sleep 2
 fi
 sudo -n systemctl reset-failed lichen-faucet.service || true
@@ -1209,7 +1209,7 @@ for _ in $(seq 1 20); do
   sleep 1
 done
 if systemctl is-active --quiet "$MOSS_SERVICE"; then
-  sudo -n systemctl kill --kill-who=control-group -s SIGKILL "$MOSS_SERVICE" || true
+  sudo -n systemctl kill --kill-who=all -s SIGKILL "$MOSS_SERVICE" || true
   sleep 2
 fi
 sudo -n systemctl reset-failed "$MOSS_SERVICE" || true
