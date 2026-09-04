@@ -5,6 +5,19 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.280] - 2026-09-04
+
+### Fixed
+
+- Extend only the exact-tag four-validator Archive V2 release job limit from
+  90 to 150 minutes. The immutable `v0.5.279` run passed every completed gate
+  and reached the former limit during the already-green post-activity restart
+  matrix, before checksums or release artifacts were created.
+- Carry the unchanged WAL-preserving rollback and deterministic legacy Testnet
+  MossStake activation from `v0.5.279` under a new immutable version. No
+  consensus, runtime, state, wire, checkpoint, catalog, migration, compaction,
+  or Archive V2 format behavior changed in this successor.
+
 ## [0.5.279] - 2026-09-04
 
 ### Fixed

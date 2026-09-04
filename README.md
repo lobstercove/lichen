@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Candidate release line:** `v0.5.279`; the installed signed testnet release is
+**Candidate release line:** `v0.5.280`; the installed signed testnet release is
 `v0.5.278`, with `v0.5.265` retained as the restart-safe rollback anchor.
 Official installable artifacts are the published
 GitHub release archives whose checksums, detached ML-DSA signature, release
@@ -104,16 +104,20 @@ matching checkpoint. The signed `v0.5.278` release permits structurally valid
 legacy MossStake bytes only inside the quorum-authenticated checkpoint path,
 where the full manifest and state root still must match. Its stopped-state
 repair exposed one lifecycle defect: a pending next-height consensus WAL
-correctly retained the pre-repair parent root. The `v0.5.279` candidate first
+correctly retained the pre-repair parent root. The `v0.5.279` implementation first
 restores that exact old state without changing the WAL, then applies the same
 source-proven correction deterministically at post-block slot `12,333,500`,
 before the next height begins. Normal imports, fresh testnets, and mainnet
 remain strict. This is a preserved-Testnet lifecycle correction, not an
-Archive V2 format change or a reset.
+Archive V2 format change or a reset. Its immutable exact-tag run passed every
+completed release gate but reached the 90-minute Archive V2 job limit during
+the already-green post-activity restart matrix. It produced no release.
+`v0.5.280` carries the same correction and gives that complete gate 150 minutes;
+no protocol or runtime behavior was changed for this harness-only successor.
 
 **Network status:** the public network is testnet. Mainnet has not launched and
 is not approved. The four Testnet validators are intentionally stopped at the
-same preserved tip while the signed `v0.5.279` recovery package is qualified;
+same preserved tip while the signed `v0.5.280` recovery package is qualified;
 Archive V2 is not yet active. The current 200 GB validator fleet is not approved
 for mainnet or indefinite archive growth. The testnet-only historical-loss
 waiver cannot be transferred to a fresh network or mainnet; both fail closed on

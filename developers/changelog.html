@@ -79,6 +79,21 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.280 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.280</span>
+                    <span class="changelog-date">September 4, 2026</span>
+                </div>
+                <h3>Complete Archive V2 release-gate runtime</h3>
+                <ul>
+                    <li>Extends only the exact-tag four-validator Archive V2 job limit from 90 to 150 minutes.</li>
+                    <li>The immutable <code>v0.5.279</code> run passed every completed gate and reached the former limit during the already-green post-activity restart matrix, before checksums or release artifacts were created.</li>
+                    <li>Carries the unchanged WAL-preserving rollback and deterministic slot-<code>12,333,500</code> Testnet repair from <code>v0.5.279</code>.</li>
+                    <li>Does not change consensus, runtime, state, wire, checkpoint, catalog, migration, compaction, or Archive V2 formats.</li>
+                </ul>
+            </article>
+
             <!-- ============ v0.5.279 ============ -->
             <article class="changelog-entry">
                 <div class="changelog-header">

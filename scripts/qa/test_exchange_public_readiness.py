@@ -253,7 +253,7 @@ class ExchangePublicReadinessTests(unittest.TestCase):
             readiness.check_exchange_package_release(gate)
             self.assertFalse(gate.checks[0]["ok"])
             self.assertIn(
-                "lichen-exchange-testnet-v0.5.279.tar.gz",
+                "lichen-exchange-testnet-v0.5.280.tar.gz",
                 gate.checks[0]["detail"]["required_assets"],
             )
         finally:

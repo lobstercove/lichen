@@ -17637,7 +17637,7 @@ fn maybe_run_legacy_testnet_mossstake_accounting_repair_admin(args: &[String]) -
             Ok(report) if report.already_repaired => {}
             Ok(_) => {
                 eprintln!(
-                    "Refusing a new out-of-band MossStake state transition; v0.5.279 activates this repair deterministically at post-block slot {}",
+                    "Refusing a new out-of-band MossStake state transition; v0.5.280 activates this repair deterministically at post-block slot {}",
                     LEGACY_TESTNET_MOSSSTAKE_ACCOUNTING_ACTIVATION_PARENT_SLOT
                 );
                 return Some(1);

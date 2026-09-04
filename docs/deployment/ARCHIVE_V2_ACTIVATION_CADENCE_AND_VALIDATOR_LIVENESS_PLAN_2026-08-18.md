@@ -127,10 +127,12 @@ recovery exposed one structurally valid legacy MossStake pool that predates
 current accounting invariants. Signed `v0.5.278` admitted that pool only through
 authenticated checkpoint staging and applied the exact stopped-state repair.
 The restart then proved pending next-height WAL values still bound the old
-parent root. `v0.5.279` is the only successor candidate: it restores the exact
-old state without altering WAL, then activates the source-proven correction at
-canonical post-block slot `12,333,500`. The full boundary is recorded in the
-v0.5.279 production-readiness addendum.
+parent root. `v0.5.279` implemented the exact WAL-preserving rollback and
+canonical post-block activation at slot `12,333,500`, but its immutable release
+job reached the former 90-minute Archive V2 limit during a green post-activity
+restart matrix and produced no artifacts. `v0.5.280` is the only successor candidate,
+a harness-only release with the same runtime behavior and a 150-minute gate. The
+full state boundary is recorded in the v0.5.279 production-readiness addendum.
 
 The preserved-state release gate additionally proved that a continuously
 non-empty reclaim queue could starve migration, an oversized SST-derived
@@ -152,7 +154,7 @@ temporary replicated recovery/archive source, not the permanent mainnet
 storage design, and deletion of any R2 object remains unauthorized.
 
 The signed `v0.5.265` release is the immediate restart-safe rollback anchor.
-Once `v0.5.279` is running and four-way V2 parity plus rollback rehearsal are
+Once `v0.5.280` is running and four-way V2 parity plus rollback rehearsal are
 recorded, validator hosts keep only those two signed release
 installations. Legacy history is retired only by signed, source-backed,
 range-bound Archive V2 retirement and compaction; low disk space does not
@@ -182,7 +184,7 @@ tip `12,332,757` and repaired state root while their distinct pending consensus
 WALs remain byte-for-byte intact. EU's authenticated checkpoint recovery is
 complete. The testnet is not mainnet-ready. Archive V2 roles and legacy
 retirement remain open, current 200 GB root volumes are not approved for
-indefinite archive growth, and `v0.5.279` still requires hosted signed-artifact,
+indefinite archive growth, and `v0.5.280` still requires hosted signed-artifact,
 coordinated-deployment, deterministic-boundary, and live acceptance gates.
 
 ### 1.1 Current decision
@@ -391,7 +393,7 @@ Accordingly:
    recover a validator that reached the fail-closed disk floor. Do not delete
    R2 objects or treat that temporary bridge as Archive V2 activation.
 3. Preserve the signed `v0.5.278` runtime and failure evidence and publish
-   `v0.5.279` through the signed release workflow, verify provenance plus its
+   `v0.5.280` through the signed release workflow, verify provenance plus its
    detached post-quantum checksum signature, and deploy it through one
    coordinated four-host stop/rollback/install/start. Keep signed `v0.5.265` as
    the only immediate restart-safe rollback.
@@ -1105,7 +1107,7 @@ This is a testnet exception, not the final production archive policy:
   Archive V2 retirement or larger storage, not another emergency offload;
 - the transition is reversible through the preserved baseline environment and
   signed `v0.5.265` immediate rollback artifact. Older releases remain Git and
-  audit history, not installed rollback binaries after `v0.5.279` acceptance.
+  audit history, not installed rollback binaries after `v0.5.280` acceptance.
 
 The later dedicated archive plane in Section 3.2 replaces this exception. It
 does not block honest Archive V2 role activation on the current testnet once
@@ -1216,13 +1218,14 @@ Current execution order is fixed:
    and its exact failed immutable tag log. Preserve the `v0.5.276` failed-tag
    handoff diagnostic and npm-audit HTTP-503 evidence. Preserve signed
    `v0.5.277` deployment evidence, signed `v0.5.278` checkpoint recovery and
-   failed restart evidence, and qualify the narrow `v0.5.279` WAL-preserving
-   rollback plus deterministic MossStake activation.
-3. Commit through protected `main`, create the immutable `v0.5.279` tag, wait
+   failed restart evidence, the `v0.5.279` timeout-only tag result, and qualify
+   the narrow `v0.5.280` WAL-preserving rollback plus deterministic MossStake
+   activation.
+3. Commit through protected `main`, create the immutable `v0.5.280` tag, wait
    for every hosted hard gate, attach the detached PQ checksum signature, verify
    provenance and every binary hash, and publish the public validator release.
 4. Capture a stopped preflight on all four hosts, prove identities/WALs/state,
-   preserve `v0.5.265`, install only the signed `v0.5.279` workflow artifact,
+   preserve `v0.5.265`, install only the signed `v0.5.280` workflow artifact,
    restore the exact pre-repair state on all four without modifying WAL, and
    perform one coordinated four-host start. Prove recovered finality, the
    matching slot-`12,333,500` deterministic repair, installed/running hash
@@ -1244,7 +1247,7 @@ Current execution order is fixed:
    validators to author, measure reclaimed bytes per host, and complete the
    documented stable-observation window.
 9. Publish and deploy the matching wallet `0.1.9`, exchange
-   `exchange-testnet-v0.5.279`, developer portal, README, and frontend surfaces
+   `exchange-testnet-v0.5.280`, developer portal, README, and frontend surfaces
    only after their live readiness evidence is attached. Keep only the new
    signed validator release and signed `v0.5.265` rollback installation on each
    VPS; remove obsolete caches, staging, superseded checkpoints, and redundant
