@@ -1,6 +1,6 @@
 [package]
 name = "lichen-moss-provider"
-version = "0.5.276"
+version = "0.5.277"
 edition = "2021"
 license = "MIT"
 authors = ["Lichen Labs <trading.lobster@lichen.network>"]

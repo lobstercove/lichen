@@ -119,9 +119,9 @@ jobs:
         run: |
           set -euo pipefail
           npm ci --ignore-scripts
-          npm audit
+          bash scripts/qa/npm-audit-with-retry.sh
           npm --prefix sdk/js ci --ignore-scripts
-          npm --prefix sdk/js audit
+          bash scripts/qa/npm-audit-with-retry.sh sdk/js
           npm --prefix sdk/js run build
           bash scripts/qa/test_python_sdk_release_supply_chain.sh
 

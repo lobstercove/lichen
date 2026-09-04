@@ -73,11 +73,11 @@ jobs:
       - name: Install root npm dependencies from lockfile
         run: npm ci --ignore-scripts
       - name: Audit complete root npm dependency graph
-        run: npm audit
+        run: bash scripts/qa/npm-audit-with-retry.sh
       - name: Install JS SDK dependencies from lockfile
         run: cd sdk/js && npm ci --ignore-scripts
       - name: Audit complete JS SDK dependency graph
-        run: cd sdk/js && npm audit
+        run: bash scripts/qa/npm-audit-with-retry.sh sdk/js
       - name: Check Python SDK release supply chain
         run: bash scripts/qa/test_python_sdk_release_supply_chain.sh
 

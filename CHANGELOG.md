@@ -5,6 +5,40 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.277] - 2026-09-04
+
+### Fixed
+
+- Admit a full-archive node from the first slot not covered by its authenticated
+  local Archive V2 catalog. Catalog-owned slots no longer have to remain
+  duplicated in legacy hot/cold storage merely because a fresh-join test uses
+  a larger recent-history setting than the checkpoint source.
+- Preserve the stricter configured hot-window check for verified-cache and
+  consensus roles, whose recent consensus history must remain physically hot.
+- Retry npm audits only for bounded, recognized registry/network availability
+  failures. Dependency findings still fail immediately, and three unavailable
+  audit responses still block the release.
+
+### Safety
+
+- Immutable `v0.5.276` was not signed, published, or deployed. Its exact-tag
+  four-validator gate imported the authenticated slot-10,000 hot checkpoint
+  covering `7,999..10,000`, then incorrectly demanded local legacy copies for
+  catalog-covered slots beginning at `5,001`. The quality job separately
+  failed closed when npm's audit service returned HTTP 503.
+- This correction changes full-archive admission partitioning only. It does
+  not change consensus, state transitions, checkpoint/catalog schemas,
+  Archive V2 objects, migration, compaction, retention, or preserved state.
+
+### Verified
+
+- The exact `catalog 0..7,998 + hot checkpoint 7,999..10,000 + configured
+  5,000-slot window` regression fails with the v0.5.276 diagnostic and passes
+  after the correction, including an authenticated read of slot 5,001 from
+  Archive V2 after admission.
+- Focused Archive V2 validator tests pass. Protected PR and immutable tag gates
+  remain mandatory before signing, deployment, or legacy retirement.
+
 ## [0.5.276] - 2026-09-03
 
 ### Fixed

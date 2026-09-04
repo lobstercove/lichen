@@ -21411,11 +21411,25 @@ fn activate_runtime_archive_v2(
         Ok(None) => catalog.entries.last().map(|entry| entry.manifest.end_slot),
         Err(error) => return Err(error.to_string()),
     };
-    let local_history_start = archive_v2_local_history_start(
+    let required_hot_history_start = archive_v2_local_history_start(
         finalized_slot,
         config.role_config.recent_history_slots,
         catalog_coverage_end,
     )?;
+    let local_history_start = if matches!(
+        config.role_config.role,
+        ArchiveV2Role::VerifiedCache | ArchiveV2Role::Consensus
+    ) {
+        required_hot_history_start
+    } else {
+        // A full archive owns authenticated local objects for every catalog-
+        // covered slot. Its mutable hot/cold suffix therefore begins at the
+        // first slot outside that catalog, even when a deliberately smaller
+        // fresh-join retention setting would otherwise overlap the immutable
+        // prefix. Requiring that overlap rejects a valid catalog-bound hot
+        // checkpoint whose profile correctly omitted duplicated history.
+        archive_v2_catalog_handoff_start(catalog_coverage_end)?
+    };
     if matches!(
         config.role_config.role,
         ArchiveV2Role::VerifiedCache | ArchiveV2Role::Consensus
@@ -21679,14 +21693,7 @@ fn archive_v2_local_history_start(
         return Err("Archive V2 recent-history retention must be non-zero".to_string());
     }
     let nominal_hot_start = finalized_slot.saturating_sub(recent_history_slots.saturating_sub(1));
-    let catalog_handoff_start = catalog_coverage_end
-        .map(|slot| {
-            slot.checked_add(1).ok_or_else(|| {
-                "Archive V2 catalog coverage end cannot advance to a local handoff slot".to_string()
-            })
-        })
-        .transpose()?
-        .unwrap_or(0);
+    let catalog_handoff_start = archive_v2_catalog_handoff_start(catalog_coverage_end)?;
     // A catalog-bound hot checkpoint deliberately retains the unpublished
     // tail between the immutable catalog and its nominal recent-history
     // window. That physical tail remains valid after the node catches up and
@@ -21705,6 +21712,17 @@ fn archive_v2_local_history_start(
         ));
     }
     Ok(local_history_start)
+}
+
+fn archive_v2_catalog_handoff_start(catalog_coverage_end: Option<u64>) -> Result<u64, String> {
+    catalog_coverage_end
+        .map(|slot| {
+            slot.checked_add(1).ok_or_else(|| {
+                "Archive V2 catalog coverage end cannot advance to a local handoff slot".to_string()
+            })
+        })
+        .transpose()
+        .map(|start| start.unwrap_or(0))
 }
 
 fn verify_local_archive_v2_block_range(
@@ -45934,6 +45952,171 @@ mod tests {
         );
         assert!(!snapshot_live_rollback_marker_path(&live_path).exists());
         assert!(!snapshot_live_rollback_checkpoint_dir(&live_path).exists());
+    }
+
+    #[test]
+    fn full_archive_live_apply_accepts_catalog_owned_range_before_hot_checkpoint() {
+        const HISTORY_START: u64 = 7_999;
+        const SNAPSHOT_SLOT: u64 = 10_000;
+        const CATALOG_END: usize = 7_998;
+        let staging_dir = tempfile::tempdir().expect("create staging dir");
+        let staging = StateStore::open(staging_dir.path()).expect("open staging state");
+        let genesis = Block::genesis(Hash::hash(b"fresh-live-apply-genesis-state"), 1, Vec::new());
+        let mut blocks = vec![genesis];
+        for slot in 1..=SNAPSHOT_SLOT {
+            blocks.push(Block::new_with_timestamp(
+                slot,
+                blocks.last().expect("previous block").hash(),
+                Hash::hash(format!("fresh-live-apply-state-{slot}").as_bytes()),
+                [0x41; 32],
+                Vec::new(),
+                slot + 1,
+            ));
+        }
+        for block in &blocks[HISTORY_START as usize..] {
+            staging
+                .put_block_atomic(block, Some(block.header.slot), Some(block.header.slot))
+                .expect("store staging block");
+        }
+
+        let live_dir = tempfile::tempdir().expect("create live dir");
+        let cold_dir = tempfile::tempdir().expect("create live cold dir");
+        let checkpoint_parent = tempfile::tempdir().expect("create checkpoint parent");
+        let archive_dir = tempfile::tempdir().expect("create Archive V2 root");
+        fs::create_dir_all(archive_dir.path().join("objects")).unwrap();
+        fs::create_dir_all(archive_dir.path().join("manifests")).unwrap();
+        fs::write(live_dir.path().join("genesis.json"), b"recovery").unwrap();
+        let identity = lichen_core::archive_v2::ArchiveV2Identity {
+            network_id: "fresh-live-apply-testnet".to_string(),
+            genesis_hash: blocks[0].hash(),
+        };
+        // Match the failed gate's important shape: the configured immutable
+        // catalog owns slots that the joiner's nominal 5,000-slot hot window
+        // overlaps, while the checkpoint correctly begins at the first slot
+        // outside that catalog.
+        let (object, manifest) = ArchiveV2SegmentCodec::encode(
+            identity,
+            None,
+            Hash::default(),
+            &ArchiveV2SegmentContents::from_blocks(blocks[..=CATALOG_END].to_vec()),
+            &ArchiveV2CodecConfig::default(),
+        )
+        .unwrap();
+        fs::write(
+            archive_dir
+                .path()
+                .join("objects")
+                .join(format!("{}.av2s", manifest.segment_object_hash.to_hex())),
+            object,
+        )
+        .unwrap();
+        fs::write(
+            archive_dir
+                .path()
+                .join("manifests")
+                .join(format!("{}.av2m", manifest.segment_object_hash.to_hex())),
+            manifest.encode_canonical().unwrap(),
+        )
+        .unwrap();
+        let mut catalog = ArchiveV2Catalog::empty(manifest.identity.clone()).unwrap();
+        catalog.append(manifest).unwrap();
+        let handoff_root = catalog.checkpoint_handoff_root(HISTORY_START).unwrap();
+        catalog
+            .store_atomic(&archive_dir.path().join("catalog.av2"))
+            .unwrap();
+
+        let mut live = StateStore::open(live_dir.path()).expect("open live state");
+        live.open_cold_store(cold_dir.path())
+            .expect("attach live cold store");
+        live.attach_archive_v2_deferred_checkpoint_catalog(catalog.clone());
+        live.cache_genesis_mossstake_slot_only(false)
+            .expect("cache genesis mode from deferred sync");
+
+        let profile = CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot: HISTORY_START,
+            archive_v2_catalog_root: Some(handoff_root.0),
+        };
+        let live_path = live_dir.path().to_string_lossy().to_string();
+        prepare_snapshot_live_rollback(
+            &live,
+            &live_path,
+            SNAPSHOT_SLOT,
+            staging.compute_state_root_cold_start(),
+            profile,
+        )
+        .expect("prepare fresh live-apply rollback");
+
+        commit_snapshot_categories_from_store(
+            &staging,
+            &live,
+            CHECKPOINT_SNAPSHOT_CATEGORIES,
+            SnapshotCategoryExportMode::Canonical,
+        )
+        .expect("commit verified staging history to live state");
+        assert_eq!(
+            live.get_hot_block_by_slot(HISTORY_START)
+                .expect("read first imported hot block")
+                .map(|block| block.hash()),
+            Some(blocks[HISTORY_START as usize].hash())
+        );
+
+        live.create_checkpoint_with_profile(
+            checkpoint_parent
+                .path()
+                .join("slot-10000")
+                .to_str()
+                .unwrap(),
+            SNAPSHOT_SLOT,
+            profile,
+        )
+        .expect("create local checkpoint from imported live state");
+        cleanup_snapshot_live_rollback(&live_path).expect("commit live-apply rollback");
+
+        assert_eq!(
+            live.get_hot_block_by_slot(HISTORY_START)
+                .expect("read first imported hot block after checkpoint")
+                .map(|block| block.hash()),
+            Some(blocks[HISTORY_START as usize].hash()),
+            "local checkpoint materialization must not remove the first hot handoff block"
+        );
+        assert!(
+            live.get_block_by_slot(5_001)
+                .expect("inspect catalog-owned block before admission")
+                .is_none(),
+            "catalog-owned history must not be required in legacy hot/cold storage"
+        );
+
+        let capability = activate_deferred_archive_v2_after_fresh_sync(
+            &live,
+            RuntimeArchiveV2Config {
+                role_config: ArchiveV2RoleConfig {
+                    version: ARCHIVE_V2_ROLE_CONFIG_VERSION,
+                    role: ArchiveV2Role::FullArchive,
+                    recent_history_slots: 5_000,
+                    verified_cache_quota_bytes: 0,
+                    advertise_deep_history: true,
+                },
+                root: archive_dir.path().to_path_buf(),
+                cache_root: None,
+                source_roots: Vec::new(),
+                source_urls: Vec::new(),
+                source_timeout: Duration::from_secs(1),
+                source_max_object_bytes: 2 * 1024 * 1024 * 1024,
+                max_decoded_segments: 1,
+            },
+            "fresh-live-apply-testnet",
+            live_dir.path(),
+            true,
+        )
+        .expect("admit full-archive role after bounded fresh checkpoint apply");
+        assert_eq!(capability.role, ArchiveV2Role::FullArchive);
+        assert_eq!(
+            live.get_block_by_slot(5_001)
+                .expect("read catalog-owned block after admission")
+                .map(|block| block.hash()),
+            Some(blocks[5_001].hash()),
+            "admitted full archive must serve the omitted range from Archive V2"
+        );
     }
 
     #[test]

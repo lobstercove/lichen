@@ -4,7 +4,7 @@ Date: 2026-09-02
 Scope: `lichen-testnet-1` preserved-chain release and Archive V2 activation  
 Status: original deployment stopped safely; signed `v0.5.274` is now installed
 on all four validators, and the current bounded checkpoint-I/O successor is
-`v0.5.276`
+`v0.5.277`
 
 ## Executive record
 
@@ -129,11 +129,17 @@ full-archive V3 imported and verified its checkpoint and then exited with
 status 0 during deferred Archive V2 role admission. It was not published or
 deployed. `v0.5.276` serializes that admission against canonical block apply,
 keeps cold migration paused until admission succeeds, and fails synchronously
-with a nonzero status if it cannot admit the role.
+with a nonzero status if it cannot admit the role. Its immutable release gate
+then exposed a separate admission-boundary error: full-archive V3 imported the
+valid slot-10,000 checkpoint covering `7,999..10,000` beside an authenticated
+catalog covering `0..7,998`, but admission incorrectly required duplicate
+legacy hot/cold rows from slot `5,001`. `v0.5.277` verifies the full-archive
+suffix at the actual catalog handoff while preserving stricter hot retention
+for verified-cache and consensus roles. Neither candidate was deployed.
 
 ## Completion criteria
 
-The incident is closed only after signed `v0.5.276` is installed and running on
+The incident is closed only after signed `v0.5.277` is installed and running on
 all four validators from each host's own preserved state; block production,
 finality, RPC, WebSocket, DEX/AMM/CLOB, prediction, governance, and launchpad
 smokes pass; all four Archive V2 manifests prove the same genesis-to-tip
