@@ -1,12 +1,14 @@
 # Archive V2 Activation, Cadence Recovery, And Validator Liveness Plan
 
-**Current status, September 6:** `v0.5.282` is the only successor candidate
-for the confirmed checkpoint cache-budget and verification-pruning defects.
+**Current status, September 6:** `v0.5.283` is the only successor candidate
+for checkpoint role-history compatibility, retaining the checkpoint cache-budget
+and verification-pruning fixes. The immutable v0.5.282 hosted archive gate failed
+fresh verified-cache admission; its local matrix pass does not override that failure.
 All four validators have signed v0.5.281 installed on their preserved state;
 recurrent OOM restarts leave sustained-memory acceptance incomplete. Internal
 gateway TLS is corrected; fresh capacity and full activation remain pending.
 Use [the current deployment preflight](ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md) and
-[v0.5.282 qualification](../audits/V0.5.282_CHECKPOINT_MEMORY_2026-09-06.md).
+[v0.5.283 qualification](../audits/V0.5.283_CHECKPOINT_ROLE_HISTORY_2026-09-06.md).
 The dated execution narrative below is historical provenance and does not
 authorize replaying old recovery, repair, PID-bound or credential commands.
 

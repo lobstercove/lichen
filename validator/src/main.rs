@@ -2814,6 +2814,39 @@ fn validate_hot_repair_checkpoint_target(
     Ok(())
 }
 
+fn validate_checkpoint_role_history(
+    snapshot_slot: u64,
+    profile: CheckpointSnapshotProfile,
+    role_config: Option<&ArchiveV2RoleConfig>,
+) -> Result<(), String> {
+    let Some(config) = role_config else {
+        return Ok(());
+    };
+    if !matches!(
+        config.role,
+        ArchiveV2Role::VerifiedCache | ArchiveV2Role::Consensus
+    ) {
+        return Ok(());
+    }
+    if config.recent_history_slots == 0 {
+        return Err("Archive V2 recent-history retention must be non-zero".to_string());
+    }
+    if let CheckpointSnapshotProfile::HotRepairV1 {
+        history_start_slot, ..
+    } = profile
+    {
+        let required_start =
+            snapshot_slot.saturating_sub(config.recent_history_slots.saturating_sub(1));
+        if history_start_slot > required_start {
+            return Err(format!(
+                "checkpoint hot history {history_start_slot}..={snapshot_slot} cannot satisfy Archive V2 {} role hot history {required_start}..={snapshot_slot}",
+                config.role
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_preactivation_hot_repair_overlap(
     local: &StateStore,
     checkpoint: &StateStore,
@@ -23952,6 +23985,11 @@ async fn run_validator() {
             return;
         }
     };
+    // Snapshot discovery must honor the configured role even before its reader
+    // is admitted. Catalog compatibility alone does not prove the hot window.
+    let snapshot_archive_v2_role_config = archive_v2_config
+        .as_ref()
+        .map(|config| config.role_config.clone());
     let archive_v2_capability = Arc::new(RwLock::new(None));
     let mut deferred_archive_v2_config = None;
     let deferred_archive_v2_admission_pending = Arc::new(AtomicBool::new(false));
@@ -29945,7 +29983,14 @@ async fn run_validator() {
                                     &state_for_snapshot_apply,
                                     slot,
                                     snapshot_profile,
-                                ) {
+                                )
+                                .and_then(|()| {
+                                    validate_checkpoint_role_history(
+                                        slot,
+                                        snapshot_profile,
+                                        snapshot_archive_v2_role_config.as_ref(),
+                                    )
+                                }) {
                                     warn!(
                                         "⚠️  Rejecting checkpoint metadata from {}: {}",
                                         response.requester, err
@@ -31029,7 +31074,14 @@ async fn run_validator() {
                             &state_for_snapshot_apply,
                             snapshot_slot,
                             active_snapshot_profile,
-                        ) {
+                        )
+                        .and_then(|()| {
+                            validate_checkpoint_role_history(
+                                snapshot_slot,
+                                active_snapshot_profile,
+                                snapshot_archive_v2_role_config.as_ref(),
+                            )
+                        }) {
                             warn!(
                                 "⚠️  Refusing verified snapshot live apply at slot {} because its Archive V2 recovery binding is no longer valid: {}",
                                 snapshot_slot, e
@@ -45356,6 +45408,81 @@ mod tests {
         assert!(validate_checkpoint_snapshot_profile(49_999, zero_catalog)
             .expect_err("zero catalog must fail")
             .contains("zero Archive V2 handoff root"));
+    }
+
+    #[test]
+    fn checkpoint_role_history_rejects_hosted_short_checkpoint_before_apply() {
+        let short = CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot: 9_101,
+            archive_v2_catalog_root: Some([1; 32]),
+        };
+        for role in [ArchiveV2Role::VerifiedCache, ArchiveV2Role::Consensus] {
+            let config = ArchiveV2RoleConfig {
+                role,
+                recent_history_slots: 5_000,
+                ..ArchiveV2RoleConfig::default()
+            };
+            let error = validate_checkpoint_role_history(10_000, short, Some(&config))
+                .expect_err("900 hot blocks cannot satisfy a 5000-block role window");
+            assert!(error.contains("5001..=10000"), "{error}");
+            for start in [5_000, 5_001] {
+                let adequate = CheckpointSnapshotProfile::HotRepairV1 {
+                    history_start_slot: start,
+                    archive_v2_catalog_root: Some([1; 32]),
+                };
+                validate_checkpoint_role_history(10_000, adequate, Some(&config))
+                    .expect("exact or longer hot window is compatible");
+            }
+            let one_short = CheckpointSnapshotProfile::HotRepairV1 {
+                history_start_slot: 5_002,
+                archive_v2_catalog_root: Some([1; 32]),
+            };
+            assert!(validate_checkpoint_role_history(10_000, one_short, Some(&config)).is_err());
+            let newer = CheckpointSnapshotProfile::HotRepairV1 {
+                history_start_slot: 10_981,
+                archive_v2_catalog_root: Some([1; 32]),
+            };
+            validate_checkpoint_role_history(20_000, newer, Some(&config))
+                .expect("newer common checkpoint covers the configured window");
+            validate_checkpoint_role_history(
+                10_000,
+                CheckpointSnapshotProfile::FullArchiveV1,
+                Some(&config),
+            )
+            .expect("complete snapshot retains all history");
+        }
+        validate_checkpoint_role_history(10_000, short, None)
+            .expect("ordinary recovery keeps its separate overlap validation");
+        validate_checkpoint_role_history(10_000, short, Some(&ArchiveV2RoleConfig::default()))
+            .expect("full archive owns its catalog-covered history locally");
+    }
+
+    #[test]
+    fn checkpoint_role_history_honors_configured_public_retention_and_genesis() {
+        for role in [ArchiveV2Role::VerifiedCache, ArchiveV2Role::Consensus] {
+            let mut config = ArchiveV2RoleConfig {
+                role,
+                recent_history_slots: 100_000,
+                ..ArchiveV2RoleConfig::default()
+            };
+            let profile = |start| CheckpointSnapshotProfile::HotRepairV1 {
+                history_start_slot: start,
+                archive_v2_catalog_root: Some([1; 32]),
+            };
+            assert!(
+                validate_checkpoint_role_history(200_000, profile(150_001), Some(&config)).is_err()
+            );
+            validate_checkpoint_role_history(200_000, profile(100_001), Some(&config)).unwrap();
+            validate_checkpoint_role_history(100, profile(0), Some(&config)).unwrap();
+            assert!(validate_checkpoint_role_history(100, profile(1), Some(&config)).is_err());
+            config.recent_history_slots = 0;
+            assert!(validate_checkpoint_role_history(100, profile(0), Some(&config)).is_err());
+            config.recent_history_slots = 1;
+            validate_checkpoint_role_history(u64::MAX, profile(u64::MAX), Some(&config)).unwrap();
+            config.recent_history_slots = u64::MAX;
+            validate_checkpoint_role_history(u64::MAX, profile(1), Some(&config)).unwrap();
+            assert!(validate_checkpoint_role_history(u64::MAX, profile(2), Some(&config)).is_err());
+        }
     }
 
     #[test]
