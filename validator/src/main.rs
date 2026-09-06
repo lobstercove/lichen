@@ -12301,6 +12301,12 @@ fn recent_verified_checkpoints(
         let Some(block) = ctx.state.get_block_by_slot(meta.slot).ok().flatten() else {
             continue;
         };
+        // Manifest verification can outlive the next checkpoint publication.
+        // Keep its source protected from ordinary and disk-pressure pruning
+        // until the read-only store and all verification work have finished.
+        let Some(_verification_pin) = CheckpointExportPin::acquire(meta.slot, &path) else {
+            continue;
+        };
         let checkpoint_store = match StateStore::open_checkpoint(&path) {
             Ok(store) => store,
             Err(err) => {
@@ -12451,6 +12457,9 @@ fn verified_checkpoint_for_anchor(
             continue;
         }
         let Some(block) = state.get_block_by_slot(meta.slot).ok().flatten() else {
+            continue;
+        };
+        let Some(_verification_pin) = CheckpointExportPin::acquire(meta.slot, &path) else {
             continue;
         };
         let checkpoint_store = match StateStore::open_checkpoint(&path) {

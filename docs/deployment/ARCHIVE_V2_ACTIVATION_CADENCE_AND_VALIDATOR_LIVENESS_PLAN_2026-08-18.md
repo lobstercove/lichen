@@ -1,11 +1,12 @@
 # Archive V2 Activation, Cadence Recovery, And Validator Liveness Plan
 
-**Current status, September 6:** `v0.5.281` is the only successor candidate
-for the confirmed Archive V2 query/runtime defects. All four validators run
-signed v0.5.280 on the preserved baseline after activation recovery. Internal
-gateway TLS and checkpoint headroom passed; full activation remains pending.
+**Current status, September 6:** `v0.5.282` is the only successor candidate
+for the confirmed checkpoint cache-budget and verification-pruning defects.
+All four validators have signed v0.5.281 installed on their preserved state;
+recurrent OOM restarts leave sustained-memory acceptance incomplete. Internal
+gateway TLS is corrected; fresh capacity and full activation remain pending.
 Use [the current deployment preflight](ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md) and
-[v0.5.281 qualification](../audits/V0.5.281_ARCHIVE_QUERY_RUNTIME_2026-09-06.md).
+[v0.5.282 qualification](../audits/V0.5.282_CHECKPOINT_MEMORY_2026-09-06.md).
 The dated execution narrative below is historical provenance and does not
 authorize replaying old recovery, repair, PID-bound or credential commands.
 

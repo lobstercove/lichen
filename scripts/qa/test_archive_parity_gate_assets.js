@@ -486,6 +486,7 @@ assert(
 const ledgerStateSource = fs.readFileSync(repoPath('core/src/state/ledger_state.rs'), 'utf8');
 const archiveV2StateSource = fs.readFileSync(repoPath('core/src/state/archive_v2_state.rs'), 'utf8');
 const snapshotIoSource = fs.readFileSync(repoPath('core/src/state/snapshot_io.rs'), 'utf8');
+const stateRootSource = fs.readFileSync(repoPath('core/src/state.rs'), 'utf8');
 assert(
     ledgerStateSource.includes('get_hot_or_legacy_cold_block_for_checkpoint')
         && ledgerStateSource.includes('get_hot_or_legacy_cold_block_by_slot_for_checkpoint')
@@ -495,10 +496,12 @@ assert(
     'hot-repair export has a private hot/legacy-cold checkpoint source independent of public Archive V2 policy',
 );
 assert(
-    snapshotIoSource.includes('const HOT_REPAIR_CHECKPOINT_CACHE_MB: usize = 128;')
-        && /Self::open_with_cache_mb\(\s*checkpoint_dir,\s*Some\(HOT_REPAIR_CHECKPOINT_CACHE_MB\)\s*\)/.test(snapshotIoSource)
-        && /Self::open_checkpoint_with_cache_mb\(\s*staging,\s*checkpoint_cache_mb\s*\)/.test(snapshotIoSource),
-    'hot-repair checkpoint materialization and verification use bounded RocksDB caches',
+    snapshotIoSource.includes('const CHECKPOINT_CACHE_MB: usize = 128;')
+        && /Self::open_with_cache_mb\(\s*checkpoint_dir,\s*Some\(CHECKPOINT_CACHE_MB\)\s*\)/.test(snapshotIoSource)
+        && /Self::open_read_only_with_cache_mb\(\s*checkpoint_dir,\s*Some\(CHECKPOINT_CACHE_MB\)\s*\)/.test(snapshotIoSource)
+        && snapshotIoSource.includes('Self::open_checkpoint(staging)')
+        && stateRootSource.includes('checkpoint_readers_bound_cache_independently_of_live_store'),
+    'checkpoint materialization and every reader use bounded RocksDB caches with an actual-capacity regression',
 );
 assert(
     snapshotIoSource.includes('fn reserve_hot_repair_materialization_rows(')

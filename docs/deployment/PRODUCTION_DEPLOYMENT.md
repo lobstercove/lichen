@@ -15,13 +15,15 @@ Use this document as the canonical workflow for:
 
 This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
 
-The target testnet release for this runbook is `v0.5.281`; the installed signed
-fleet release is `v0.5.280` on the preserved baseline. Archive V2 activation
-and full acceptance remain incomplete. Preserve its signed rollback artifacts
-and the `v0.5.265` restart-safe anchor. Install `v0.5.281` only after
-its exact tag workflow, attestations, checksums, detached PQ signature, and
-four-validator Archive V2 gate pass. Keep all three signed artifact sets through
-live parity and rollback rehearsal; cleanup requires a separate evidence check.
+Resolve the release and restart-safe rollback from the latest dated, sealed
+deployment evidence for the selected network. A source version or historical
+runbook example is not proof of the installed release or completed acceptance.
+Never deploy from a dirty or partially staged worktree. Require the exact tag
+workflow, attestations, checksums, detached PQ signature and four-validator
+Archive V2 gate before installation. Preserve all recorded signed artifact
+sets through live parity and rollback rehearsal; cleanup needs evidence checks.
+For the existing Testnet, retain signed v0.5.280 and v0.5.281 plus the
+`v0.5.265` restart-safe anchor while successor qualification remains incomplete.
 `v0.5.265` remains Archive V2 dual-reader capable and must be retained until the
 new release, four-way V2 parity, and rollback rehearsal are recorded. Neither
 `v0.5.229` nor any pre-schema-3 anchor can be used after required legacy rows
@@ -926,50 +928,22 @@ make deploy-local
 
 ## VPS Runbook
 
-### Step 1: stage the repo correctly
+### Step 1: select and stage the signed release
 
-Do not use `git archive` for VPS staging in this repo. Ignored directories in this tree still matter for deployment.
+Resolve the exact qualified tag from the dated deployment record. Verify the
+successful immutable workflow, complete checksums, provenance attestations and
+detached PQ signature against the recorded trust anchor. Stage the identical
+signed binary and contract bundles on all four hosts. Keep configuration and
+secrets in their approved host-local paths and preserve every validator's own
+state, WAL, keys and rollback artifacts.
 
-Use a full repo sync into `~/lichen` instead:
+### Step 2: verify the staged artifacts
 
-```bash
-rsync -az --delete \
-  --exclude '.git' \
-  --exclude 'target' \
-  --exclude 'compiler/target' \
-  --exclude 'data' \
-  --exclude 'logs' \
-  --exclude 'node_modules' \
-  --exclude 'dist' \
-  ./ <host>:~/lichen/
-```
-
-For a clean-slate redeploy, also remove stale repo-generated artifacts on the host before first boot:
-
-```bash
-rm -f ~/lichen/deploy-manifest.json
-rm -f ~/lichen/signed-metadata-manifest-testnet.json ~/lichen/signed-metadata-manifest-mainnet.json
-```
-
-### Step 2: build release binaries on the host
-
-If the host was updated via `rsync` hotfixes, force Cargo to see fresh source mtimes before rebuilding. `rsync -a` preserves timestamps, and stale remote artifact mtimes can otherwise cause `cargo build` to reuse old validator binaries even when the new Rust source is present.
-
-From the staged repo:
-
-```bash
-find . \
-  \( -path './target' -o -path './compiler/target' -o -path './node_modules' \) -prune -o \
-  -type f \( -name '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' \) -exec touch {} +
-```
-
-From the staged repo:
-
-```bash
-. "$HOME/.cargo/env"
-cargo build --release --bin lichen-validator --bin lichen-genesis --bin lichen-faucet --bin lichen-custody --bin lichen --bin zk-prove
-./scripts/build-all-contracts.sh
-```
+Require installed and running binary hashes to match the signed inventory after
+the coordinated stop/install/start. Never rebuild a production binary on a VPS,
+copy a locally built candidate, or sync an operator worktree over live files.
+The full [deployment preflight](ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md) covers staged
+inputs, stopped-process barriers, readiness deadlines and interrupted recovery.
 
 Critical contract artifact invariant:
 
@@ -987,10 +961,6 @@ Example verification command:
 command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs shasum -a 256 | shasum -a 256
 ```
 
-Why the explicit `cargo` env load matters:
-
-- `ssh <host> 'cd ~/lichen && cargo build ...'` uses a non-login shell on many VPSes, and `cargo` will be missing from `PATH` unless you source `~/.cargo/env` yourself.
-
 ### Step 3: install services and env files
 
 Provision the base host once from the exact signed-release unit, env, and Caddy
@@ -998,7 +968,8 @@ templates plus the approved secret manager. Release upgrades then use the
 coordinated signed-artifact deployer from the operator machine:
 
 ```bash
-LICHEN_RELEASE_TAG=v0.5.281 LICHEN_COORDINATED_RELEASE=1 \
+: "${LICHEN_RELEASE_TAG:?Set the qualified release tag from the deployment record}"
+LICHEN_COORDINATED_RELEASE=1 \
   bash scripts/rolling-release-deploy.sh testnet
 ```
 

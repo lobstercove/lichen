@@ -103,25 +103,18 @@ async function deriveReleaseSignerAddress() {
     );
 
     const runbook = readText('deploy/mainnet-launch-runbook.md');
-    const workspaceVersion = readText('validator/Cargo.toml').match(
-        /^version = "(\d+\.\d+\.\d+)"/m
-    )?.[1];
-    const releaseLine = runbook.match(
-        /Release line for this\s+runbook is\s+`(v\d+\.\d+\.\d+)`/
-    );
     assert(
         runbook.includes(releaseSigner),
         'mainnet launch runbook records the release signer trust anchor'
     );
     assert(
-        Boolean(releaseLine) && releaseLine[1] === `v${workspaceVersion}` &&
+        runbook.includes('Resolve the signed release and compatible rollback from the dated launch record') &&
             runbook.includes('Fresh mainnet requires its own validated rollback plan'),
-        'mainnet launch runbook matches the source version and requires network-specific rollback qualification'
+        'mainnet launch runbook requires evidence-selected artifacts and network-specific rollback qualification'
     );
     assert(
         runbook.includes('node "$REPO_ROOT/scripts/verify-release-checksums.mjs" .') &&
-            releaseLine &&
-            runbook.includes(`export LICHEN_RELEASE_TAG=${releaseLine[1]}`) &&
+            runbook.includes('LICHEN_RELEASE_TAG:?Set the qualified release tag') &&
             runbook.includes('LICHEN_RELEASE_TAG:?Set the recorded compatible signed rollback tag') &&
             runbook.includes('LICHEN_MAINNET_VPS_HOSTS:?Set the approved mainnet inventory') &&
             runbook.includes('--workflow Release --branch "$LICHEN_RELEASE_TAG" --event push') &&
