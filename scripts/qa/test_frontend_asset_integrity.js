@@ -736,6 +736,8 @@ function validateMonitoringRiskConsole() {
 
 function validateExchangesPublicPortal() {
     const exchangesRoot = path.join(repoRoot, 'exchanges');
+    const runtimeVersion = fs.readFileSync(path.join(repoRoot, 'validator', 'Cargo.toml'), 'utf8')
+        .match(/^version = "([^"]+)"/m)[1];
     const html = fs.readFileSync(path.join(exchangesRoot, 'index.html'), 'utf8');
     const js = fs.readFileSync(path.join(exchangesRoot, 'js', 'exchanges.js'), 'utf8');
     const proxy = fs.readFileSync(path.join(exchangesRoot, 'functions', 'api', 'rpc.js'), 'utf8');
@@ -751,7 +753,7 @@ function validateExchangesPublicPortal() {
         'exchange-ops@lichen.network',
         'business@lichen.network',
         'https://developers.lichen.network/exchange-integration',
-        'https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.281',
+        `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v${runtimeVersion}`,
         'https://github.com/lobstercove/lichen/releases/tag/v0.5.265',
     ];
     assert(
