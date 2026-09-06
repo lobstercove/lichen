@@ -5,6 +5,22 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.283] - 2026-09-06
+
+### Fixed
+
+- Reject checkpoint profiles that cannot satisfy the receiving verified-cache
+  or consensus role's configured hot-history window before download and before
+  live state replacement. Preserve complete catalog and role admission checks.
+
+### Deployment
+
+- Candidate only. The v0.5.282 hosted archive gate failed fresh verified-cache
+  admission despite a complete local matrix pass. Preserve that immutable tag
+  and failed evidence. Signed v0.5.281 remains installed; sustained memory and
+  full Archive V2 acceptance remain pending. The checkpoint cache and pruning
+  fixes from v0.5.282 are retained.
+
 ## [0.5.282] - 2026-09-06
 
 ### Fixed

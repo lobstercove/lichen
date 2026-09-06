@@ -15,6 +15,13 @@ single controller identity and recovery mechanism. On resume, inspect actual
 processes, services, timers, journals, and evidence before starting any writer.
 An old success file or historical runbook version is not a fresh preflight.
 
+Before merging, inspect both repository merge options and the target branch's
+protection. Main requires linear history even though repository-level merge
+commits are enabled. Use the allowed squash method, match the reviewed head,
+and require all protected checks. Verify the resulting tree against the qualified
+source. Preserve an existing immutable tag on its original commit; never move
+it to a later squash commit or bind deployment to an assumed merge identity.
+
 Before each retry, review the complete selected execution path and run its
 non-mutating preflight against the actual saved inputs. Check producer and
 consumer bounds together, including minimum/maximum bytes, file counts,
@@ -30,6 +37,22 @@ clippy/tests, audit/deny, standalone contracts and genesis WASM, static
 frontend/SDK/deployment QA, and the exact release's four-validator hot/cold,
 fresh-join, outage, own-state restart, coordinated restart, and history parity
 matrix. Deploy only signed tag-workflow artifacts from a clean release source.
+
+Fresh checkpoint compatibility must include the receiving role's configured
+recent-history window before download and again before live state replacement.
+An authenticated catalog handoff and a valid checkpoint state root do not prove
+that a verified-cache or consensus node receives its entire required hot window.
+For example, slot 10000 with history 9101..10000 cannot satisfy a 5000-slot window,
+which requires 5001..10000. Reject that candidate during discovery and continue
+to a compatible checkpoint; never weaken admission or silently reduce retention.
+Full-archive nodes additionally own authenticated catalog objects locally and
+retain their separate catalog/hot-history admission rules.
+
+Record local and hosted matrix results separately. A local pass cannot replace
+a failed immutable release job. Retain the failed job ID, source identity,
+checkpoint slot/profile, configured role/window and exact admission error.
+Fix a deterministic compatibility regression before a new signed successor;
+never move the failed release tag or repeatedly rerun without diagnosis.
 
 For GitHub draft releases, an authenticated tag-specific REST lookup can return
 404 even while the draft exists. Use the authenticated release listing or
