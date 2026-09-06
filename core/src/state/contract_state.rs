@@ -387,7 +387,9 @@ impl StateStore {
             }
         }
         let archive_end = before_cursor.map(|(slot, _)| slot).unwrap_or(u64::MAX);
-        for (key, value) in self.archive_v2_category_rows("events", 0, archive_end)? {
+        for (key, value) in
+            self.archive_v2_category_rows_with_prefix("events", 0, archive_end, &prefix)?
+        {
             if !key.starts_with(&prefix) || key.len() < 56 {
                 continue;
             }

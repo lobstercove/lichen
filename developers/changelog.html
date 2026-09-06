@@ -79,6 +79,21 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.281 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.281</span>
+                    <span class="changelog-date">September 6, 2026</span>
+                </div>
+                <h3>Archive query runtime and authenticated index cache candidate</h3>
+                <ul>
+                    <li>Bounds blocking RPC work and keeps recent transaction pages from scanning older archives unnecessarily.</li>
+                    <li>Authenticates public-index caches within one shared disk quota and filters aggregate rows during decoding.</li>
+                    <li>Adds complete-input cache preflight and prewarming, with corruption, quota, cancellation and source-outage regressions.</li>
+                    <li>Candidate only: signed v0.5.280 remains installed on the preserved Testnet baseline. Full Archive V2 activation and live acceptance remain pending.</li>
+                </ul>
+            </article>
+
             <!-- ============ v0.5.280 ============ -->
             <article class="changelog-entry">
                 <div class="changelog-header">

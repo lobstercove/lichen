@@ -106,23 +106,27 @@ async function deriveReleaseSignerAddress() {
     const workspaceVersion = readText('validator/Cargo.toml').match(
         /^version = "(\d+\.\d+\.\d+)"/m
     )?.[1];
-    const releasePair = runbook.match(
-        /Release line for this\s+runbook is\s+`(v\d+\.\d+\.\d+)`; keep `(v\d+\.\d+\.\d+)` as the signed restart-safe anchor/
+    const releaseLine = runbook.match(
+        /Release line for this\s+runbook is\s+`(v\d+\.\d+\.\d+)`/
     );
     assert(
         runbook.includes(releaseSigner),
         'mainnet launch runbook records the release signer trust anchor'
     );
     assert(
-        Boolean(releasePair) && releasePair[1] === `v${workspaceVersion}`,
-        'mainnet launch runbook release matches the workspace version and declares a restart-safe anchor'
+        Boolean(releaseLine) && releaseLine[1] === `v${workspaceVersion}` &&
+            runbook.includes('Fresh mainnet requires its own validated rollback plan'),
+        'mainnet launch runbook matches the source version and requires network-specific rollback qualification'
     );
     assert(
         runbook.includes('node "$REPO_ROOT/scripts/verify-release-checksums.mjs" .') &&
-            releasePair &&
-            runbook.includes(`export LICHEN_RELEASE_TAG=${releasePair[1]}`) &&
-            runbook.includes(`export LICHEN_RELEASE_TAG=${releasePair[2]}`),
-        'mainnet launch runbook verifies detached release checksums and documents the signed restart-safe anchor'
+            releaseLine &&
+            runbook.includes(`export LICHEN_RELEASE_TAG=${releaseLine[1]}`) &&
+            runbook.includes('LICHEN_RELEASE_TAG:?Set the recorded compatible signed rollback tag') &&
+            runbook.includes('LICHEN_MAINNET_VPS_HOSTS:?Set the approved mainnet inventory') &&
+            runbook.includes('--workflow Release --branch "$LICHEN_RELEASE_TAG" --event push') &&
+            !runbook.includes('git tag -v "$LICHEN_RELEASE_TAG" || true'),
+        'mainnet launch runbook binds signed artifacts, inventory and rollback to the qualified launch record'
     );
 
     const readme = readText('README.md');

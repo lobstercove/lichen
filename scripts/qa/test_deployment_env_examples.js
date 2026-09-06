@@ -463,8 +463,9 @@ const mainnetRunbook = read('deploy/mainnet-launch-runbook.md');
 const mainnetRunbookDoc = read('docs/deployment/MAINNET_LAUNCH_RUNBOOK.md');
 const productionDeployment = read('docs/deployment/PRODUCTION_DEPLOYMENT.md');
 const productionReleasePair = productionDeployment.match(
-  /The target testnet release for this runbook is `(v\d+\.\d+\.\d+)`; the installed signed\s+fleet release is `(v\d+\.\d+\.\d+)`, and the immediate restart-safe anchor is\s+`(v\d+\.\d+\.\d+)`\./,
+  /The target testnet release for this runbook is `(v\d+\.\d+\.\d+)`; the installed signed\s+fleet release is `(v\d+\.\d+\.\d+)`/,
 );
+const archiveDeploymentPreflight = read('docs/deployment/ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md');
 const validatorVersion = read('validator/Cargo.toml').match(/^version = "(\d+\.\d+\.\d+)"/m)?.[1];
 const dexLiquidityStrategy = read('docs/strategy/DEX_LIQUIDITY_STRATEGY.md');
 const btcRolloutPlan = read('docs/deployment/BTC_WRAPPED_ASSET_ROLLOUT_PLAN.md');
@@ -510,9 +511,15 @@ assert(
 assert(
   productionReleasePair &&
     productionReleasePair[1] === `v${validatorVersion}` &&
-    productionReleasePair[2] === 'v0.5.278' &&
-    productionReleasePair[3] === 'v0.5.265' &&
-    /Historical\s+tags and audit records remain in Git/.test(productionDeployment) &&
+    productionReleasePair[2] === 'v0.5.280' &&
+    productionDeployment.includes('`v0.5.265` restart-safe anchor') &&
+    productionDeployment.includes('ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md') &&
+    mainnetRunbookDoc.includes('ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md') &&
+    archiveDeploymentPreflight.includes('CA:FALSE') &&
+    archiveDeploymentPreflight.includes('CaUsedAsEndEntity') &&
+    archiveDeploymentPreflight.includes('reqwest/Rustls') &&
+    archiveDeploymentPreflight.includes('prewarm-indexes') &&
+    archiveDeploymentPreflight.includes('actual saved inputs') &&
     productionDeployment.includes('This destructive checklist does not apply to the current July testnet') &&
     productionDeployment.includes('in-place archive repair and coordinated resume') &&
     productionDeployment.includes('LICHEN_RUN_LAUNCHPAD_E2E=1') &&

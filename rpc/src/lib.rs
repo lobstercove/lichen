@@ -112,6 +112,7 @@ const MAX_TX_WIRE_SIZE: u64 = lichen_core::transaction::MAX_TRANSACTION_WIRE_SIZ
 /// HTTP request body cap. A max-size raw transaction becomes roughly 4/3 larger
 /// when base64-encoded inside JSON, so keep this above the wire cap.
 const MAX_RPC_BODY_SIZE: usize = 8 * 1024 * 1024;
+const MAX_CONCURRENT_BLOCKING_RPC_REQUESTS: usize = 4;
 
 /// Decode the mandatory V1 transaction wire envelope.
 pub(crate) fn decode_transaction_bytes(bytes: &[u8]) -> Result<Transaction, RpcError> {
@@ -2718,6 +2719,7 @@ pub struct TransactionSubmission {
 #[derive(Clone)]
 struct RpcState {
     state: StateStore,
+    blocking_requests: Arc<tokio::sync::Semaphore>,
     /// Optional canonical block-apply barrier supplied by embedded validators.
     /// Proof endpoints use it so Merkle roots are generated only from a stable
     /// fully post-applied state, never from the middle of block commit effects.
@@ -3644,7 +3646,62 @@ async fn rate_limit_middleware(
         }
     }
 
+    if req.uri().path().starts_with("/api/v1/")
+        || req.uri().path().starts_with("/archive-v2/objects/")
+    {
+        return execute_blocking_rpc(&state, serde_json::Value::Null, next.run(req)).await;
+    }
     next.run(req).await
+}
+
+/// Keep synchronous database, archive and VM work off the consensus executor.
+/// Admission happens before spawning, and the permit lives in the blocking
+/// job so client cancellation cannot admit another job while work still runs.
+async fn execute_blocking_rpc<F>(
+    state: &RpcState,
+    request_id: serde_json::Value,
+    future: F,
+) -> Response
+where
+    F: std::future::Future<Output = Response> + Send + 'static,
+{
+    let Ok(permit) = state.blocking_requests.clone().try_acquire_owned() else {
+        return jsonrpc_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            request_id,
+            -32005,
+            "RPC execution capacity is busy; retry later".to_string(),
+        );
+    };
+    let runtime = tokio::runtime::Handle::current();
+    match tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        runtime.block_on(future)
+    })
+    .await
+    {
+        Ok(response) => response,
+        Err(_) => jsonrpc_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            request_id,
+            -32603,
+            "RPC execution failed".to_string(),
+        ),
+    }
+}
+
+fn rpc_method_needs_blocking_executor(method: &str) -> bool {
+    !matches!(
+        method,
+        "getHealth"
+            | "getSlot"
+            | "getVersion"
+            | "eth_blockNumber"
+            | "eth_chainId"
+            | "net_version"
+            | "net_listening"
+            | "web3_clientVersion"
+    )
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -5357,6 +5414,9 @@ fn build_rpc_router_internal(
     )));
     let rpc_state = RpcState {
         state,
+        blocking_requests: Arc::new(tokio::sync::Semaphore::new(
+            MAX_CONCURRENT_BLOCKING_RPC_REQUESTS,
+        )),
         block_apply_lock,
         tx_sender,
         data_dir_path,
@@ -5529,6 +5589,25 @@ fn build_rpc_router_internal(
 
 /// Handle RPC request
 async fn handle_rpc(
+    State(state): State<Arc<RpcState>>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
+    body: AxumBytes,
+) -> Response {
+    let probe = match parse_rpc_tier_probe(body.as_ref()) {
+        Ok(probe) => probe,
+        Err(response) => return response,
+    };
+    let id = probe.id.unwrap_or(serde_json::Value::Null);
+    let future = handle_rpc_inner(State(state.clone()), connect_info, headers, body);
+    if rpc_method_needs_blocking_executor(&probe.method) {
+        execute_blocking_rpc(&state, id, future).await
+    } else {
+        future.await
+    }
+}
+
+async fn handle_rpc_inner(
     State(state): State<Arc<RpcState>>,
     connect_info: Option<ConnectInfo<SocketAddr>>,
     headers: HeaderMap,
@@ -5952,6 +6031,25 @@ async fn handle_solana_rpc(
         Ok(probe) => probe,
         Err(response) => return response,
     };
+    let id = probe.id.unwrap_or(serde_json::Value::Null);
+    let future = handle_solana_rpc_inner(State(state.clone()), connect_info, headers, body);
+    if rpc_method_needs_blocking_executor(&probe.method) {
+        execute_blocking_rpc(&state, id, future).await
+    } else {
+        future.await
+    }
+}
+
+async fn handle_solana_rpc_inner(
+    State(state): State<Arc<RpcState>>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
+    body: AxumBytes,
+) -> Response {
+    let probe = match parse_rpc_tier_probe(body.as_ref()) {
+        Ok(probe) => probe,
+        Err(response) => return response,
+    };
     let request_id = probe.id.clone().unwrap_or(serde_json::Value::Null);
 
     // P9-RPC-03: Tiered rate limiting for Solana-compat methods
@@ -6047,6 +6145,25 @@ async fn handle_solana_rpc(
 
 /// Handle Ethereum-compatible RPC request
 async fn handle_evm_rpc(
+    State(state): State<Arc<RpcState>>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
+    body: AxumBytes,
+) -> Response {
+    let probe = match parse_rpc_tier_probe(body.as_ref()) {
+        Ok(probe) => probe,
+        Err(response) => return response,
+    };
+    let id = probe.id.unwrap_or(serde_json::Value::Null);
+    let future = handle_evm_rpc_inner(State(state.clone()), connect_info, headers, body);
+    if rpc_method_needs_blocking_executor(&probe.method) {
+        execute_blocking_rpc(&state, id, future).await
+    } else {
+        future.await
+    }
+}
+
+async fn handle_evm_rpc_inner(
     State(state): State<Arc<RpcState>>,
     connect_info: Option<ConnectInfo<SocketAddr>>,
     headers: HeaderMap,
@@ -22013,6 +22130,7 @@ async fn handle_get_oracle_prices(state: &RpcState) -> Result<serde_json::Value,
 
 #[cfg(test)]
 mod tests {
+    mod archive_query_runtime;
     use super::{
         bridge_access_message_v2_create, classify_evm_method_tier, classify_method,
         classify_solana_method_tier, clear_privileged_rpc_mutation_test_sink,
@@ -22152,6 +22270,9 @@ mod tests {
     ) -> RpcState {
         RpcState {
             state,
+            blocking_requests: Arc::new(tokio::sync::Semaphore::new(
+                super::MAX_CONCURRENT_BLOCKING_RPC_REQUESTS,
+            )),
             block_apply_lock: None,
             tx_sender: None,
             data_dir_path: None,

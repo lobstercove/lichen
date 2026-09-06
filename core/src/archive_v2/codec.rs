@@ -17,6 +17,8 @@ use super::format::{
 use crate::codec::{deserialize_legacy_bincode_strict, serialize_legacy_bincode};
 use crate::{Block, Hash, Transaction};
 
+mod index_cache;
+
 const MAX_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RECORD_BYTES: usize = 128 * 1024 * 1024;
 const SEGMENT_TRAILER_BYTES: usize = 32;
@@ -893,6 +895,27 @@ fn encode_compact_indexes(indexes: &ArchiveV2PublicIndexes) -> Result<Vec<u8>, A
 }
 
 fn decode_compact_indexes(encoded: &[u8]) -> Result<ArchiveV2PublicIndexes, ArchiveV2Error> {
+    decode_compact_indexes_selected(encoded, None, None)
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ArchiveV2IndexRowQuery<'a> {
+    pub category: &'a str,
+    pub prefix: &'a [u8],
+    pub start_slot: u64,
+    pub end_slot: u64,
+}
+
+fn decode_compact_indexes_selected(
+    encoded: &[u8],
+    query: Option<ArchiveV2IndexRowQuery<'_>>,
+    manifest: Option<&ArchiveV2Manifest>,
+) -> Result<ArchiveV2PublicIndexes, ArchiveV2Error> {
+    if query.is_some() && manifest.is_none() {
+        return Err(ArchiveV2Error::Malformed(
+            "selected indexes require a manifest".to_string(),
+        ));
+    }
     let mut cursor = CompactIndexCursor {
         bytes: encoded,
         offset: 0,
@@ -914,6 +937,17 @@ fn decode_compact_indexes(encoded: &[u8]) -> Result<ArchiveV2PublicIndexes, Arch
         )));
     }
     let block_count = cursor.count("block index count", MAX_SEGMENT_RECORDS)?;
+    if manifest.is_some_and(|manifest| {
+        manifest
+            .end_slot
+            .checked_sub(manifest.start_slot)
+            .and_then(|n| n.checked_add(1))
+            != Some(block_count as u64)
+    }) {
+        return Err(ArchiveV2Error::Ordering(
+            "compact block index does not cover the segment".to_string(),
+        ));
+    }
     let mut blocks_by_slot = BTreeMap::new();
     let mut previous_slot = 0u64;
     for index in 0..block_count {
@@ -932,7 +966,26 @@ fn decode_compact_indexes(encoded: &[u8]) -> Result<ArchiveV2PublicIndexes, Arch
         };
         let frame = cursor.u32_varint("block frame index")?;
         let ordinal = cursor.u32_varint("block frame ordinal")?;
-        if blocks_by_slot.insert(slot, (frame, ordinal)).is_some() {
+        if let Some(manifest) = manifest {
+            if manifest.start_slot.checked_add(index as u64) != Some(slot) {
+                return Err(ArchiveV2Error::Ordering(
+                    "compact block index is not contiguous".to_string(),
+                ));
+            }
+            if !manifest
+                .frames
+                .get(frame as usize)
+                .is_some_and(|descriptor| {
+                    descriptor.kind == ArchiveV2FrameKind::Blocks
+                        && ordinal < descriptor.record_count
+                })
+            {
+                return Err(ArchiveV2Error::Ordering(
+                    "compact block index has an invalid frame reference".to_string(),
+                ));
+            }
+        }
+        if query.is_none() && blocks_by_slot.insert(slot, (frame, ordinal)).is_some() {
             return Err(ArchiveV2Error::Ordering(
                 "compact block slot index is duplicated".to_string(),
             ));
@@ -943,40 +996,52 @@ fn decode_compact_indexes(encoded: &[u8]) -> Result<ArchiveV2PublicIndexes, Arch
     let transaction_count = cursor.count("transaction index count", MAX_SEGMENT_RECORDS)?;
     let mut transactions_by_signature = BTreeMap::new();
     let mut previous_signature = Vec::new();
-    for _ in 0..transaction_count {
-        let signature = cursor.prefixed(&previous_signature, 32, "transaction signature prefix")?;
-        if signature.len() != 32 {
+    for transaction_index in 0..transaction_count {
+        cursor.prefixed_reuse(
+            &mut previous_signature,
+            32,
+            "transaction signature prefix",
+            transaction_index > 0,
+        )?;
+        if previous_signature.len() != 32 {
             return Err(ArchiveV2Error::Bounds(
                 "compact transaction signature is not 32 bytes".to_string(),
             ));
         }
         let signature = Hash(
-            signature
+            previous_signature
                 .as_slice()
                 .try_into()
                 .map_err(|_| ArchiveV2Error::Truncated("transaction signature"))?,
         );
-        if !previous_signature.is_empty() && signature.0.as_slice() <= previous_signature.as_slice()
-        {
-            return Err(ArchiveV2Error::Ordering(
-                "compact transaction signatures are out of order".to_string(),
-            ));
-        }
         let location = (
             cursor.u32_varint("transaction frame index")?,
             cursor.u32_varint("transaction frame ordinal")?,
             cursor.varint("transaction block slot")?,
             cursor.u32_varint("transaction block ordinal")?,
         );
-        if transactions_by_signature
-            .insert(signature, location)
-            .is_some()
+        if manifest.is_some_and(|manifest| {
+            !manifest
+                .frames
+                .get(location.0 as usize)
+                .is_some_and(|descriptor| {
+                    descriptor.kind == ArchiveV2FrameKind::Transactions
+                        && location.1 < descriptor.record_count
+                })
+        }) {
+            return Err(ArchiveV2Error::Ordering(
+                "compact transaction index has an invalid frame reference".to_string(),
+            ));
+        }
+        if query.is_none()
+            && transactions_by_signature
+                .insert(signature, location)
+                .is_some()
         {
             return Err(ArchiveV2Error::Ordering(
                 "compact transaction index is duplicated".to_string(),
             ));
         }
-        previous_signature = signature.0.to_vec();
     }
 
     let category_count = cursor.count("public category count", 1024)?;
@@ -1000,25 +1065,36 @@ fn decode_compact_indexes(encoded: &[u8]) -> Result<ArchiveV2PublicIndexes, Arch
             ));
         }
         let row_count = cursor.count("public category row count", MAX_SEGMENT_RECORDS)?;
-        let mut rows = Vec::with_capacity(row_count);
+        let mut rows = Vec::with_capacity(if query.is_none() { row_count } else { 0 });
         let mut previous_key = Vec::new();
-        for _ in 0..row_count {
+        for row_index in 0..row_count {
             let slot = cursor.varint("public row slot")?;
-            let key =
-                cursor.prefixed(&previous_key, MAX_INDEX_KEY_BYTES, "public row key prefix")?;
-            if !previous_key.is_empty() && key.as_slice() <= previous_key.as_slice() {
+            if manifest
+                .is_some_and(|manifest| slot < manifest.start_slot || slot > manifest.end_slot)
+            {
                 return Err(ArchiveV2Error::Ordering(format!(
-                    "compact public category {category} keys are out of order"
+                    "public index {category} contains a row outside the segment range"
                 )));
             }
+            cursor.prefixed_reuse(
+                &mut previous_key,
+                MAX_INDEX_KEY_BYTES,
+                "public row key prefix",
+                row_index > 0,
+            )?;
             let value_len = cursor.count("public row value length", MAX_RECORD_BYTES)?;
-            let value = cursor.take(value_len, "public row value")?.to_vec();
-            rows.push(ArchiveV2PublicRow {
-                slot,
-                key: key.clone(),
-                value,
-            });
-            previous_key = key;
+            let value = cursor.take(value_len, "public row value")?;
+            if query.is_none_or(|query| {
+                query.category == category
+                    && previous_key.starts_with(query.prefix)
+                    && (query.start_slot..=query.end_slot).contains(&slot)
+            }) {
+                rows.push(ArchiveV2PublicRow {
+                    slot,
+                    key: previous_key.clone(),
+                    value: value.to_vec(),
+                });
+            }
         }
         if categories.insert(category, rows).is_some() {
             return Err(ArchiveV2Error::Ordering(
@@ -1142,6 +1218,37 @@ impl<'a> CompactIndexCursor<'a> {
         value.extend_from_slice(&previous[..common]);
         value.extend_from_slice(self.take(suffix_len, context)?);
         Ok(value)
+    }
+
+    /// Reconstruct prefix-compressed keys in one reusable buffer. Comparing
+    /// suffixes before truncation preserves strict ordering without allocating
+    /// an owned key for rows the caller does not retain.
+    fn prefixed_reuse(
+        &mut self,
+        previous: &mut Vec<u8>,
+        maximum: usize,
+        context: &'static str,
+        require_increasing: bool,
+    ) -> Result<(), ArchiveV2Error> {
+        let common = self.count(context, previous.len())?;
+        let suffix_len = self.count(context, maximum)?;
+        let total = common
+            .checked_add(suffix_len)
+            .ok_or_else(|| ArchiveV2Error::Bounds(format!("{context} length overflow")))?;
+        if total > maximum {
+            return Err(ArchiveV2Error::Bounds(format!(
+                "{context} length {total} exceeds {maximum}"
+            )));
+        }
+        let suffix = self.take(suffix_len, context)?;
+        if require_increasing && suffix <= &previous[common..] {
+            return Err(ArchiveV2Error::Ordering(format!(
+                "{context} values are out of order"
+            )));
+        }
+        previous.truncate(common);
+        previous.extend_from_slice(suffix);
+        Ok(())
     }
 
     fn finish(self) -> Result<(), ArchiveV2Error> {

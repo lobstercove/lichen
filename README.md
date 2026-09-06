@@ -7,14 +7,15 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Candidate release line:** `v0.5.280`; the installed signed testnet release is
-`v0.5.278`, with `v0.5.265` retained as the restart-safe rollback anchor.
+**Candidate release line:** `v0.5.281`; the installed signed testnet release is
+`v0.5.280`, with its signed artifacts and the `v0.5.265` restart-safe rollback
+anchor preserved.
 Official installable artifacts are the published
 GitHub release archives whose checksums, detached ML-DSA signature, release
-trust anchor, and provenance attestations all verify. The candidate adds the
-coherent hot-to-Archive-V2 checkpoint path, certificate-normalized public
-history, fail-closed role bootstrap, and signed range-bound retirement tooling
-needed to move an existing network fully onto Archive V2. Treat those changes
+trust anchor, and provenance attestations all verify. The candidate bounds
+blocking RPC work, avoids unnecessary old-history scans for complete recent
+pages, and authenticates a shared-quota public-index cache for aggregate queries.
+It also adds a complete-input cache prewarm procedure. Treat those changes
 as unreleased until the exact tag, signature, provenance, and release gates pass.
 
 The signed `v0.5.272` release accepts the legacy deployed contract ABI field
@@ -116,9 +117,13 @@ the already-green post-activity restart matrix. It produced no release.
 no protocol or runtime behavior was changed for this harness-only successor.
 
 **Network status:** the public network is testnet. Mainnet has not launched and
-is not approved. The four Testnet validators are intentionally stopped at the
-same preserved tip while the signed `v0.5.280` recovery package is qualified;
-Archive V2 is not yet active. The current 200 GB validator fleet is not approved
+is not approved. All four Testnet validators are running signed `v0.5.280`
+on the preserved baseline. Archive V2 activation recovered after failing its
+runtime query gate and remains incomplete. The internal gateway certificate
+correction and checkpoint headroom recovery passed; the query successor still
+requires full release and live acceptance. See the
+[deployment preflight](docs/deployment/ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md)
+for the verified procedure. The current 200 GB validator fleet is not approved
 for mainnet or indefinite archive growth. The testnet-only historical-loss
 waiver cannot be transferred to a fresh network or mainnet; both fail closed on
 incomplete genesis-to-tip public history.

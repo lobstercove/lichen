@@ -89,7 +89,9 @@ impl StateStore {
         );
 
         let mut rows = std::collections::BTreeMap::new();
-        for (key, value) in self.archive_v2_category_rows("nft_activity", 0, u64::MAX)? {
+        for (key, value) in
+            self.archive_v2_category_rows_with_prefix("nft_activity", 0, u64::MAX, &prefix)?
+        {
             if key.starts_with(&prefix) {
                 rows.insert(key, value);
             }

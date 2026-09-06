@@ -418,7 +418,9 @@ impl StateStore {
             }
         }
         let archive_end = before_cursor.map(|(slot, _)| slot).unwrap_or(u64::MAX);
-        for (key, value) in self.archive_v2_category_rows("program_calls", 0, archive_end)? {
+        for (key, value) in
+            self.archive_v2_category_rows_with_prefix("program_calls", 0, archive_end, &prefix)?
+        {
             if !key.starts_with(&prefix) || key.len() < 44 {
                 continue;
             }
@@ -508,7 +510,9 @@ impl StateStore {
                 }
             }
         }
-        for (key, _) in self.archive_v2_category_rows("program_calls", 0, u64::MAX)? {
+        for (key, _) in
+            self.archive_v2_category_rows_with_prefix("program_calls", 0, u64::MAX, &prefix)?
+        {
             if key.starts_with(&prefix) {
                 keys.insert(key);
             }
@@ -610,7 +614,12 @@ impl StateStore {
         let prefix = collection.map(|c| c.0);
 
         let mut rows = std::collections::BTreeMap::new();
-        for (key, value) in self.archive_v2_category_rows("market_activity", 0, u64::MAX)? {
+        for (key, value) in self.archive_v2_category_rows_with_prefix(
+            "market_activity",
+            0,
+            u64::MAX,
+            prefix.as_ref().map_or(&[], |bytes| bytes.as_slice()),
+        )? {
             if prefix
                 .as_ref()
                 .is_none_or(|prefix_bytes| key.starts_with(prefix_bytes))

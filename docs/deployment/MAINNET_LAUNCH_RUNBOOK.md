@@ -4,13 +4,17 @@ This is the operator runbook for launching Lichen mainnet and then enabling
 mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
-Written for the next mainnet package. Release line for this runbook is
-`v0.5.266`; keep `v0.5.265` as the signed restart-safe anchor and immediate
-rollback. The release must not be used until its exact tag and signed artifacts
-pass the release gates. Historical tags and audit records remain in Git; they
-are not installed rollback binaries. Mainnet remains blocked until production
-storage, full-scope launch gates, independent review, and deployment approval
-pass.
+Select the signed release and a compatible signed rollback from the latest
+sealed release qualification; historical version examples are not launch
+authority. Mainnet remains blocked until production storage, full-scope launch
+gates, independent review, and deployment approval pass. A Testnet deployment
+or legacy-history waiver does not satisfy a Mainnet gate.
+
+Complete [ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md](ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md)
+before genesis or any Archive V2 activation. Rehearse the same TLS, capacity,
+history, outage, and restart gates on a fresh network using the exact signed
+release. The existing 200 GB Testnet VPS storage is not approved for Mainnet
+or indefinite archive growth.
 
 ## Operating Rules
 
@@ -61,9 +65,8 @@ pass.
   preserve replay compatibility for the June 2026 testnet after governed signer
   custody was lost; mainnet must launch from verified custody instead.
 - Do not deploy a release that changes consensus rules with a mixed-version
-  rolling restart. The current safe anchor `v0.5.265` must remain available
-  until `v0.5.266` is signed, fully qualified, deployed, and explicitly
-  recorded as restart-safe.
+  rolling restart. Preserve the explicitly recorded, state-compatible signed
+  rollback until its replacement passes the complete restart acceptance gate.
 - `v0.5.224` introduces the canonical analytics v2 state projection. Deploy it
   only as a coordinated all-validator upgrade after proving every validator can
   read every `dex_trade_*` row and its referenced block from genesis through
@@ -238,22 +241,27 @@ credentials, or keypair passwords.
 
 ## Phase 1: Release Verification
 
-Use the signed release that passed CI. For the current package:
+Use the immutable signed release and approved mainnet inventory selected in
+the dated launch record. Set both variables before these checks:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.266
-export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
+: "${LICHEN_RELEASE_TAG:?Set the qualified release tag from the launch record}"
+: "${LICHEN_MAINNET_VPS_HOSTS:?Set the approved mainnet inventory from the launch record}"
 ```
 
 Required release checks:
 
 ```bash
 git fetch origin --tags
-git rev-parse "$LICHEN_RELEASE_TAG"
-git tag -v "$LICHEN_RELEASE_TAG" || true
-gh run list --branch main --limit 10
+git rev-parse "$LICHEN_RELEASE_TAG^{}"
+gh run list --workflow Release --branch "$LICHEN_RELEASE_TAG" --event push \
+  --json databaseId,headSha,status,conclusion
 gh release view "$LICHEN_RELEASE_TAG" --json url,isDraft,isPrerelease,assets
 ```
+
+Require the successful immutable tag workflow's head SHA to match the resolved
+tag commit and every required release job to pass. Verify any required Git tag
+signature separately; it does not replace the detached PQ checksum signature.
 
 Expected release assets:
 
@@ -282,13 +290,14 @@ The rolling deploy script verifies the detached PQ signature over `SHA256SUMS`
 before it installs anything on a VPS. Do not bypass that gate during rollout.
 
 There is no supported downgrade to v0.5.225 because its initial post-effects
-cursor is not restart-safe on a mature activated chain. For recovery, explicitly
-reinstall the current signed safe anchor through the same release path:
+cursor is not restart-safe on a mature activated chain. For recovery, select
+the explicitly recorded signed rollback and verify it against actual state
+and retirement schemas. Use coordinated stop/install/start when consensus
+compatibility requires it. This verification command does not deploy:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.265
+: "${LICHEN_RELEASE_TAG:?Set the recorded compatible signed rollback tag}"
 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh mainnet
-bash scripts/rolling-release-deploy.sh mainnet
 ```
 
 Do not reset RocksDB state for a code rollback unless a separate incident

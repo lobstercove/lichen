@@ -418,7 +418,9 @@ impl StateStore {
             }
         }
         let archive_end = before_cursor.map(|(slot, _)| slot).unwrap_or(u64::MAX);
-        for (key, value) in self.archive_v2_category_rows("token_transfers", 0, archive_end)? {
+        for (key, value) in
+            self.archive_v2_category_rows_with_prefix("token_transfers", 0, archive_end, &prefix)?
+        {
             if !key.starts_with(&prefix) || key.len() < 48 {
                 continue;
             }
@@ -839,7 +841,9 @@ impl StateStore {
                     )?;
                 }
             }
-            for (key, _) in self.archive_v2_category_rows("account_txs", 0, u64::MAX)? {
+            for (key, _) in
+                self.archive_v2_category_rows_with_prefix("account_txs", 0, u64::MAX, &pubkey.0)?
+            {
                 if key.starts_with(&pubkey.0) && key.len() >= 76 {
                     keys.insert(key);
                 }
@@ -922,7 +926,9 @@ impl StateStore {
             }
         }
         let archive_end = before_cursor.map(|(slot, _)| slot).unwrap_or(u64::MAX);
-        for (key, _) in self.archive_v2_category_rows("account_txs", 0, archive_end)? {
+        for (key, _) in
+            self.archive_v2_category_rows_with_prefix("account_txs", 0, archive_end, &pubkey.0)?
+        {
             if !key.starts_with(&pubkey.0) {
                 continue;
             }
@@ -1061,8 +1067,19 @@ impl StateStore {
             }
         }
 
+        // The hot iterator already returns canonical rows newest first. Once
+        // it fills the requested page, strictly older archive slots cannot
+        // enter that page. Include the boundary slot so overlapping partitions
+        // and transaction ordinals at that slot still merge exactly.
+        let archive_start = if results.len() >= limit {
+            results.last().map(|(_, slot, _)| *slot).unwrap_or(0)
+        } else {
+            0
+        };
         let archive_end = before_cursor.map(|(slot, _)| slot).unwrap_or(u64::MAX);
-        for (key, value) in self.archive_v2_category_rows("tx_by_slot", 0, archive_end)? {
+        for (key, value) in
+            self.archive_v2_category_rows("tx_by_slot", archive_start, archive_end)?
+        {
             if key.len() != 16 || value.len() != 32 {
                 return Err("Corrupt Archive V2 tx-by-slot row".to_string());
             }

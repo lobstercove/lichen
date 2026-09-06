@@ -76,7 +76,7 @@ impl StateStore {
             _ => None,
         };
         let archive_v2 = self
-            .archive_v2_category_rows("account_snapshots", 0, target_slot)?
+            .archive_v2_category_rows_with_prefix("account_snapshots", 0, target_slot, &pubkey.0)?
             .into_iter()
             .rev()
             .find_map(|(key, value)| {

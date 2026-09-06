@@ -5,12 +5,17 @@ mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
 Written for the next mainnet package. Release line for this runbook is
-`v0.5.280`; keep `v0.5.265` as the signed restart-safe anchor and immediate
-rollback. The release must not be used until its exact tag and signed artifacts
+`v0.5.281`. Preserve the signed `v0.5.280` Testnet rollback and `v0.5.265`
+restart-safe anchor. Fresh mainnet requires its own validated rollback plan.
+The release must not be used until its exact tag and signed artifacts
 pass the release gates. Historical tags and audit records remain in Git; they
 are not installed rollback binaries. Mainnet remains blocked until production
 storage, full-scope launch gates, independent review, and deployment approval
 pass.
+
+Before deployment, follow the shared
+[Archive V2 preflight](../docs/deployment/ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md)
+with the actual network, catalog, certificate and capacity inputs.
 
 ## Operating Rules
 
@@ -59,7 +64,7 @@ pass.
   custody was lost; mainnet must launch from verified custody instead.
 - Do not deploy a release that changes consensus rules with a mixed-version
   rolling restart. The current safe anchor `v0.5.265` must remain available
-until `v0.5.280` is signed, fully qualified, deployed, and explicitly
+until `v0.5.281` is signed, fully qualified, deployed, and explicitly
   recorded as restart-safe.
 - Do not commit provider URLs, auth tokens, keypair passwords, custody seeds,
   funded keypairs, signing keys, or filled production env files.
@@ -246,22 +251,27 @@ credentials, or keypair passwords.
 
 ## Phase 1: Release Verification
 
-Use the signed release that passed CI. For the current package:
+Use the signed release that passed CI and is selected in the dated launch
+record. For this candidate package, after qualification:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.280
-export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
+export LICHEN_RELEASE_TAG=v0.5.281
+: "${LICHEN_MAINNET_VPS_HOSTS:?Set the approved mainnet inventory from the launch record}"
 ```
 
 Required release checks:
 
 ```bash
 git fetch origin --tags
-git rev-parse "$LICHEN_RELEASE_TAG"
-git tag -v "$LICHEN_RELEASE_TAG" || true
-gh run list --branch main --limit 10
+git rev-parse "$LICHEN_RELEASE_TAG^{}"
+gh run list --workflow Release --branch "$LICHEN_RELEASE_TAG" --event push \
+  --json databaseId,headSha,status,conclusion
 gh release view "$LICHEN_RELEASE_TAG" --json url,isDraft,isPrerelease,assets
 ```
+
+Require the resolved tag commit to match the successful immutable workflow,
+with every required job complete. A Git tag signature does not replace the
+detached PQ checksum signature.
 
 Expected release assets:
 
@@ -293,13 +303,13 @@ signature over `SHA256SUMS` before it installs anything on a VPS. Do not bypass
 that gate during rollout.
 
 There is no supported downgrade to v0.5.225 because its initial post-effects
-cursor is not restart-safe on a mature activated chain. For recovery, explicitly
-reinstall the current signed safe anchor through the same release path:
+cursor is not restart-safe on a mature activated chain. Select the explicitly
+recorded state-compatible signed rollback before recovery. This verifies its
+release only; deployment must follow the coordinated recovery procedure:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.265
+: "${LICHEN_RELEASE_TAG:?Set the recorded compatible signed rollback tag}"
 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh mainnet
-bash scripts/rolling-release-deploy.sh mainnet
 ```
 
 Do not reset RocksDB state for a code rollback unless a separate incident

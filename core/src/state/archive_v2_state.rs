@@ -809,6 +809,16 @@ impl StateStore {
         start_slot: u64,
         end_slot: u64,
     ) -> Result<ArchiveV2Rows, String> {
+        self.archive_v2_category_rows_with_prefix(category, start_slot, end_slot, &[])
+    }
+
+    pub(super) fn archive_v2_category_rows_with_prefix(
+        &self,
+        category: &str,
+        start_slot: u64,
+        end_slot: u64,
+        prefix: &[u8],
+    ) -> Result<ArchiveV2Rows, String> {
         let Some(reader) = self.archive_v2_reader() else {
             return Ok(Vec::new());
         };
@@ -819,7 +829,7 @@ impl StateStore {
             return Ok(Vec::new());
         }
         reader
-            .category_rows(category, start_slot, end_slot)
+            .category_rows_with_prefix(category, start_slot, end_slot, prefix)
             .map_err(|error| error.to_string())
     }
 
@@ -1220,6 +1230,134 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn recent_hot_page_does_not_fetch_older_archive_segments() {
+        let state_root = tempdir().unwrap();
+        let archive_root = tempdir().unwrap();
+        let remote_root = tempdir().unwrap();
+        let cache_root = tempdir().unwrap();
+        let state = StateStore::open(state_root.path()).unwrap();
+        let archived_transaction = Transaction::new(crate::Message::new(
+            vec![crate::Instruction {
+                program_id: crate::Pubkey([1; 32]),
+                accounts: vec![crate::Pubkey([2; 32])],
+                data: vec![4; 64],
+            }],
+            Hash::default(),
+        ));
+        let archived_signature = archived_transaction.signature();
+        let genesis = Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::default(),
+            [5; 32],
+            vec![archived_transaction],
+            1,
+        );
+        let identity = ArchiveV2Identity {
+            network_id: "recent-page-regression".to_string(),
+            genesis_hash: genesis.hash(),
+        };
+        let (bytes, manifest) = ArchiveV2SegmentCodec::encode(
+            identity.clone(),
+            None,
+            Hash::default(),
+            &ArchiveV2SegmentContents::from_blocks(vec![genesis.clone()]),
+            &ArchiveV2CodecConfig::default(),
+        )
+        .unwrap();
+        fs::create_dir_all(remote_root.path().join("objects")).unwrap();
+        fs::write(
+            remote_root
+                .path()
+                .join("objects")
+                .join(format!("{}.av2s", manifest.segment_object_hash)),
+            &bytes,
+        )
+        .unwrap();
+        let mut catalog = ArchiveV2Catalog::empty(identity.clone()).unwrap();
+        catalog.append(manifest).unwrap();
+        let catalog_path = archive_root.path().join("catalog.av2");
+        catalog.store_atomic(&catalog_path).unwrap();
+        let transaction = Transaction::new(crate::Message::new(
+            vec![crate::Instruction {
+                program_id: crate::Pubkey([1; 32]),
+                accounts: vec![crate::Pubkey([2; 32])],
+                data: vec![3; 64],
+            }],
+            genesis.hash(),
+        ));
+        let signature = transaction.signature();
+        let recent = Block::new_with_timestamp(
+            1,
+            genesis.hash(),
+            Hash::default(),
+            [5; 32],
+            vec![transaction],
+            2,
+        );
+        state.put_block_atomic(&recent, None, None).unwrap();
+        state.attach_archive_v2_reader(
+            ArchiveV2Reader::open(
+                identity,
+                &catalog_path,
+                ArchiveV2ReaderConfig {
+                    role: ArchiveV2Role::VerifiedCache,
+                    root: archive_root.path().to_path_buf(),
+                    cache_root: Some(cache_root.path().to_path_buf()),
+                    cache_quota_bytes: bytes.len() as u64 + 1024,
+                    max_decoded_segments: 1,
+                    allow_remote_fetch: true,
+                    sources: vec![Arc::new(ArchiveV2DirectorySource::new(
+                        "test-source",
+                        remote_root.path(),
+                        true,
+                    ))],
+                },
+            )
+            .unwrap(),
+        );
+        state.mark_archive_v2_admitted_after_fresh_sync().unwrap();
+        assert_eq!(
+            state.get_recent_txs_paginated_exact(1, None).unwrap(),
+            vec![(signature, 1, 0)]
+        );
+        assert_eq!(
+            state.archive_v2_status().unwrap().remote_fetches,
+            0,
+            "a complete hot page must not fetch strictly older archive data"
+        );
+        assert_eq!(
+            state.get_recent_user_txs_paginated_exact(1, None).unwrap(),
+            vec![(signature, 1, 0)]
+        );
+        assert_eq!(
+            state.archive_v2_status().unwrap().remote_fetches,
+            0,
+            "the user-only RPC page must also stay inside the hot suffix"
+        );
+        assert_eq!(
+            state.get_recent_txs_paginated_exact(2, None).unwrap(),
+            vec![(signature, 1, 0), (archived_signature, 0, 0)],
+            "a partial hot page must still include authenticated history"
+        );
+        assert_eq!(state.archive_v2_status().unwrap().remote_fetches, 1);
+        assert_eq!(
+            state
+                .get_recent_txs_paginated_exact(1, Some((1, 0)))
+                .unwrap(),
+            vec![(archived_signature, 0, 0)],
+            "pagination must continue across the hot/archive boundary"
+        );
+        // An overlapping hot row at the catalog boundary cannot exclude other
+        // canonical ordinals in that same slot, and must deduplicate exactly.
+        state.put_block_atomic(&genesis, None, None).unwrap();
+        assert_eq!(
+            state.get_recent_txs_paginated_exact(2, None).unwrap(),
+            vec![(signature, 1, 0), (archived_signature, 0, 0)]
+        );
+    }
     use crate::archive_v2::{
         ArchiveV2Catalog, ArchiveV2CodecConfig, ArchiveV2DirectorySource, ArchiveV2Identity,
         ArchiveV2ReaderConfig, ArchiveV2SegmentCodec, ArchiveV2SegmentContents,
