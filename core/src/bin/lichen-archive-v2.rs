@@ -62,6 +62,7 @@ fn run(raw: Vec<String>) -> Result<(), String> {
         "role-preflight" => run_role_preflight(&args),
         "role-bootstrap" => run_role_bootstrap(&args),
         "snapshot-hot" => run_snapshot_hot(&args),
+        "prewarm-indexes" => run_prewarm_indexes(&args),
         "verify" => run_verify(&args),
         "repair" => run_repair(&args),
         "declare-legacy-loss" => run_declare_legacy_loss(&args),
@@ -79,7 +80,7 @@ fn run(raw: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         _ => Err(format!(
-            "unknown command {command:?}; expected status, catalog-extension-check, role-preflight, role-bootstrap, snapshot-hot, verify, repair, declare-legacy-loss, build, mirror, restore, retirement-authorize, retirement-pass, retirement-reclaim, public-history-manifest, profile-source, or benchmark"
+            "unknown command {command:?}; expected status, catalog-extension-check, role-preflight, role-bootstrap, snapshot-hot, prewarm-indexes, verify, repair, declare-legacy-loss, build, mirror, restore, retirement-authorize, retirement-pass, retirement-reclaim, public-history-manifest, profile-source, or benchmark"
         )),
     }
 }
@@ -237,6 +238,128 @@ fn run_status(args: &CommandArgs) -> Result<(), String> {
         "missing_objects_first_100": missing_objects,
         "missing_manifests_first_100": missing_manifests,
         "complete_local_inventory": missing_object_count == 0 && missing_manifest_count == 0,
+    }))
+}
+
+fn run_prewarm_indexes(args: &CommandArgs) -> Result<(), String> {
+    args.ensure_only(
+        &[
+            "root",
+            "source-root",
+            "cache-root",
+            "cache-quota-bytes",
+            "reserve-bytes",
+            "network-id",
+            "genesis-hash",
+            "catalog-root",
+        ],
+        &["acknowledge-stopped-validator", "dry-run"],
+    )?;
+    let dry_run = args.flag("dry-run");
+    if !dry_run && !args.flag("acknowledge-stopped-validator") {
+        return Err("prewarm-indexes requires --acknowledge-stopped-validator".to_string());
+    }
+    let root = PathBuf::from(args.required("root")?)
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let source = PathBuf::from(args.required("source-root")?)
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    // Require the cache directory to exist so path and capacity checks refer to
+    // the actual filesystem, including symlinks and mounted cache volumes.
+    let cache = PathBuf::from(args.required("cache-root")?)
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    if cache.starts_with(&source)
+        || source.starts_with(&cache)
+        || cache.starts_with(&root)
+        || root.starts_with(&cache)
+    {
+        return Err("cache must be separate from the source and catalog root".to_string());
+    }
+    let catalog = ArchiveV2Catalog::load(&root.join("catalog.av2")).map_err(|e| e.to_string())?;
+    if args.required("network-id")? != catalog.identity.network_id
+        || args.required("genesis-hash")? != catalog.identity.genesis_hash.to_hex()
+        || args.required("catalog-root")? != catalog.catalog_root.to_hex()
+    {
+        return Err("prewarm network, genesis or catalog identity does not match".to_string());
+    }
+    let quota = parse_u64(args.required("cache-quota-bytes")?, "cache-quota-bytes")?;
+    let reserve = parse_u64(args.required("reserve-bytes")?, "reserve-bytes")?;
+    let floor = if catalog.identity.network_id == "lichen-testnet-1" {
+        TESTNET_CAPACITY_FLOOR_BYTES
+    } else {
+        DEFAULT_CAPACITY_FLOOR_BYTES
+    };
+    if reserve < floor {
+        return Err(format!("--reserve-bytes must be at least {floor}"));
+    }
+    let required = active_manifests(&catalog)?
+        .into_iter()
+        .try_fold(0_u64, |total, manifest| {
+            let size = ArchiveV2SegmentCodec::public_index_cache_size(manifest)
+                .map_err(|e| e.to_string())? as u64;
+            total
+                .checked_add(size)
+                .ok_or_else(|| "index cache size overflow".to_string())
+        })?;
+    if quota == 0 || required > quota {
+        return Err(format!(
+            "catalog indexes require {required} bytes, cache quota is {quota}"
+        ));
+    }
+    let available = cli_filesystem_capacity(&cache)?.available_bytes;
+    let minimum_free = reserve
+        .checked_add(quota)
+        .ok_or_else(|| "cache reserve overflow".to_string())?;
+    if available < minimum_free {
+        return Err(format!(
+            "cache filesystem has {available} bytes free, requires {minimum_free}"
+        ));
+    }
+    // Authenticate every source envelope and index before any cache mutation.
+    // Both dry-run and execution therefore test the complete actual input set.
+    for manifest in active_manifests(&catalog)? {
+        ArchiveV2SegmentCodec::public_index_cache_at_path(
+            &object_path(&source, &manifest.segment_object_hash),
+            manifest,
+            &catalog.identity,
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let count = if dry_run {
+        0
+    } else {
+        let reader = ArchiveV2Reader::open(
+            catalog.identity.clone(),
+            &root.join("catalog.av2"),
+            ArchiveV2ReaderConfig {
+                role: ArchiveV2Role::FullArchive,
+                root: root.clone(),
+                cache_root: Some(cache.clone()),
+                cache_quota_bytes: quota,
+                max_decoded_segments: 1,
+                allow_remote_fetch: false,
+                sources: Vec::new(),
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        reader
+            .prewarm_public_indexes(&source)
+            .map_err(|e| e.to_string())?
+    };
+    let remaining = cli_filesystem_capacity(&cache)?.available_bytes;
+    if remaining < reserve {
+        return Err("cache filesystem fell below reserve".to_string());
+    }
+    print_json(&json!({
+        "operation": "prewarm-indexes", "dry_run": dry_run,
+        "network_id": catalog.identity.network_id, "genesis_hash": catalog.identity.genesis_hash.to_hex(),
+        "catalog_root": catalog.catalog_root.to_hex(), "segments": catalog.entries.len(),
+        "verified_source_indexes": catalog.entries.len(), "cached_indexes": count,
+        "required_index_bytes": required, "cache_quota_bytes": quota,
+        "remaining_free_bytes": remaining, "reserve_bytes": reserve,
+        "whole_objects_verified": false,
     }))
 }
 
@@ -2894,7 +3017,7 @@ fn write_bytes_create_new(path: &Path, encoded: &[u8]) -> Result<(), String> {
 
 fn print_usage() {
     println!(
-        "lichen-archive-v2 <status|catalog-extension-check|role-preflight|role-bootstrap|snapshot-hot|verify|repair|declare-legacy-loss|build|mirror|restore|retirement-authorize|retirement-pass|retirement-reclaim|public-history-manifest|profile-source|benchmark> [options]\n\
+        "lichen-archive-v2 <status|catalog-extension-check|role-preflight|role-bootstrap|snapshot-hot|prewarm-indexes|verify|repair|declare-legacy-loss|build|mirror|restore|retirement-authorize|retirement-pass|retirement-reclaim|public-history-manifest|profile-source|benchmark> [options]\n\
          Run `lichen-archive-v2 <command> --help` is intentionally unsupported; unknown options fail closed.\n\
          Retirement authorization accepts paired --start-slot/--end-slot bounds inside one verified segment; omitting both authorizes the full segment.\n\
          Replica specifications use name:failure-domain:path. Retirement evidence uses destination,failure-domain,verified-unix-seconds. Verify and mirror default to one object per pass."
@@ -2904,6 +3027,93 @@ fn print_usage() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn index_prewarm_checks_actual_inputs_before_mutation() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("catalog");
+        let source = temporary.path().join("source");
+        let cache = temporary.path().join("cache");
+        for path in [&root, &source.join("objects"), &cache] {
+            fs::create_dir_all(path).unwrap();
+        }
+        let block = lichen_core::Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::default(),
+            [0; 32],
+            Vec::new(),
+            1,
+        );
+        let identity = ArchiveV2Identity {
+            network_id: "lichen-testnet-1".to_string(),
+            genesis_hash: block.hash(),
+        };
+        let (bytes, manifest) = ArchiveV2SegmentCodec::encode(
+            identity.clone(),
+            None,
+            Hash::default(),
+            &lichen_core::archive_v2::ArchiveV2SegmentContents::from_blocks(vec![block]),
+            &ArchiveV2CodecConfig::default(),
+        )
+        .unwrap();
+        let required = ArchiveV2SegmentCodec::public_index_cache_size(&manifest).unwrap() as u64;
+        let source_path = object_path(&source, &manifest.segment_object_hash);
+        fs::write(&source_path, &bytes).unwrap();
+        let mut catalog = ArchiveV2Catalog::empty(identity.clone()).unwrap();
+        catalog.append(manifest).unwrap();
+        catalog.store_atomic(&root.join("catalog.av2")).unwrap();
+        let mut args = CommandArgs::default();
+        for (key, value) in [
+            ("root", root.display().to_string()),
+            ("source-root", source.display().to_string()),
+            ("cache-root", cache.display().to_string()),
+            ("cache-quota-bytes", required.to_string()),
+            ("reserve-bytes", TESTNET_CAPACITY_FLOOR_BYTES.to_string()),
+            ("network-id", identity.network_id),
+            ("genesis-hash", identity.genesis_hash.to_hex()),
+            ("catalog-root", catalog.catalog_root.to_hex()),
+        ] {
+            args.values.insert(key.to_string(), vec![value]);
+        }
+        assert!(run_prewarm_indexes(&args)
+            .unwrap_err()
+            .contains("acknowledge-stopped-validator"));
+        args.flags.insert("dry-run".to_string());
+        args.values.insert(
+            "cache-quota-bytes".to_string(),
+            vec![(required - 1).to_string()],
+        );
+        assert!(run_prewarm_indexes(&args)
+            .unwrap_err()
+            .contains("cache quota"));
+        args.values
+            .insert("cache-quota-bytes".to_string(), vec![required.to_string()]);
+        args.values
+            .insert("catalog-root".to_string(), vec![Hash::default().to_hex()]);
+        assert!(run_prewarm_indexes(&args).unwrap_err().contains("identity"));
+        args.values.insert(
+            "catalog-root".to_string(),
+            vec![catalog.catalog_root.to_hex()],
+        );
+        fs::write(&source_path, b"corrupt").unwrap();
+        assert!(run_prewarm_indexes(&args).is_err());
+        assert_eq!(fs::read_dir(&cache).unwrap().count(), 0);
+        fs::write(&source_path, &bytes).unwrap();
+        run_prewarm_indexes(&args).unwrap();
+        assert_eq!(fs::read_dir(&cache).unwrap().count(), 0);
+        args.flags.remove("dry-run");
+        args.flags
+            .insert("acknowledge-stopped-validator".to_string());
+        run_prewarm_indexes(&args).unwrap();
+        run_prewarm_indexes(&args).unwrap();
+        let cached_bytes: u64 = fs::read_dir(cache.join("indexes"))
+            .unwrap()
+            .map(|entry| entry.unwrap().metadata().unwrap().len())
+            .sum();
+        assert_eq!(cached_bytes, required);
+        assert_eq!(fs::read(source_path).unwrap(), bytes);
+    }
 
     #[test]
     fn short_role_preflight_policy_is_explicit_local_dev_only() {

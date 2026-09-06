@@ -712,7 +712,9 @@ impl StateStore {
             limit,
             Direction::Reverse,
         )?;
-        for (key, _) in self.archive_v2_category_rows("dex_trades_by_pair", 0, u64::MAX)? {
+        for (key, _) in
+            self.archive_v2_category_rows_with_prefix("dex_trades_by_pair", 0, u64::MAX, &prefix)?
+        {
             if key.len() == 16 && key.starts_with(&prefix) {
                 ids.push(u64::from_be_bytes(key[8..16].try_into().unwrap()));
             }
@@ -743,7 +745,9 @@ impl StateStore {
             limit,
             Direction::Reverse,
         )?;
-        for (key, _) in self.archive_v2_category_rows("dex_trades_by_taker", 0, u64::MAX)? {
+        for (key, _) in
+            self.archive_v2_category_rows_with_prefix("dex_trades_by_taker", 0, u64::MAX, &taker)?
+        {
             if key.len() == 40 && key.starts_with(&taker) {
                 ids.push(u64::from_be_bytes(key[32..40].try_into().unwrap()));
             }
@@ -779,7 +783,12 @@ impl StateStore {
             limit,
             Direction::Reverse,
         )?;
-        for (key, _) in self.archive_v2_category_rows("dex_trades_by_pair_taker", 0, u64::MAX)? {
+        for (key, _) in self.archive_v2_category_rows_with_prefix(
+            "dex_trades_by_pair_taker",
+            0,
+            u64::MAX,
+            &prefix,
+        )? {
             if key.len() == 48 && key.starts_with(&prefix) {
                 ids.push(u64::from_be_bytes(key[40..48].try_into().unwrap()));
             }

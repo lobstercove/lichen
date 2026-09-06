@@ -1,5 +1,14 @@
 # Archive V2 Activation, Cadence Recovery, And Validator Liveness Plan
 
+**Current status, September 6:** `v0.5.281` is the only successor candidate
+for the confirmed Archive V2 query/runtime defects. All four validators run
+signed v0.5.280 on the preserved baseline after activation recovery. Internal
+gateway TLS and checkpoint headroom passed; full activation remains pending.
+Use [the current deployment preflight](ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md) and
+[v0.5.281 qualification](../audits/V0.5.281_ARCHIVE_QUERY_RUNTIME_2026-09-06.md).
+The dated execution narrative below is historical provenance and does not
+authorize replaying old recovery, repair, PID-bound or credential commands.
+
 **Date:** 2026-08-18
 **Last updated:** 2026-09-03
 **Status:** Authoritative execution plan. Signed `v0.5.274` is installed on all
@@ -130,7 +139,7 @@ The restart then proved pending next-height WAL values still bound the old
 parent root. `v0.5.279` implemented the exact WAL-preserving rollback and
 canonical post-block activation at slot `12,333,500`, but its immutable release
 job reached the former 90-minute Archive V2 limit during a green post-activity
-restart matrix and produced no artifacts. `v0.5.280` is the only successor candidate,
+restart matrix and produced no artifacts. At that checkpoint, `v0.5.280` was the successor candidate,
 a harness-only release with the same runtime behavior and a 150-minute gate. The
 full state boundary is recorded in the v0.5.279 production-readiness addendum.
 

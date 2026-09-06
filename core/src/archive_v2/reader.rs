@@ -18,6 +18,8 @@ use crate::{Block, Hash, Transaction};
 
 static QUARANTINE_NONCE: AtomicU64 = AtomicU64::new(0);
 
+mod index_cache;
+
 pub trait ArchiveV2ObjectSource: Send + Sync {
     fn name(&self) -> &str;
     fn authenticated(&self) -> bool;
@@ -354,6 +356,18 @@ impl ArchiveV2Reader {
         start_slot: u64,
         end_slot: u64,
     ) -> Result<super::ArchiveV2Rows, ArchiveV2Error> {
+        self.category_rows_with_prefix(category, start_slot, end_slot, &[])
+    }
+
+    /// Filter authenticated rows before accumulating results across segments.
+    /// Empty prefixes preserve the complete category used by offline audits.
+    pub fn category_rows_with_prefix(
+        &self,
+        category: &str,
+        start_slot: u64,
+        end_slot: u64,
+        prefix: &[u8],
+    ) -> Result<super::ArchiveV2Rows, ArchiveV2Error> {
         self.ensure_deep_history()?;
         if end_slot < start_slot {
             return Err(ArchiveV2Error::Bounds(
@@ -366,6 +380,37 @@ impl ArchiveV2Reader {
                 .catalog
                 .active_manifest(&entry.manifest.segment_object_hash)?;
             if manifest.end_slot < start_slot || manifest.start_slot > end_slot {
+                continue;
+            }
+            if !matches!(
+                category,
+                "slots" | "blocks" | "transactions" | "tx_by_slot" | "tx_to_slot"
+            ) {
+                let indexes = self.public_indexes(
+                    manifest,
+                    super::codec::ArchiveV2IndexRowQuery {
+                        category,
+                        prefix,
+                        start_slot,
+                        end_slot,
+                    },
+                )?;
+                if let Some(category_rows) = indexes.categories.get(category) {
+                    let start = category_rows.partition_point(|row| row.key.as_slice() < prefix);
+                    for row in category_rows[start..]
+                        .iter()
+                        .take_while(|row| row.key.starts_with(prefix))
+                    {
+                        if (start_slot..=end_slot).contains(&row.slot) {
+                            insert_category_row(
+                                &mut rows,
+                                row.key.clone(),
+                                row.value.clone(),
+                                category,
+                            )?;
+                        }
+                    }
+                }
                 continue;
             }
             let segment = self.load_segment(manifest)?;
@@ -458,24 +503,13 @@ impl ArchiveV2Reader {
                         }
                     }
                 }
-                _ => {
-                    if let Some(category_rows) = segment.indexes.categories.get(category) {
-                        for row in category_rows {
-                            if row.slot < start_slot || row.slot > end_slot {
-                                continue;
-                            }
-                            insert_category_row(
-                                &mut rows,
-                                row.key.clone(),
-                                row.value.clone(),
-                                category,
-                            )?;
-                        }
-                    }
-                }
+                _ => unreachable!("raw categories handled by authenticated indexes above"),
             }
         }
-        Ok(rows.into_iter().collect())
+        Ok(rows
+            .into_iter()
+            .filter(|(key, _)| key.starts_with(prefix))
+            .collect())
     }
 
     pub fn category_value(
@@ -488,16 +522,20 @@ impl ArchiveV2Reader {
             let manifest = self
                 .catalog
                 .active_manifest(&entry.manifest.segment_object_hash)?;
-            if let Some(value) = self.read_authenticated_point(manifest, |path| {
-                ArchiveV2SegmentCodec::decode_category_value_at_path(
-                    path,
-                    manifest,
-                    &self.identity,
+            let indexes = self.public_indexes(
+                manifest,
+                super::codec::ArchiveV2IndexRowQuery {
                     category,
-                    key,
-                )
-            })? {
-                return Ok(Some(value));
+                    prefix: key,
+                    start_slot: 0,
+                    end_slot: u64::MAX,
+                },
+            )?;
+            if let Some(rows) = indexes.categories.get(category) {
+                if let Ok(index) = rows.binary_search_by(|row| row.key.as_slice().cmp(key)) {
+                    let row = &rows[index];
+                    return Ok(Some((row.slot, row.value.clone())));
+                }
             }
         }
         Ok(None)
@@ -981,44 +1019,56 @@ fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), ArchiveV2Error> {
 }
 
 fn cache_size(root: &Path) -> Result<u64, ArchiveV2Error> {
-    let objects = root.join("objects");
-    if !objects.exists() {
-        return Ok(0);
-    }
     let mut total = 0u64;
-    for entry in fs::read_dir(objects)? {
-        let entry = entry?;
-        if entry.file_type()?.is_file() {
-            total = total.saturating_add(entry.metadata()?.len());
+    for kind in ["objects", "indexes"] {
+        let directory = root.join(kind);
+        if !directory.exists() {
+            continue;
+        }
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            if entry.file_type()?.is_file() {
+                total = total.saturating_add(entry.metadata()?.len());
+            }
         }
     }
     Ok(total)
 }
 
 fn evict_cache_until(root: &Path, target_bytes: u64) -> Result<(), ArchiveV2Error> {
-    let objects = root.join("objects");
-    if !objects.exists() {
-        return Ok(());
-    }
     let mut files = Vec::new();
     let mut total = 0u64;
-    for entry in fs::read_dir(&objects)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {
+    // Index bundles serve many queries and are much smaller than bodies. Keep
+    // them preferentially, while charging both tiers to the same hard quota.
+    for (priority, kind) in ["objects", "indexes"].into_iter().enumerate() {
+        let directory = root.join(kind);
+        if !directory.exists() {
             continue;
         }
-        let metadata = entry.metadata()?;
-        total = total.saturating_add(metadata.len());
-        files.push((
-            metadata
-                .modified()
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
-            entry.path(),
-            metadata.len(),
-        ));
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let metadata = entry.metadata()?;
+            total = total.saturating_add(metadata.len());
+            files.push((
+                priority,
+                metadata
+                    .modified()
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+                entry.path(),
+                metadata.len(),
+            ));
+        }
     }
-    files.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
-    for (_, path, bytes) in files {
+    files.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.2.cmp(&right.2))
+    });
+    for (_, _, path, bytes) in files {
         if total <= target_bytes {
             break;
         }
@@ -1266,6 +1316,115 @@ mod tests {
             vec![(b"event-key".to_vec(), b"event-value".to_vec())]
         );
         assert!(reader.category_rows("events", 1, 1).unwrap().is_empty());
+        assert_eq!(
+            reader
+                .category_rows_with_prefix("events", 0, 0, b"event-")
+                .unwrap(),
+            reader.category_rows("events", 0, 0).unwrap()
+        );
+        for prefix in [b"a".as_slice(), b"event-key-extra", b"z"] {
+            assert!(reader
+                .category_rows_with_prefix("events", 0, 0, prefix)
+                .unwrap()
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn prewarmed_indexes_survive_source_outage_and_reject_corruption() {
+        let local = tempdir().unwrap();
+        let source = tempdir().unwrap();
+        let cache = tempdir().unwrap();
+        let (identity, _, bytes, manifest) = fixture(local.path());
+        let source_path = object_path(source.path(), &manifest.segment_object_hash);
+        write_new_synced(&source_path, &bytes).unwrap();
+        let bundle_bytes =
+            ArchiveV2SegmentCodec::public_index_cache_size(&manifest).unwrap() as u64;
+        let config = |quota| ArchiveV2ReaderConfig {
+            role: ArchiveV2Role::VerifiedCache,
+            root: local.path().to_path_buf(),
+            cache_root: Some(cache.path().to_path_buf()),
+            cache_quota_bytes: quota,
+            max_decoded_segments: 1,
+            allow_remote_fetch: true,
+            sources: vec![Arc::new(ArchiveV2DirectorySource::new(
+                "source",
+                source.path(),
+                true,
+            ))],
+        };
+        let too_small = ArchiveV2Reader::open(
+            identity.clone(),
+            &local.path().join("catalog.av2"),
+            config(bundle_bytes - 1),
+        )
+        .unwrap();
+        assert!(matches!(
+            too_small.prewarm_public_indexes(source.path()),
+            Err(ArchiveV2Error::Bounds(_))
+        ));
+        assert_eq!(cache_size(cache.path()).unwrap(), 0);
+        let reader = ArchiveV2Reader::open(
+            identity,
+            &local.path().join("catalog.av2"),
+            config(bundle_bytes),
+        )
+        .unwrap();
+        assert_eq!(reader.prewarm_public_indexes(source.path()).unwrap(), 1);
+        assert_eq!(reader.prewarm_public_indexes(source.path()).unwrap(), 1);
+        assert_eq!(cache_size(cache.path()).unwrap(), bundle_bytes);
+        fs::remove_file(&source_path).unwrap();
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    assert_eq!(
+                        reader
+                            .category_rows_with_prefix("events", 0, 0, b"event")
+                            .unwrap(),
+                        vec![(b"event-key".to_vec(), b"event-value".to_vec())]
+                    );
+                });
+            }
+        });
+        assert_eq!(reader.status().remote_fetches, 0);
+        assert_eq!(reader.status().verified_objects, 0);
+        assert!(reader.decoded.lock().unwrap().is_empty());
+        assert!(
+            reader.get_block(0).is_err(),
+            "index availability must not claim body availability"
+        );
+        let index_path = cache
+            .path()
+            .join("indexes")
+            .join(format!("{}.av2i", manifest.segment_object_hash.to_hex()));
+        let mut corrupted = fs::read(&index_path).unwrap();
+        *corrupted.last_mut().unwrap() ^= 1;
+        fs::write(&index_path, corrupted).unwrap();
+        assert!(reader.category_value("events", b"event-key").is_err());
+        assert_eq!(reader.status().quarantined_objects, 1);
+        assert!(!index_path.exists());
+        write_new_synced(&source_path, &bytes).unwrap();
+        assert_eq!(reader.prewarm_public_indexes(source.path()).unwrap(), 1);
+        assert_eq!(
+            reader.category_value("events", b"event-key").unwrap(),
+            Some((0, b"event-value".to_vec()))
+        );
+    }
+
+    #[test]
+    fn object_and_index_caches_share_one_quota_with_body_eviction_first() {
+        let root = tempdir().unwrap();
+        let body = root.path().join("objects").join("body");
+        let index = root.path().join("indexes").join("index");
+        write_new_synced(&index, &[1; 20]).unwrap();
+        write_new_synced(&body, &[2; 80]).unwrap();
+        assert_eq!(cache_size(root.path()).unwrap(), 100);
+        evict_cache_until(root.path(), 50).unwrap();
+        assert!(!body.exists());
+        assert!(index.exists());
+        assert_eq!(cache_size(root.path()).unwrap(), 20);
+        evict_cache_until(root.path(), 0).unwrap();
+        assert!(!index.exists());
     }
 
     #[test]

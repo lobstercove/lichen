@@ -15,17 +15,23 @@ Use this document as the canonical workflow for:
 
 This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
 
-The target testnet release for this runbook is `v0.5.280`; the installed signed
-fleet release is `v0.5.278`, and the immediate restart-safe anchor is
-`v0.5.265`. Install `v0.5.280` only after
+The target testnet release for this runbook is `v0.5.281`; the installed signed
+fleet release is `v0.5.280` on the preserved baseline. Archive V2 activation
+and full acceptance remain incomplete. Preserve its signed rollback artifacts
+and the `v0.5.265` restart-safe anchor. Install `v0.5.281` only after
 its exact tag workflow, attestations, checksums, detached PQ signature, and
-four-validator Archive V2 gate pass. Once the fleet is proven on `v0.5.280`,
-keep only `v0.5.280` and `v0.5.265` installed on each validator. Historical
-tags and audit records remain in Git; they are not live rollback binaries.
+four-validator Archive V2 gate pass. Keep all three signed artifact sets through
+live parity and rollback rehearsal; cleanup requires a separate evidence check.
 `v0.5.265` remains Archive V2 dual-reader capable and must be retained until the
 new release, four-way V2 parity, and rollback rehearsal are recorded. Neither
 `v0.5.229` nor any pre-schema-3 anchor can be used after required legacy rows
 are retired.
+
+Use [Archive V2 deployment preflight](ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md) for
+actual-input bounds, exact-client gateway TLS, checkpoint capacity, cache
+warming, coordinated recovery and runtime-load acceptance. Pin each host's
+actual native snapshot inventory rather than assuming checkpoint metadata or
+an IDENTITY file is included in a RocksDB-only snapshot.
 
 Mainnet launch must use the gated checklist in [MAINNET_LAUNCH_RUNBOOK.md](MAINNET_LAUNCH_RUNBOOK.md). That runbook is the owner-facing package for launching the 4-validator mainnet first, then enabling custody only after post-genesis verification and route-specific dust tests pass.
 
@@ -992,7 +998,7 @@ templates plus the approved secret manager. Release upgrades then use the
 coordinated signed-artifact deployer from the operator machine:
 
 ```bash
-LICHEN_RELEASE_TAG=v0.5.280 LICHEN_COORDINATED_RELEASE=1 \
+LICHEN_RELEASE_TAG=v0.5.281 LICHEN_COORDINATED_RELEASE=1 \
   bash scripts/rolling-release-deploy.sh testnet
 ```
 

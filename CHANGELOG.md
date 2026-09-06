@@ -5,6 +5,29 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.281] - 2026-09-06
+
+### Fixed
+
+- Keep synchronous database, VM and archive RPC work off the validator's async
+  executor, with four bounded jobs and capacity retained until cancelled
+  clients' work actually finishes.
+- Avoid fetching strictly older Archive V2 segments when recent transactions
+  already fill the requested hot page; preserve cursors and boundary overlap.
+- Authenticate disposable public-index caches against the existing catalog and
+  frame commitments. Charge indexes and objects to one disk quota, and retain
+  only matching account/program/pair rows during aggregate decoding.
+- Add `prewarm-indexes` with exact network/genesis/catalog binding, complete
+  source validation, explicit quota/reserve checks, dry-run and cache readback.
+
+### Deployment
+
+- Candidate only. Signed v0.5.280 remains installed on the preserved Testnet
+  baseline; full Archive V2 activation and application acceptance are pending.
+- Consensus, wire, checkpoint and Archive V2 object/catalog formats are unchanged.
+  Preserve validator state, WAL, keys, signed rollback artifacts and source
+  archives. No historical-loss waiver applies to fresh networks or mainnet.
+
 ## [0.5.280] - 2026-09-04
 
 ### Fixed
