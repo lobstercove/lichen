@@ -4,14 +4,13 @@ This is the operator runbook for launching Lichen mainnet and then enabling
 mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
-Written for the next mainnet package. Release line for this runbook is
-`v0.5.281`. Preserve the signed `v0.5.280` Testnet rollback and `v0.5.265`
-restart-safe anchor. Fresh mainnet requires its own validated rollback plan.
-The release must not be used until its exact tag and signed artifacts
-pass the release gates. Historical tags and audit records remain in Git; they
-are not installed rollback binaries. Mainnet remains blocked until production
-storage, full-scope launch gates, independent review, and deployment approval
-pass.
+The canonical launch gates are maintained in
+[MAINNET_LAUNCH_RUNBOOK.md](../docs/deployment/MAINNET_LAUNCH_RUNBOOK.md).
+Resolve the signed release and compatible rollback from the dated launch record.
+Fresh mainnet requires its own validated rollback plan. Mainnet remains blocked
+until production storage, full-scope launch gates, independent review and
+deployment approval pass. Testnet's history waiver and 200 GB hosts do not
+satisfy Mainnet launch requirements.
 
 Before deployment, follow the shared
 [Archive V2 preflight](../docs/deployment/ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md)
@@ -63,9 +62,8 @@ with the actual network, catalog, certificate and capacity inputs.
   preserve replay compatibility for the June 2026 testnet after governed signer
   custody was lost; mainnet must launch from verified custody instead.
 - Do not deploy a release that changes consensus rules with a mixed-version
-  rolling restart. The current safe anchor `v0.5.265` must remain available
-until `v0.5.281` is signed, fully qualified, deployed, and explicitly
-  recorded as restart-safe.
+  rolling restart. Preserve the explicitly recorded state-compatible signed
+  rollback until its replacement passes restart acceptance.
 - Do not commit provider URLs, auth tokens, keypair passwords, custody seeds,
   funded keypairs, signing keys, or filled production env files.
 - Do not print secrets in shell logs, tickets, chat, or launch notes. Print key
@@ -251,11 +249,11 @@ credentials, or keypair passwords.
 
 ## Phase 1: Release Verification
 
-Use the signed release that passed CI and is selected in the dated launch
-record. For this candidate package, after qualification:
+Use the signed release and approved inventory selected in the dated launch
+record after all qualification gates pass:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.281
+: "${LICHEN_RELEASE_TAG:?Set the qualified release tag from the launch record}"
 : "${LICHEN_MAINNET_VPS_HOSTS:?Set the approved mainnet inventory from the launch record}"
 ```
 

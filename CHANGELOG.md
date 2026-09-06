@@ -5,6 +5,24 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.282] - 2026-09-06
+
+### Fixed
+
+- Bound every checkpoint reader to a 128 MiB cache, including background
+  verification and snapshot serving, instead of deriving an additional cache
+  of up to 4 GiB from host memory. Keep the live database cache independent.
+- Pin checkpoint sources throughout background and anchored verification so
+  checkpoint pruning cannot remove SSTs during an active manifest scan.
+
+### Deployment
+
+- Candidate only. Signed v0.5.281 remains installed on Testnet. Its initial
+  four-validator finality passed, but recurring OOMs leave memory acceptance
+  and Archive V2 activation incomplete. The real checkpoint comparison and
+  remaining gates are recorded in the v0.5.282 checkpoint-memory audit.
+- Consensus, state, wire, checkpoint and Archive V2 formats are unchanged.
+
 ## [0.5.281] - 2026-09-06
 
 ### Fixed
@@ -22,8 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Deployment
 
-- Candidate only. Signed v0.5.280 remains installed on the preserved Testnet
-  baseline; full Archive V2 activation and application acceptance are pending.
+- Signed and installed on all four Testnet validators on September 6. Full
+  Archive V2 activation, sustained memory and application acceptance are pending.
 - Consensus, wire, checkpoint and Archive V2 object/catalog formats are unchanged.
   Preserve validator state, WAL, keys, signed rollback artifacts and source
   archives. No historical-loss waiver applies to fresh networks or mainnet.

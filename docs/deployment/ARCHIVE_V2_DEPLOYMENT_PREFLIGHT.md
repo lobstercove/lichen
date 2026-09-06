@@ -1,7 +1,7 @@
 # Archive V2 deployment and recovery gates
 
 Applies to devnet, testnet, and mainnet. Updated 2026-09-06 from the signed
-v0.5.280 Testnet rollout. This is an operating procedure, not a declaration that
+v0.5.280/v0.5.281 Testnet rollout. This is an operating procedure, not a declaration that
 the rollout passed. Existing network-specific authorization and state policy
 still apply. Never copy a validator database, WAL, or private identity to peers.
 
@@ -30,6 +30,54 @@ clippy/tests, audit/deny, standalone contracts and genesis WASM, static
 frontend/SDK/deployment QA, and the exact release's four-validator hot/cold,
 fresh-join, outage, own-state restart, coordinated restart, and history parity
 matrix. Deploy only signed tag-workflow artifacts from a clean release source.
+
+For GitHub draft releases, an authenticated tag-specific REST lookup can return
+404 even while the draft exists. Use the authenticated release listing or
+`gh release view`, select the exact immutable tag, and verify every asset digest,
+attestation, checksum and detached signature. Retrieve private draft assets with
+the authenticated asset API; keep its temporary download URL in memory and out
+of logs. A local verification marker does not prove four-host artifact staging.
+
+Require two fleet-wide barriers for binary changes: every validator and affected
+auxiliary binary process must be stopped before any replacement; every installed
+target set and stopped WAL must match before any start. Fixture-test failed-host
+responses at both barriers, then repeat the complete preflight on actual signed
+stages. Bind any existing signer key, seeds and unit files as well as validator
+identity, genesis and protected environment. Preserve their bytes and ownership.
+During partial installation, watchdogs may halt the fleet but must never restart
+individual hosts on mixed versions. Budget all sequential startup deadlines,
+SSH timeouts and recovery leases together. Where loading times differ, load and
+pause one validator at a time at its own invocation's established startup
+boundary; verify all four paused identities before continuing them together.
+Recovery must continue a paused process before requesting a normal service stop.
+Do not clear restart history to make a preflight pass.
+
+Exercise startup readiness on Linux, including process creation before exec and
+an empty current-invocation journal. `Type=simple` may report an active MainPID
+before the native executable is ready. Within a short deadline, require that
+same service PID/invocation to expose the exact signed executable hash before
+waiting for its startup marker. Never accept the initial process hash merely
+because the unit is active. `journalctl --grep` returns exit 1 when no entries
+match; only an empty stdout/stderr result is pending readiness. Permission,
+transport, journal and persistent artifact errors still fail closed. After an
+interrupted start, inspect the actual process and preserve its current WAL;
+resume an already loaded, verified process without replaying installation or
+restoring an older WAL. Test these boundaries with a real fork/exec fixture and
+the host's actual journal behavior, not only mocked service responses.
+
+Clear transient recovery timers before their associated service. Stopping the
+timer may let systemd unload the inactive transient service immediately; a
+subsequent stop can return exit 5. Treat that as completed only after explicit
+`LoadState=not-found`, `ActiveState=inactive`, and zero/no MainPID checks.
+Other stop errors or an active process still fail. Recheck the validator's
+unchanged service identity after guard removal; never use `reset-failed` to
+hide deployment or restart history.
+
+Perform an ordinary signed baseline upgrade and verify four-way current finality
+before a separately qualified Archive V2 configuration transition. A binary
+operator that pins baseline environment hashes cannot also start after those
+environment bytes have changed. Each transition needs its own fresh stopped
+WAL, configuration-preservation and recovery proof.
 
 Record UTC timestamps, source hashes and content-addressed evidence for each
 gate. Keep failed logs and partial native results; do not replace them with a
@@ -85,6 +133,9 @@ serve a separate server certificate, not the root CA certificate itself.
 
 On the current Testnet the internal endpoint is loopback port 19443 and URLs
 use `/primary/objects/<sha256>.av2s` and `/replica/objects/<sha256>.av2s`.
+The configured method is GET. HEAD and manifest routes return 404 by design;
+use a bounded GET range with exact 206/Content-Range/Content-Length checks for
+a small transport probe. This does not replace complete-object verification.
 Unauthenticated 401 is expected. Authenticated `/primary/catalog.av2` can return
 404 because this HTTPS route exposes objects only; catalog availability is a
 separate configured-source check. Derive routes from the actual config on a
@@ -127,6 +178,14 @@ bootstrap reserve is not the checkpoint/Normal-capacity target. Record free
 bytes, calculated required bytes, role, catalog hash/root/end, and finalized tip.
 Recheck after long preflights or ordinary chain growth before activation.
 
+Apply this complete-path check before the long local validator test as well.
+Its retention-loop floor and download reserve may be lower than the native
+archive builder requirement. The September 6 Mac builder needed 31,161,690,727
+bytes and rejected 28,994,560,000 available after public-history parity. Check
+the actual native requirement plus run-growth margin first. Reclaim only unused
+compiler cache after open-file/process checks, preserving test evidence and
+owned checkpoints for the harness's supported exact resume.
+
 Include both retained checkpoints and concurrent replacement staging in the
 disk inventory. After the September 6 TLS correction, completed checkpoints
 and replacement staging accounted for about 4–9.5 GB per host, leaving US,
@@ -135,6 +194,13 @@ alongside checkpoint directories and active exports; `du` can double-count SST
 hard links shared with live state. Do not delete active staging, pinned exports,
 or live state files to make a preflight pass. A startup-time success must also
 leave room for subsequent checkpoint replacement and archive reads.
+
+Pin the completed snapshot's actual file inventory and finalized metadata.
+Creation reports may count staged input files rather than final output files:
+the September 6 EU snapshot report counted 124 input SST hardlinks, while the
+completed RocksDB checkpoint contained 126 SSTs after isolated staging opened
+and flushed. Verify final filenames, sizes, identities and control-file hashes;
+do not substitute an input-stage count or assume checkpoint metadata filenames.
 
 For this v0.5.280 Testnet plan the four-host Normal target is 23,775,365,530
 bytes: 23,238,494,618 required plus 536,870,912 margin. The prior SEA
@@ -261,6 +327,60 @@ contain origin-auth headers: never return raw request/header records. Method
 traffic diagnostics may retain method counts only, without bodies or headers.
 
 ## Retirement and full acceptance
+
+Include memory in the deployment budget and acceptance evidence. Record the
+actual configured hot/cold/object caches, process anonymous RSS, host
+MemAvailable, service cgroup memory, swap and restart history. Cgroup memory
+includes file cache and cannot substitute for process RSS or host availability.
+Observe representative query load across a fully published checkpoint; completed
+category messages alone do not prove publication. Preserve OOM timestamps and
+old/new invocation IDs, diagnose the initiating allocation, and do not infer
+that a runtime query fix also fixes a separately observed OOM. A recovered
+service is not by itself sustained-memory acceptance. On September 6 SEA and
+India automatically restarted after OOM kills on signed v0.5.280; their new
+identities require explicit fresh bindings, rather than silently resetting
+NRestarts or continuing with a previous PID.
+
+Signed v0.5.281 subsequently passed its initial four-validator baseline check,
+then EU and India were OOM-killed again at 16:07:06 and 16:01:38 UTC on
+September 6. The activation preparation rejected India's changed invocation
+before any configuration stage or write. Preserve that failed preflight and
+the earlier successful baseline proof as separate events. Diagnose the memory
+failure, refresh all four service bindings, and repeat the complete actual-input
+preflight; neither clearing restart counters nor replaying completed backups is
+a recovery procedure. SEA also OOM-restarted; the complete production-memory
+failure remains open until sustained acceptance on the corrected signed release.
+
+Inventory every database instance, including read-only checkpoint verification
+and snapshot serving. The live `--cache-size-mb` argument does not necessarily
+reach those consumers: the v0.5.281 checkpoint-opening path passes no explicit
+cache size and derives a separate limit from host memory. Record those defaults
+and their concurrency in the memory budget. A logged 1 GiB live block cache
+does not establish a 1 GiB process limit. Measure process RSS independently and
+use resource-bounded diagnostics on a preserved immutable checkpoint; do not
+stress a nearly exhausted validator host or treat a cache hypothesis as a
+confirmed OOM cause.
+
+The v0.5.282 candidate bounds every `StateStore::open_checkpoint` reader to
+128 MiB and holds an export pin throughout background verification so pruning
+cannot remove its source SSTs. The regression opens four readers concurrently
+and checks the actual RocksDB cache capacity independently of the live cache.
+On the same preserved real checkpoint, the signed v0.5.281 manifest command
+with an explicit 128 MiB cache completed at 317,608 KiB peak RSS; with 4 GiB
+it exhausted a dedicated 2 GiB diagnostic cgroup in 22 seconds. Neither test
+modified the running service or checkpoint files. See
+[the checkpoint memory audit](../audits/V0.5.282_CHECKPOINT_MEMORY_2026-09-06.md).
+This comparison proves the cache-budget defect, not that all production memory
+growth is fixed. Require the complete signed release gates and representative
+live load across checkpoint publication with stable RSS and no new OOM restart.
+
+For the disposable Archive V2 disk cache, inventory existing `objects` and
+`indexes` together. Native eviction shares one quota between both directories;
+warming indexes can replace already allocated objects. Record actual occupancy
+and maximum additional growth rather than adding the entire quota a second
+time. Retain the native prewarm free-space check and the separate checkpoint
+peak requirement. Count physical checkpoint reclaim conservatively: hard links
+shared with live state do not yield their logical file size when unlinked.
 
 After activation, execute the qualified source-backed, additive, resumable,
 conflict-aborting retirement sequence. Preserve native journals and interrupted

@@ -88,11 +88,11 @@ const PORTABLE_SNAPSHOT_OMITTED_STATS_KEYS: &[&[u8]] = &[
     b"join_complete",
 ];
 
-/// Hot-repair checkpoint construction runs beside the live validator cache.
-/// Keep its writable staging and final read-only verification caches bounded
-/// so a coordinated four-validator checkpoint cannot multiply the production
-/// default into avoidable memory pressure.
-const HOT_REPAIR_CHECKPOINT_CACHE_MB: usize = 128;
+/// Checkpoint construction, background verification and snapshot serving run
+/// beside the live validator database. Every checkpoint instance needs its own
+/// bounded cache; inheriting the host-sized live default can allocate another
+/// 4 GiB for each reader even when the validator's cache is explicitly smaller.
+const CHECKPOINT_CACHE_MB: usize = 128;
 
 /// Conservative physical-write accounting for bounded checkpoint rows. The
 /// raw checkpoint hard-links existing SSTs, so inherited history consumes no
@@ -1486,14 +1486,8 @@ impl StateStore {
                     )?;
                 }
             }
-            let checkpoint_cache_mb = matches!(
-                snapshot_profile,
-                CheckpointSnapshotProfile::HotRepairV1 { .. }
-            )
-            .then_some(HOT_REPAIR_CHECKPOINT_CACHE_MB);
-            let checkpoint_store =
-                Self::open_checkpoint_with_cache_mb(staging, checkpoint_cache_mb)
-                    .map_err(|e| format!("Failed to open created checkpoint: {}", e))?;
+            let checkpoint_store = Self::open_checkpoint(staging)
+                .map_err(|e| format!("Failed to open created checkpoint: {}", e))?;
             let checkpoint_slot = checkpoint_store.get_last_slot()?;
             if checkpoint_slot != slot {
                 return Err(format!(
@@ -1555,13 +1549,10 @@ impl StateStore {
         }
         let mut materialized_upper_bytes = 0u64;
 
-        let checkpoint =
-            Self::open_with_cache_mb(checkpoint_dir, Some(HOT_REPAIR_CHECKPOINT_CACHE_MB))
-                .map_err(|error| {
-                    format!(
-                        "Failed to open hot-repair checkpoint for history materialization: {error}"
-                    )
-                })?;
+        let checkpoint = Self::open_with_cache_mb(checkpoint_dir, Some(CHECKPOINT_CACHE_MB))
+            .map_err(|error| {
+                format!("Failed to open hot-repair checkpoint for history materialization: {error}")
+            })?;
         let stats_cf = checkpoint
             .db
             .cf_handle(CF_STATS)
@@ -1849,14 +1840,8 @@ impl StateStore {
 
     /// Open a checkpoint as a read-only StateStore for serving snapshot data.
     pub fn open_checkpoint(checkpoint_dir: &str) -> Result<Self, String> {
-        Self::open_checkpoint_with_cache_mb(checkpoint_dir, None)
-    }
-
-    fn open_checkpoint_with_cache_mb(
-        checkpoint_dir: &str,
-        cache_mb: Option<usize>,
-    ) -> Result<Self, String> {
-        let mut store = Self::open_read_only_with_cache_mb(checkpoint_dir, cache_mb)?;
+        let mut store =
+            Self::open_read_only_with_cache_mb(checkpoint_dir, Some(CHECKPOINT_CACHE_MB))?;
         let cold_checkpoint_dir = std::path::Path::new(checkpoint_dir).join("cold");
         if cold_checkpoint_dir.is_dir() {
             store.open_cold_store_read_only(&cold_checkpoint_dir)?;

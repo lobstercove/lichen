@@ -462,11 +462,7 @@ const custodyRouteProfile = read('deploy/custody-route-profile.md');
 const mainnetRunbook = read('deploy/mainnet-launch-runbook.md');
 const mainnetRunbookDoc = read('docs/deployment/MAINNET_LAUNCH_RUNBOOK.md');
 const productionDeployment = read('docs/deployment/PRODUCTION_DEPLOYMENT.md');
-const productionReleasePair = productionDeployment.match(
-  /The target testnet release for this runbook is `(v\d+\.\d+\.\d+)`; the installed signed\s+fleet release is `(v\d+\.\d+\.\d+)`/,
-);
 const archiveDeploymentPreflight = read('docs/deployment/ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md');
-const validatorVersion = read('validator/Cargo.toml').match(/^version = "(\d+\.\d+\.\d+)"/m)?.[1];
 const dexLiquidityStrategy = read('docs/strategy/DEX_LIQUIDITY_STRATEGY.md');
 const btcRolloutPlan = read('docs/deployment/BTC_WRAPPED_ASSET_ROLLOUT_PLAN.md');
 const cleanSlateRedeployPath = path.join(root, 'scripts', 'clean-slate-redeploy.sh');
@@ -509,9 +505,10 @@ assert(
   'BTC rollout plan must record the epoch-6 governed execution signatures and compute budget',
 );
 assert(
-  productionReleasePair &&
-    productionReleasePair[1] === `v${validatorVersion}` &&
-    productionReleasePair[2] === 'v0.5.280' &&
+  /Resolve the release and restart-safe rollback from the latest dated, sealed\s+deployment evidence/.test(productionDeployment) &&
+    productionDeployment.includes('Never deploy from a dirty or partially staged') &&
+    mainnetRunbook.includes('LICHEN_RELEASE_TAG:?Set the qualified release tag') &&
+    mainnetRunbookDoc.includes('LICHEN_RELEASE_TAG:?Set the qualified release tag') &&
     productionDeployment.includes('`v0.5.265` restart-safe anchor') &&
     productionDeployment.includes('ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md') &&
     mainnetRunbookDoc.includes('ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md') &&
@@ -540,7 +537,7 @@ assert(
     !productionDeployment.includes('31 manifest symbols') &&
     !productionDeployment.includes('--repair-stake-pool-production-counters') &&
     !productionDeployment.includes('such as `v0.5.50`'),
-  'production deployment docs must match the current release, rollback, preserved-state, archive, and activation policy',
+  'deployment docs must require evidence-selected signed releases, compatible rollback, exact-client TLS, preserved state, archive parity, and activation gates',
 );
 assert(
   productionDeployment.includes('Do not add `faucet.lichen.network` as a Cloudflare Pages custom domain') &&

@@ -851,6 +851,46 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_readers_bound_cache_independently_of_live_store() {
+        let temp = tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let checkpoint_dir = temp.path().join("checkpoint");
+        let state = StateStore::open_with_cache_mb(&state_dir, Some(16)).unwrap();
+        state
+            .put_block_atomic(&make_test_block(7), Some(7), Some(7))
+            .unwrap();
+        state
+            .create_checkpoint(checkpoint_dir.to_str().unwrap(), 7)
+            .unwrap();
+        let before = directory_fingerprint(&checkpoint_dir);
+        let mut readers = Vec::new();
+        for _ in 0..4 {
+            let reader = StateStore::open_checkpoint(checkpoint_dir.to_str().unwrap()).unwrap();
+            let blocks = reader.db.cf_handle(CF_BLOCKS).unwrap();
+            assert_eq!(
+                reader
+                    .db
+                    .property_int_value_cf(&blocks, "rocksdb.block-cache-capacity")
+                    .unwrap(),
+                Some(128 * 1024 * 1024),
+                "each checkpoint reader must use the bounded maintenance cache, not a host-sized default"
+            );
+            assert_eq!(reader.get_last_slot().unwrap(), 7);
+            readers.push(reader);
+        }
+        let blocks = state.db.cf_handle(CF_BLOCKS).unwrap();
+        assert_eq!(
+            state
+                .db
+                .property_int_value_cf(&blocks, "rocksdb.block-cache-capacity")
+                .unwrap(),
+            Some(16 * 1024 * 1024),
+            "checkpoint readers must not change the live database's configured cache"
+        );
+        assert_eq!(directory_fingerprint(&checkpoint_dir), before);
+    }
+
+    #[test]
     fn test_checkpoint_lifecycle_roundtrip() {
         let temp = tempdir().unwrap();
         let state_dir = temp.path().join("state");

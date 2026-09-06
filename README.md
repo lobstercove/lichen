@@ -7,15 +7,16 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Candidate release line:** `v0.5.281`; the installed signed testnet release is
-`v0.5.280`, with its signed artifacts and the `v0.5.265` restart-safe rollback
-anchor preserved.
+**Candidate release line:** `v0.5.282`; the installed signed testnet release is
+`v0.5.281`. Preserve its signed artifacts, v0.5.280 and the v0.5.265 restart-safe
+rollback anchor. Archive V2 and sustained-memory acceptance remain incomplete.
 Official installable artifacts are the published
 GitHub release archives whose checksums, detached ML-DSA signature, release
-trust anchor, and provenance attestations all verify. The candidate bounds
-blocking RPC work, avoids unnecessary old-history scans for complete recent
-pages, and authenticates a shared-quota public-index cache for aggregate queries.
-It also adds a complete-input cache prewarm procedure. Treat those changes
+trust anchor, and provenance attestations all verify. The candidate bounds every
+checkpoint reader cache to 128 MiB and protects background verification from
+checkpoint pruning. The signed v0.5.281 query and index-cache fixes are retained.
+See the [checkpoint memory audit](docs/audits/V0.5.282_CHECKPOINT_MEMORY_2026-09-06.md).
+Treat the candidate changes
 as unreleased until the exact tag, signature, provenance, and release gates pass.
 
 The signed `v0.5.272` release accepts the legacy deployed contract ABI field
