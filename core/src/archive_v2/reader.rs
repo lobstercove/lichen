@@ -201,6 +201,15 @@ impl ArchiveV2Reader {
         &self.catalog
     }
 
+    /// Bind a checkpoint to this reader's immutable, verified catalog prefix.
+    /// Loading already validates every manifest, identity and catalog root.
+    /// Coverage and the exact handoff boundary are checked on every call without
+    /// re-encoding the entire catalog on the consensus commit path.
+    pub fn checkpoint_handoff_root(&self, history_start_slot: u64) -> Result<Hash, ArchiveV2Error> {
+        self.catalog
+            .checkpoint_handoff_root_validated(history_start_slot)
+    }
+
     pub fn role(&self) -> ArchiveV2Role {
         self.config.role
     }
@@ -1140,6 +1149,114 @@ mod tests {
         catalog.append(manifest.clone()).unwrap();
         catalog.store_atomic(&root.join("catalog.av2")).unwrap();
         (identity, catalog, bytes, manifest)
+    }
+
+    #[test]
+    fn checkpoint_handoff_uses_verified_immutable_catalog_and_checks_coverage() {
+        let local = tempdir().unwrap();
+        let (identity, catalog, _, _) = fixture(local.path());
+        let catalog_path = local.path().join("catalog.av2");
+        let config = || ArchiveV2ReaderConfig {
+            role: ArchiveV2Role::FullArchive,
+            root: local.path().to_path_buf(),
+            cache_root: None,
+            cache_quota_bytes: 0,
+            max_decoded_segments: 1,
+            allow_remote_fetch: false,
+            sources: Vec::new(),
+        };
+        let reader = ArchiveV2Reader::open(identity.clone(), &catalog_path, config()).unwrap();
+        for start in [0, 1] {
+            assert_eq!(
+                reader.checkpoint_handoff_root(start).unwrap(),
+                catalog.checkpoint_handoff_root(start).unwrap(),
+            );
+        }
+        for start in [2, u64::MAX] {
+            assert!(reader.checkpoint_handoff_root(start).is_err());
+            assert!(catalog.checkpoint_handoff_root(start).is_err());
+        }
+        let mut tampered = catalog.clone();
+        tampered.catalog_root = Hash::default();
+        assert!(tampered.checkpoint_handoff_root(0).is_err());
+        assert!(tampered.checkpoint_handoff_root(1).is_err());
+
+        // A file changing after admission cannot mutate the owned catalog.
+        // Reopening it must still perform full validation and fail closed.
+        fs::write(&catalog_path, b"corrupt catalog replacement").unwrap();
+        assert_eq!(
+            reader.checkpoint_handoff_root(1).unwrap(),
+            catalog.checkpoint_handoff_root(1).unwrap(),
+        );
+        assert!(ArchiveV2Reader::open(identity, &catalog_path, config()).is_err());
+        assert_eq!(reader.status().remote_fetches, 0);
+        assert!(reader.decoded.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly supplied production catalog fixture"]
+    fn checkpoint_handoff_production_catalog_parity_and_cost() {
+        let path = std::env::var_os("LICHEN_TEST_HANDOFF_CATALOG")
+            .map(PathBuf::from)
+            .expect("set LICHEN_TEST_HANDOFF_CATALOG to a retained catalog fixture");
+        let catalog = ArchiveV2Catalog::load(&path).unwrap();
+        let local = tempdir().unwrap();
+        let reader = ArchiveV2Reader::open(
+            catalog.identity.clone(),
+            &path,
+            ArchiveV2ReaderConfig {
+                role: ArchiveV2Role::FullArchive,
+                root: local.path().to_path_buf(),
+                cache_root: None,
+                cache_quota_bytes: 0,
+                max_decoded_segments: 1,
+                allow_remote_fetch: false,
+                sources: Vec::new(),
+            },
+        )
+        .unwrap();
+        let mut starts = vec![0, 1];
+        for entry in &catalog.entries {
+            starts.push(entry.manifest.start_slot);
+            starts.push(entry.manifest.end_slot.checked_add(1).unwrap());
+        }
+        for gap in &catalog.legacy_loss_declarations {
+            starts.extend([gap.start_slot, gap.end_slot, gap.following_slot().unwrap()]);
+        }
+        starts.push(u64::MAX);
+        starts.sort_unstable();
+        starts.dedup();
+        let started = std::time::Instant::now();
+        let checked: Vec<_> = starts
+            .iter()
+            .map(|slot| {
+                catalog
+                    .checkpoint_handoff_root(*slot)
+                    .map_err(|e| e.to_string())
+            })
+            .collect();
+        let checked_us = started.elapsed().as_micros();
+        let started = std::time::Instant::now();
+        let admitted: Vec<_> = starts
+            .iter()
+            .map(|slot| {
+                reader
+                    .checkpoint_handoff_root(*slot)
+                    .map_err(|e| e.to_string())
+            })
+            .collect();
+        let admitted_us = started.elapsed().as_micros();
+        assert_eq!(checked, admitted);
+        assert_eq!(reader.status().remote_fetches, 0);
+        assert!(reader.decoded.lock().unwrap().is_empty());
+        println!(
+            "handoff parity: catalog={} segments={} boundaries={} checked_us={} admitted_us={}",
+            catalog.catalog_root,
+            catalog.entries.len(),
+            starts.len(),
+            checked_us,
+            admitted_us,
+        );
     }
 
     #[test]

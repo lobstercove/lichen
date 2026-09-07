@@ -614,25 +614,7 @@ impl StateStore {
         let Some(reader) = self.archive_v2_reader() else {
             return Ok(None);
         };
-        if let Some(required_end) = history_start_slot.checked_sub(1) {
-            let covered = reader
-                .catalog()
-                .covers_genesis_through(required_end)
-                .map_err(|error| error.to_string())?;
-            if !covered {
-                return Err(format!(
-                    "Archive V2 catalog {} does not cover genesis through hot checkpoint predecessor slot {}",
-                    reader.catalog().catalog_root, required_end
-                ));
-            }
-        } else {
-            reader
-                .catalog()
-                .validate()
-                .map_err(|error| error.to_string())?;
-        }
         reader
-            .catalog()
             .checkpoint_handoff_root(history_start_slot)
             .map(Some)
             .map_err(|error| error.to_string())
@@ -659,7 +641,6 @@ impl StateStore {
             );
         }
         let catalog = reader.catalog();
-        catalog.validate().map_err(|error| error.to_string())?;
         let catalog_coverage_end = match catalog.trailing_loss_declaration() {
             Ok(Some(declaration)) => Some(declaration.end_slot),
             Ok(None) => catalog.entries.last().map(|entry| entry.manifest.end_slot),
@@ -688,9 +669,9 @@ impl StateStore {
                 max_unpublished_extension_slots
             ));
         }
-        let catalog_root = self
-            .archive_v2_checkpoint_catalog_root(history_start_slot)?
-            .ok_or_else(|| "Archive V2 reader disappeared during checkpoint handoff".to_string())?;
+        let catalog_root = reader
+            .checkpoint_handoff_root(history_start_slot)
+            .map_err(|error| error.to_string())?;
         Ok(Some((history_start_slot, catalog_root)))
     }
 

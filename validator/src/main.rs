@@ -11907,6 +11907,11 @@ fn checkpoint_profile_is_due(slot: u64, profile: CheckpointSnapshotProfile) -> b
     interval > 0 && slot.is_multiple_of(interval)
 }
 
+fn checkpoint_admission_is_due(slot: u64, has_archive_reader: bool) -> bool {
+    SyncManager::should_checkpoint(slot)
+        && (!has_archive_reader || slot.is_multiple_of(HOT_REPAIR_CHECKPOINT_INTERVAL_SLOTS))
+}
+
 fn checkpoint_minimum_available_bytes(
     profile: CheckpointSnapshotProfile,
     runtime_minimum_available_bytes: u64,
@@ -11987,7 +11992,11 @@ async fn maybe_create_checkpoint(
     sync_manager: &Arc<SyncManager>,
 ) {
     use crate::sync::SyncManager;
-    if !SyncManager::should_checkpoint(slot) {
+    // Choose the cadence before resolving an authenticated handoff profile.
+    // Legacy and preactivation retain their ordinary checkpoint interval.
+    if !SyncManager::should_checkpoint(slot)
+        || !checkpoint_admission_is_due(slot, state.has_archive_v2_reader())
+    {
         return;
     }
     if CHECKPOINT_CREATION_TERMINALLY_PAUSED.load(Ordering::Acquire) {
@@ -50291,6 +50300,33 @@ mod tests {
             ARCHIVE_V2_DEFAULT_CHECKPOINT_PEAK_BYTES,
             "the minimum admitted headroom must expose the full checkpoint write budget"
         );
+    }
+
+    #[test]
+    fn checkpoint_admission_preserves_profile_cadence_without_early_handoff_work() {
+        let bound = CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot: 1,
+            archive_v2_catalog_root: Some([7; 32]),
+        };
+        let preactivation = CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot: 1,
+            archive_v2_catalog_root: None,
+        };
+        for slot in 0..=2 * HOT_REPAIR_CHECKPOINT_INTERVAL_SLOTS {
+            assert_eq!(
+                checkpoint_admission_is_due(slot, true),
+                SyncManager::should_checkpoint(slot) && checkpoint_profile_is_due(slot, bound),
+            );
+            for profile in [preactivation, CheckpointSnapshotProfile::FullArchiveV1] {
+                assert_eq!(
+                    checkpoint_admission_is_due(slot, false),
+                    SyncManager::should_checkpoint(slot)
+                        && checkpoint_profile_is_due(slot, profile),
+                );
+            }
+        }
+        assert!(!checkpoint_admission_is_due(12_618_000, true));
+        assert!(checkpoint_admission_is_due(12_620_000, true));
     }
 
     #[test]

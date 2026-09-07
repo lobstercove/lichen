@@ -227,6 +227,12 @@ impl ArchiveV2Catalog {
     /// declaration. Declared slots remain unavailable to block-body RPCs.
     pub fn covers_genesis_through(&self, required_end: u64) -> Result<bool, ArchiveV2Error> {
         self.validate()?;
+        self.covers_genesis_through_validated(required_end)
+    }
+
+    // Only for an immutable catalog owned by a reader after verified loading,
+    // or a caller in this module that has just performed full validation.
+    fn covers_genesis_through_validated(&self, required_end: u64) -> Result<bool, ArchiveV2Error> {
         let Some(first) = self.entries.first() else {
             return Ok(false);
         };
@@ -284,9 +290,19 @@ impl ArchiveV2Catalog {
     /// boundary drift.
     pub fn checkpoint_handoff_root(&self, history_start_slot: u64) -> Result<Hash, ArchiveV2Error> {
         self.validate()?;
+        self.checkpoint_handoff_root_validated(history_start_slot)
+    }
+
+    // ArchiveV2Reader owns a fully validated catalog and exposes no mutable
+    // access to it. Keep this entry point private to the archive subsystem;
+    // public callers with mutable/untrusted catalogs must validate above.
+    pub(super) fn checkpoint_handoff_root_validated(
+        &self,
+        history_start_slot: u64,
+    ) -> Result<Hash, ArchiveV2Error> {
         let required_end = history_start_slot.checked_sub(1);
         if let Some(required_end) = required_end {
-            if !self.covers_genesis_through(required_end)? {
+            if !self.covers_genesis_through_validated(required_end)? {
                 return Err(ArchiveV2Error::Continuity(format!(
                     "catalog does not cover genesis through checkpoint predecessor {required_end}"
                 )));
