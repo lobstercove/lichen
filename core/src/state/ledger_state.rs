@@ -487,10 +487,7 @@ impl StateStore {
         append_legacy_bincode(&mut value, block, "block")
             .map_err(|e| format!("Failed to serialize block: {}", e))?;
 
-        let is_new_slot = self
-            .get_block_by_slot(block.header.slot)
-            .unwrap_or(None)
-            .is_none();
+        let is_new_slot = self.get_block_by_slot(block.header.slot)?.is_none();
         let current_last_slot = self.get_last_slot().unwrap_or(0);
         let current_confirmed_slot = self.get_last_confirmed_slot().unwrap_or(0);
         let current_finalized_slot = self.get_last_finalized_slot().unwrap_or(0);
@@ -615,14 +612,18 @@ impl StateStore {
         self.batch_index_account_transactions(block, &mut batch)?;
         self.batch_index_block_activity(block, &mut batch)?;
 
-        if is_new_slot {
-            self.metrics.track_block(block);
-            self.metrics.save_to_batch(&mut batch, &self.db)?;
-        }
+        let pending_metrics = if is_new_slot {
+            Some(self.metrics.prepare_block(block, &mut batch, &self.db)?)
+        } else {
+            None
+        };
 
         self.db
             .write(batch)
             .map_err(|e| format!("Failed to write block batch: {}", e))?;
+        if let Some(pending) = pending_metrics {
+            pending.commit();
+        }
 
         self.push_blockhash_cache(block_hash, block.header.slot);
 

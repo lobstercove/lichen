@@ -14,6 +14,8 @@ const entrypoints = [
 ];
 const supportPaths = [
     'tests/archive-v2-https-source.py',
+    'tests/live-transaction-metrics.py',
+    'tests/test-live-transaction-metrics.py',
 ];
 const policyPaths = [
     'docs/deployment/ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md',

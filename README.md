@@ -7,8 +7,8 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Candidate release line:** `v0.5.283`; the installed signed testnet release is
-`v0.5.281`. Preserve its signed artifacts, v0.5.280 and the v0.5.265 restart-safe
+**Candidate release line:** `v0.5.284`; the installed signed testnet release is
+`v0.5.283`. Preserve its signed artifacts, v0.5.280 and the v0.5.265 restart-safe
 rollback anchor. Archive V2 and sustained-memory acceptance remain incomplete.
 Official installable artifacts are the published
 GitHub release archives whose checksums, detached ML-DSA signature, release
@@ -20,6 +20,10 @@ history before download and state replacement. The immutable v0.5.282 hosted
 archive gate failed this compatibility case despite passing the local matrix.
 See the [checkpoint compatibility audit](docs/audits/V0.5.283_CHECKPOINT_ROLE_HISTORY_2026-09-06.md)
 and [checkpoint memory audit](docs/audits/V0.5.282_CHECKPOINT_MEMORY_2026-09-06.md).
+The v0.5.284 candidate restores transaction counters at the canonical execution
+commit boundary, makes their persistence atomic, and verifies live counter deltas
+against canonical blocks. Historical counter reconciliation and the signed
+deployment are pending. See the [metrics audit](docs/audits/V0.5.284_CANONICAL_METRICS_2026-09-07.md).
 Treat the candidate changes
 as unreleased until the exact tag, signature, provenance, and release gates pass.
 

@@ -431,3 +431,30 @@ evidence paths/hashes; exact deployed identities; rollback; certificate and
 credential renewal; capacity/catalog deadlines; and the next permitted action.
 This makes a resumed deployment verifiable without treating a narrative status
 or an old success marker as current fleet evidence.
+
+## Transaction metrics acceptance and backfill
+
+A changing Latest Transactions list does not prove that Total Transactions or
+its UTC daily counter is correct. Canonical execution must commit its metrics
+with the first durable block anchor. Completing secondary indexes must neither
+skip counting nor count twice. Require crash/failed-write/replay/restart tests,
+including native oracle, EVM and consensus-only blocks. Observe actual transaction
+traffic; an idle window cannot establish this gate.
+
+Run `python3 tests/live-transaction-metrics.py --rpc-url <origin-RPC>` against
+each origin and the explorer's same-origin API using its existing authorized
+access. The check compares total/daily/block deltas with every canonical block
+in the observed range, verifies continuity and rejects frozen or double counts.
+Repeat after own-state/all-validator restart and after Archive V2 activation.
+If an access layer rejects a local probe, retain that failure separately; it is
+not a successful counter sample and does not justify changing TLS or access policy.
+
+For a backfill, preserve the old durable values and bind a fixed canonical
+frontier. Independently verify the complete transaction source and reconstructed
+count before writing; record the source, prior values and applied correction
+atomically and make retries idempotent/conflict-aborting. Do not infer the
+correction from block-count differences, sum unverified secondary indexes, or
+add client-side increments to conceal a server undercount. The Testnet signed-body
+waiver cannot silently turn missing history into zero transactions. A historical
+prefix counter needs exact source and slot provenance. Fresh networks/mainnet
+have no waiver. Verify the repaired count after restart and through the explorer.

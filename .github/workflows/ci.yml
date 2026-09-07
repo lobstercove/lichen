@@ -96,6 +96,8 @@ jobs:
         run: node scripts/qa/test_legacy_bincode_codec_policy.js
       - name: Verify RocksDB WAL recovery diagnostics
         run: python3 scripts/qa/test_rocksdb_wal_inventory.py
+      - name: Verify canonical transaction metrics acceptance failures
+        run: python3 tests/test-live-transaction-metrics.py
       - name: Verify release audit summaries
         run: node scripts/qa/test_release_audit_summaries.js
       - name: Verify public claims against implementation boundaries

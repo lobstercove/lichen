@@ -79,6 +79,21 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.284 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.284</span>
+                    <span class="changelog-date">September 7, 2026 — candidate</span>
+                </div>
+                <h3>Canonical transaction metrics</h3>
+                <ul>
+                    <li>Counts native oracle and EVM transactions at the atomic canonical block commit, excluding consensus metadata.</li>
+                    <li>Preserves counters across failed writes, duplicate replay and restart; historical replay does not inflate today's UTC count.</li>
+                    <li>Checks live counter deltas against canonical blocks before and after Archive V2 admission and rejoin.</li>
+                    <li>Signed v0.5.283 remains installed. Historical backfill, candidate deployment and full Archive V2 acceptance remain pending.</li>
+                </ul>
+            </article>
+
             <!-- ============ v0.5.283 ============ -->
             <article class="changelog-entry">
                 <div class="changelog-header">

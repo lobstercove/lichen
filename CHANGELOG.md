@@ -5,6 +5,30 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.284] - 2026-09-07
+
+### Fixed
+
+- Persist non-consensus transaction and block counters in the same atomic batch
+  as canonical execution and its block anchor. Publish counters after a successful
+  write, serialize metric reads/saves, and avoid counting duplicate block storage.
+- Count native oracle and EVM transactions; exclude consensus metadata. Historical
+  replay no longer inflates the current UTC day's count, and stale daily counts
+  read as zero after midnight.
+- Propagate an existing canonical-slot read error before deciding that a block is
+  new. Add crash, failed-write, replay, restart and state-root exclusion checks.
+- Extend the read-only source profiler with non-consensus counts by UTC day and
+  canonical boundary hashes. Verify transaction roots and support explicitly
+  bound Archive V2 sources without modifying corrupt source files.
+
+### Deployment
+
+- Candidate, not yet deployed. All four validators run signed v0.5.283 on their
+  own preserved state with measured allocator tuning. Full Archive V2 acceptance
+  and historical metrics reconciliation remain pending. Release acceptance now
+  compares live RPC counter deltas with canonical transaction bodies before and
+  after Archive V2 admission and rejoin.
+
 ## [0.5.283] - 2026-09-06
 
 ### Fixed

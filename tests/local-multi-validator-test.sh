@@ -4761,6 +4761,58 @@ FINAL_SLOT=$(get_slot $V1_RPC)
 FINAL_VCNT=$(get_validator_count $V1_RPC)
 verify_canonical_commit_parity
 
+verify_live_transaction_metrics() {
+    local metric_rpc_urls=()
+    local metric_validator_num
+    for metric_validator_num in $(seq 1 "$MAX_VALIDATORS"); do
+        metric_rpc_urls+=("http://127.0.0.1:$(rpc_port "$metric_validator_num")")
+    done
+    # Submit known local traffic after every initial sample. This gate must not
+    # depend on external oracle feeds producing during an arbitrary time window.
+    python3 - "$REPO_ROOT/tests/live-transaction-metrics.py" \
+        "$(db_path 1)/genesis-wallet.json" "$RELEASE_BIN_DIR/lichen" \
+        "${ALL_PUBKEYS[1]}" "${metric_rpc_urls[@]}" <<'PY' \
+        || fail "Live metrics differ from canonical block transaction counts"
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import sys
+from urllib.parse import urlsplit
+
+source, metadata, cli, recipient, *urls = sys.argv[1:]
+if not urls or any(urlsplit(url).hostname != '127.0.0.1' for url in urls):
+    raise SystemExit('metrics fixture only supports the local validator cluster')
+metadata = Path(metadata).resolve()
+relative = next((entry.get('keypair_path') for entry in
+                 json.loads(metadata.read_text()).get('distribution_wallets', [])
+                 if entry.get('role') == 'builder_grants'), None)
+if not isinstance(relative, str) or not relative:
+    raise SystemExit('missing local funded distribution keypair')
+wallet = (metadata.parent / relative).resolve()
+wallet.relative_to(metadata.parent)
+if not wallet.is_file():
+    raise SystemExit('missing local funded distribution keypair file')
+spec = importlib.util.spec_from_file_location('metrics_gate', source)
+gate = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gate)
+
+def submit_fixture():
+    for amount in ('0.000001', '0.000002', '0.000003'):
+        result = subprocess.run([cli, 'transfer', recipient, amount, '--keypair',
+                                 str(wallet), '--rpc-url', urls[0]],
+                                capture_output=True, text=True, timeout=20)
+        if result.returncode or 'Signature:' not in result.stdout:
+            raise SystemExit('local metrics transaction fixture admission failed')
+
+report = gate.observe_and_verify(urls, 10, submit_fixture)
+if any(row['transaction_delta'] < 3 for row in report['reports']):
+    raise SystemExit('local metrics fixture did not commit across all validators')
+print(json.dumps(report, sort_keys=True))
+PY
+}
+verify_live_transaction_metrics
+
 if [[ "$USING_EXISTING_CLUSTER" == "true" ]]; then
     COMMON_CHECKPOINT_SLOT=""
     wait_for_common_checkpoint "reused-cluster parity"
@@ -4795,6 +4847,7 @@ else
     verify_archive_v2_hot_checkpoint_profile
     prepare_archive_v2_fresh_join_roots
     verify_fresh_archive_v2_role_rejoins
+    verify_live_transaction_metrics
     run_requested_user_journeys_and_post_parity
 fi
 

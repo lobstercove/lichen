@@ -35,6 +35,59 @@ warming, coordinated recovery and runtime-load acceptance. Pin each host's
 actual native snapshot inventory rather than assuming checkpoint metadata or
 an IDENTITY file is included in a RocksDB-only snapshot.
 
+Transaction metrics are a mandatory deployment acceptance check on devnet,
+testnet and mainnet. After current finality is established, run
+`python3 tests/live-transaction-metrics.py --rpc-url <validator-rpc>` for each
+validator and the explorer's RPC origin. Repeat after own-state restart and
+Archive V2 role activation. The read-only check requires actual transactions;
+an idle window is unproven. It compares total, UTC daily and block counter
+deltas with complete canonical block bodies. Local four-validator acceptance
+submits three transfers from its generated distribution wallet after sampling,
+so external oracle feed timing cannot hide the regression.
+
+For a historical counter repair, use the signed release containing
+`lichen-archive-v2 metrics-reconcile` and follow the
+[canonical metrics audit](../audits/V0.5.284_CANONICAL_METRICS_2026-09-07.md).
+The v0.5.284 source is a candidate until the exact tag workflow and detached PQ
+signature are verified. The repair sequence is:
+
+1. Preserve prior durable counters and qualify an immutable canonical source.
+   Run bounded `profile-source` ranges, link their predecessor/last hashes and
+   verify transaction Merkle roots, counts and UTC days. Independently validate
+   the historical prefix baseline and every suffix range. A checksum identifies
+   evidence; it does not establish that its claims are correct. Missing history
+   cannot be counted as zero. Existing Testnet waiver treatment does not apply
+   to a fresh network or mainnet.
+2. Bind the repair plan to the source manifest SHA-256, exact current tip/hash,
+   prior total transaction/block counters, reconstructed totals and UTC date.
+   `total_blocks` is the canonical tip slot plus one, including genesis. If the
+   fixed source stops before the maintenance tip, verify and include the complete
+   suffix before preparing the plan. Include any transactions already counted by
+   the fixed release exactly once.
+3. Qualify the exact command, source inputs, resource bounds and failure cases
+   on the target Linux platform. Stop the validator cleanly under the coordinated
+   deployment plan, preserve its current own WAL and identity, and prove no
+   validator or maintenance writer holds the database. Do not reuse an old stop
+   record. On that stopped database run the signed utility with
+   `metrics-reconcile --state-dir <existing-state> --plan <plan.json>` plus
+   `--plan-sha256 <sha256> --source-manifest <manifest.json>` and
+   `--acknowledge-stopped-validator`. Keep the source manifest and plan with the
+   operation evidence. The command acquires the exclusive database lock and
+   aborts on changed counters, frontier or date.
+4. Verify the synchronous correction record and counters, then restart the same
+   signed validator from its own state/WAL. An exact repeated plan is a no-op;
+   changed plans sharing the same evidence identifier abort. Verify all four
+   validators' counters against the reconstructed source, observe live total
+   and daily advancement, and repeat after restart and through the explorer
+   origin. Record backfill acceptance separately from Archive V2 retirement.
+
+Deployment preflight must compare each actual producer and consumer's bounds,
+not defaults inferred from a previous operation. Pin immutable input identities,
+sample current free space separately, and verify effective service configuration
+and the installed/running artifact hashes. R2 cleanup requires an enumerated
+obsolete-object list checked against current catalogs, recovery sources,
+rollback artifacts and retention requirements before deletion.
+
 Mainnet launch must use the gated checklist in [MAINNET_LAUNCH_RUNBOOK.md](MAINNET_LAUNCH_RUNBOOK.md). That runbook is the owner-facing package for launching the 4-validator mainnet first, then enabling custody only after post-genesis verification and route-specific dust tests pass.
 
 Mandatory state/sync policy: [TESTNET_STATE_AND_SYNC_POLICY.md](TESTNET_STATE_AND_SYNC_POLICY.md). For any shared testnet, staging, or mainnet-like network, do not reset state and do not distribute a copied validator state directory unless the network owner explicitly approves that exact reset. Joining validators must sync from their own state directories.

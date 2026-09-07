@@ -59,7 +59,7 @@ pub use merkle_state::{
     AccountProof, MerkleProof, SparseMerkleProof, SparseProofStep, SparseStateCommitmentReport,
     SparseStateCommitmentStartupReport, StateRootComponentReport,
 };
-pub use metrics_state::{Metrics, MetricsStore};
+pub use metrics_state::{Metrics, MetricsCounterRepair, MetricsStore};
 pub use shielded_state::ShieldedStateRebuildReport;
 pub use snapshot_io::{
     AccountTxsRebuildReport, AccountTxsSlotInspection, AccountTxsSourceInspection, CheckpointMeta,
@@ -6362,6 +6362,18 @@ mod tests {
         );
         assert_eq!(state.get_tx_slot(&tx_hash).unwrap(), Some(1));
         assert_eq!(state.get_txs_by_slot(1, 10).unwrap(), vec![tx_hash]);
+        assert_eq!(state.get_metrics().total_transactions, 1);
+        assert_eq!(state.get_metrics().total_blocks, 1);
+
+        // The consensus commit already stored the anchor; completing secondary
+        // explorer indexes must not skip or double count the transaction.
+        state.put_block_atomic(&block, Some(1), Some(1)).unwrap();
+        assert_eq!(state.get_metrics().total_transactions, 1);
+        assert_eq!(state.get_metrics().total_blocks, 1);
+        drop(state);
+        let reopened = StateStore::open(temp.path()).unwrap();
+        assert_eq!(reopened.get_metrics().total_transactions, 1);
+        assert_eq!(reopened.get_metrics().total_blocks, 1);
     }
 
     #[test]

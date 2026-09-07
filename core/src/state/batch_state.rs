@@ -96,19 +96,23 @@ impl StateStore {
         let dex_orderbook_level_deltas = batch.dex_orderbook_level_deltas.clone();
 
         let mut wb = batch.batch;
+        let mut new_canonical_block = None;
         let _block_write_guard =
             if let Some((block, confirmed_slot, finalized_slot)) = canonical_block {
                 let guard = self
                     .block_write_lock
                     .lock()
                     .map_err(|_| "Block write lock poisoned".to_string())?;
-                self.stage_canonical_block_anchor(
+                let is_new_slot = self.stage_canonical_block_anchor(
                     block,
                     Some(block.header.slot),
                     confirmed_slot,
                     finalized_slot,
                     &mut wb,
                 )?;
+                if is_new_slot {
+                    new_canonical_block = Some(block);
+                }
                 Some(guard)
             } else {
                 None
@@ -172,9 +176,15 @@ impl StateStore {
             self.stage_contract_storage_dirty_marker(&mut wb, key)?;
         }
 
+        let pending_metrics = new_canonical_block
+            .map(|block| self.metrics.prepare_block(block, &mut wb, &self.db))
+            .transpose()?;
         self.db
             .write(wb)
             .map_err(|e| format!("Atomic batch commit failed: {}", e))?;
+        if let Some(pending) = pending_metrics {
+            pending.commit();
+        }
         drop(state_commitment_guard);
 
         if batch.new_accounts != 0 {
