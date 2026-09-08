@@ -5,6 +5,16 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.289] - Unreleased
+
+### Fixed
+
+- Read the current local slot after bootstrap RPC observations before admitting
+  returning or newly registered validators to consensus. Slow or unavailable
+  endpoints no longer make a caught-up node appear behind using an old local tip.
+- Exercise local block progress during an actual HTTP timeout and preserve
+  rejection of real lag. Voting, finality and post-block effects gates remain.
+
 ## [0.5.284] - 2026-09-07
 
 ### Fixed

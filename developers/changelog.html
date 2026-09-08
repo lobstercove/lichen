@@ -79,6 +79,20 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.289 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.289</span>
+                    <span class="changelog-date">September 9, 2026 — candidate</span>
+                </div>
+                <h3>Returning validator readiness after slow bootstrap queries</h3>
+                <ul>
+                    <li>Read the current local tip after bootstrap requests so endpoint timeouts cannot make a caught-up validator appear behind.</li>
+                    <li>Use the same observation order after registration while preserving voting, finality and post-block effects checks.</li>
+                    <li>Includes regression coverage for block progress during an HTTP timeout and rejection of actual lag. Full release qualification remains required.</li>
+                </ul>
+            </article>
+
             <!-- ============ v0.5.288 ============ -->
             <article class="changelog-entry">
                 <div class="changelog-header">

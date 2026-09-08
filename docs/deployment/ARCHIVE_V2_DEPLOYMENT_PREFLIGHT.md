@@ -5,7 +5,24 @@ v0.5.280 through v0.5.284 Testnet rollout. This is an operating procedure, not a
 the rollout passed. Existing network-specific authorization and state policy
 still apply. Never copy a validator database, WAL, or private identity to peers.
 
-Current checkpoint, September8 13:53UTC: all4 signed287 binaries are installed;
+Current checkpoint, September8 20:04UTC: signed v0.5.288 and Archive V2 catalog
+430 are live on all four validators. All four authors, common finalized block
+and commit, installed/running signed artifacts, and exact live transaction
+counters passed. Previously active auxiliary services were restored and the
+catalog maintenance guards cleared. Catalog430 ends at12,679,000. Legacy
+physical retirement, full history verification and qualified obsolete R2 cleanup
+remain open. Active primary/replica objects and remaining legacy references must
+be preserved. Temporary legacy mount credentials are being renewed separately.
+
+One returning validator remained in catch-up because its readiness loop compared
+a local tip read before slow bootstrap RPC calls with a newer network tip.
+The qualified bounded process pause admitted it through the existing exact-tip
+stalled-quorum recovery path; all original processes resumed. Candidate v0.5.289
+reads the local slot after asynchronous observations in both readiness loops.
+It is not deployed. Preserve voting, drift, finality and post-effects gates.
+Mobile header polish remains explicitly deferred until full release acceptance.
+
+Historical checkpoint, September8 13:53UTC: all4 signed287 binaries are installed;
 validators are STOPPED with each own WAL and signed284 rollback preserved.
 Native287 preflight rejected catalog freshness: finalized12773078 requires
 12673078 under its nominal100000-slot calculation, while427 ends12649000.
@@ -1337,3 +1354,63 @@ must retain every block and boundary while using the signed verifier's unchanged
 bodies; the final counts must equal the actual atomic RPC sample. Qualify gaps,
 boundary conflicts, wrong totals/daily counts and exhausted retries before use.
 Keep operator evidence separate from a browser check of the explorer route.
+
+## Catalog refresh and publication timing
+
+Record the local role catalog and both published source catalogs separately.
+Publishing an append changes the source bindings before it changes the running
+reader. An old operation whose immutable inputs include the previous source
+catalog cannot authorize the refresh. Preserve the old local catalog, verify the
+exact append with the signed CLI, and qualify the recovery path against the new
+source catalogs before stopping. Changing only a wrapper's expected root or
+segment count is insufficient.
+
+If reconstructible cache cleanup is needed, authenticate the stopped cache and
+its immutable sources first, retain an exact intent inventory, and measure free
+space after cleanup. Charge the full future cache quota unless a separately
+qualified calculation accounts for the preserved, authenticated allocation.
+Charge every simultaneous catalog copy, cache metadata, operation records and
+the unchanged native recovery reserve. A successful online projection does not
+authorize the next disk consumer.
+
+Exercise fresh fleet barriers between long phases and before each coordinated
+startup. Measure complete prewarm and admission duration: source validation,
+cache import and final cache validation are distinct work, and an empty cache
+during initial source validation is not itself a failure. Inspect retained output
+and the current unit before retrying any phase. Clear maintenance guards only
+after fresh process-bound finality, canonical transaction-counter and auxiliary
+service checks.
+
+Before starting a long verifier or retirement window, calculate catalog runway
+from the native admission boundary, current finalized slot and measured slot
+rate. Include the time needed for publication, verification and the next
+coordinated refresh. Publish a sufficiently large verified extension from an
+eligible preserved source; a small successful append is not proof of sustained
+operation. Source-index prewarming alone is neither whole-object verification
+nor full public-history parity. Renew expiring legacy-source credentials while
+their references remain, separately from active Archive V2 source credentials.
+
+## Returning validator readiness and auxiliary scan holds
+
+RPC health alone does not establish voting readiness. Require all four current
+authors to advance and compare a fixed canonical block and commit certificate
+across the fleet. If a returning node receives blocks but never proposes, inspect
+its current invocation's pre-consensus messages and time every configured
+bootstrap endpoint. A local tip captured before slow asynchronous RPC requests
+can appear behind even when block application has caught up. Read the local tip
+after those observations; retain the existing drift, post-effects and finality
+checks. Apply this to both returning-node and post-registration readiness.
+
+The signed runtime has an exact-tip stalled-quorum recovery path. Any temporary
+process pause used for recovery must have its own qualified scope, original
+process and binary bindings, independently armed automatic resume timers, and
+unconditional resume on controller failure. Verify actual voting and finality
+afterward. A successful recovery does not qualify an unshipped code correction.
+
+When holding integrity scans for legacy mount credential renewal, a deliberately
+terminated scan can finish with systemd `ActiveState=failed` and `MainPID=0`.
+Preserve its exit evidence. Before clearing that stopped status, verify the exact
+invocation and expected termination, empty cgroup, no legacy file consumers, and
+the original integrity-restore timer. `reset-failed` only clears unit status; it
+does not establish that readers stopped. Resume the qualified hold checks and
+restore the original scan scheduling after authenticated mount verification.

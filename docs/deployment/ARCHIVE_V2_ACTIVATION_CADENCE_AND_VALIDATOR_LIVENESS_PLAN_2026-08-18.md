@@ -1,16 +1,19 @@
 # Archive V2 Activation, Cadence Recovery, And Validator Liveness Plan
 
-**Current status, September 8:** `v0.5.288` is the only successor candidate,
-and is not deployed. Signed v0.5.287 is installed on all four stopped validators with
-their own preserved state and WALs. Native287 preflight exposed a mismatch
-between its nominal hot-history boundary and the validator's bounded, physically
-verified unpublished tail. Candidate288 makes those calculations shared without
-changing the50,000-slot extension cap. Prior284 historical counter reconciliation
-and exact live oracle deltas passed; new live acceptance is pending startup.
-The signed286 full-history scan stopped at its reserve guard and is not complete.
-Wallet0.1.11 and the DEX popup connection fix are published. Eligible retirement,
-sustained capacity and full acceptance remain pending. Internal gateway TLS is
-qualified; it is not the transaction-counter defect or this admission mismatch.
+**Current status, September 8, 20:04UTC:** signed `v0.5.288` is live on all four
+validators with Archive V2 catalog430. All four authorship, common finality,
+signed-artifact and exact live counter checks passed; auxiliary services were
+restored and catalog maintenance guards cleared. `v0.5.289` is the only successor candidate;
+it fixes a
+returning-node readiness comparison that used a stale local tip across bootstrap
+RPC timeouts. It is not deployed. The existing exact-tip recovery path restored
+the affected validator with its original process and own state preserved.
+The signed286 full-history scan stopped at its reserve guard and is incomplete.
+Wallet0.1.11 and the DEX fixes are published. Eligible physical retirement,
+sustained capacity, full history acceptance and obsolete R2 cleanup remain open.
+Gateway TLS is qualified. Preserve active primary/replica objects, remaining
+legacy references and signed rollback artifacts; renew temporary legacy mount
+credentials before their expiry while these references remain.
 Use [the current deployment preflight](ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md) and
 [v0.5.283 qualification](../audits/V0.5.283_CHECKPOINT_ROLE_HISTORY_2026-09-06.md).
 The dated execution narrative below is historical provenance and does not
