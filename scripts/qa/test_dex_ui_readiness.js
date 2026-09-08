@@ -406,3 +406,4 @@ if (failed > 0) {
 }
 
 console.log(`\nDEX UI readiness: ${passed} passed, 0 failed`);
+require('./test_dex_live_candles.js');

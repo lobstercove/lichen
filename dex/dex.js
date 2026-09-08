@@ -231,9 +231,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 this.reconnectDelay = 1000;
                 this.connected = true;
                 if (this.onConnectionChange) this.onConnectionChange(true);
+                const socket = this.ws;
                 for (const [channel, sub] of this.subs) {
                     this._sendSubscribe(sub.method, sub.params)
-                        .then((newSubId) => { sub.subId = newSubId; this.subs.set(channel, sub); })
+                        .then((newSubId) => {
+                            if (this.ws !== socket) return;
+                            if (this.subs.get(channel) !== sub) {
+                                if (newSubId && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ jsonrpc: '2.0', id: this.nextReqId++, method: sub.unsubscribeMethod || 'unsubscribeDex', params: { subscription: newSubId } }));
+                                return;
+                            }
+                            sub.subId = newSubId;
+                        })
                         .catch(() => { });
                 }
                 this.pending.forEach(msg => this.ws.send(msg));
@@ -300,6 +308,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
             try {
                 const subId = await this._sendSubscribe(method, params);
+                if (this.subs.get(channelKey) !== entry) {
+                    if (subId && this.ws?.readyState === WebSocket.OPEN) {
+                        this.ws.send(JSON.stringify({ jsonrpc: '2.0', id: this.nextReqId++, method: unsubscribeMethod, params: { subscription: subId } }));
+                    }
+                    return channelKey;
+                }
                 entry.subId = subId;
                 this.subs.set(channelKey, entry);
                 return subId || channelKey;
@@ -1953,13 +1967,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
 
-    async function loadCandles(from, to, interval) {
+    async function loadCandles(from, to, interval, pair = state.activePair) {
         try {
+            if (!pair) return null;
             const params = new URLSearchParams({ interval: resolutionToSec(interval || '15'), limit: 300 });
             if (from) params.set('from', Math.floor(from)); if (to) params.set('to', Math.floor(to));
-            const { data } = await api.get(`/pairs/${state.activePairId}/candles?${params}`);
+            const { data } = await api.get(`/pairs/${pair.pairId}/candles?${params}`);
             if (Array.isArray(data) && data.length > 0) {
-                const invert = isDisplayInvertedPair(state.activePair);
+                const invert = isDisplayInvertedPair(pair);
                 return data.map(c => {
                     const bar = { time: (c.timestamp || c.time || 0) * 1000, open: c.open || 0, high: c.high || 0, low: c.low || 0, close: c.close || 0, volume: c.volume || 0 };
                     return invert ? invertCandle(bar) : bar;
@@ -2177,7 +2192,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 state.lastPrice = displayPrice; updateTickerDisplay();
                 throttledRenderPairList();
                 // C1-FIX: Feed live trades into TradingView chart so header and chart stay in sync
-                streamBarUpdate(displayPrice, (d.quantity || 0) / 1e9);
+                streamBarUpdate(displayPrice, (d.quantity || 0) / 1e9, pairId);
                 const c = document.querySelector('.trades-list');
                 if (c && state.currentView === 'trade') {
                     const row = document.createElement('div'); row.className = 'trade-row';
@@ -2236,6 +2251,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     state.lastPrice = displayPrice;
                     updateTickerDisplay();
                 }
+                streamBarUpdate(displayPrice, 0, p.pairId);
                 throttledRenderPairList();
             }).then(id => _tickerSubs.push(id)).catch(() => { });
         }
@@ -2555,7 +2571,72 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // TradingView (wired to candle API)
     // ═══════════════════════════════════════════════════════════════════════
-    let tvWidget = null, realtimeCallback = null, lastBarTime = 0, activeResolution = localStorage.getItem('dexChartInterval') || '15', currentBarOpen = 0, currentBarHigh = 0, currentBarLow = Infinity, currentSubscriberUID = null;
+    let tvWidget = null;
+    const chartStreams = new Map();
+    const chartSubscribers = new Map();
+
+    // Persisted OHLCV seeds history. Live quotes update only the forming bar;
+    // they never create trade volume or rewrite earlier candles.
+    function createLiveCandleStream(intervalMs, emit, now = Date.now) {
+        let bar = null, live = false, historyTime = null;
+        const valid = value => Number.isFinite(value) && value > 0;
+        const current = () => bar ? { ...bar } : null;
+        function seed(value, notify = false) {
+            if (!value || !Number.isFinite(value.time) || !['open', 'high', 'low', 'close'].every(k => valid(value[k]))) return;
+            if (bar && value.time < bar.time) return;
+            historyTime = value.time;
+            if (bar && value.time === bar.time && live) {
+                bar = { ...bar, open: value.open, high: Math.max(bar.high, value.high), low: Math.min(bar.low, value.low), volume: Math.max(bar.volume, value.volume || 0) };
+            } else {
+                bar = { ...value, volume: value.volume || 0 };
+                live = false;
+            }
+            if (notify) emit(current());
+        }
+        function price(value, volume = 0) {
+            if (!valid(value)) return;
+            const time = Math.floor(now() / intervalMs) * intervalMs;
+            if (bar && time < bar.time) return;
+            if (!bar || time > bar.time) bar = { time, open: value, high: value, low: value, close: value, volume: 0 };
+            bar = { ...bar, high: Math.max(bar.high, value), low: Math.min(bar.low, value), close: value, volume: bar.volume + (Number.isFinite(volume) && volume > 0 ? volume : 0) };
+            live = true;
+            emit(current());
+        }
+        function snapshot(value) {
+            // Legacy candle events carry the current chain slot, not the candle
+            // timestamp. They cannot date a new bar or supersede a live quote.
+            if (!bar || bar.time !== Math.floor(now() / intervalMs) * intervalMs) return;
+            if (live) {
+                if (historyTime !== bar.time || !['open', 'high', 'low', 'close'].every(k => valid(value[k]))) return;
+                const high = Math.max(bar.high, value.high), low = Math.min(bar.low, value.low);
+                const volume = Math.max(bar.volume, Number.isFinite(value.volume) ? value.volume : 0);
+                if (high !== bar.high || low !== bar.low || volume !== bar.volume) {
+                    bar = { ...bar, high, low, volume };
+                    emit(current());
+                }
+                return;
+            }
+            seed({ ...value, time: bar.time }, true);
+        }
+        return { seed, price, snapshot, current };
+    }
+
+    function chartStream(pair, resolution) {
+        const key = `${pair.pairId}:${resolution}`;
+        if (!chartStreams.has(key)) {
+            const entry = { pair, resolution, listeners: new Map(), generation: 0, channel: null };
+            entry.stream = createLiveCandleStream(resolutionToMs(resolution), bar => {
+                for (const callback of entry.listeners.values()) callback({ ...bar });
+            });
+            chartStreams.set(key, entry);
+        }
+        return chartStreams.get(key);
+    }
+
+    function chartPair(symbol) {
+        const name = (symbol.ticker || symbol.name || '').replace(/^[^:]+:/, '');
+        return pairs.find(p => p.id === name);
+    }
 
 
     function createDatafeed() {
@@ -2569,46 +2650,34 @@ document.addEventListener('DOMContentLoaded', () => {
                 setTimeout(() => ok({ name: p.id, ticker: p.id, description: p.id, type: 'crypto', session: '24x7', timezone: 'Etc/UTC', exchange: 'Lichen', listed_exchange: 'Lichen', minmov: 1, pricescale: ps, has_intraday: true, has_weekly_and_monthly: true, supported_resolutions: ['1', '5', '15', '60', '240', '1D', '3D', '1W'], volume_precision: 2, data_status: 'streaming' }), 0);
             },
             getBars: async (si, res, pp, ok) => {
-                const apiC = await loadCandles(pp.from, pp.to, res);
+                const pair = chartPair(si);
+                const apiC = await loadCandles(pp.from, pp.to, res, pair);
                 let bars = apiC?.length ? apiC : [];
-                if (bars.length) {
-                    state.candles = bars;
-                    lastBarTime = bars[bars.length - 1].time;
-                    currentBarOpen = bars[bars.length - 1].open;
-                    currentBarHigh = bars[bars.length - 1].high;
-                    currentBarLow = bars[bars.length - 1].low;
-                }
+                if (pair && bars.length) chartStream(pair, res).stream.seed(bars[bars.length - 1]);
                 ok(bars, { noData: !bars.length });
-                // Only seed a synthetic live bar when there is no market history yet.
-                if (!bars.length && state.lastPrice > 0) setTimeout(() => streamBarUpdate(state.lastPrice, 0), 100);
             },
             subscribeBars: (si, res, cb, uid) => {
-                realtimeCallback = cb; activeResolution = res;
-                currentSubscriberUID = uid;
+                const pair = chartPair(si);
+                if (!pair) return;
+                const entry = chartStream(pair, res);
+                chartSubscribers.set(uid, entry);
+                entry.listeners.set(uid, cb);
                 localStorage.setItem('dexChartInterval', res);
-                // Subscribe to candle WS channel for real-time OHLCV streaming
-                subscribeCandleWs(state.activePairId, res);
+                subscribeCandleWs(entry);
             },
-            unsubscribeBars: (uid) => { if (uid === currentSubscriberUID) { realtimeCallback = null; currentSubscriberUID = null; unsubscribeCandleWs(); } },
+            unsubscribeBars: (uid) => {
+                const entry = chartSubscribers.get(uid);
+                if (!entry) return;
+                entry.listeners.delete(uid);
+                chartSubscribers.delete(uid);
+                if (!entry.listeners.size) unsubscribeCandleWs(entry);
+            },
         };
     }
 
-    function streamBarUpdate(price, vol) {
-        if (!realtimeCallback || !price || price <= 0) return;
-        const ms = resolutionToMs(activeResolution);
-        const bt = Math.floor(Date.now() / ms) * ms;
-        if (bt > lastBarTime) {
-            // New candle period
-            lastBarTime = bt;
-            currentBarOpen = price;
-            currentBarHigh = price;
-            currentBarLow = price;
-            realtimeCallback({ time: bt, open: price, high: price, low: price, close: price, volume: vol || 0 });
-        } else {
-            // Update existing candle — track real high/low across all ticks
-            currentBarHigh = Math.max(currentBarHigh, price);
-            currentBarLow = Math.min(currentBarLow, price);
-            realtimeCallback({ time: lastBarTime, open: currentBarOpen, high: currentBarHigh, low: currentBarLow, close: price, volume: vol || 0 });
+    function streamBarUpdate(price, vol, pairId = state.activePairId) {
+        for (const entry of chartStreams.values()) {
+            if (entry.pair.pairId === pairId && entry.listeners.size) entry.stream.price(price, vol);
         }
     }
 
@@ -2618,37 +2687,28 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // Candle WS subscription — real-time OHLCV streaming from validator
     // ═══════════════════════════════════════════════════════════════════════
-    let _candleWsSub = null;
-    function subscribeCandleWs(pairId, resolution) {
-        unsubscribeCandleWs();
-        if (!dexWs || !pairId) return;
+    function subscribeCandleWs(entry) {
+        if (entry.channel || !dexWs) return;
+        const { pair, resolution } = entry;
+        const generation = ++entry.generation;
         const interval = resolutionToSec(resolution);
-        dexWs.subscribe(`candles:${pairId}:${interval}`, (d) => {
-            if (!realtimeCallback || !d.close || d.close <= 0) return;
-            const inv = isDisplayInvertedPair(state.activePair);
+        entry.channel = `candles:${pair.pairId}:${interval}`;
+        dexWs.subscribe(entry.channel, (d) => {
+            if (entry.generation !== generation || !entry.listeners.size || d.pairId !== pair.pairId || d.interval !== interval) return;
+            const inv = isDisplayInvertedPair(pair);
             const o = inv ? invertPrice(d.open) : d.open;
             const h_raw = inv ? invertPrice(d.low) : d.high;
             const l_raw = inv ? invertPrice(d.high) : d.low;
             const c = inv ? invertPrice(d.close) : d.close;
             const h = Math.max(h_raw, l_raw);
             const l = Math.min(h_raw, l_raw);
-            const ms = resolutionToMs(resolution);
-            const bt = d.slot ? Math.floor(Date.now() / ms) * ms : lastBarTime;
-            if (bt > lastBarTime) {
-                lastBarTime = bt; currentBarOpen = o; currentBarHigh = h; currentBarLow = l;
-            } else {
-                currentBarHigh = Math.max(currentBarHigh, h);
-                currentBarLow = Math.min(currentBarLow, l);
-            }
-            // Candle feeds TradingView only — ticker WS is the single source of
-            // truth for header + dropdown prices (both use live Binance feed).
-            // Writing state.lastPrice here would overwrite the ticker's live
-            // price with a stale consensus-lagged value, causing jitter.
-            realtimeCallback({ time: lastBarTime || bt, open: currentBarOpen || o, high: currentBarHigh, low: currentBarLow, close: c, volume: d.volume || 0 });
-        }).then(id => { _candleWsSub = id; }).catch(() => { });
+            entry.stream.snapshot({ open: o, high: h, low: l, close: c, volume: d.volume || 0 });
+        }).catch(() => { });
     }
-    function unsubscribeCandleWs() {
-        if (_candleWsSub && dexWs) { dexWs.unsubscribe(_candleWsSub); _candleWsSub = null; }
+    function unsubscribeCandleWs(entry) {
+        entry.generation++;
+        if (entry.channel && dexWs) dexWs.unsubscribe(entry.channel);
+        entry.channel = null;
     }
 
     let tvRetryCount = 0;
@@ -2733,7 +2793,13 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    function drawChart() { if (realtimeCallback && state.candles.length) { const l = state.candles[state.candles.length - 1]; const ms = resolutionToMs(activeResolution); realtimeCallback({ time: Math.floor(l.time / ms) * ms, open: l.open, high: l.high, low: l.low, close: l.close, volume: l.volume }); } }
+    function drawChart() {
+        for (const entry of chartStreams.values()) {
+            if (entry.pair.pairId !== state.activePairId) continue;
+            const bar = entry.stream.current();
+            if (bar) for (const cb of entry.listeners.values()) cb({ ...bar });
+        }
+    }
 
     // ═══════════════════════════════════════════════════════════════════════
     // Order Form
