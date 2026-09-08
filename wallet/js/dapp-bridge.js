@@ -351,7 +351,7 @@
         const network = getCurrentNetwork();
         const isLocked = Boolean(walletState?.isLocked);
         const connected = approved && Boolean(wallet);
-        const activeAddress = connected && !isLocked ? String(wallet.address || '').trim() : '';
+        const activeAddress = connected ? String(wallet.address || '').trim() : '';
 
         return {
             connected,
@@ -362,6 +362,7 @@
             accounts: activeAddress ? [activeAddress] : [],
             hasWallet: walletExists,
             isLocked,
+            canRequestSignatures: connected && walletExists,
             version: '0.1.9',
             providerType: 'web-wallet',
         };
@@ -397,8 +398,8 @@
     }
 
     function schedulePopupClose() {
-        // Keeping the popup open preserves the live signer. Closing it makes the
-        // connected dApp read-only until the encrypted browser wallet is reopened.
+        // The encrypted browser wallet is reopened for each requested approval.
+        // Closing this window does not revoke the site's account permission.
     }
 
     function emitProviderEvent(eventName, payload) {
@@ -1110,7 +1111,7 @@
         if (!hasWallet()) {
             return `Finish creating or importing a wallet to continue the request from <span class="mono" style="overflow-wrap:anywhere;word-break:break-word;">${origin}</span>.`;
         }
-        if (walletState?.isLocked) {
+        if (walletState?.isLocked && !SIGNING_METHODS.has(normalizeMethod(request?.payload?.method))) {
             return `Unlock your wallet to continue the request from <span class="mono" style="overflow-wrap:anywhere;word-break:break-word;">${origin}</span>.`;
         }
         return '';
@@ -1125,7 +1126,8 @@
             .filter((entry) => !entry.responded && shouldAwaitWalletSetup(entry))
             .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0))[0];
 
-        if (!request || (!walletState?.isLocked && hasWallet())) {
+        if (!request || (hasWallet() && (!walletState?.isLocked
+            || SIGNING_METHODS.has(normalizeMethod(request?.payload?.method))))) {
             removeHint();
             return;
         }
@@ -1246,7 +1248,9 @@
             return;
         }
 
-        if (walletState?.isLocked) {
+        // Signing already verifies the password in the approval modal. A second
+        // dashboard unlock is unnecessary, including after a popup was closed.
+        if (walletState?.isLocked && !SIGNING_METHODS.has(method)) {
             noteRequestState(request, 'locked');
             return;
         }

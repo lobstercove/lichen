@@ -3953,15 +3953,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const accounts = Array.isArray(providerState?.accounts)
             ? providerState.accounts.map(normalizeWalletAddress).filter(Boolean)
             : [];
-        const livePopupSession = providerType !== 'web-wallet' || windowOpen;
-        const exposedAccounts = livePopupSession ? accounts : [];
-        const connected = livePopupSession && Boolean(providerState?.connected);
+        const connected = Boolean(providerState?.connected);
+        const exposedAccounts = connected ? accounts : [];
         const providerReportsWallet = providerState && Object.prototype.hasOwnProperty.call(providerState, 'hasWallet');
         const hasWallet = providerType === 'extension'
             ? (providerReportsWallet ? Boolean(providerState.hasWallet) : true)
-            : (livePopupSession
-                ? (providerReportsWallet ? Boolean(providerState.hasWallet) : Boolean(accounts.length || providerState?.activeAddress))
-                : false);
+            : (providerReportsWallet ? Boolean(providerState.hasWallet) : Boolean(accounts.length || providerState?.activeAddress));
 
         return {
             available: providerType === 'extension'
@@ -3969,7 +3966,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 : Boolean(windowOpen || connected || exposedAccounts.length > 0),
             connected,
             hasWallet,
-            isLocked: hasWallet ? Boolean(providerState?.isLocked) : false,
+            isLocked: hasWallet && !(providerType === 'web-wallet' && providerState?.canRequestSignatures)
+                ? Boolean(providerState?.isLocked) : false,
             accounts: exposedAccounts,
             activeAddress: exposedAccounts[0] || '',
             provider,
@@ -4325,7 +4323,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 if (helper) {
                     helper.className = 'wm-extension-helper';
-                    helper.textContent = 'Unlock and approve in the popup. Keep it open for live signing, or reconnect later to reopen the encrypted browser wallet.';
+                    helper.textContent = 'Your connection lasts 30 minutes in this tab. You can close the popup; it reopens when you approve a signature.';
                 }
                 return;
             }

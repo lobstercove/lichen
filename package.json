@@ -25,7 +25,7 @@
     "test-false-positive-lift-drill-docs": "node scripts/qa/test_false_positive_lift_drill_docs.js",
     "audit-frontend-rpc-parity": "node scripts/qa/audit_frontend_rpc_parity.js",
     "test-wallet-docs": "node scripts/qa/test_wallet_release_docs.js",
-    "test-wallet": "node scripts/qa/test_wallet_audit.js",
+    "test-wallet": "node scripts/qa/test_wallet_audit.js && node scripts/qa/test_web_wallet_popup_session.js",
     "test-wallet-extension": "node scripts/qa/test_wallet_extension_audit.js && node scripts/qa/test_wallet_extension_signing_e2e.js",
     "validate-wallet-extension-release": "npm run test-wallet-docs && npm run test-wallet-extension && npm run test-wallet",
     "package-wallet-extension": "node scripts/package-wallet-extension.mjs",
