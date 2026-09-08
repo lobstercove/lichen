@@ -1,12 +1,12 @@
 # Archive V2 Activation, Cadence Recovery, And Validator Liveness Plan
 
-**Current status, September 7:** `v0.5.284` is the only successor candidate,
-correcting canonical transaction metrics while retaining the checkpoint role,
-cache-budget and verification-pruning fixes. All four validators run signed
-v0.5.283 on their own preserved state. Separate allocator trials are active on
-all four; initial own-state recovery passed, sustained acceptance remains open.
-Archive V2 remains off. Historical counter reconciliation, fresh catalog coverage,
-capacity, activation, retirement and full acceptance remain pending. Internal
+**Current status, September 8:** `v0.5.286` is the only successor candidate,
+and is not deployed. Signed v0.5.284 is installed on all four validators with
+their own preserved state. Archive V2 roles were activated on all four, and
+historical counter reconciliation and exact live oracle deltas passed. The
+fleet is now stopped for the separately qualified427 catalog refresh; index
+verification is running. Eligible retirement, sustained capacity and full
+acceptance remain pending. Internal
 gateway TLS is qualified; it is not the transaction-counter defect.
 Use [the current deployment preflight](ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md) and
 [v0.5.283 qualification](../audits/V0.5.283_CHECKPOINT_ROLE_HISTORY_2026-09-06.md).

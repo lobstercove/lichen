@@ -79,6 +79,21 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.286 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.286</span>
+                    <span class="changelog-date">September 8, 2026 — candidate</span>
+                </div>
+                <h3>Bounded archive history verification</h3>
+                <ul>
+                    <li>Streams authenticated archive segments and uses temporary disk indexes for global history ordering and metadata lookup.</li>
+                    <li>Preserves canonical category roots, duplicate handling, conflict rejection and the existing checkpoint exporter filesystem behavior.</li>
+                    <li>Includes checkpoint catalog admission and canonical transaction-counter corrections.</li>
+                    <li>Signed v0.5.284 remains installed; full history, capacity and retirement acceptance remain pending.</li>
+                </ul>
+            </article>
+
             <!-- ============ v0.5.284 ============ -->
             <article class="changelog-entry">
                 <div class="changelog-header">
@@ -90,7 +105,7 @@
                     <li>Counts native oracle and EVM transactions at the atomic canonical block commit, excluding consensus metadata.</li>
                     <li>Preserves counters across failed writes, duplicate replay and restart; historical replay does not inflate today's UTC count.</li>
                     <li>Checks live counter deltas against canonical blocks before and after Archive V2 admission and rejoin.</li>
-                    <li>Signed v0.5.283 remains installed. Historical backfill, candidate deployment and full Archive V2 acceptance remain pending.</li>
+                    <li>Signed v0.5.284 is installed. Historical backfill and exact live counter checks passed on all four validators; full Archive V2 acceptance remains pending.</li>
                 </ul>
             </article>
 
