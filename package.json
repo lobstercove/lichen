@@ -26,6 +26,7 @@
     "audit-frontend-rpc-parity": "node scripts/qa/audit_frontend_rpc_parity.js",
     "test-wallet-docs": "node scripts/qa/test_wallet_release_docs.js",
     "test-wallet": "node scripts/qa/test_wallet_audit.js && node scripts/qa/test_web_wallet_popup_session.js",
+    "test-wallet-browser": "node scripts/qa/test_wallet_browser.cjs",
     "test-wallet-extension": "node scripts/qa/test_wallet_extension_audit.js && node scripts/qa/test_wallet_extension_signing_e2e.js",
     "validate-wallet-extension-release": "npm run test-wallet-docs && npm run test-wallet-extension && npm run test-wallet",
     "package-wallet-extension": "node scripts/package-wallet-extension.mjs",
@@ -37,6 +38,7 @@
   "devDependencies": {
     "@noble/post-quantum": "^0.6.1",
     "esbuild": "^0.25.11",
+    "playwright": "1.57.0",
     "wrangler": "^4.70.0"
   },
   "overrides": {

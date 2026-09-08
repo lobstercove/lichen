@@ -374,6 +374,17 @@ jobs:
           node scripts/qa/test_wallet_extension_audit.js
           node scripts/qa/test_wallet_extension_signing_e2e.js
           node scripts/qa/test_wallet_audit.js
+          node scripts/qa/test_web_wallet_popup_session.js
+      - name: Install wallet test browser
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Verify wallet layouts and popup sessions in Chromium
+        run: npm run test-wallet-browser
+      - name: Upload wallet browser evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: wallet-browser-evidence
+          path: dist/wallet-browser/
       - name: Package wallet extension
         run: node scripts/package-wallet-extension.mjs
       - name: Upload wallet extension artifacts
