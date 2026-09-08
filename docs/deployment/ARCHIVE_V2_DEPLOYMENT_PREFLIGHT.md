@@ -5,7 +5,26 @@ v0.5.280 through v0.5.284 Testnet rollout. This is an operating procedure, not a
 the rollout passed. Existing network-specific authorization and state policy
 still apply. Never copy a validator database, WAL, or private identity to peers.
 
-Current checkpoint, September8 06:45UTC: all four validators are stopped for
+Current checkpoint, September8 09:46UTC: all four validators are LIVE on signed
+v0.5.284 and catalog427. The refresh, own-state rejoin, all4 authorship, common
+finality and exact live oracle counter checks completed; guards were cleared.
+The signed286 composed history verifier is reading the preserved EU12700000
+checkpoint under the sole fleet lock. Its inputs are read-only, scratch is capped
+at3GiB, native RAM at8GiB, and the full recovery floor remains enforced.
+At09:46 the EU validator process was unchanged, native stderr empty, scratch
+245,547,008B and free disk27,964,911,616B. This is progress, not full history parity.
+No286/287 validator is installed. Full physical retirement and qualified R2
+cleanup remain open; preserve active primary/replica archives and all rollback.
+
+The web wallet and DEX were published from cleanb22664cf with the popup session
+fix and wallet0.1.10 responsive layouts. Four web viewport and three extension
+browser checks, password/signing tests and PWA cache migration passed. Signed
+v0.5.287 is the candidate that consolidates these frontend changes with the
+already-qualified286 runtime source. It still requires exact workflow, artifact,
+PQ signature and live-fleet acceptance. See `WALLET_LAYOUT_ACCEPTANCE.md` and
+`WEB_WALLET_POPUP_SESSION.md` for application behavior and repeatable gates.
+
+Historical checkpoint, September8 06:45UTC: all four validators were stopped for
 the qualified427 refresh.427 is published and fully read back in both R2 stores, through12,649,000.
 Its40,000 new blocks contain46,499 transactions. The completed build/publication
 receipts supersede the05:40 in-progress note below. All4 stages, preflights,
