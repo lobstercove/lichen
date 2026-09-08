@@ -1,11 +1,13 @@
 # Archive V2 Activation, Cadence Recovery, And Validator Liveness Plan
 
-**Current status, September 8:** `v0.5.286` is the only successor candidate,
+**Current status, September 8:** `v0.5.287` is the only successor candidate,
 and is not deployed. Signed v0.5.284 is installed on all four validators with
 their own preserved state. Archive V2 roles were activated on all four, and
 historical counter reconciliation and exact live oracle deltas passed. The
-fleet is now stopped for the separately qualified427 catalog refresh; index
-verification is running. Eligible retirement, sustained capacity and full
+fleet is live on catalog427 after the completed refresh and own-state rejoin.
+The isolated signed286 full history reader is scanning the preserved EU12700000
+checkpoint; no286/287 validator is installed. Wallet0.1.10 and the DEX popup
+connection fix were published from cleanb22664cf. Eligible retirement, sustained capacity and full
 acceptance remain pending. Internal
 gateway TLS is qualified; it is not the transaction-counter defect.
 Use [the current deployment preflight](ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md) and
