@@ -1,4 +1,4 @@
-# Wallet 0.1.10 layout and browser acceptance
+# Wallet 0.1.11 layout and browser acceptance
 
 September 8, 2026. The owner requested stronger desktop, tablet and mobile
 layouts while retaining the existing Lichen colours and transaction behavior.
@@ -12,10 +12,18 @@ status bar. The extension popup uses the same file with compact popup selectors.
 Existing IDs, action hooks and tab identifiers are preserved. Icon-only header
 controls have labels, and keyboard focus and reduced-motion settings are covered.
 
-The manifest, About screens and provider version fallbacks are 0.1.10. The web
-PWA cache is `lichen-wallet-v6-20260908-layout` and includes the new stylesheet.
+The 0.1.11 polish uses equal64px square balance actions with a consistent icon
+box and places refresh at the card's top-right edge. Achievements initially show
+up to four earned badges. A native keyboard-accessible disclosure exposes all
+92 definitions, earned first, in a bounded scroll region. Web and extension full
+views use the same classes and styles; the mobile header controls are retained.
+Browser checks cover button geometry, compact preview, all92 rows and keyboard
+expand/collapse in the actual web and extension identity renderers.
+
+The manifest, About screens and provider version fallbacks are 0.1.11. The web
+PWA cache is `lichen-wallet-v7-20260908-polish` and includes the new stylesheet.
 Production export content-versions first-party script and stylesheet references.
-Extension updates use the existing `wallet-extension-v0.1.10` tag workflow; a
+Extension updates use the existing `wallet-extension-v0.1.11` tag workflow; a
 local package is not a browser-store publication or evidence of user auto-update.
 
 ## Alignment boundaries

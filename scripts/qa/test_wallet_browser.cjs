@@ -10,6 +10,7 @@ const root = path.resolve(__dirname, '../..');
 const output = process.env.WALLET_BROWSER_OUTPUT || path.join(root, 'dist/wallet-browser');
 const expectedTabs = ['assets', 'activity', 'nfts', 'staking', 'identity', 'shield'];
 const balance = { licn:'12480.52', spendable_licn:'12480.52', spores:12480520000000, spendable:12480520000000 };
+const identityFixture = {identity:{name:'Main account',is_active:true,reputation:1500},achievements:[1,9,12,32,33,34,35,36,37,38,39,40,41].map(id=>({id})),skills:[],vouches:{received:[],given:[]}};
 const mime = {'.html':'text/html','.js':'text/javascript','.mjs':'text/javascript','.css':'text/css','.json':'application/json','.png':'image/png','.ico':'image/x-icon'};
 fs.mkdirSync(output, {recursive:true});
 const server = http.createServer((request,response) => {
@@ -32,6 +33,7 @@ async function routeFixtures(route) {
     if (payload.method === 'getBalance') result = balance;
     if (payload.method === 'getNFTsByOwner') result = {nfts:[]};
     if (payload.method === 'getRecentTransactions') result = [];
+    if (payload.method === 'getLichenIdProfile') result = identityFixture;
     return route.fulfill({contentType:'application/json',body:JSON.stringify({jsonrpc:'2.0',id:payload.id || 1,result})});
 }
 async function checkLayout(page, label, width, selectors) {
@@ -41,12 +43,33 @@ async function checkLayout(page, label, width, selectors) {
     }), selectors);
     assert(data.scroll <= width, `${label}: horizontal overflow ${data.scroll}/${width}`);
     assert.deepEqual(data.tabs, expectedTabs, `${label}: wallet sections must stay aligned`);
+    const buttons = await page.locator('.balance-actions .action-btn').evaluateAll(elements=>elements.map(e=>{const b=e.getBoundingClientRect();return {width:b.width,height:b.height,top:b.top};}));
+    if(buttons.length) {
+        assert.equal(buttons.length,3);
+        assert(buttons.every(b=>b.width===64 && b.height===64 && Math.abs(b.top-buttons[0].top)<1),label+': balance actions must be aligned squares');
+    }
     await page.screenshot({path:path.join(output, label+'.png'),fullPage:true});
     await page.locator(selectors.tabs+'[data-tab="activity"]').click();
     assert(await page.locator(selectors.content+'[data-tab="activity"]').isVisible());
     await page.locator(selectors.tabs+'[data-tab="assets"]').click();
     assert(await page.locator('#assetsList').isVisible());
     return data;
+}
+async function checkAchievements(page,label,tabs) {
+    await page.locator(tabs+'[data-tab="identity"]').click();
+    const section=page.locator('.wallet-achievements');
+    await section.waitFor({state:'visible'});
+    assert.equal(await section.locator('.achievement-preview .achievement-badge').count(),4);
+    assert((await section.boundingBox()).height<230,label+': collapsed achievements must stay compact');
+    const summary=section.locator('summary');await summary.focus();await page.keyboard.press('Enter');
+    assert.equal(await section.locator('details').getAttribute('open'),'');
+    assert.equal(await section.locator('.achievement-grid .achievement-badge').count(),92);
+    assert.equal(await section.locator('.achievement-preview').isVisible(),false);
+    assert((await section.locator('.achievement-grid').boundingBox()).height<=300);
+    await page.screenshot({path:path.join(output,label+'-achievements-expanded.png'),fullPage:true});
+    await summary.click();assert.equal(await section.locator('details').getAttribute('open'),null);
+    await page.screenshot({path:path.join(output,label+'-achievements.png'),fullPage:true});
+    await page.locator(tabs+'[data-tab="assets"]').click();
 }
 async function popupLifecycle(context, port) {
     const origin = `http://127.0.0.1:${port}`, walletOrigin = `http://localhost:${port}`;
@@ -76,21 +99,22 @@ async function main() {
             const page = await context.newPage(), errors=[];page.on('pageerror',e=>errors.push(e.message));
             await page.route('**/*',routeFixtures);await page.routeWebSocket('**/*',ws=>ws.close());
             await page.goto(`http://127.0.0.1:${port}/wallet/`,{waitUntil:'networkidle'});
-            await page.evaluate(async balance=>{
+            await page.evaluate(async ({balance,identityFixture})=>{
                 walletState.wallets=[{id:'fixture',name:'Main account',address:'11111111111111111111111111111111'}];
                 walletState.activeWalletId='fixture';walletState.isLocked=false;
-                rpc.getBalance=async()=>balance;rpc.call=async()=>null;
+                rpc.getBalance=async()=>balance;rpc.call=async method=>method==='getLichenIdProfile'?identityFixture:null;
                 getAllTokenBalances=async()=>({});fetchWrappedReserveStats=async()=>({});fetchNeoGasRewardsSnapshot=async()=>null;
                 showScreen('walletDashboard');setupDashboardTabs();setupWalletSelector();
                 await refreshBalance();await loadAssets();
                 document.getElementById('chainBlockHeight').textContent='Testnet · local fixture';
-            }, balance);
+            }, {balance,identityFixture});
             results.push({label,...await checkLayout(page,label,width,{tabs:'.dashboard-tab',content:'.tab-content'})});
             await page.locator('[data-wallet-action="showReceive"]').first().click();assert(await page.locator('#receiveModal').isVisible());
             await page.screenshot({path:path.join(output,label+'-receive.png'),fullPage:true});
             await page.locator('#receiveModal [data-wallet-action="closeModal"]').click();
             await page.locator('[data-wallet-action="showSettings"]').click();assert(await page.locator('#settingsModal').isVisible());
             await page.locator('#settingsModal .modal-close').click();
+            await checkAchievements(page,label,'.dashboard-tab');
             assert.deepEqual(errors,[],label+': browser exceptions');await context.close();
         }
         const context=await browser.newContext();await popupLifecycle(context,port);await context.close();
@@ -118,6 +142,7 @@ async function main() {
             await page.goto(`chrome-extension://${id}/src/${view}`,{waitUntil:'networkidle'});
             assert(await page.locator(popup?'#dashboardScreen':'#walletDashboard').isVisible());
             results.push({label,...await checkLayout(page,label,width,{tabs:popup?'.popup-dash-tab':'.dashboard-tab',content:popup?'.popup-tab-content':'.tab-content'})});
+            if(!popup) await checkAchievements(page,label,'.dashboard-tab');
             assert.deepEqual(errors,[],label+': browser exceptions');await page.close();
         }
     } finally {await context.close();}
