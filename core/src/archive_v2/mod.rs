@@ -69,6 +69,7 @@ pub use role_marker::{
     ARCHIVE_V2_ROLE_MARKER_FILENAME,
 };
 pub use roles::{
+    archive_v2_catalog_handoff_start, archive_v2_local_history_start,
     archive_v2_state_admission_fingerprint, ArchiveV2CapabilityAdvertisement, ArchiveV2Role,
     ArchiveV2RoleAdmission, ArchiveV2RoleConfig, ArchiveV2RoleRequirements,
     ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS, ARCHIVE_V2_ROLE_CONFIG_VERSION,

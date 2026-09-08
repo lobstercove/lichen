@@ -9,6 +9,43 @@ use crate::Hash;
 
 pub const ARCHIVE_V2_ROLE_CONFIG_VERSION: u16 = 1;
 pub const ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS: u64 = 50_000;
+
+/// First hot slot needed by both validator and deployment admission. The
+/// physically verified unpublished tail may extend retention by one segment.
+pub fn archive_v2_local_history_start(
+    finalized_slot: u64,
+    recent_history_slots: u64,
+    catalog_coverage_end: Option<u64>,
+) -> Result<u64, String> {
+    if recent_history_slots == 0 {
+        return Err("Archive V2 recent-history retention must be non-zero".to_string());
+    }
+    let nominal_hot_start = finalized_slot.saturating_sub(recent_history_slots.saturating_sub(1));
+    let catalog_handoff_start = archive_v2_catalog_handoff_start(catalog_coverage_end)?;
+    let local_history_start = nominal_hot_start.min(catalog_handoff_start);
+    let unpublished_extension_slots = nominal_hot_start
+        .checked_sub(local_history_start)
+        .ok_or_else(|| "Archive V2 local handoff arithmetic failed".to_string())?;
+    if unpublished_extension_slots > ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS {
+        return Err(format!(
+            "Archive V2 catalog trails the configured hot window by {unpublished_extension_slots} slots, above the {}-slot unpublished-tail bound",
+            ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS
+        ));
+    }
+    Ok(local_history_start)
+}
+
+/// Start of the local suffix immediately following catalog coverage.
+pub fn archive_v2_catalog_handoff_start(catalog_coverage_end: Option<u64>) -> Result<u64, String> {
+    catalog_coverage_end
+        .map(|slot| {
+            slot.checked_add(1).ok_or_else(|| {
+                "Archive V2 catalog coverage end cannot advance to a local handoff slot".to_string()
+            })
+        })
+        .transpose()
+        .map(|start| start.unwrap_or(0))
+}
 /// Durable, node-local proof that an Archive V2 role was admitted either after
 /// a fresh state sync or by the stopped-validator role-bootstrap gate.
 ///
@@ -299,6 +336,26 @@ impl ArchiveV2RoleConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_handoff_preserves_live_and_bounded_restart_history() {
+        assert_eq!(
+            archive_v2_local_history_start(12_773_078, 100_000, Some(12_649_000)).unwrap(),
+            12_649_001
+        );
+        assert_eq!(
+            archive_v2_local_history_start(12_799_000, 100_000, Some(12_649_000)).unwrap(),
+            12_649_001
+        );
+        assert!(archive_v2_local_history_start(12_799_001, 100_000, Some(12_649_000)).is_err());
+        assert_eq!(archive_v2_local_history_start(0, 100_000, None).unwrap(), 0);
+        assert_eq!(
+            archive_v2_local_history_start(100_000, 100_000, Some(100_000)).unwrap(),
+            1
+        );
+        assert!(archive_v2_local_history_start(0, 0, None).is_err());
+        assert!(archive_v2_local_history_start(u64::MAX, 100_000, Some(u64::MAX)).is_err());
+    }
 
     fn base_requirements() -> ArchiveV2RoleRequirements {
         ArchiveV2RoleRequirements {

@@ -25,6 +25,7 @@ pub mod wal;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use futures_util::{SinkExt, StreamExt};
 use lichen_core::archive_v2::{
+    archive_v2_catalog_handoff_start, archive_v2_local_history_start,
     archive_v2_state_admission_fingerprint, load_archive_v2_role_marker,
     store_archive_v2_role_marker_create_new, ArchiveV2AdaptiveReservePolicy,
     ArchiveV2CapabilityAdvertisement, ArchiveV2CapacityDecision, ArchiveV2CapacityGuard,
@@ -22920,47 +22921,6 @@ fn activate_runtime_archive_v2(
         admission.serves_deep_history
     );
     Ok(capability)
-}
-
-fn archive_v2_local_history_start(
-    finalized_slot: u64,
-    recent_history_slots: u64,
-    catalog_coverage_end: Option<u64>,
-) -> Result<u64, String> {
-    if recent_history_slots == 0 {
-        return Err("Archive V2 recent-history retention must be non-zero".to_string());
-    }
-    let nominal_hot_start = finalized_slot.saturating_sub(recent_history_slots.saturating_sub(1));
-    let catalog_handoff_start = archive_v2_catalog_handoff_start(catalog_coverage_end)?;
-    // A catalog-bound hot checkpoint deliberately retains the unpublished
-    // tail between the immutable catalog and its nominal recent-history
-    // window. That physical tail remains valid after the node catches up and
-    // restarts; deriving coverage from the newer tip alone would invent a gap
-    // that is still present locally. Keep the same one-segment bound used by
-    // checkpoint construction so a stale catalog cannot silently turn into
-    // indefinitely growing local history.
-    let local_history_start = nominal_hot_start.min(catalog_handoff_start);
-    let unpublished_extension_slots = nominal_hot_start
-        .checked_sub(local_history_start)
-        .ok_or_else(|| "Archive V2 local handoff arithmetic failed".to_string())?;
-    if unpublished_extension_slots > ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS {
-        return Err(format!(
-            "Archive V2 catalog trails the configured hot window by {unpublished_extension_slots} slots, above the {}-slot unpublished-tail bound",
-            ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS
-        ));
-    }
-    Ok(local_history_start)
-}
-
-fn archive_v2_catalog_handoff_start(catalog_coverage_end: Option<u64>) -> Result<u64, String> {
-    catalog_coverage_end
-        .map(|slot| {
-            slot.checked_add(1).ok_or_else(|| {
-                "Archive V2 catalog coverage end cannot advance to a local handoff slot".to_string()
-            })
-        })
-        .transpose()
-        .map(|start| start.unwrap_or(0))
 }
 
 fn verify_local_archive_v2_block_range(

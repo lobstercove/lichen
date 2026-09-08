@@ -79,6 +79,21 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.288 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.288</span>
+                    <span class="changelog-date">September 8, 2026 — candidate</span>
+                </div>
+                <h3>Consistent archive deployment admission</h3>
+                <ul>
+                    <li>The validator and deployment CLI share the same bounded archive-to-hot-history handoff calculation.</li>
+                    <li>Admission verifies every block in the unpublished suffix and retains the 50,000-slot extension limit.</li>
+                    <li>Regression coverage rejects missing tail blocks, stale catalogs and overflow without changing consensus or storage formats.</li>
+                    <li>Includes wallet 0.1.11 balance actions and compact achievements. Full fleet acceptance remains pending.</li>
+                </ul>
+            </article>
+
             <!-- ============ v0.5.287 ============ -->
             <article class="changelog-entry">
                 <div class="changelog-header">

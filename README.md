@@ -7,8 +7,9 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Candidate release line:** `v0.5.287`; the installed signed testnet release is
-`v0.5.284`. Preserve its signed artifacts, v0.5.280 and the v0.5.265 restart-safe
+**Candidate release line:** `v0.5.288`; the last live signed testnet release was
+`v0.5.284`. Signed v0.5.287 is installed on the stopped fleet; admission exposed
+a CLI/runtime history-boundary mismatch. Preserve its signed artifacts, v0.5.280 and the v0.5.265 restart-safe
 rollback anchor. Archive V2 and sustained-memory acceptance remain incomplete.
 Official installable artifacts are the published
 GitHub release archives whose checksums, detached ML-DSA signature, release
@@ -25,12 +26,15 @@ commit boundary, makes their persistence atomic, and verifies live counter delta
 against canonical blocks. Historical counter reconciliation completed on all four
 validators, followed by exact live oracle-transaction delta checks. See the
 [metrics audit](docs/audits/V0.5.284_CANONICAL_METRICS_2026-09-07.md).
-The v0.5.287 candidate bounds composed archive-history verification with streamed
+The v0.5.288 candidate shares the bounded local-history handoff calculation
+between the validator and deployment CLI, including physical verification of
+the entire unpublished suffix and the unchanged50,000-slot extension limit.
+It retains bounded composed archive-history verification with streamed
 segments and temporary disk indexes, and avoids repeated checkpoint catalog
 admission scans. Full history parity, sustained capacity and eligible legacy
 retirement remain open. See the [current deployment preflight](docs/deployment/ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md)
 for the maintenance state and required resource checks.
-The same source line retains live DEX candle updates and wallet 0.1.10: a
+The same source line retains live DEX candle updates and wallet 0.1.11: a
 30-minute tab connection across popup closure, password-protected approval,
 shared responsive web/extension layouts, and browser/PWA regression gates.
 Treat the candidate changes

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use lichen_core::archive_v2::{
+    archive_v2_catalog_handoff_start, archive_v2_local_history_start,
     archive_v2_state_admission_fingerprint, benchmark_archive_v2_range,
     discover_archive_v2_catalog, load_archive_v2_role_marker,
     store_archive_v2_role_marker_create_new, ArchiveV2AdaptiveReservePolicy,
@@ -695,10 +696,19 @@ fn evaluate_role_preflight(
         return Err("Archive V2 catalog genesis conflicts with local state".to_string());
     }
     let genesis_mossstake_slot_only = genesis_block_declares_mossstake_slot_only(&local_genesis)?;
-    let hot_start = finalized_slot.saturating_sub(recent_history_slots.saturating_sub(1));
-    // Full-archive migration owns both hot and legacy-cold local storage until
-    // signed retirement. Match runtime admission by accepting that physically
-    // verified unpublished tail; cache/consensus roles must keep it hot.
+    let catalog_coverage_end = catalog
+        .trailing_loss_declaration()
+        .map_err(|error| error.to_string())?
+        .map(|declaration| declaration.end_slot)
+        .or_else(|| catalog.entries.last().map(|entry| entry.manifest.end_slot));
+    let required_hot_start =
+        archive_v2_local_history_start(finalized_slot, recent_history_slots, catalog_coverage_end)?;
+    let hot_start = match role {
+        ArchiveV2Role::FullArchive => archive_v2_catalog_handoff_start(catalog_coverage_end)?,
+        ArchiveV2Role::VerifiedCache | ArchiveV2Role::Consensus => required_hot_start,
+    };
+    // Use the exact runtime handoff and physically verify its ENTIRE local
+    // suffix, including any bounded extension before the nominal hot window.
     let complete_hot_window = match role {
         ArchiveV2Role::FullArchive => {
             verify_full_archive_preflight_local_range(&state, hot_start, finalized_slot).is_ok()
@@ -707,7 +717,7 @@ fn evaluate_role_preflight(
             .verify_hot_canonical_block_range(hot_start, finalized_slot)
             .is_ok(),
     };
-    let required_archive_end = finalized_slot.checked_sub(recent_history_slots);
+    let required_archive_end = hot_start.checked_sub(1);
     let complete_catalog_verified = match required_archive_end {
         Some(end) => catalog
             .covers_genesis_through(end)
@@ -3446,6 +3456,77 @@ mod tests {
             ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS
         );
         assert_eq!(short.recent_history_slots, 20);
+    }
+
+    #[test]
+    fn role_preflight_checks_the_entire_unpublished_handoff() {
+        for missing_tail_block in [false, true] {
+            let temporary = tempfile::tempdir().unwrap();
+            let (mut args, _) = role_bootstrap_fixture_args(&temporary, true);
+            let state_dir = PathBuf::from(args.required("state-dir").unwrap());
+            let root = PathBuf::from(args.required("root").unwrap());
+            let state = StateStore::open_with_cache_mb(&state_dir, Some(8)).unwrap();
+            let genesis = state.get_block_by_slot(0).unwrap().unwrap();
+            let mut parent = genesis.hash();
+            for slot in 1..=8 {
+                let block = lichen_core::Block::new_with_timestamp(
+                    slot,
+                    parent,
+                    Hash::default(),
+                    [1; 32],
+                    Vec::new(),
+                    slot + 1,
+                );
+                parent = block.hash();
+                if !(missing_tail_block && slot == 2) {
+                    state
+                        .put_block_atomic(&block, Some(slot), Some(slot))
+                        .unwrap();
+                }
+            }
+            // The old CLI's nominal window (4..=8) is complete even when
+            // slot2 is missing. Runtime requires the full handoff (1..=8).
+            assert!(state.verify_hot_canonical_block_range(4, 8).is_ok());
+            drop(state);
+            let identity = ArchiveV2Identity {
+                network_id: "lichen-testnet-1".to_string(),
+                genesis_hash: genesis.hash(),
+            };
+            let (bytes, manifest) = ArchiveV2SegmentCodec::encode(
+                identity.clone(),
+                None,
+                Hash::default(),
+                &lichen_core::archive_v2::ArchiveV2SegmentContents::from_blocks(vec![genesis]),
+                &ArchiveV2CodecConfig::default(),
+            )
+            .unwrap();
+            fs::create_dir_all(root.join("objects")).unwrap();
+            fs::create_dir_all(root.join("manifests")).unwrap();
+            fs::write(object_path(&root, &manifest.segment_object_hash), bytes).unwrap();
+            fs::write(
+                manifest_path(&root, &manifest.segment_object_hash),
+                manifest.encode_canonical().unwrap(),
+            )
+            .unwrap();
+            let mut catalog = ArchiveV2Catalog::empty(identity).unwrap();
+            catalog.append(manifest).unwrap();
+            catalog.store_atomic(&root.join("catalog.av2")).unwrap();
+            args.values
+                .insert("recent-history-slots".to_string(), vec!["5".to_string()]);
+            for role in ["consensus", "full-archive"] {
+                args.values
+                    .insert("role".to_string(), vec![role.to_string()]);
+                let assessment = evaluate_role_preflight(&args, true, true).unwrap();
+                assert_eq!(assessment.hot_start, 1);
+                assert_eq!(assessment.required_archive_end, Some(0));
+                assert!(assessment.complete_catalog_verified);
+                assert_eq!(assessment.complete_hot_window, !missing_tail_block);
+                assert_eq!(assessment.admission.admitted, !missing_tail_block);
+            }
+            // This fixture uses the explicit local-dev policy override to
+            // test a short chain; public admission must still reject it.
+            assert!(evaluate_role_preflight(&args, false, false).is_err());
+        }
     }
 
     #[cfg(unix)]

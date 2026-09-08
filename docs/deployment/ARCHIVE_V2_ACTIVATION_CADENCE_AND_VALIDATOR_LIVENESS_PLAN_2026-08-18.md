@@ -1,15 +1,16 @@
 # Archive V2 Activation, Cadence Recovery, And Validator Liveness Plan
 
-**Current status, September 8:** `v0.5.287` is the only successor candidate,
-and is not deployed. Signed v0.5.284 is installed on all four validators with
-their own preserved state. Archive V2 roles were activated on all four, and
-historical counter reconciliation and exact live oracle deltas passed. The
-fleet is live on catalog427 after the completed refresh and own-state rejoin.
-The isolated signed286 full history reader is scanning the preserved EU12700000
-checkpoint; no286/287 validator is installed. Wallet0.1.10 and the DEX popup
-connection fix were published from cleanb22664cf. Eligible retirement, sustained capacity and full
-acceptance remain pending. Internal
-gateway TLS is qualified; it is not the transaction-counter defect.
+**Current status, September 8:** `v0.5.288` is the only successor candidate,
+and is not deployed. Signed v0.5.287 is installed on all four stopped validators with
+their own preserved state and WALs. Native287 preflight exposed a mismatch
+between its nominal hot-history boundary and the validator's bounded, physically
+verified unpublished tail. Candidate288 makes those calculations shared without
+changing the50,000-slot extension cap. Prior284 historical counter reconciliation
+and exact live oracle deltas passed; new live acceptance is pending startup.
+The signed286 full-history scan stopped at its reserve guard and is not complete.
+Wallet0.1.11 and the DEX popup connection fix are published. Eligible retirement,
+sustained capacity and full acceptance remain pending. Internal gateway TLS is
+qualified; it is not the transaction-counter defect or this admission mismatch.
 Use [the current deployment preflight](ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md) and
 [v0.5.283 qualification](../audits/V0.5.283_CHECKPOINT_ROLE_HISTORY_2026-09-06.md).
 The dated execution narrative below is historical provenance and does not

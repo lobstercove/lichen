@@ -5,7 +5,22 @@ v0.5.280 through v0.5.284 Testnet rollout. This is an operating procedure, not a
 the rollout passed. Existing network-specific authorization and state policy
 still apply. Never copy a validator database, WAL, or private identity to peers.
 
-Current checkpoint, September8 09:46UTC: all four validators are LIVE on signed
+Current checkpoint, September8 13:53UTC: all4 signed287 binaries are installed;
+validators are STOPPED with each own WAL and signed284 rollback preserved.
+Native287 preflight rejected catalog freshness: finalized12773078 requires
+12673078 under its nominal100000-slot calculation, while427 ends12649000.
+Capacity is Normal and both authenticated source inventories match. The runtime
+already verifies a bounded unpublished hot suffix starting12649001, but the
+CLI used a different boundary. Candidate v0.5.288 moves the unchanged runtime
+calculation into a shared core helper and makes CLI admission physically verify
+the same complete suffix. The50,000-slot extension cap, configuration, state
+admission identity and consensus/storage formats remain unchanged. This is a
+candidate fix, not deployment acceptance. Full release workflow and signature
+verification are required before replacing any VPS artifact. Preserve the failed
+preflight receipts and close/renew the active maintenance timers using exact
+stopped process/WAL/artifact checks. Mobile header polish remains deferred.
+
+Historical checkpoint, September8 09:46UTC: all four validators were LIVE on signed
 v0.5.284 and catalog427. The refresh, own-state rejoin, all4 authorship, common
 finality and exact live oracle counter checks completed; guards were cleared.
 The signed286 composed history verifier is reading the preserved EU12700000
@@ -19,7 +34,7 @@ cleanup remain open; preserve active primary/replica archives and all rollback.
 The web wallet and DEX were published from cleanb22664cf with the popup session
 fix and wallet0.1.10 responsive layouts. Four web viewport and three extension
 browser checks, password/signing tests and PWA cache migration passed. Signed
-v0.5.287 is the candidate that consolidates these frontend changes with the
+v0.5.287 was the candidate that consolidated these frontend changes with the
 already-qualified286 runtime source. It still requires exact workflow, artifact,
 PQ signature and live-fleet acceptance. See `WALLET_LAYOUT_ACCEPTANCE.md` and
 `WEB_WALLET_POPUP_SESSION.md` for application behavior and repeatable gates.
