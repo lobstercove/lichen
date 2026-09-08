@@ -4055,6 +4055,37 @@ fn has_enough_direct_bootstrap_observations(
     direct_successes >= required
 }
 
+async fn observe_pre_consensus_tips(
+    sync_manager: &SyncManager,
+    http_client: Option<&reqwest::Client>,
+    rpc_urls: &[String],
+    read_local_slot: impl FnOnce() -> u64,
+) -> (u64, u64, usize, usize) {
+    let mut direct_successes = 0;
+    let mut direct_endpoints = rpc_urls
+        .iter()
+        .filter(|url| !is_shared_bootstrap_rpc(url))
+        .count();
+    if let Some(client) = http_client {
+        if let Some((slot, successes, endpoints)) = fetch_bootstrap_tip(client, rpc_urls).await {
+            sync_manager.note_seen(slot).await;
+            direct_successes = successes;
+            direct_endpoints = endpoints;
+        }
+    }
+    let network_slot = sync_manager.get_highest_seen().await;
+    // Block application continues during the RPC requests, including their
+    // timeouts. Read the local tip after all asynchronous observations so a
+    // caught-up validator is not judged against a pre-request local snapshot.
+    let current_slot = read_local_slot();
+    (
+        current_slot,
+        network_slot,
+        direct_successes,
+        direct_endpoints,
+    )
+}
+
 fn should_wait_for_pre_consensus_tip_observation(
     is_joining_network: bool,
     current_slot: u64,
@@ -33210,10 +33241,6 @@ async fn run_validator() {
                 .build()
                 .expect("Failed to build bootstrap sync HTTP client")
         });
-        let direct_bootstrap_endpoint_count = bootstrap_rpc_urls_for_join
-            .iter()
-            .filter(|url| !is_shared_bootstrap_rpc(url))
-            .count();
         let pre_consensus_sync_started = Instant::now();
         let require_resume_stability = !is_joining_network && current_tip > 0;
         let mut resume_stability: Option<(Instant, u64)> = None;
@@ -33373,20 +33400,18 @@ async fn run_validator() {
             }
 
             // Wait for chain sync
-            let current_slot = state.get_last_slot().unwrap_or(0);
-            let mut network_slot = sync_manager_join.get_highest_seen().await;
-            let mut direct_bootstrap_successes = 0usize;
-            let mut direct_bootstrap_endpoints = direct_bootstrap_endpoint_count;
-            if let Some(bootstrap_http_client) = bootstrap_http_client_for_join.as_ref() {
-                if let Some((bootstrap_slot, direct_successes, direct_endpoints)) =
-                    fetch_bootstrap_tip(bootstrap_http_client, &bootstrap_rpc_urls_for_join).await
-                {
-                    sync_manager_join.note_seen(bootstrap_slot).await;
-                    network_slot = network_slot.max(bootstrap_slot);
-                    direct_bootstrap_successes = direct_successes;
-                    direct_bootstrap_endpoints = direct_endpoints;
-                }
-            }
+            let (
+                current_slot,
+                network_slot,
+                direct_bootstrap_successes,
+                direct_bootstrap_endpoints,
+            ) = observe_pre_consensus_tips(
+                &sync_manager_join,
+                bootstrap_http_client_for_join.as_ref(),
+                &bootstrap_rpc_urls_for_join,
+                || state.get_last_slot().unwrap_or(0),
+            )
+            .await;
             if network_slot > highest_network_slot {
                 highest_network_slot = network_slot;
                 last_network_progress_at = Instant::now();
@@ -33680,17 +33705,13 @@ async fn run_validator() {
             }
 
             loop {
-                let current_slot = state.get_last_slot().unwrap_or(0);
-                let mut network_slot = sync_manager.get_highest_seen().await;
-                if let Some(bootstrap_http_client) = bootstrap_http_client_for_join.as_ref() {
-                    if let Some((bootstrap_slot, _, _)) =
-                        fetch_bootstrap_tip(bootstrap_http_client, &bootstrap_rpc_urls_for_join)
-                            .await
-                    {
-                        sync_manager.note_seen(bootstrap_slot).await;
-                        network_slot = network_slot.max(bootstrap_slot);
-                    }
-                }
+                let (current_slot, network_slot, _, _) = observe_pre_consensus_tips(
+                    &sync_manager,
+                    bootstrap_http_client_for_join.as_ref(),
+                    &bootstrap_rpc_urls_for_join,
+                    || state.get_last_slot().unwrap_or(0),
+                )
+                .await;
 
                 sync_manager
                     .release_caught_up_sync_guard(current_slot)
@@ -49186,6 +49207,79 @@ mod tests {
                 Duration::from_secs(1),
             ),
             ResumeVotingAdmission::Stable
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_observation_reads_local_tip_after_endpoint_timeouts() {
+        let local_tip = Arc::new(AtomicU64::new(1_000));
+        let advancing_tip = local_tip.clone();
+        let app = axum::Router::new()
+            .route(
+                "/tip",
+                axum::routing::post(|| async {
+                    axum::Json(serde_json::json!({"jsonrpc":"2.0","id":1,"result":1_010}))
+                }),
+            )
+            .route(
+                "/slow",
+                axum::routing::post(move || {
+                    let local = advancing_tip.clone();
+                    async move {
+                        // The block receiver catches up while this endpoint is
+                        // still outstanding; the HTTP timeout must not hide it.
+                        local.store(1_010, Ordering::SeqCst);
+                        time::sleep(Duration::from_secs(1)).await;
+                        axum::Json(serde_json::json!({"result":1_010}))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(200))
+            .build()
+            .unwrap();
+        let sync = SyncManager::new();
+        let urls = vec![
+            format!("http://{address}/tip"),
+            format!("http://{address}/slow"),
+        ];
+        let (local, observed, successes, endpoints) =
+            observe_pre_consensus_tips(&sync, Some(&client), &urls, || {
+                local_tip.load(Ordering::SeqCst)
+            })
+            .await;
+        server.abort();
+        assert_eq!(
+            (local, observed, successes, endpoints),
+            (1_010, 1_010, 1, 2)
+        );
+        assert!(!needs_pre_consensus_tip_catch_up(local, observed, 1));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_observation_preserves_real_peer_tip_lag() {
+        let sync = SyncManager::new();
+        sync.note_seen(1_010).await;
+        let (local, observed, successes, endpoints) =
+            observe_pre_consensus_tips(&sync, None, &[], || 1_000).await;
+        assert_eq!(
+            (local, observed, successes, endpoints),
+            (1_000, 1_010, 0, 0)
+        );
+        assert!(needs_pre_consensus_tip_catch_up(local, observed, 1));
+        assert_eq!(
+            resume_voting_admission(
+                local,
+                observed,
+                false,
+                Duration::from_secs(60),
+                100,
+                Duration::from_secs(60),
+            ),
+            ResumeVotingAdmission::Wait
         );
     }
 
