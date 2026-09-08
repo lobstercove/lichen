@@ -52,8 +52,8 @@ pub use join::{
     ArchiveV2JoinPlan, ArchiveV2MutableStateJoinMethod, ARCHIVE_V2_JOIN_PLAN_VERSION,
 };
 pub use reader::{
-    ArchiveV2DirectorySource, ArchiveV2ObjectSource, ArchiveV2Reader, ArchiveV2ReaderConfig,
-    ArchiveV2ReaderStatus,
+    ArchiveV2CategoryCursor, ArchiveV2DirectorySource, ArchiveV2ObjectSource, ArchiveV2Reader,
+    ArchiveV2ReaderConfig, ArchiveV2ReaderStatus,
 };
 pub use replication::{
     inspect_archive_v2_replica_inventory, ArchiveV2DirectoryReplica, ArchiveV2MirrorLimits,

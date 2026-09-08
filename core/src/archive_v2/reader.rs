@@ -76,6 +76,18 @@ pub struct ArchiveV2ReaderConfig {
     pub sources: Vec<Arc<dyn ArchiveV2ObjectSource>>,
 }
 
+/// Exclusive key cursor for an authenticated public-index category. The row
+/// and payload limits bound the merge across all segments independently of
+/// the total history size; decoding one index frame has its own codec bound.
+pub struct ArchiveV2CategoryCursor<'a> {
+    pub category: &'a str,
+    pub start_slot: u64,
+    pub end_slot: u64,
+    pub after_key: Option<&'a [u8]>,
+    pub max_rows: usize,
+    pub max_payload_bytes: usize,
+}
+
 impl ArchiveV2ReaderConfig {
     pub fn validate(&self) -> Result<(), ArchiveV2Error> {
         if self.max_decoded_segments == 0 || self.max_decoded_segments > 1024 {
@@ -366,6 +378,201 @@ impl ArchiveV2Reader {
         end_slot: u64,
     ) -> Result<super::ArchiveV2Rows, ArchiveV2Error> {
         self.category_rows_with_prefix(category, start_slot, end_slot, &[])
+    }
+
+    /// Visit authenticated segments in catalog order without filling the
+    /// decoded-segment LRU. Only one new decoded segment is retained by this
+    /// method at a time. The callback must filter blocks at the range edges.
+    ///
+    /// The limit applies to declared uncompressed frame payload, not total
+    /// allocator usage. Codec allocations, encoded bytes, existing reader
+    /// caches and any data retained by the callback need separate budgeting.
+    /// A callback error aborts traversal; callers must discard partial digests.
+    pub fn visit_segments_in_range<F>(
+        &self,
+        start_slot: u64,
+        end_slot: u64,
+        max_segment_payload_bytes: u64,
+        mut visit: F,
+    ) -> Result<(), ArchiveV2Error>
+    where
+        F: FnMut(&ArchiveV2DecodedSegment) -> Result<(), ArchiveV2Error>,
+    {
+        self.ensure_deep_history()?;
+        if end_slot < start_slot || max_segment_payload_bytes == 0 {
+            return Err(ArchiveV2Error::Bounds(
+                "invalid segment visitor range or payload limit".to_string(),
+            ));
+        }
+        for entry in &self.catalog.entries {
+            let manifest = self
+                .catalog
+                .active_manifest(&entry.manifest.segment_object_hash)?;
+            if manifest.end_slot < start_slot || manifest.start_slot > end_slot {
+                continue;
+            }
+            let payload_bytes = manifest.frames.iter().try_fold(0u64, |total, frame| {
+                total.checked_add(u64::from(frame.uncompressed_bytes))
+            });
+            if payload_bytes.is_none_or(|bytes| bytes > max_segment_payload_bytes) {
+                return Err(ArchiveV2Error::Bounds(format!(
+                    "segment {} exceeds the visitor payload limit",
+                    manifest.segment_object_hash
+                )));
+            }
+            let bytes = self.acquire_object(manifest)?;
+            let decoded = ArchiveV2SegmentCodec::decode(&bytes, manifest, &self.identity)?;
+            drop(bytes);
+            visit(&decoded)?;
+        }
+        Ok(())
+    }
+
+    /// Visit one authenticated public-index category in segment order. This
+    /// keeps one segment's selected index rows at a time. A consumer requiring
+    /// global key order or duplicate detection must provide its own bounded
+    /// merge/index; segment order is not global key order.
+    pub fn visit_category_rows<F>(
+        &self,
+        category: &str,
+        start_slot: u64,
+        end_slot: u64,
+        max_segment_payload_bytes: u64,
+        mut visit: F,
+    ) -> Result<(), ArchiveV2Error>
+    where
+        F: FnMut(&super::ArchiveV2PublicRow) -> Result<(), ArchiveV2Error>,
+    {
+        self.ensure_deep_history()?;
+        if end_slot < start_slot
+            || max_segment_payload_bytes == 0
+            || matches!(
+                category,
+                "slots" | "blocks" | "transactions" | "tx_by_slot" | "tx_to_slot"
+            )
+        {
+            return Err(ArchiveV2Error::Bounds(
+                "invalid public-index visitor request".to_string(),
+            ));
+        }
+        for entry in &self.catalog.entries {
+            let manifest = self
+                .catalog
+                .active_manifest(&entry.manifest.segment_object_hash)?;
+            if manifest.end_slot < start_slot || manifest.start_slot > end_slot {
+                continue;
+            }
+            let payload_bytes = manifest.frames.iter().try_fold(0u64, |total, frame| {
+                total.checked_add(u64::from(frame.uncompressed_bytes))
+            });
+            if payload_bytes.is_none_or(|bytes| bytes > max_segment_payload_bytes) {
+                return Err(ArchiveV2Error::Bounds(format!(
+                    "segment {} exceeds the visitor payload limit",
+                    manifest.segment_object_hash
+                )));
+            }
+            let indexes = self.public_indexes(
+                manifest,
+                super::codec::ArchiveV2IndexRowQuery {
+                    category,
+                    prefix: &[],
+                    start_slot,
+                    end_slot,
+                },
+            )?;
+            if let Some(rows) = indexes.categories.get(category) {
+                for row in rows {
+                    if (start_slot..=end_slot).contains(&row.slot) {
+                        visit(row)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Return the next globally ordered page without retaining a whole
+    /// category. Equal duplicate rows collapse; conflicting rows fail in the
+    /// page containing their key. The caller must consume every page for a
+    /// complete-category verification.
+    pub fn category_rows_page(
+        &self,
+        query: ArchiveV2CategoryCursor<'_>,
+    ) -> Result<(super::ArchiveV2Rows, bool), ArchiveV2Error> {
+        self.ensure_deep_history()?;
+        if query.end_slot < query.start_slot
+            || query.max_rows == 0
+            || query.max_rows > 50_000
+            || query.max_payload_bytes == 0
+            || query.max_payload_bytes > 64 * 1024 * 1024
+            || matches!(
+                query.category,
+                "slots" | "blocks" | "transactions" | "tx_by_slot" | "tx_to_slot"
+            )
+        {
+            return Err(ArchiveV2Error::Bounds(
+                "invalid public-index category cursor or page limits".to_string(),
+            ));
+        }
+        let mut rows = BTreeMap::<Vec<u8>, Vec<u8>>::new();
+        let mut payload_bytes = 0usize;
+        let mut has_more = false;
+        for entry in &self.catalog.entries {
+            let manifest = self
+                .catalog
+                .active_manifest(&entry.manifest.segment_object_hash)?;
+            if manifest.end_slot < query.start_slot || manifest.start_slot > query.end_slot {
+                continue;
+            }
+            let indexes = self.public_indexes(
+                manifest,
+                super::codec::ArchiveV2IndexRowQuery {
+                    category: query.category,
+                    prefix: &[],
+                    start_slot: query.start_slot,
+                    end_slot: query.end_slot,
+                },
+            )?;
+            if let Some(category_rows) = indexes.categories.get(query.category) {
+                for row in category_rows {
+                    if !(query.start_slot..=query.end_slot).contains(&row.slot)
+                        || query.after_key.is_some_and(|key| row.key.as_slice() <= key)
+                    {
+                        continue;
+                    }
+                    if let Some(existing) = rows.get(&row.key) {
+                        if existing != &row.value {
+                            return Err(ArchiveV2Error::Ordering(format!(
+                                "{} has conflicting authenticated rows at key {}",
+                                query.category,
+                                hex::encode(&row.key)
+                            )));
+                        }
+                        continue;
+                    }
+                    // Once a page is truncated, larger keys belong to a later
+                    // page. Avoid even a temporary clone of their payloads.
+                    if has_more && rows.last_key_value().is_some_and(|(key, _)| row.key > *key) {
+                        continue;
+                    }
+                    let bytes = row.key.len().saturating_add(row.value.len());
+                    if bytes > query.max_payload_bytes {
+                        return Err(ArchiveV2Error::Bounds(format!(
+                            "{} row exceeds the cursor payload limit",
+                            query.category
+                        )));
+                    }
+                    payload_bytes += bytes;
+                    rows.insert(row.key.clone(), row.value.clone());
+                    while rows.len() > query.max_rows || payload_bytes > query.max_payload_bytes {
+                        let (key, value) = rows.pop_last().expect("nonempty over-budget page");
+                        payload_bytes -= key.len() + value.len();
+                        has_more = true;
+                    }
+                }
+            }
+        }
+        Ok((rows.into_iter().collect(), has_more))
     }
 
     /// Filter authenticated rows before accumulating results across segments.
@@ -1191,6 +1398,245 @@ mod tests {
         assert!(ArchiveV2Reader::open(identity, &catalog_path, config()).is_err());
         assert_eq!(reader.status().remote_fetches, 0);
         assert!(reader.decoded.lock().unwrap().is_empty());
+    }
+
+    fn paginated_index_fixture(root: &Path, conflict: bool) -> ArchiveV2Reader {
+        let identity = ArchiveV2Identity {
+            network_id: "cursor-testnet".to_string(),
+            genesis_hash: Hash::hash(b"cursor-genesis"),
+        };
+        let mut catalog = ArchiveV2Catalog::empty(identity.clone()).unwrap();
+        let mut previous_segment = None;
+        let mut previous_block = Hash::default();
+        fs::create_dir(root.join("objects")).unwrap();
+        for (slot, keys) in [vec![b'a', b'c', b'f'], vec![b'b', b'c', b'd']]
+            .into_iter()
+            .enumerate()
+        {
+            let block = Block::new_with_timestamp(
+                slot as u64,
+                previous_block,
+                Hash::hash(&[slot as u8]),
+                [8; 32],
+                Vec::new(),
+                slot as u64 + 1,
+            );
+            let mut contents = ArchiveV2SegmentContents::from_blocks(vec![block]);
+            contents.public_categories.insert(
+                "events".to_string(),
+                keys.into_iter()
+                    .map(|key| ArchiveV2PublicRow {
+                        slot: slot as u64,
+                        key: vec![key],
+                        value: vec![
+                            if conflict && slot == 1 && key == b'c' {
+                                b'x'
+                            } else {
+                                key
+                            };
+                            3
+                        ],
+                    })
+                    .collect(),
+            );
+            let (bytes, manifest) = ArchiveV2SegmentCodec::encode(
+                identity.clone(),
+                previous_segment,
+                previous_block,
+                &contents,
+                &ArchiveV2CodecConfig::default(),
+            )
+            .unwrap();
+            previous_segment = Some(manifest.segment_object_hash);
+            previous_block = manifest.last_block_hash;
+            fs::write(object_path(root, &manifest.segment_object_hash), bytes).unwrap();
+            catalog.append(manifest).unwrap();
+        }
+        catalog.store_atomic(&root.join("catalog.av2")).unwrap();
+        ArchiveV2Reader::open(
+            identity,
+            &root.join("catalog.av2"),
+            ArchiveV2ReaderConfig {
+                role: ArchiveV2Role::FullArchive,
+                root: root.to_path_buf(),
+                cache_root: None,
+                cache_quota_bytes: 0,
+                max_decoded_segments: 1,
+                allow_remote_fetch: false,
+                sources: Vec::new(),
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn index_visitor_preserves_segment_rows_and_aborts_on_source_or_callback_failure() {
+        let local = tempdir().unwrap();
+        let reader = paginated_index_fixture(local.path(), false);
+        let mut rows = Vec::new();
+        reader
+            .visit_category_rows("events", 0, 1, 1024 * 1024, |row| {
+                rows.push((row.slot, row.key.clone()));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (0, b"a".to_vec()),
+                (0, b"c".to_vec()),
+                (0, b"f".to_vec()),
+                (1, b"b".to_vec()),
+                (1, b"c".to_vec()),
+                (1, b"d".to_vec())
+            ]
+        );
+        assert!(reader.decoded.lock().unwrap().is_empty());
+        let mut visited = 0;
+        assert!(reader
+            .visit_category_rows("events", 0, 1, 1, |_| {
+                visited += 1;
+                Ok(())
+            })
+            .is_err());
+        assert_eq!(visited, 0);
+        assert!(reader
+            .visit_category_rows("events", 0, 1, 1024 * 1024, |_| {
+                visited += 1;
+                Err(ArchiveV2Error::Ordering("callback failure".to_string()))
+            })
+            .is_err());
+        assert_eq!(visited, 1);
+        let manifest = &reader.catalog.entries[1].manifest;
+        fs::write(
+            object_path(local.path(), &manifest.segment_object_hash),
+            b"corrupt",
+        )
+        .unwrap();
+        assert!(reader
+            .visit_category_rows("events", 0, 1, 1024 * 1024, |_| Ok(()))
+            .is_err());
+    }
+
+    #[test]
+    fn category_cursor_merges_interleaved_segments_with_byte_and_row_bounds() {
+        let local = tempdir().unwrap();
+        let reader = paginated_index_fixture(local.path(), false);
+        let expected = reader.category_rows("events", 0, 1).unwrap();
+        for (max_rows, max_payload_bytes) in [(1, 64), (2, 64), (50, 8), (50, 64)] {
+            let mut cursor = None;
+            let mut actual = Vec::new();
+            loop {
+                let (rows, more) = reader
+                    .category_rows_page(ArchiveV2CategoryCursor {
+                        category: "events",
+                        start_slot: 0,
+                        end_slot: 1,
+                        after_key: cursor.as_deref(),
+                        max_rows,
+                        max_payload_bytes,
+                    })
+                    .unwrap();
+                assert!(rows.len() <= max_rows);
+                assert!(
+                    rows.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>() <= max_payload_bytes
+                );
+                if more {
+                    let next = rows
+                        .last()
+                        .expect("a continuing page must advance")
+                        .0
+                        .clone();
+                    assert!(cursor.as_ref().is_none_or(|key| key < &next));
+                    cursor = Some(next);
+                }
+                actual.extend(rows);
+                if !more {
+                    break;
+                }
+            }
+            assert_eq!(actual, expected);
+        }
+        assert_eq!(expected.len(), 5);
+        assert!(reader.decoded.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn segment_visitor_orders_and_filters_without_retaining_decoded_segments() {
+        let local = tempdir().unwrap();
+        let reader = paginated_index_fixture(local.path(), false);
+        for (start, end, expected) in [(0, 1, vec![0, 1]), (1, 1, vec![1]), (2, 3, vec![])] {
+            let mut slots = Vec::new();
+            reader
+                .visit_segments_in_range(start, end, 1024 * 1024, |segment| {
+                    assert!(reader.decoded.lock().unwrap().is_empty());
+                    slots.extend(segment.blocks.iter().map(|block| block.header.slot));
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(slots, expected);
+            assert!(reader.decoded.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn segment_visitor_enforces_bounds_authentication_and_callback_failure() {
+        let local = tempdir().unwrap();
+        let reader = paginated_index_fixture(local.path(), false);
+        let mut calls = 0;
+        assert!(reader
+            .visit_segments_in_range(0, 1, 1, |_| {
+                calls += 1;
+                Ok(())
+            })
+            .is_err());
+        assert_eq!(calls, 0);
+        assert!(reader
+            .visit_segments_in_range(1, 0, 1024, |_| Ok(()))
+            .is_err());
+        assert!(reader.visit_segments_in_range(0, 1, 0, |_| Ok(())).is_err());
+        let error = reader
+            .visit_segments_in_range(0, 1, 1024 * 1024, |_| {
+                calls += 1;
+                Err(ArchiveV2Error::Ordering("callback stopped".to_string()))
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("callback stopped"));
+        assert_eq!(calls, 1);
+
+        let second = &reader.catalog.entries[1].manifest;
+        fs::write(
+            object_path(local.path(), &second.segment_object_hash),
+            b"corrupt",
+        )
+        .unwrap();
+        calls = 0;
+        assert!(reader
+            .visit_segments_in_range(0, 1, 1024 * 1024, |_| {
+                calls += 1;
+                Ok(())
+            })
+            .is_err());
+        assert_eq!(calls, 1);
+        assert!(reader.decoded.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn category_cursor_rejects_conflicts_on_later_pages_and_oversized_rows() {
+        let local = tempdir().unwrap();
+        let reader = paginated_index_fixture(local.path(), true);
+        let query = |after_key, max_payload_bytes| ArchiveV2CategoryCursor {
+            category: "events",
+            start_slot: 0,
+            end_slot: 1,
+            after_key,
+            max_rows: 1,
+            max_payload_bytes,
+        };
+        assert!(reader.category_rows_page(query(None, 64)).is_ok());
+        assert!(reader.category_rows_page(query(Some(b"b"), 64)).is_err());
+        assert!(reader.category_rows_page(query(None, 3)).is_err());
+        assert!(reader.category_rows_page(query(None, 0)).is_err());
     }
 
     #[test]
