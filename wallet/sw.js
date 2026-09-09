@@ -1,7 +1,7 @@
 // LichenWallet Service Worker — Cache-first assets with safe navigation fallback
 'use strict';
 
-const CACHE_VERSION = 'lichen-wallet-v7-20260908-polish';
+const CACHE_VERSION = 'lichen-wallet-v8-20260909-response';
 const APP_SHELL_URL = './';
 const ASSETS = [
     APP_SHELL_URL,
@@ -98,7 +98,7 @@ self.addEventListener('fetch', (event) => {
     }
 
     // Network-first for API / RPC calls
-    if (url.pathname.includes('/api/') || url.pathname.includes('/solana-compat') || url.pathname.includes('/evm')) {
+    if (url.pathname.includes('/api/') || url.pathname.includes('/solana-compat') || url.pathname.includes('/evm') || url.pathname.endsWith('/faucet/airdrops')) {
         return;
     }
 
@@ -127,7 +127,7 @@ self.addEventListener('fetch', (event) => {
                         caches.open(CACHE_VERSION).then((cache) => cache.put(event.request, clone).catch(() => { }));
                     }
                     return response;
-                }).catch(() => cached);
+                }).catch(() => cached || Response.error());
             })
         );
         return;
@@ -142,7 +142,7 @@ self.addEventListener('fetch', (event) => {
                     caches.open(CACHE_VERSION).then((cache) => cache.put(event.request, clone).catch(() => { }));
                 }
                 return response;
-            }).catch(() => cached);
+            }).catch(() => cached || Response.error());
 
             return cached || fetchPromise;
         })

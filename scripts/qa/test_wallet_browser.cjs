@@ -51,6 +51,10 @@ async function checkLayout(page, label, width, selectors) {
     await page.screenshot({path:path.join(output, label+'.png'),fullPage:true});
     await page.locator(selectors.tabs+'[data-tab="activity"]').click();
     assert(await page.locator(selectors.content+'[data-tab="activity"]').isVisible());
+    if (!label.startsWith('extension-')) {
+        await page.locator('#activityList .activity-item').first().waitFor({state:'visible',timeout:5000});
+        assert.equal(await page.locator('#activityList').getByText('Loading activity...').count(),0,label+': activity must finish loading');
+    }
     await page.locator(selectors.tabs+'[data-tab="assets"]').click();
     assert(await page.locator('#assetsList').isVisible());
     return data;
@@ -102,10 +106,18 @@ async function main() {
             await page.evaluate(async ({balance,identityFixture})=>{
                 walletState.wallets=[{id:'fixture',name:'Main account',address:'11111111111111111111111111111111'}];
                 walletState.activeWalletId='fixture';walletState.isLocked=false;
-                rpc.getBalance=async()=>balance;rpc.call=async method=>method==='getLichenIdProfile'?identityFixture:null;
+                rpc.getBalance=async()=>balance;rpc.call=async method=>{
+                    if(method==='getLichenIdProfile') return identityFixture;
+                    if(method==='getTransactionsByAddress') {
+                        await new Promise(resolve=>setTimeout(resolve,200));
+                        return {transactions:[{type:'Transfer',from:walletState.wallets[0].address,to:'public-fixture-recipient',amount:1000000000,signature:'fixture-transaction',timestamp:1788900000,slot:123}],has_more:false};
+                    }
+                    return null;
+                };
                 getAllTokenBalances=async()=>({});fetchWrappedReserveStats=async()=>({});fetchNeoGasRewardsSnapshot=async()=>null;
                 showScreen('walletDashboard');setupDashboardTabs();setupWalletSelector();
                 await refreshBalance();await loadAssets();
+                void loadActivity();
                 document.getElementById('chainBlockHeight').textContent='Testnet · local fixture';
             }, {balance,identityFixture});
             results.push({label,...await checkLayout(page,label,width,{tabs:'.dashboard-tab',content:'.tab-content'})});

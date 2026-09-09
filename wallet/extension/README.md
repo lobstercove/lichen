@@ -30,7 +30,7 @@ npm run test-wallet-docs
 npm run test-wallet
 npm run test-wallet-extension
 npm run test-frontend-assets
-node tests/test_frontend_trust_boundaries.js
+npm run test-wallet-browser
 npm run validate-wallet-extension-release
 ```
 
