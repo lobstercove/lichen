@@ -1707,13 +1707,9 @@ Supported repo deploy command:
 
 The wrapper runs the frontend asset audit, stages the selected portal into a clean temp directory, verifies required staged assets such as the DEX TradingView bundle, and then calls Wrangler from that staged `--cwd`.
 
-Raw CLI pattern for reference only:
-
-```bash
-npx wrangler pages deploy <dir> --project-name lichen-network-<portal> --commit-dirty=true
-```
-
-Do not use the raw command as the normal repo workflow. It can silently omit git-ignored runtime assets that the staged deploy wrapper preserves.
+Require a clean committed source, a sealed export manifest and matching public
+asset/browser acceptance. Follow [verified frontend exports](#deploy-verified-frontend-exports)
+for the final command and interrupted-deployment handling.
 
 `faucet-service` is the VPS/API backend. The browser faucet portal in `faucet/` is a separate Cloudflare Pages project: `lichen-network-faucet`.
 
@@ -2681,24 +2677,74 @@ All frontend portals are deployed as static sites to Cloudflare Pages via Wrangl
 | Monitoring | `lichen-network-monitoring` | `monitoring/` | `monitoring.lichen.network` |
 | Website | `lichen-network-website` | `website/` | `lichen.network` |
 
-### Deploy all frontends
+### Deploy verified frontend exports
+
+Deploy from a clean committed checkout after the required CI checks pass for
+that exact commit. Do not publish a raw working directory or use
+`--commit-dirty=true`. The DEX export includes its retained licensed chart bundle;
+the wallet export contains the selected public assets, not extension source or
+private release inputs. An all-portal loop is not an export verification gate.
+
+Before each deployment, seal an export manifest with the source commit, complete
+file list, byte lengths and SHA-256 hashes. Bind first-party HTML script/style
+URLs to the exported asset content so edge caches cannot mix old CSS/JS with new
+HTML. Verify the complete export against its manifest, reject symlinks/unlisted
+files, and record the current production deployment ID. The exact exporter,
+manifest and deployment operator for an active release are recorded in
+the per-run deployment record; inspect its current evidence before resuming.
+
+The final Pages command, after those checks, has this form:
 
 ```bash
-for portal in dex wallet explorer faucet marketplace developers programs monitoring website; do
-  echo "=== Deploying $portal ==="
-  wrangler pages deploy "$portal/" \
-    --project-name "lichen-network-$portal" \
-    --branch main \
-    --commit-dirty=true
-  echo ""
-done
+set -euo pipefail
+test -z "$(git status --porcelain)"
+LICHEN_FRONTEND_COMMIT=$(git rev-parse HEAD)
+wrangler pages deploy "${LICHEN_FRONTEND_EXPORT_DIR:?verified portal export required}" \
+  --project-name "${LICHEN_FRONTEND_PROJECT:?exact Pages project required}" \
+  --branch main \
+  --commit-hash "$LICHEN_FRONTEND_COMMIT" \
+  --commit-dirty=false
 ```
 
-### Deploy a single frontend
+Set the project and export directory from the sealed release record. Retain an
+intent before invoking Pages and a deployment receipt afterward. If a command
+disconnects, inspect the recorded attempt and remote deployment list before
+retrying. Verify the resulting production branch and source commit, then hash
+all served assets on both the immutable deployment URL and custom domain using
+the actual content-versioned URLs in HTML. An unversioned edge-cache response
+alone does not establish whether the newly deployed page loads the correct file.
 
-```bash
-wrangler pages deploy dex/ --project-name lichen-network-dex --branch main --commit-dirty=true
-```
+Wrangler prioritizes `CLOUDFLARE_API_TOKEN` over its saved OAuth session. An R2
+Account token may lack Pages permissions. Verify the exact project with a
+read-only deployment listing using the intended credential. When the existing
+Pages OAuth session is the qualified credential, omit that environment variable
+for the Pages command only; preserve R2 credentials and never print their values.
+
+### Wallet PWA and Activity acceptance
+
+For a wallet deployment, run `npm run test-wallet`,
+`npm run test-wallet-extension`, `npm run test-wallet-browser`, and
+`npm run test-frontend-assets`, with the SDK built as required by the audit.
+The browser gate covers web/extension layouts and popup sessions; it must also
+exercise actual service-worker installation, cache migration, cached offline
+assets, uncached network failures, offline navigation and fresh faucet activity.
+Repeat public browser acceptance against the deployed assets. Keep `sw.js` and
+HTML revalidated through their configured response headers and increment the
+worker cache version for changed cached assets or worker behavior.
+
+Every `respondWith` promise must resolve to a `Response` or reject. A failed
+network request with no cached copy must not resolve to `undefined`; that emits
+`Failed to convert value to 'Response'`. Dynamic RPC/API and faucet activity
+requests must bypass the static asset cache. A worker fix does not prove a
+separate RPC performance problem is resolved.
+
+When Activity loads slowly, record its `getTransactionsByAddress` request
+duration, any faucet request duration, and the time rows render. Distinguish
+synthetic browser fixtures from live account timing. Check the installed/running
+validator release and whether a known canonical-slot receipt lookup accesses
+only its authenticated archive segment. Do not attribute a slow request to
+hot/cold storage solely because Archive V2 is enabled, and do not backfill or
+change account history without source-backed evidence.
 
 ### Shared configuration
 
@@ -2721,7 +2767,8 @@ shasum dex/shared-config.js wallet/shared-config.js explorer/shared-config.js \
   programs/shared-config.js monitoring/shared-config.js website/shared-config.js
 ```
 
-4. Redeploy all portals via the deploy loop above.
+4. Produce and verify a separate export for each affected portal, deploy it through
+   the procedure above, then verify its served assets.
 
 ### Custom domains
 

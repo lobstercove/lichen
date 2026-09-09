@@ -1,9 +1,124 @@
 # Archive V2 deployment and recovery gates
 
-Applies to devnet, testnet, and mainnet. Updated 2026-09-08 from the signed
-v0.5.280 through v0.5.284 Testnet rollout. This is an operating procedure, not a declaration that
-the rollout passed. Existing network-specific authorization and state policy
-still apply. Never copy a validator database, WAL, or private identity to peers.
+## Operating sequence
+
+This guide defines gates, not current fleet status. The dated rollout notes below
+are historical evidence. Before acting, read the latest execution checkpoint and
+verify the actual services, installed/running hashes, own WAL identities, catalog,
+source inventories and available resources. Use the per-run deployment record identified by the release qualification. A historical
+"complete" receipt authorizes neither a new operation nor replay of an old one.
+
+1. **Bind the release.** Use a clean checkout and immutable tag. Check every
+   version consumer and locked workspace before tagging; require full CI and the
+   tag workflow, complete four-validator matrix, platform provenance, checksum
+   hashes and detached PQ signature before installation. Measure the actual signed
+   tar members and selected binaries. Resolve draft assets with `gh release view`
+   and compare their immutable metadata; exercise the actual download transport.
+2. **Bind the operation.** Record the network/genesis, each host's identity,
+   installed and running binaries, invocation/start identity, service state, own
+   state/WAL, catalog and source bindings. Log configuration hashes rather than
+   credentials. Inspect active native readers before any stop. A process from an
+   earlier receipt cannot stand in for the current process.
+3. **Reconcile capacity across every consumer.** Read the native calculation and
+   all wrapper defaults. Distinguish installation, catalog refresh, checkpoint,
+   archive building, manifest verification and retirement. Account for peak
+   allocations, retained rollback inputs and recovery, on the actual filesystem.
+   Credit an existing cache only after a stopped, authenticated inventory proves
+   its allocation and immutability. Test exact saved inputs, including one-byte
+   failure boundaries, before dispatch. Projected deletion is not free space.
+   List native reserves, each allocation and additional operator padding as
+   separate terms. Do not silently reuse padding from a different maintenance
+   mode. The September9 Testnet continuation retains512MiB extra where admission
+   depends on derived-copy removal, and256MiB extra where it uses measured free
+   space plus declared regenerable cache. Both additionally charge the complete
+   native reserve, cache quota, overlapping catalogs, records, signed payload and
+   adoption. These are operation-specific margins, not Mainnet/Devnet defaults.
+   A change to any term requires new exact-plan and one-byte-short qualification;
+   actual post-prune, post-cache, staging and native admission gates still apply.
+4. **Preserve recovery before changing files.** Keep every validator's own keys,
+   state and WAL, the required signed rollback artifacts, canonical captures,
+   active archives and provider backups. Bind any derived-checkpoint cleanup to
+   its exact completed generation and references. Preserve a useful newer capture
+   before a later runtime checkpoint can retire its periodic directory.
+5. **Coordinate transitions.** For a coordinated upgrade, establish the complete
+   stopped fleet barrier before installation and the complete staged barrier
+   before replacing binaries. A staged barrier must accept the old installed
+   release and subsequent partial install progress; it verifies staged and
+   rollback artifacts. Require all new installed binaries before admission and
+   startup. Exercise the complete four-host phase sequence in controller tests,
+   including these version transitions. Keep a finite halt guard. Inspect partial phases;
+   never overwrite their receipts or blindly replay a completed stop or prune.
+   Renew a maintenance guard only with fresh matching stopped-state evidence.
+6. **Use one history rule for CLI and runtime.** Both admission paths must derive
+   the same catalog handoff and physically verify the entire required local
+   suffix. A recent nominal window alone is insufficient. The existing bounded
+   unpublished extension is 50,000 slots; excess lag fails closed. Checkpoint
+   metadata's `archive_v2_catalog_root` stores the append-stable handoff digest;
+   compare it with the native handoff calculation, not directly with catalog root.
+7. **Separate verification stages.** Source inventory, source-index validation,
+   whole-object hashes, local handoff verification and full public-history parity
+   prove different things. Require native admission and bootstrap dry-run against
+   the selected signed artifact. A successful TLS probe in one client does not
+   prove another client's acceptance; verify the actual runtime client when TLS
+   is implicated. Do not change a CA based only on a historical error field.
+8. **Prove recovery and live behavior.** Wait for RPC and BFT readiness after
+   startup. Require matching installed/running artifacts, advancing slots,
+   authorship by all four validators and common fixed-slot canonical finality.
+   Verify exact transaction-counter deltas against new canonical transactions,
+   restore the prior auxiliary service states, then clear maintenance guards from
+   fresh matching evidence. Never replay an already applied metrics backfill.
+9. **Finish retirement and publication.** Archive V2 activation alone does not
+   release the legacy files. Continue source-backed, journaled eligible retirement
+   and bounded physical reclaim; distinguish logical deletion, family shrinkage
+   and observed filesystem space. Preserve original journal roots and pending
+   work across catalog upgrades. Demonstrate continued archive publication,
+   restart/outage recovery, deep reads and full fixed-tip history parity before
+   declaring the rollout complete. Apply only the documented existing-Testnet
+   body-loss waiver; fresh networks and Mainnet have none.
+10. **Close the release.** Verify application behavior and served PWA/extension
+    versions, publish accurate release/deployment records, then remove only
+    qualified obsolete artifacts or R2 objects. Active primary/replica archives,
+    source captures and protected backups remain part of the deployment.
+
+A verifier stopping at its reserve guard means its planned peak/recovery envelope
+was no longer available. Archive V2 saves space after verified legacy retirement
+and physical reclamation; migration can temporarily retain both representations.
+Identify the actual occupied files, references and peak consumers, then qualify a
+fitting plan. Repeating the same failed scan or lowering its floor does not prove
+the deployment can finish or recover.
+
+## Retiring superseded diagnostic checkpoint copies
+
+Inventory allocated blocks and hardlink references before selecting a copy.
+Use `os.scandir` with `entry.stat(follow_symlinks=False)` for local-device walks:
+`os.walk(followlinks=False)` can still follow file symlinks while classifying
+entries and stall on remote SST metadata. A timed-out inventory provides no
+capacity credit. Shared checkpoint SSTs provide no physical saving until their
+last link is removed; never count logical size as recovered space.
+
+Bind a selected diagnostic copy to its original completed capture, exact inode
+identities and control hashes. Verify its covered history against both immutable
+archive sources and preserve a qualified newer capture. Keep parent capture,
+publication and qualification records, produced archive objects, and a hashed
+copy of checkpoint controls. Check live descriptors, mappings and references
+before a no-replace detach. Remove only the sealed file set through a resumable
+ledger, preserving live hardlinks and rejecting changed or extra files. Keep
+resource guards anchored to the filesystem root so they remain valid after the
+selected directory is renamed or removed. Require fresh process-bound fleet
+health and test rename races, partial removals and control corruption on Linux.
+
+Measure actual filesystem space afterward. This retires a derived diagnostic
+copy; it does not prove legacy row retirement or full public-history parity.
+
+A superseded periodic checkpoint needs the same exact-generation and reference
+checks. Preserve a completed newer own checkpoint and the selected generation's
+hashed control records; never select the live state directory. A file-only
+operation that opens no database has its own bounded metadata and growth budget.
+It must demonstrate that selected exclusive allocations cover the unchanged
+native recovery envelope plus an explicit margin, then measure that full native
+reserve after removal. Do not apply a lower file-only floor to a later stop,
+native verifier, catalog refresh or retirement pass. Re-run the actual fleet
+preflight after reclamation, since ongoing compaction can change free space.
 
 ## Historical receipt read acceptance
 
@@ -1398,6 +1513,39 @@ and the current unit before retrying any phase. Clear maintenance guards only
 after fresh process-bound finality, canonical transaction-counter and auxiliary
 service checks.
 
+Barrier freshness uses each host's observation time, not the time the controller
+finally receives all replies. A slow peer can age out earlier observations.
+Preserve every host's result, refresh only aged observations within a bounded
+retry policy, and require the unchanged native freshness limit before mutation.
+
+Exercise both positive and negative host/controller clock skew before the first
+stop. A strict nonnegative receipt age can reject a valid observation when the
+remote clock is slightly ahead. Use bounded waiting for genuine observation
+timestamps, including enough settling time for a receiving host whose clock is
+behind. Never rewrite timestamps, extend freshness limits or make an old record
+fresh. Reject skew outside the qualified bound and retain the failed receipt.
+The September9 adapter admits at most2s observed skew and waits3s at receipt and
+barrier boundaries; Linux/controller failure cases and the real all4 stopped/WAL
+barrier passed before use. These bounds are operation-specific, not a substitute
+for synchronized clocks or qualification on a new network.
+Qualification must exercise a delayed last peer as well as immediate replies.
+
+A lost SSH reply does not prove that the remote operation failed. Inspect the
+specific service, operation ledger and retained native output first. If the work
+completed, collect and authenticate its existing receipt without rerunning it.
+Any continuation must name the exact failed operation and verify the already
+completed hosts. Keep finite guard expiry and local control-machine availability
+visible throughout maintenance; do not carry an old-version guard-renewal worker
+across a binary installation without qualifying it for the new installed state.
+
+For file maintenance, measure the real guard and reference-scan duration as well
+as transfer speed. Charge how often they execute across the complete selected
+file set; a deadline for a smaller selection cannot qualify a larger pass.
+Journal each replacement before mutation and verify its completed receipt before
+skipping it on continuation. Reject gaps, changed file identities, unowned
+temporary links and changed completion records. Preserve finite pass and health
+limits; use a fresh health proof before starting the next bounded continuation.
+
 Before starting a long verifier or retirement window, calculate catalog runway
 from the native admission boundary, current finalized slot and measured slot
 rate. Include the time needed for publication, verification and the next
@@ -1406,6 +1554,39 @@ eligible preserved source; a small successful append is not proof of sustained
 operation. Source-index prewarming alone is neither whole-object verification
 nor full public-history parity. Renew expiring legacy-source credentials while
 their references remain, separately from active Archive V2 source credentials.
+
+## Archive migration capacity and verifier admission
+
+An active verified-cache role proves that Archive V2 serves history. It does not
+prove that legacy hot/cold data has been retired or that the expected disk space
+has been reclaimed. Track those as separate outcomes, including unique allocated
+bytes before and after eligible retirement and retained checkpoint hardlinks.
+
+For a long verifier, account for the validator's concurrent mutable writes and
+SST rewrites, plus blocks retained by checkpoints and separately preserved
+sources. On September8 the fixed-source verifier stopped after5244seconds when
+free disk crossed its26,057,066,906-byte guard; scratch stayed below450MB and
+memory remained within its bound. No complete manifest resulted. Retain the
+source and terminal receipt, inspect the actual allocation change, and change
+the qualified execution conditions before retrying. Do not lower a guard solely
+because a sampled free-space figure would pass it.
+
+A binary replacement using an unchanged catalog is a separate operation from
+catalog publication and index prewarming. Derive each phase from its real
+consumers: download, expansion, retained rollback, atomic installation, cache
+growth, records, native memory and live recovery. Charge shared filesystems
+together. Existing cache occupancy may reduce future allocation only after a
+stopped service/WAL/reader barrier and authenticated stable file inventory;
+reject corrupt, shared, sparse, unexpected or quarantined entries. Preserve the
+normal native reserve and account separately for physical allocation overhead.
+A helper's arithmetic tests do not qualify the complete stop/install/recovery
+procedure. Never reuse the older Archive-OFF budget for an active Archive V2 role.
+
+Qualify filesystem checks at the actual target. On this fleet US `/tmp` is a
+separate tmpfs, while validator data uses ext4. A test of allocation behavior on
+`/tmp` cannot establish ext4 behavior or data-volume headroom. Run disposable
+fixtures on their intended filesystem, bind the device identity, use the actual
+service account and resolve executable paths before restricting the child PATH.
 
 ## Returning validator readiness and auxiliary scan holds
 
