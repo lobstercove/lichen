@@ -1,19 +1,21 @@
 # Archive V2 Activation, Cadence Recovery, And Validator Liveness Plan
 
-**Current status, September 9, 04:08UTC:** signed `v0.5.289` is live on all four
-validators with Archive V2 catalog433. Fresh authorship and fixed finality passed
-at slot12,846,657; signed-artifact, exact counter, auxiliary restoration and
-maintenance guard checks completed. `v0.5.290` is the only successor candidate;
-it bounds known-slot historical receipt reads to their owning authenticated
-archive segment. Full genesis responses currently time out while commit-only
-and empty-block reads remain fast. Candidate core/RPC tests and strict Clippy
-pass; CI and signed release qualification remain required before deployment.
+**Current status, September 9, 11:40UTC:** signed `v0.5.290` is live on all four
+validators with Archive V2 catalog443. Fresh authorship and fixed finality passed
+at slot12,900,222; signed-artifact, exact counter, auxiliary restoration and
+maintenance guard checks completed. `v0.5.291` is the only successor candidate;
+it bounds account Activity pages to the newest archive ranges that can enter the
+page. Signed290 already bounds known-slot receipt reads. The live account-history
+latency gate remains open; candidate regression tests are not live timing proof.
+CI and signed release qualification remain required before a new deployment.
 
 Five obsolete EU diagnostic captures were retired with controls, provenance and
 the newest source preserved, recovering20,348,854,272observed free bytes. This
-does not establish complete legacy retirement. The next EU checkpoint is being
-watched for continued publication beyond catalog433. The signed286 full-history
-scan remains incomplete. Full history/restart acceptance, sustained capacity and
+does not establish complete legacy retirement. Another superseded EU12700000
+capture was retired on September9, recovering4,044,099,584observed free bytes.
+The isolated signed290 full-history scan of the preserved12850000 checkpoint is
+running with catalog443 and explicit live-growth/checkpoint/scratch reserves.
+Full history/restart acceptance, sustained capacity and
 qualified obsolete R2 cleanup remain open. Wallet/extension0.1.11 and DEX fixes
 are deployed; public DEX asset and desktop/tablet/mobile checks pass. Mobile icon
 polish remains deferred. Preserve active primary/replica objects, remaining legacy

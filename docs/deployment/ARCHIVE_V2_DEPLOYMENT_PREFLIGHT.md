@@ -96,6 +96,14 @@ Identify the actual occupied files, references and peak consumers, then qualify 
 fitting plan. Repeating the same failed scan or lowering its floor does not prove
 the deployment can finish or recover.
 
+Before tagging a new source version, check the runtime crate manifests, path
+dependency version constraints and all five Cargo lockfiles. Also update the
+candidate references in README, the developer CLI and getting-started guides,
+developer changelog, exchange portal/package readiness checker and current
+activation plan. Preserve historical release entries. Run public-claims,
+exchange-release-assets and the full frontend/deployment static QA before CI
+publication so a version bump cannot leave these consumers on the previous line.
+
 ## Retiring superseded diagnostic checkpoint copies
 
 Inventory allocated blocks and hardlink references before selecting a copy.

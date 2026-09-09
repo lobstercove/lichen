@@ -79,6 +79,20 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.291 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.291</span>
+                    <span class="changelog-date">September 9, 2026 — candidate</span>
+                </div>
+                <h3>Bounded wallet Activity pagination</h3>
+                <ul>
+                    <li>Read account history from the newest archive ranges that can contribute to the page.</li>
+                    <li>Preserve transaction cursors within a block, hot/archive overlap and errors for unavailable required history.</li>
+                    <li>Exercise consecutive 20-row wallet RPC pages without fetching unrelated archive segments. Signed release and live latency acceptance remain required.</li>
+                </ul>
+            </article>
+
             <!-- ============ v0.5.290 ============ -->
             <article class="changelog-entry">
                 <div class="changelog-header">
