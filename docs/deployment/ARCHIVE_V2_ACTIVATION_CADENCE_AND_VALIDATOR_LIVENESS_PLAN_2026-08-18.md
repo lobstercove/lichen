@@ -1,19 +1,23 @@
 # Archive V2 Activation, Cadence Recovery, And Validator Liveness Plan
 
-**Current status, September 8, 20:04UTC:** signed `v0.5.288` is live on all four
-validators with Archive V2 catalog430. All four authorship, common finality,
-signed-artifact and exact live counter checks passed; auxiliary services were
-restored and catalog maintenance guards cleared. `v0.5.289` is the only successor candidate;
-it fixes a
-returning-node readiness comparison that used a stale local tip across bootstrap
-RPC timeouts. It is not deployed. The existing exact-tip recovery path restored
-the affected validator with its original process and own state preserved.
-The signed286 full-history scan stopped at its reserve guard and is incomplete.
-Wallet0.1.11 and the DEX fixes are published. Eligible physical retirement,
-sustained capacity, full history acceptance and obsolete R2 cleanup remain open.
-Gateway TLS is qualified. Preserve active primary/replica objects, remaining
-legacy references and signed rollback artifacts; renew temporary legacy mount
-credentials before their expiry while these references remain.
+**Current status, September 9, 04:08UTC:** signed `v0.5.289` is live on all four
+validators with Archive V2 catalog433. Fresh authorship and fixed finality passed
+at slot12,846,657; signed-artifact, exact counter, auxiliary restoration and
+maintenance guard checks completed. `v0.5.290` is the only successor candidate;
+it bounds known-slot historical receipt reads to their owning authenticated
+archive segment. Full genesis responses currently time out while commit-only
+and empty-block reads remain fast. Candidate core/RPC tests and strict Clippy
+pass; CI and signed release qualification remain required before deployment.
+
+Five obsolete EU diagnostic captures were retired with controls, provenance and
+the newest source preserved, recovering20,348,854,272observed free bytes. This
+does not establish complete legacy retirement. The next EU checkpoint is being
+watched for continued publication beyond catalog433. The signed286 full-history
+scan remains incomplete. Full history/restart acceptance, sustained capacity and
+qualified obsolete R2 cleanup remain open. Wallet/extension0.1.11 and DEX fixes
+are deployed; public DEX asset and desktop/tablet/mobile checks pass. Mobile icon
+polish remains deferred. Preserve active primary/replica objects, remaining legacy
+references, signed rollback and temporary credential renewal deadlines.
 Use [the current deployment preflight](ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md) and
 [v0.5.283 qualification](../audits/V0.5.283_CHECKPOINT_ROLE_HISTORY_2026-09-06.md).
 The dated execution narrative below is historical provenance and does not
