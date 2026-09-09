@@ -7,6 +7,8 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
+**Candidate release line:** `v0.5.291`; GitHub publication remains pending.
+
 **Signed Testnet deployment:** all four validators completed `v0.5.291` with
 Archive V2 catalog 452 on September 9, 2026. Authorship, finality, signed-binary
 parity and exact live transaction-counter checks passed. All unused legacy cold
