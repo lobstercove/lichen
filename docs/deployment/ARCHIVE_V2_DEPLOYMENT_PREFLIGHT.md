@@ -103,6 +103,17 @@ Identify the actual occupied files, references and peak consumers, then qualify 
 fitting plan. Repeating the same failed scan or lowering its floor does not prove
 the deployment can finish or recover.
 
+Native maintenance units must also declare and verify their descriptor limits.
+Do not inherit systemd's default soft `LimitNOFILE`: the September 9 US live
+database contained 3,318 SST files while an isolated verifier inherited 1,024
+descriptors. It failed with `Too many open files`; the validator itself remained
+healthy with a 65,536 limit. The corrected read-only verifier declares
+`LimitNOFILE=65536`, verifies both effective limits in the actual namespace,
+opens 2,048 harmless descriptors as a preflight, and checks the SST inventory
+against its descriptor budget before opening RocksDB. Disk, memory, deadline
+and read-only filesystem gates remain independent requirements. A derived
+checkpoint with fewer files does not qualify a live database's resource limits.
+
 Before tagging a new source version, check the runtime crate manifests, path
 dependency version constraints and all five Cargo lockfiles. Also update the
 candidate references in README, the developer CLI and getting-started guides,
