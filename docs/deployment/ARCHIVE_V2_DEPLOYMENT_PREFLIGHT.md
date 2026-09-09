@@ -57,8 +57,10 @@ source inventories and available resources. Use the per-run deployment record id
    compare it with the native handoff calculation, not directly with catalog root.
 7. **Separate verification stages.** Source inventory, source-index validation,
    whole-object hashes, local handoff verification and full public-history parity
-   prove different things. Require native admission and bootstrap dry-run against
-   the selected signed artifact. A successful TLS probe in one client does not
+   prove different things. Require native admission against the selected signed
+   artifact. Initial placement also requires its bootstrap dry-run; an existing
+   role after cold retirement uses the marker-authorized restart path below.
+   A successful TLS probe in one client does not
    prove another client's acceptance; verify the actual runtime client when TLS
    is implicated. Do not change a CA based only on a historical error field.
 8. **Prove recovery and live behavior.** Wait for RPC and BFT readiness after
@@ -89,6 +91,11 @@ Compare cold/warm latency and exact returned rows on the same sampled account
 before and after a signed change. A fast UI fixture does not measure live RPC
 latency. See the [account pagination audit](../audits/V0.5.291_ACCOUNT_ACTIVITY_PAGINATION_2026-09-09.md).
 
+Compare dashboard counters with canonical transactions excluding consensus
+transactions, matching `MetricsState::track_block_at`. The public-history
+manifest's transaction category includes consensus transactions. Its raw count
+is therefore not a replacement value for the dashboard's total.
+
 A verifier stopping at its reserve guard means its planned peak/recovery envelope
 was no longer available. Archive V2 saves space after verified legacy retirement
 and physical reclamation; migration can temporarily retain both representations.
@@ -103,6 +110,147 @@ developer changelog, exchange portal/package readiness checker and current
 activation plan. Preserve historical release entries. Run public-claims,
 exchange-release-assets and the full frontend/deployment static QA before CI
 publication so a version bump cannot leave these consumers on the previous line.
+
+## Native restart and archive publication
+
+### Restart after legacy cold retirement
+
+Distinguish initial role bootstrap from restarting an already admitted validator.
+In v0.5.291, the maintenance CLI's `role-preflight` reads canonical genesis from
+local hot/cold storage, and `role-bootstrap` explicitly requires `--cold-store`.
+Removing that argument does not make either command suitable for a retired cold
+store. On September 9 this incorrect wrapper change rejected all four stopped
+validators with `local state has no canonical genesis block`; no startup had
+been attempted and the genesis block remained in the verified Archive V2 data.
+
+The signed validator supports an existing checksummed `role-config-v1.bin` when
+slot zero is outside the hot window. Its startup validates marker identity and
+role, verifies the complete hot canonical range and archive handoff, applies
+capacity admission, and validates any persisted state-admission fingerprint.
+Keep immutable source verification separate from short-lived process barriers.
+Record the complete source inventory with its catalog hash, observation time,
+host and own stopped WAL. Apply an explicit observation lifetime and recheck
+current catalog identities. Refresh the complete stopped/paused process barrier
+immediately before each sequential action. Do not run expensive source inventory
+inside a shared barrier whose lifetime cannot cover that work. Preserve partial
+completion and use an explicitly bound continuation instead of replaying it.
+
+Use that native restart path only for the exact previously admitted state,
+preserved marker, own WAL, verified catalog and signed artifact. Check both
+source inventories, authenticated indexes and the complete recovery reserve
+before startup; require actual marker activation and native admission before
+allowing the fleet to proceed. Preserve initial-bootstrap failures as failures.
+Never fabricate a successful CLI admission record or create a dummy cold store.
+
+After all nodes pass native startup, verify advancing authorship, fixed-block
+and commit parity, genesis/deep reads, counters and application queries before
+clearing the maintenance guards. Missing, corrupt or conflicting markers and
+incomplete or conflicting hot history must still stop startup. Fresh networks
+must complete their initial admission and receive no historical Testnet waiver.
+
+### Publication cadence
+
+Read the checkpoint interval and publication depth from the selected release.
+In v0.5.291, periodic hot-repair checkpoints run at 10,000-slot boundaries;
+the archive builder's retained finality depth is 50,000 slots. These are separate
+limits. A source checkpoint at slot 12,850,000 can therefore publish through
+12,800,000. A later live RPC finality response does not advance the stored slot
+inside that immutable source. Do not relabel checkpoint metadata or lower the
+builder's finality depth to extend its publication range.
+
+Calculate the next restart deadline from the admitted catalog end, configured
+recent-history window and native unpublished-extension bound. Include measured
+source verification, cache import, native admission and coordinated startup time
+before stopping validators. If that complete transition cannot fit, preserve a
+newer completed own checkpoint, publish a verified append to both sources, and
+qualify the local catalog transition first. A running reader does not automatically
+adopt an externally replaced catalog in this release.
+
+Record both observed checkpoint publication and the procedure responsible for
+continued archive publication. Enabling the Archive V2 reader or publishing one
+append does not establish ongoing retention. Recovery of free space must also
+restore checkpoint cadence; successful block production alone does not establish
+that recovery.
+
+## Full verifier I/O and completion
+
+The signed public-history verifier performs a canonical ledger walk and separate
+globally ordered merges for the other public categories. The canonical walk
+finishing is not completion of the full manifest. Review the final native JSON,
+all category counts and digests, source slot, handoff, state root, catalog and
+documented network-specific gaps before accepting its result.
+
+Measure the exact verifier configuration, including its index-cache behavior.
+With a local object directory and no cache, the reader extracts authenticated
+indexes from object files for each category. A remote filesystem can make those
+repeated range reads expensive even when scratch usage is small. A configured
+authenticated index cache can avoid those repeated extractions, but must be
+included in the actual filesystem, ownership, namespace and peak-capacity plan.
+For `public-history-manifest`, `--cache-root` and a nonzero `--cache-quota-bytes`
+require at least one `--source-dir`; setting a cache argument alone is rejected.
+Do not change the configuration or deadline of an already running verifier.
+
+After an interrupted transport, inspect the existing unit, native output and
+completion record. Never repeat an expensive native operation merely because
+its local reply was lost. A runtime deadline or reserve failure remains a failed
+verification, even when earlier stages succeeded; preserve its evidence and
+qualify a fitting successor before retrying.
+
+## Exact legacy-copy and R2 retirement
+
+Archive V2 activation and obsolete-file retirement are separate operations.
+Before retiring a detached legacy database, verify complete replacement history,
+independent archive copies and each validator's own recovery path. Check that
+runtime and remaining maintenance commands no longer require that database.
+Preserve the original retirement journals, authorizations and catalog bindings;
+do not rebind a pending journal to a later catalog. `retirement-reclaim` opens
+the optional cold store only when `--cold-store` is supplied, so inspect the
+actual journal families before adding that dependency to a hot-only reclaim.
+
+Bind deletion to exact file identities, preserve and fsync database control files,
+scan local filesystems including `/dev/shm`, descriptors and mappings, and use a
+durable no-replace detach/removal ledger. Unlinking an SST symlink must never
+remove its target. A file-only budget must fund both its bounded operations and
+the unchanged native recovery reserve after removal. Confirm the latter using
+observed free space; estimated exclusive allocations are only a preflight input.
+
+For legacy R2 mounts, verify the running mount's actual backend and key prefix,
+configuration hash, unit identity and remaining dependencies. A familiar mount
+name alone is insufficient. Complete and verify local retirement and normal
+unmounting before treating those keys as obsolete. Account for background
+integrity scanners as well as validator descriptors. Preserve active Archive V2
+primary and replica objects, recovery copies, signed rollbacks and unclassified
+prefixes. Both buckets remain part of the deployed archive; cleanup must never
+mean emptying them.
+
+Inspect every unit's actual restart and stop policy. The September 9 fleet has
+empty `ExecStop` command arrays that `systemctl show` omits even with `--all`.
+Request all scalar properties explicitly and verify the empty command array
+through systemd's typed D-Bus `Service.ExecStop` property. A missing property
+alone is not proof that a stop command is absent. Exercise the actual property
+reader against every deployed unit before authorizing the first unmount.
+
+The September 9 fleet has
+three legacy variants: no post-stop hook, an ignored `fusermount3 -uz` hook, and
+two ignored hooks ending in `umount -l`. Stopping these units first could hide a
+busy mount. Verify that a normal `umount -- EXACT_TARGET` refuses open references,
+then confirm successful daemon exit without an automatic restart. Preserve the
+transient unit fragment before systemd removes it. Qualify each distinct rclone
+and mount-helper binary set; India differs from the other three hosts.
+
+Place isolated mount fixtures under an existing permitted path, such as a private
+directory under `/mnt`. This fleet's fusermount3 AppArmor policy does not permit
+arbitrary mounts under `/var/lib/lichen`; do not weaken the policy to fit a test.
+Use the `lichen` account name in native maintenance units and verify permissions
+on each host. The US UID is 999 and the other hosts use 997. Probe the real
+read-only source paths and writable cache in the exact service namespace before
+stopping validators; a root-only probe does not prove service-account access.
+
+Before any R2 deletion, take a fresh complete listing and bind the exact bucket,
+key, size and ETag set to the accepted retirement and recovery evidence. Reject
+scope changes, new dependencies and unmatched keys. Keep durable per-object
+results and verify the post-delete listing and live history again. Report actual
+deleted bytes separately from candidates, local disk gains and preserved data.
 
 ## Retiring superseded diagnostic checkpoint copies
 
