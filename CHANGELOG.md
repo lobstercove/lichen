@@ -5,6 +5,17 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.291] - Unreleased
+
+### Fixed
+
+- Bound account Activity pagination to the newest archive ranges that can enter
+  the requested page. A complete hot page no longer scans the entire archive
+  account index; partial pages continue through older ranges as needed.
+- Preserve exact within-block cursors, overlapping hot/archive rows and failures
+  for unavailable required history. Add state and wallet RPC regression tests,
+  including two 20-row pages served without fetching unrelated archive objects.
+
 ## [0.5.290] - Unreleased
 
 ### Fixed

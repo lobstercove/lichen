@@ -1,3 +1,4 @@
+use crate::archive_v2::ArchiveV2Role;
 use crate::block::Block;
 
 use super::*;
@@ -8,6 +9,17 @@ struct AccountTxIndexRow {
     hash: Hash,
     slot: u64,
     seq: u32,
+}
+
+fn retain_account_tx_page(rows: &mut Vec<AccountTxIndexRow>, limit: usize) {
+    rows.sort_by(|a, b| {
+        b.slot
+            .cmp(&a.slot)
+            .then_with(|| b.seq.cmp(&a.seq))
+            .then_with(|| b.hash.0.cmp(&a.hash.0))
+    });
+    rows.dedup_by(|a, b| a.key == b.key);
+    rows.truncate(limit);
 }
 
 fn extract_token_recipient_from_ix(ix: &crate::transaction::Instruction) -> Option<Pubkey> {
@@ -925,32 +937,54 @@ impl StateStore {
                 )?);
             }
         }
+        retain_account_tx_page(&mut rows, limit);
         let archive_end = before_cursor.map(|(slot, _)| slot).unwrap_or(u64::MAX);
-        for (key, _) in
-            self.archive_v2_category_rows_with_prefix("account_txs", 0, archive_end, &pubkey.0)?
+        if let Some(reader) = self
+            .archive_v2_reader()
+            .filter(|reader| reader.role() != ArchiveV2Role::Consensus)
         {
-            if !key.starts_with(&pubkey.0) {
-                continue;
+            // Catalog ranges are disjoint and ordered. Merge newest segments
+            // first, stopping only when older slots cannot enter the page.
+            // Keep the boundary slot inclusive for overlapping hot rows and
+            // other canonical transaction ordinals in that same slot.
+            for entry in reader.catalog().entries.iter().rev() {
+                let manifest = &entry.manifest;
+                let archive_start = if rows.len() == limit {
+                    rows.last().map(|row| row.slot).unwrap_or(0)
+                } else {
+                    0
+                };
+                if manifest.end_slot < archive_start {
+                    break;
+                }
+                if manifest.start_slot > archive_end {
+                    continue;
+                }
+                for (key, _) in reader
+                    .category_rows_with_prefix(
+                        "account_txs",
+                        archive_start.max(manifest.start_slot),
+                        archive_end.min(manifest.end_slot),
+                        &pubkey.0,
+                    )
+                    .map_err(|error| error.to_string())?
+                {
+                    if !key.starts_with(&pubkey.0) {
+                        continue;
+                    }
+                    let Some(row) = parse_account_tx_index_key(&key)? else {
+                        continue;
+                    };
+                    if before_cursor.is_some_and(|(slot, seq)| {
+                        row.slot > slot || (row.slot == slot && row.seq >= seq)
+                    }) {
+                        continue;
+                    }
+                    rows.push(row);
+                }
+                retain_account_tx_page(&mut rows, limit);
             }
-            let Some(row) = parse_account_tx_index_key(&key)? else {
-                continue;
-            };
-            if before_cursor
-                .is_some_and(|(slot, seq)| row.slot > slot || (row.slot == slot && row.seq >= seq))
-            {
-                continue;
-            }
-            rows.push(row);
         }
-
-        rows.sort_by(|a, b| {
-            b.slot
-                .cmp(&a.slot)
-                .then_with(|| b.seq.cmp(&a.seq))
-                .then_with(|| b.hash.0.cmp(&a.hash.0))
-        });
-        rows.dedup_by(|a, b| a.key == b.key);
-        rows.truncate(limit);
 
         Ok(rows
             .into_iter()

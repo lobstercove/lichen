@@ -1881,6 +1881,160 @@ mod tests {
             vec![(signature, 1, 0), (archived_signature, 0, 0)]
         );
     }
+    #[test]
+    fn account_pages_only_read_archive_ranges_that_can_enter_the_page() {
+        let state_root = tempdir().unwrap();
+        let archive_root = tempdir().unwrap();
+        let remote_root = tempdir().unwrap();
+        let cache_root = tempdir().unwrap();
+        let state = StateStore::open(state_root.path()).unwrap();
+        let account = Pubkey([2; 32]);
+        let mut blocks = Vec::new();
+        let mut parent = Hash::default();
+        for slot in 0..4 {
+            let transactions = (0..if slot >= 2 { 3 } else { 1 })
+                .map(|seq| {
+                    Transaction::new(Message::new(
+                        vec![Instruction {
+                            program_id: Pubkey([1; 32]),
+                            accounts: vec![if slot == 1 { Pubkey([9; 32]) } else { account }],
+                            data: vec![slot as u8, seq],
+                        }],
+                        parent,
+                    ))
+                })
+                .collect();
+            let block = Block::new_with_timestamp(
+                slot,
+                parent,
+                Hash::default(),
+                [5; 32],
+                transactions,
+                slot + 1,
+            );
+            parent = block.hash();
+            blocks.push(block);
+        }
+        let identity = ArchiveV2Identity {
+            network_id: "account-page-regression".to_string(),
+            genesis_hash: blocks[0].hash(),
+        };
+        let mut catalog = ArchiveV2Catalog::empty(identity.clone()).unwrap();
+        let objects = remote_root.path().join("objects");
+        fs::create_dir_all(&objects).unwrap();
+        let mut previous_segment = None;
+        let mut oldest_object = None;
+        let mut quota = 1024 * 1024;
+        for block in &blocks[..3] {
+            let mut contents = ArchiveV2SegmentContents::from_blocks(vec![block.clone()]);
+            let mut rows: Vec<_> =
+                super::super::secondary_indexes::account_tx_index_entries_for_block(block)
+                    .into_iter()
+                    .map(|(_, key)| ArchiveV2PublicRow {
+                        slot: block.header.slot,
+                        key,
+                        value: Vec::new(),
+                    })
+                    .collect();
+            rows.sort_by(|a, b| a.key.cmp(&b.key));
+            contents
+                .public_categories
+                .insert("account_txs".to_string(), rows);
+            let (bytes, manifest) = ArchiveV2SegmentCodec::encode(
+                identity.clone(),
+                previous_segment,
+                block.header.parent_hash,
+                &contents,
+                &ArchiveV2CodecConfig::default(),
+            )
+            .unwrap();
+            let path = objects.join(format!("{}.av2s", manifest.segment_object_hash));
+            fs::write(&path, &bytes).unwrap();
+            quota += bytes.len() as u64;
+            if block.header.slot == 0 {
+                oldest_object = Some((path, bytes));
+            }
+            previous_segment = Some(manifest.segment_object_hash);
+            catalog.append(manifest).unwrap();
+        }
+        let catalog_path = archive_root.path().join("catalog.av2");
+        catalog.store_atomic(&catalog_path).unwrap();
+        state.put_block_atomic(&blocks[3], None, None).unwrap();
+        state.attach_archive_v2_reader(
+            ArchiveV2Reader::open(
+                identity,
+                &catalog_path,
+                ArchiveV2ReaderConfig {
+                    role: ArchiveV2Role::VerifiedCache,
+                    root: archive_root.path().to_path_buf(),
+                    cache_root: Some(cache_root.path().to_path_buf()),
+                    cache_quota_bytes: quota,
+                    max_decoded_segments: 1,
+                    allow_remote_fetch: true,
+                    sources: vec![Arc::new(ArchiveV2DirectorySource::new(
+                        "account-page-source",
+                        remote_root.path(),
+                        true,
+                    ))],
+                },
+            )
+            .unwrap(),
+        );
+        state.mark_archive_v2_admitted_after_fresh_sync().unwrap();
+        let row = |slot: usize, seq: usize| {
+            (
+                blocks[slot].transactions[seq].signature(),
+                slot as u64,
+                seq as u32,
+            )
+        };
+        let page = |limit, cursor| {
+            state.get_account_tx_signatures_paginated_exact(&account, limit, cursor)
+        };
+        assert!(page(0, None).unwrap().is_empty());
+        assert_eq!(page(2, None).unwrap(), vec![row(3, 2), row(3, 1)]);
+        assert_eq!(state.archive_v2_status().unwrap().remote_fetches, 0);
+
+        // An unavailable older segment must not affect a complete recent page.
+        // It must still fail closed when pagination actually needs that range.
+        let (oldest_path, oldest_bytes) = oldest_object.unwrap();
+        fs::remove_file(&oldest_path).unwrap();
+        assert_eq!(
+            page(4, None).unwrap(),
+            vec![row(3, 2), row(3, 1), row(3, 0), row(2, 2)]
+        );
+        assert_eq!(state.archive_v2_status().unwrap().remote_fetches, 1);
+        assert_eq!(page(2, Some((2, 2))).unwrap(), vec![row(2, 1), row(2, 0)]);
+        assert_eq!(state.archive_v2_status().unwrap().remote_fetches, 1);
+        assert!(page(3, Some((2, 2))).is_err());
+        fs::write(&oldest_path, oldest_bytes).unwrap();
+        assert_eq!(
+            page(3, Some((2, 2))).unwrap(),
+            vec![row(2, 1), row(2, 0), row(0, 0)],
+            "empty account ranges must not truncate a partial page"
+        );
+        assert!(page(2, Some((0, 0))).unwrap().is_empty());
+
+        // Retain only ordinal zero in hot state at the archive boundary.
+        // A full hot page still has to merge newer ordinals from that slot.
+        state.put_block_atomic(&blocks[2], None, None).unwrap();
+        let cf = state.db.cf_handle(CF_ACCOUNT_TXS).unwrap();
+        for (_, key) in
+            super::super::secondary_indexes::account_tx_index_entries_for_block(&blocks[2])
+        {
+            if key[40..44] != 0u32.to_be_bytes() {
+                state.db.delete_cf(&cf, key).unwrap();
+            }
+        }
+        assert_eq!(page(1, Some((3, 0))).unwrap(), vec![row(2, 2)]);
+        assert_eq!(
+            page(4, Some((3, 0))).unwrap(),
+            vec![row(2, 2), row(2, 1), row(2, 0), row(0, 0)],
+            "overlapping hot/archive rows must deduplicate before limiting"
+        );
+        assert_eq!(page(1, Some((u64::MAX, 0))).unwrap(), vec![row(3, 2)]);
+    }
+
     use crate::archive_v2::{
         ArchiveV2Catalog, ArchiveV2CodecConfig, ArchiveV2DirectorySource, ArchiveV2Identity,
         ArchiveV2ReaderConfig, ArchiveV2SegmentCodec, ArchiveV2SegmentContents,

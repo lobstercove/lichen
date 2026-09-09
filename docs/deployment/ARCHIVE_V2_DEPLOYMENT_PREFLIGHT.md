@@ -80,6 +80,15 @@ source inventories and available resources. Use the per-run deployment record id
     qualified obsolete artifacts or R2 objects. Active primary/replica archives,
     source captures and protected backups remain part of the deployment.
 
+Account Activity acceptance must exercise the complete `getTransactionsByAddress`
+handler, including the extra row used for `has_more`, receipts, timestamps and
+the returned signature cursor. Verify a full recent page without unrelated
+archive fetches, a page crossing into archive storage, multiple transactions in
+one block, overlapping hot/archive rows and unavailable required history.
+Compare cold/warm latency and exact returned rows on the same sampled account
+before and after a signed change. A fast UI fixture does not measure live RPC
+latency. See the [account pagination audit](../audits/V0.5.291_ACCOUNT_ACTIVITY_PAGINATION_2026-09-09.md).
+
 A verifier stopping at its reserve guard means its planned peak/recovery envelope
 was no longer available. Archive V2 saves space after verified legacy retirement
 and physical reclamation; migration can temporarily retain both representations.
