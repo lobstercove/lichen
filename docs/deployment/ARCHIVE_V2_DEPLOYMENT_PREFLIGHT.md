@@ -1008,6 +1008,16 @@ afterward. It changed only its copied journal. This qualifies reader startup and
 journal I/O, not live SST amplification, sustained memory or full deployment.
 Never interpret an object verification or systemd-parser test as this full path.
 
+Check this lifecycle for every new staging root, including authorization-only
+readers. On September 9 the grouped v0.5.291 authorization repeated this omission:
+the objects and catalog were readable, but `quarantine` was absent inside the
+read-only mount namespace. The first native call failed before writing a signed
+record. Preserve that attempt's exact output, precreate the empty directory with
+explicit service access, and use an exclusive continuation output directory.
+Keep the catalog, objects and manifests read-only. A successful native
+authorization establishes reader startup and signing; the first deletion pass
+must still perform its own complete hot/archive equivalence verification.
+
 When a finite maintenance batch ends, preserve its completed journal and exact
 per-pass evidence. A later batch must use a new operation identity, the latest
 journal hash linked to the previous sealed result, and a fresh clean stop with

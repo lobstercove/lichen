@@ -13,8 +13,10 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 Archive V2 catalog 452 on September 9, 2026. Authorship, finality, signed-binary
 parity and exact live transaction-counter checks passed. All unused legacy cold
 copies and 100 emergency R2 mounts have been retired, recovering 150.71 GB of
-local filesystem space. Four-validator public-history parity, remaining hot
-reclamation, sustained capacity and obsolete R2 object cleanup remain open.
+local filesystem space. All four public-history tails now match across 21
+categories through slot 12,970,000, with the native catalog handoff verified.
+Final composed-history acceptance, remaining hot reclamation, sustained capacity
+and obsolete R2 object cleanup remain open.
 The GitHub release is still a draft. Preserve signed rollback artifacts and
 consult the [dated deployment record](docs/deployment/V0.5.291_TESTNET_DEPLOYMENT_2026-09-09.md)
 before operating; a completed deployment observation is not a fresh fleet check.
