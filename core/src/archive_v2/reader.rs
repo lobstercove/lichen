@@ -757,6 +757,34 @@ impl ArchiveV2Reader {
         Ok(None)
     }
 
+    /// Look up a public row whose canonical block slot is already known.
+    /// A missing receipt must not search unrelated segments or sources.
+    pub fn category_value_at_slot(
+        &self,
+        category: &str,
+        key: &[u8],
+        slot: u64,
+    ) -> Result<Option<Vec<u8>>, ArchiveV2Error> {
+        self.ensure_deep_history()?;
+        let Some(manifest) = self.manifest_for_slot(slot) else {
+            return Ok(None);
+        };
+        let indexes = self.public_indexes(
+            manifest,
+            super::codec::ArchiveV2IndexRowQuery {
+                category,
+                prefix: key,
+                start_slot: slot,
+                end_slot: slot,
+            },
+        )?;
+        Ok(indexes.categories.get(category).and_then(|rows| {
+            rows.binary_search_by(|row| row.key.as_slice().cmp(key))
+                .ok()
+                .map(|index| rows[index].value.clone())
+        }))
+    }
+
     fn manifest_for_slot(&self, slot: u64) -> Option<&ArchiveV2Manifest> {
         self.catalog
             .entries
@@ -1467,6 +1495,44 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn known_slot_row_lookup_does_not_consult_unrelated_segments() {
+        let local = tempdir().unwrap();
+        let reader = paginated_index_fixture(local.path(), true);
+        assert_eq!(
+            reader.category_value_at_slot("events", b"c", 0).unwrap(),
+            Some(b"ccc".to_vec())
+        );
+        assert_eq!(
+            reader.category_value_at_slot("events", b"c", 1).unwrap(),
+            Some(b"xxx".to_vec())
+        );
+        // A key from another slot is not a receipt for the requested block.
+        assert_eq!(
+            reader.category_value_at_slot("events", b"b", 0).unwrap(),
+            None
+        );
+        assert_eq!(
+            reader.category_value_at_slot("events", b"a", 2).unwrap(),
+            None
+        );
+
+        let unrelated = reader.catalog.entries[1].manifest.segment_object_hash;
+        fs::remove_file(object_path(local.path(), &unrelated)).unwrap();
+        assert_eq!(
+            reader
+                .category_value_at_slot("events", b"missing", 0)
+                .unwrap(),
+            None
+        );
+        assert!(
+            reader.category_value("events", b"missing").is_err(),
+            "the old unbounded lookup reaches the unrelated unavailable segment"
+        );
+        assert!(reader.category_value_at_slot("events", b"b", 1).is_err());
+        assert!(reader.decoded.lock().unwrap().is_empty());
     }
 
     #[test]

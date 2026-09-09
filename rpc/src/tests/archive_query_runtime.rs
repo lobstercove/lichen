@@ -10,6 +10,121 @@ struct SlowSource {
     entered: std::sync::mpsc::SyncSender<()>,
 }
 
+struct UnavailableCountingSource(Arc<std::sync::atomic::AtomicUsize>);
+
+impl ArchiveV2ObjectSource for UnavailableCountingSource {
+    fn name(&self) -> &str {
+        "unrelated-unavailable-segment"
+    }
+    fn authenticated(&self) -> bool {
+        true
+    }
+    fn fetch(&self, _: &Hash) -> Result<Option<Vec<u8>>, ArchiveV2Error> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(None)
+    }
+}
+
+#[tokio::test]
+async fn genesis_block_missing_receipts_do_not_fetch_unrelated_segments() {
+    let state_root = tempdir().unwrap();
+    let archive_root = tempdir().unwrap();
+    let cache_root = tempdir().unwrap();
+    let state = StateStore::open(state_root.path()).unwrap();
+    let tx = Transaction::new(lichen_core::Message::new(
+        vec![lichen_core::Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![Pubkey([1; 32]), Pubkey([2; 32])],
+            data: vec![0; 9],
+        }],
+        Hash::default(),
+    ));
+    let genesis =
+        Block::new_with_timestamp(0, Hash::default(), Hash::default(), [0; 32], vec![tx], 1);
+    let child =
+        Block::new_with_timestamp(1, genesis.hash(), Hash::default(), [0; 32], Vec::new(), 2);
+    let unrelated =
+        Block::new_with_timestamp(2, child.hash(), Hash::default(), [0; 32], Vec::new(), 3);
+    let identity = ArchiveV2Identity {
+        network_id: "known-slot-rpc-test".to_string(),
+        genesis_hash: genesis.hash(),
+    };
+    let mut catalog = ArchiveV2Catalog::empty(identity.clone()).unwrap();
+    let mut previous_object = None;
+    let mut previous_block = Hash::default();
+    std::fs::create_dir_all(archive_root.path().join("objects")).unwrap();
+    for block in [genesis.clone(), child, unrelated] {
+        let slot = block.header.slot;
+        let (bytes, manifest) = ArchiveV2SegmentCodec::encode(
+            identity.clone(),
+            previous_object,
+            previous_block,
+            &ArchiveV2SegmentContents::from_blocks(vec![block]),
+            &ArchiveV2CodecConfig::default(),
+        )
+        .unwrap();
+        if slot < 2 {
+            std::fs::write(
+                archive_root
+                    .path()
+                    .join("objects")
+                    .join(format!("{}.av2s", manifest.segment_object_hash)),
+                bytes,
+            )
+            .unwrap();
+        }
+        previous_object = Some(manifest.segment_object_hash);
+        previous_block = manifest.last_block_hash;
+        catalog.append(manifest).unwrap();
+    }
+    let catalog_path = archive_root.path().join("catalog.av2");
+    catalog.store_atomic(&catalog_path).unwrap();
+    let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    state.attach_archive_v2_reader(
+        ArchiveV2Reader::open(
+            identity,
+            &catalog_path,
+            ArchiveV2ReaderConfig {
+                role: ArchiveV2Role::VerifiedCache,
+                root: archive_root.path().to_path_buf(),
+                cache_root: Some(cache_root.path().to_path_buf()),
+                cache_quota_bytes: 1024 * 1024,
+                max_decoded_segments: 1,
+                allow_remote_fetch: true,
+                sources: vec![Arc::new(UnavailableCountingSource(fetches.clone()))],
+            },
+        )
+        .unwrap(),
+    );
+    let rpc = make_test_rpc_state(state);
+    let block = super::super::handle_get_block(&rpc, Some(serde_json::json!([0])))
+        .await
+        .unwrap();
+    assert_eq!(block["hash"], genesis.hash().to_hex());
+    assert_eq!(block["transaction_count"], 1);
+    for encoding in ["json", "base64", "base58"] {
+        let block = super::super::handle_solana_get_block(
+            &rpc,
+            Some(serde_json::json!([0, {"encoding": encoding}])),
+        )
+        .await
+        .unwrap();
+        assert_eq!(block["transactions"].as_array().unwrap().len(), 1);
+        assert!(block["transactions"][0]["meta"]["err"].is_null());
+    }
+    assert_eq!(
+        fetches.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "missing legacy receipts must not fetch any unrelated archive segment"
+    );
+    // Verify that this fixture detects the original archive-wide lookup.
+    assert!(rpc
+        .state
+        .get_tx_meta_full(&genesis.transactions[0].signature())
+        .is_err());
+    assert!(fetches.load(std::sync::atomic::Ordering::SeqCst) > 0);
+}
+
 impl ArchiveV2ObjectSource for SlowSource {
     fn name(&self) -> &str {
         "slow-test-source"

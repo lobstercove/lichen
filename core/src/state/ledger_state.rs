@@ -1440,6 +1440,29 @@ impl StateStore {
             },
         }
     }
+
+    /// Read a receipt for a transaction with a known canonical block slot.
+    /// Legacy transactions can have no receipt; that miss is confined to their
+    /// own authenticated segment instead of searching the entire archive.
+    pub fn get_tx_meta_full_at_slot(
+        &self,
+        sig: &Hash,
+        slot: u64,
+    ) -> Result<Option<crate::processor::TxMeta>, String> {
+        match self.get_hot_tx_meta_full(sig)? {
+            Some(meta) => Ok(Some(meta)),
+            None => match self.archive_v2_category_value_at_slot("tx_meta", &sig.0, slot)? {
+                Some(data) if data.len() == 8 => Ok(Some(crate::processor::TxMeta {
+                    compute_units_used: u64::from_le_bytes(data.try_into().unwrap()),
+                    ..Default::default()
+                })),
+                Some(data) => decode_tx_meta(&data)
+                    .map(Some)
+                    .map_err(|e| format!("Failed to deserialize Archive V2 tx meta: {e}")),
+                None => Ok(None),
+            },
+        }
+    }
 }
 
 #[cfg(test)]

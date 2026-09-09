@@ -4682,9 +4682,13 @@ fn account_balances(state: &StateStore, tx: &Transaction) -> Vec<u64> {
 fn transaction_receipt_fields(
     state: &StateStore,
     tx: &Transaction,
+    slot: u64,
     fallback_fee: u64,
 ) -> (u64, serde_json::Value, Vec<String>, bool) {
-    let meta = state.get_tx_meta_full(&tx.signature()).ok().flatten();
+    let meta = state
+        .get_tx_meta_full_at_slot(&tx.signature(), slot)
+        .ok()
+        .flatten();
     let success = meta.as_ref().map(TxMeta::succeeded).unwrap_or(true);
     let fee = meta
         .as_ref()
@@ -4715,7 +4719,7 @@ fn solana_transaction_json(
 ) -> serde_json::Value {
     let (account_keys, instructions) = solana_message_json(tx);
     let signature = hash_to_base58(&tx.signature());
-    let (fee, error, logs, _success) = transaction_receipt_fields(state, tx, fee);
+    let (fee, error, logs, _success) = transaction_receipt_fields(state, tx, slot, fee);
 
     // F1: Populate balances from current state.
     // postBalances = current on-chain balances for each account key.
@@ -4757,7 +4761,7 @@ fn solana_transaction_encoded_json(
     encoding: &str,
 ) -> serde_json::Value {
     let encoded = encode_solana_transaction(tx, encoding);
-    let (fee, error, logs, success) = transaction_receipt_fields(state, tx, fee);
+    let (fee, error, logs, success) = transaction_receipt_fields(state, tx, slot, fee);
 
     let post_balances = account_balances(state, tx);
     // AUDIT-FIX F-9: Reconstruct pre-balances from transaction effects.
@@ -4813,11 +4817,12 @@ fn solana_transaction_encoded_json(
 fn solana_block_transaction_json(
     state: &StateStore,
     tx: &Transaction,
+    slot: u64,
     fee: u64,
 ) -> serde_json::Value {
     let (account_keys, instructions) = solana_message_json(tx);
     let signature = hash_to_base58(&tx.signature());
-    let (fee, error, logs, _success) = transaction_receipt_fields(state, tx, fee);
+    let (fee, error, logs, _success) = transaction_receipt_fields(state, tx, slot, fee);
 
     let post_balances = account_balances(state, tx);
     let pre_balances: Vec<u64> = post_balances
@@ -4848,12 +4853,13 @@ fn solana_block_transaction_json(
 fn solana_block_transaction_encoded_json(
     state: &StateStore,
     tx: &Transaction,
+    slot: u64,
     fee: u64,
     encoding: &str,
 ) -> serde_json::Value {
     let encoded = encode_solana_transaction(tx, encoding);
     let signature = hash_to_base58(&tx.signature());
-    let (fee, error, logs, _success) = transaction_receipt_fields(state, tx, fee);
+    let (fee, error, logs, _success) = transaction_receipt_fields(state, tx, slot, fee);
 
     let post_balances = account_balances(state, tx);
     let pre_balances: Vec<u64> = post_balances
@@ -6863,7 +6869,11 @@ async fn handle_get_block(
                 .iter()
                 .filter(|tx| !tx.is_consensus())
                 .map(|tx| {
-                    let tx_meta = state.state.get_tx_meta_full(&tx.signature()).ok().flatten();
+                    let tx_meta = state
+                        .state
+                        .get_tx_meta_full_at_slot(&tx.signature(), block.header.slot)
+                        .ok()
+                        .flatten();
                     tx_to_rpc_json(
                         tx,
                         block.header.slot,
@@ -7462,7 +7472,11 @@ async fn handle_get_transaction(
 
     match tx {
         Some(tx) => {
-            let tx_meta = state.state.get_tx_meta_full(&tx.signature()).ok().flatten();
+            let tx_meta = state
+                .state
+                .get_tx_meta_full_at_slot(&tx.signature(), slot)
+                .ok()
+                .flatten();
             let mut json = tx_to_rpc_json(
                 &tx,
                 slot,
@@ -7507,7 +7521,7 @@ async fn handle_get_transaction(
                     if block_tx.signature() == sig_hash {
                         let tx_meta = state
                             .state
-                            .get_tx_meta_full(&block_tx.signature())
+                            .get_tx_meta_full_at_slot(&block_tx.signature(), slot)
                             .ok()
                             .flatten();
                         return Ok(tx_to_rpc_json(
@@ -7851,7 +7865,7 @@ async fn handle_get_transactions_by_address(
 
         let computed_fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
         let (fee, error, _logs, success) =
-            transaction_receipt_fields(&state.state, &tx, computed_fee);
+            transaction_receipt_fields(&state.state, &tx, *slot, computed_fee);
 
         let mut entry = serde_json::json!({
             "hash": tx.signature().to_hex(),
@@ -7988,7 +8002,7 @@ async fn handle_get_recent_transactions(
 
         let computed_fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
         let (fee, error, _logs, success) =
-            transaction_receipt_fields(&state.state, &tx, computed_fee);
+            transaction_receipt_fields(&state.state, &tx, *slot, computed_fee);
 
         let mut entry = serde_json::json!({
             "hash": tx.signature().to_hex(),
@@ -8112,7 +8126,11 @@ async fn handle_get_recent_shielded_transactions(
             ts
         };
 
-        let tx_meta = state.state.get_tx_meta_full(&tx.signature()).ok().flatten();
+        let tx_meta = state
+            .state
+            .get_tx_meta_full_at_slot(&tx.signature(), *slot)
+            .ok()
+            .flatten();
         let mut entry = tx_to_rpc_json(
             &tx,
             *slot,
@@ -8733,7 +8751,7 @@ async fn handle_confirm_transaction(
 
     let error = state
         .state
-        .get_tx_meta_full(&sig_hash)
+        .get_tx_meta_full_at_slot(&sig_hash, tx_slot)
         .ok()
         .flatten()
         .filter(|meta| !meta.succeeded())
@@ -9343,7 +9361,7 @@ async fn handle_solana_get_signatures_for_address(
 
         let error = state
             .state
-            .get_tx_meta_full(&hash)
+            .get_tx_meta_full_at_slot(&hash, slot)
             .ok()
             .flatten()
             .filter(|meta| !meta.succeeded())
@@ -9523,9 +9541,15 @@ async fn handle_solana_get_block(
                 .iter()
                 .map(|tx| {
                     if encoding == "base64" || encoding == "base58" {
-                        solana_block_transaction_encoded_json(&state.state, tx, 0, encoding)
+                        solana_block_transaction_encoded_json(
+                            &state.state,
+                            tx,
+                            block.header.slot,
+                            0,
+                            encoding,
+                        )
                     } else {
-                        solana_block_transaction_json(&state.state, tx, 0)
+                        solana_block_transaction_json(&state.state, tx, block.header.slot, 0)
                     }
                 })
                 .collect::<Vec<_>>();

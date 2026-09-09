@@ -5,6 +5,19 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.290] - Unreleased
+
+### Fixed
+
+- Bound receipt lookups for known canonical transaction slots to their owning
+  authenticated Archive V2 segment. Historical blocks with absent legacy receipts
+  no longer scan every archive index once per transaction.
+- Preserve hot receipts, legacy compute-unit records, full receipt decoding and
+  default responses for genuinely absent metadata. Native and Solana block RPC
+  regressions require zero requests to unrelated unavailable segments.
+- Value native LICN DEX balances using the LICN quote, independently of the
+  selected trading market. Update Sharp to the libheif security patch.
+
 ## [0.5.289] - Unreleased
 
 ### Fixed

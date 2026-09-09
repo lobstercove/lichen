@@ -1132,6 +1132,20 @@ impl StateStore {
             .map_err(|error| error.to_string())
     }
 
+    pub(super) fn archive_v2_category_value_at_slot(
+        &self,
+        category: &str,
+        key: &[u8],
+        slot: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let Some(reader) = self.archive_v2_reader() else {
+            return Ok(None);
+        };
+        reader
+            .category_value_at_slot(category, key, slot)
+            .map_err(|error| error.to_string())
+    }
+
     #[cfg(test)]
     pub(crate) fn archive_v2_public_categories(
         &self,
@@ -2145,6 +2159,155 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn known_slot_receipts_preserve_formats_and_bound_absent_metadata() {
+        let state_root = tempdir().unwrap();
+        let archive_root = tempdir().unwrap();
+        let state = StateStore::open(state_root.path()).unwrap();
+        let transactions: Vec<_> = (1..=4)
+            .map(|byte| {
+                Transaction::new(Message::new(
+                    vec![Instruction {
+                        program_id: Pubkey([1; 32]),
+                        accounts: vec![Pubkey([2; 32])],
+                        data: vec![byte; 64],
+                    }],
+                    Hash::default(),
+                ))
+            })
+            .collect();
+        let signatures: Vec<_> = transactions.iter().map(Transaction::signature).collect();
+        let block = Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::default(),
+            [5; 32],
+            transactions,
+            1,
+        );
+        let child =
+            Block::new_with_timestamp(1, block.hash(), Hash::default(), [5; 32], Vec::new(), 2);
+        let identity = ArchiveV2Identity {
+            network_id: "known-slot-receipts".to_string(),
+            genesis_hash: block.hash(),
+        };
+        let full = crate::processor::TxMeta {
+            compute_units_used: 23,
+            return_code: Some(7),
+            fee_paid: Some(11),
+            logs: vec!["retained receipt".to_string()],
+            ..Default::default()
+        };
+        let mut contents = ArchiveV2SegmentContents::from_blocks(vec![block]);
+        contents.public_categories.insert(
+            "tx_meta".to_string(),
+            [
+                (signatures[0], 17u64.to_le_bytes().to_vec()),
+                (
+                    signatures[1],
+                    crate::codec::serialize_legacy_bincode(&full, "test receipt").unwrap(),
+                ),
+                (signatures[2], vec![255]),
+            ]
+            .into_iter()
+            .map(|(signature, value)| ArchiveV2PublicRow {
+                slot: 0,
+                key: signature.0.to_vec(),
+                value,
+            })
+            .collect(),
+        );
+        contents
+            .public_categories
+            .get_mut("tx_meta")
+            .unwrap()
+            .sort_by(|a, b| a.key.cmp(&b.key));
+        let (bytes, manifest) = ArchiveV2SegmentCodec::encode(
+            identity.clone(),
+            None,
+            Hash::default(),
+            &contents,
+            &ArchiveV2CodecConfig::default(),
+        )
+        .unwrap();
+        fs::create_dir_all(archive_root.path().join("objects")).unwrap();
+        fs::write(
+            archive_root
+                .path()
+                .join("objects")
+                .join(format!("{}.av2s", manifest.segment_object_hash)),
+            bytes,
+        )
+        .unwrap();
+        let (_, unavailable) = ArchiveV2SegmentCodec::encode(
+            identity.clone(),
+            Some(manifest.segment_object_hash),
+            manifest.last_block_hash,
+            &ArchiveV2SegmentContents::from_blocks(vec![child]),
+            &ArchiveV2CodecConfig::default(),
+        )
+        .unwrap();
+        let mut catalog = ArchiveV2Catalog::empty(identity.clone()).unwrap();
+        catalog.append(manifest).unwrap();
+        catalog.append(unavailable).unwrap();
+        let catalog_path = archive_root.path().join("catalog.av2");
+        catalog.store_atomic(&catalog_path).unwrap();
+        state.attach_archive_v2_reader(
+            ArchiveV2Reader::open(
+                identity,
+                &catalog_path,
+                ArchiveV2ReaderConfig {
+                    role: ArchiveV2Role::FullArchive,
+                    root: archive_root.path().to_path_buf(),
+                    cache_root: None,
+                    cache_quota_bytes: 0,
+                    max_decoded_segments: 1,
+                    allow_remote_fetch: false,
+                    sources: Vec::new(),
+                },
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            state
+                .get_tx_meta_full_at_slot(&signatures[0], 0)
+                .unwrap()
+                .unwrap()
+                .compute_units_used,
+            17
+        );
+        let actual = state
+            .get_tx_meta_full_at_slot(&signatures[1], 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(actual.compute_units_used, full.compute_units_used);
+        assert_eq!(actual.return_code, full.return_code);
+        assert_eq!(actual.fee_paid, full.fee_paid);
+        assert_eq!(actual.logs, full.logs);
+        assert!(state
+            .get_tx_meta_full_at_slot(&signatures[2], 0)
+            .unwrap_err()
+            .contains("deserialize"));
+        assert!(state
+            .get_tx_meta_full_at_slot(&signatures[3], 0)
+            .unwrap()
+            .is_none());
+        assert!(
+            state.get_tx_meta_full(&signatures[3]).is_err(),
+            "unbounded fallback reaches unrelated unavailable history"
+        );
+        let hot = Hash::hash(b"hot-only-receipt");
+        state.put_tx_meta(&hot, 42).unwrap();
+        assert_eq!(
+            state
+                .get_tx_meta_full_at_slot(&hot, 100)
+                .unwrap()
+                .unwrap()
+                .compute_units_used,
+            42
+        );
     }
 
     #[test]

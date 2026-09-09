@@ -5,7 +5,24 @@ v0.5.280 through v0.5.284 Testnet rollout. This is an operating procedure, not a
 the rollout passed. Existing network-specific authorization and state policy
 still apply. Never copy a validator database, WAL, or private identity to peers.
 
-Current checkpoint, September8 20:04UTC: signed v0.5.288 and Archive V2 catalog
+## Historical receipt read acceptance
+
+Before accepting a release, time full block responses as well as commit-only
+responses for genesis and representative archived blocks. Include transactions
+with absent legacy receipts: a fast block-body lookup does not establish bounded
+metadata work. Known canonical-slot receipt queries must read only their owning
+authenticated segment. Preserve legacy receipt formats and source failures;
+do not treat an unavailable owning segment as proof that metadata is absent.
+Regression tests must observe source access, since a handler that defaults after
+an archive error can return a plausible response after scanning unrelated data.
+Include native and Solana JSON/base64/base58 block responses, current transaction
+feeds and runtime progress. Pace production probes and retain timed-out results.
+
+The dated checkpoints below are historical. Read the latest sealed execution
+evidence and verify the live services before operating; none authorizes replay
+of completed phases or replacement from an unsigned local build.
+
+Historical checkpoint, September8 20:04UTC: signed v0.5.288 and Archive V2 catalog
 430 are live on all four validators. All four authors, common finalized block
 and commit, installed/running signed artifacts, and exact live transaction
 counters passed. Previously active auxiliary services were restored and the
