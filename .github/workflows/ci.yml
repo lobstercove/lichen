@@ -379,6 +379,8 @@ jobs:
         run: npx --no-install playwright install --with-deps chromium
       - name: Verify wallet layouts and popup sessions in Chromium
         run: npm run test-wallet-browser
+      - name: Verify DEX balances and portfolio across viewports
+        run: node scripts/qa/test_dex_balance_browser.cjs
       - name: Upload wallet browser evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

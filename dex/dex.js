@@ -1994,9 +1994,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 balances = {};
                 // F19.4b: Use spendable (excludes staked/locked) instead of total spores
                 if (result.spendable !== undefined) {
-                    balances['LICN'] = { available: result.spendable / 1e9, usd: (result.spendable / 1e9) * state.lastPrice };
+                    balances['LICN'] = { available: result.spendable / 1e9, usd: computeTokenUsd('LICN', result.spendable / 1e9) };
                 } else if (result.spores !== undefined) {
-                    balances['LICN'] = { available: result.spores / 1e9, usd: (result.spores / 1e9) * state.lastPrice };
+                    balances['LICN'] = { available: result.spores / 1e9, usd: computeTokenUsd('LICN', result.spores / 1e9) };
                 }
             }
             // F19.4a: Fetch token balances via getTokenAccounts

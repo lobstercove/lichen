@@ -407,3 +407,4 @@ if (failed > 0) {
 
 console.log(`\nDEX UI readiness: ${passed} passed, 0 failed`);
 require('./test_dex_live_candles.js');
+require('./test_dex_balance_valuation.js');
