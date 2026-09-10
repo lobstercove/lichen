@@ -8,6 +8,34 @@ verify the actual services, installed/running hashes, own WAL identities, catalo
 source inventories and available resources. Use the per-run deployment record identified by the release qualification. A historical
 "complete" receipt authorizes neither a new operation nor replay of an old one.
 
+Run each one-validator maintenance lifecycle as a supervised, ordered sequence:
+fresh inspection, stop, bounded native work, own-WAL restart, full-fleet health,
+auxiliary restoration and guard removal. The sequence must reserve enough time
+for startup and acceptance before its maintenance guard expires. Do not leave
+these dependent steps waiting for a conversational continuation. A lost SSH
+reply requires inspection of durable intents, native outcomes and the current
+process before any further mutation; it does not authorize a repeated stop,
+native command or start. Read-only readiness probes may retry bounded transient
+connection or capacity errors while preserving each failed observation.
+
+Verify the actual SSH route before the first stop. The September 10 continuation
+replaced failing multiplexed relay routes with individually verified fresh,
+direct SSH sessions, retaining strict host-key checks and existing credentials.
+Bind transport changes in the new operator's evidence; preserve previously
+qualified sources. Full R2 readback may take much longer than the upload: inspect
+transfer progress and retain the publication deadline. Never equate an uploaded
+object with a verified copy or a partial publication with an adopted catalog.
+For the September 10 catalog-467 publication, one replica IPv6 download took
+about 15 minutes for 142.6 MB. A separate IPv4 range read returned the exact
+expected 1 MiB in 0.4 seconds. The reviewed adjustment appended only `ipv4` to
+the two exact temporary curl configurations, preserving endpoint, credentials,
+TLS verification, retries, timeouts, full readback and catalog CAS. It neither
+restarted the in-flight transfer nor dispatched an R2 write. The before/after
+configuration hashes and mutation receipt are retained under
+`14e22df6916900ced8a40b122e8bfd6216c41e09cae5a1363a9f46050ed04566`.
+Future deployments must qualify the actual route and include its choice in the
+publication plan; do not copy ephemeral credential files into deployment notes.
+
 1. **Bind the release.** Use a clean checkout and immutable tag. Check every
    version consumer and locked workspace before tagging; require full CI and the
    tag workflow, complete four-validator matrix, platform provenance, checksum
@@ -1758,7 +1786,78 @@ operation. Source-index prewarming alone is neither whole-object verification
 nor full public-history parity. Renew expiring legacy-source credentials while
 their references remain, separately from active Archive V2 source credentials.
 
+Calculate a catalog adoption's restart window from the **incoming verified
+catalog**. Calculate a retirement window from the already adopted catalog.
+For signed291, admission uses the configured recent-history window and permits
+at most50,000additional unpublished slots. On this Testnet, the actual runtime
+argument is100,000recent slots. The qualified operator retains10,000slots for
+recovery: latest stop = catalog coverage end +100,000+50,000−10,000. Verify the
+actual argument and signed source, reject missing/duplicate values, and retain
+the native startup check. For catalog474 ending13,110,000, this gives13,250,000.
+Do not carry a previous catalog's literal stop slot into a later adoption or
+change a runtime retention limit to make an expired operation pass.
+
+After a bounded physical-reclamation pause, compose and verify the exact
+accepted journal hashes before another lifecycle. Completed tombstoning passes
+must not run again. A signed native report can record successful range splits
+with zero compacted ranges and a larger queue; those splits are progress toward
+the unchanged input limit. Keep the same finite time, range, memory and disk
+limits. A report with neither compaction nor splitting and no smaller queue is
+a pause requiring inspection. Logical deletion totals are not measured disk
+recovery, and a successful source check does not imply compaction completed.
+
+## Completing a temporary R2 migration
+
+Archive V2 activation and R2 retirement are separate acceptance results. On
+September 10 the owner confirmed that R2 is temporary and must be emptied after
+migration. Four healthy `verified_cache` validators whose authenticated gateways
+still read R2 do not satisfy that completion requirement. A dated prefix such as
+`archive-v2/v0.5.238/lichen-testnet-1` can contain the current active catalog;
+never classify its contents as obsolete by version or age alone.
+
+Before changing archive sources, inventory actual mount devices and available
+bytes on every proposed destination. A directory named `ovh-backup-*` does not
+prove a separate mounted volume. Preserve retained provider recovery data and
+charge complete archive copies, indexes, migration scratch, checkpoint peaks,
+growth and the native reserve. Reclamation means measured released filesystem
+blocks, not merely tombstoned logical bytes. Existing 200 GB Testnet disks are
+not an approval for mainnet or indefinite history growth.
+
+Place complete content-addressed archives on independently verified persistent
+destinations, retaining current sources until every destination passes full
+object, manifest and catalog verification. Record actual source endpoints and
+failure domains, qualify the supported source configuration change, and verify
+deep-history reads and source outage recovery from every public RPC origin.
+The ongoing tail publisher must write and verify the replacement destinations;
+moving only the existing prefix leaves a future R2 dependency.
+
+After acceptance, retire exact R2 gateway, mount, publisher and credential
+consumers. Check live process descriptors, mappings, configuration and rollback
+references before deletion. Preserve immutable evidence and required recovery
+copies. Delete from an exact-key, size-and-hash-bound manifest using durable
+per-batch receipts; an uncertain request requires outcome review before any
+continuation. Finish with both buckets empty, no incomplete multipart uploads,
+no consumers able to recreate objects, and fresh fleet/history acceptance.
+Dashboard storage totals alone do not prove completion.
+
 ## Archive migration capacity and verifier admission
+
+The combined diagnostic and deployment SSH rate must fit the host firewall's
+actual connection policy. On September 10, the US server limited new SSH
+connections to fewer than six within 30 seconds. A complete peer-health batch
+can consume five connections to its proposal-sampling host; overlapping
+diagnostics or the next batch can therefore receive `Connection refused` even
+while the validator and SSH service remain healthy. Consolidate reads and allow
+35 seconds between these batches. Do not weaken the firewall. A five-second
+retry loop can keep refreshing the limit window rather than allowing recovery.
+
+If such a failure occurs before a target mutation, verify the controller's exact
+dispatch order and the target's durable records before continuing. The India
+catalog adoption retained its successful stop and catalog installation when a
+peer read failed before prewarming. Continuation required an unchanged stopped
+WAL, exact completed-stage receipt, active original guard, absent prewarm intent
+and native service, and sufficient remaining guard time. Repeating a successful
+stop or catalog installation would be incorrect.
 
 An active verified-cache role proves that Archive V2 serves history. It does not
 prove that legacy hot/cold data has been retired or that the expected disk space
@@ -1784,6 +1883,27 @@ reject corrupt, shared, sparse, unexpected or quarantined entries. Preserve the
 normal native reserve and account separately for physical allocation overhead.
 A helper's arithmetic tests do not qualify the complete stop/install/recovery
 procedure. Never reuse the older Archive-OFF budget for an active Archive V2 role.
+
+When a compaction batch exceeds available headroom, changing the actual native
+input cap is a separate, reviewable plan change. Derive both the outer admission
+threshold and every inner native command from that same cap; retain the runtime
+reserve, recovery headroom and journal allowance. For example, the September10
+US continuation changed the native cap from1GiB to256MiB and kept the26,777,786,778
+byte runtime reserve. Its complete threshold became29,529,250,202 bytes
+(reserve + twice256MiB +2GiB +64MiB). All nine commands, report validators and
+insufficient-space boundaries were checked, followed by67 tests on Linux/ext4
+as the actual service user. Lowering only a wrapper threshold is not equivalent.
+A smaller cap may leave indivisible work pending; preserve that native result
+and recover the validator before planning another batch.
+
+Resuming a partial group requires a fresh operation identity and the exact
+accepted journal frontier. Verify the directory contains precisely the completed
+journals, hash each private service-owned file, reject symlinks/shared or unknown
+files, and keep unstarted entries absent. Distinguish the staged catalog bound
+to existing retirement authorizations from the newer live reader catalog.
+Recheck physical presence only for the remaining untombstoned ranges, then let
+the signed native retirement code revalidate each authorization. Neither an
+empty-directory assumption nor replaying completed tombstones is a valid resume.
 
 Qualify filesystem checks at the actual target. On this fleet US `/tmp` is a
 separate tmpfs, while validator data uses ext4. A test of allocation behavior on
