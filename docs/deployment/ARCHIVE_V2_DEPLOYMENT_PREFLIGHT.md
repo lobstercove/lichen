@@ -331,6 +331,18 @@ health and test rename races, partial removals and control corruption on Linux.
 Measure actual filesystem space afterward. This retires a derived diagnostic
 copy; it does not prove legacy row retirement or full public-history parity.
 
+A read-only bind preserves source modes. A public destination parent does not
+make a bound root-owned `0700` directory or `0600` SST readable by `lichen`.
+Inspect every file in the actual capture before creating a verifier view; an
+older capture contained two private SSTs among 124 readable SSTs. Where needed,
+copy only the enumerated small private files within a measured byte ceiling and
+bind readable SSTs individually read-only. Probe directory traversal, controls,
+private SST copies and readable SST bindings inside the actual native service
+user's read-only namespace before opening the database. Verify unchanged source
+hashes, modes, identities and link counts afterward. Keep recovery parents
+private, and qualify the complete saved inventory rather than a fixture that
+assumes every SST has the same mode.
+
 A superseded periodic checkpoint needs the same exact-generation and reference
 checks. Preserve a completed newer own checkpoint and the selected generation's
 hashed control records; never select the live state directory. A file-only

@@ -182,6 +182,8 @@ docs/audits/*
 !docs/audits/V0.5.282_CHECKPOINT_MEMORY_2026-09-06.md
 !docs/deployment/
 docs/deployment/*
+!docs/deployment/V0.5.291_TESTNET_DEPLOYMENT_2026-09-09.md
+!docs/deployment/V0.5.291_EXECUTION_HISTORY_2026-09-10.md
 !docs/deployment/ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md
 !docs/deployment/ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md
 !docs/deployment/TESTNET_STATE_AND_SYNC_POLICY.md
