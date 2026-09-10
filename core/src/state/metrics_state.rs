@@ -44,8 +44,27 @@ pub struct Metrics {
     pub last_observed_block_at_ms: u64,
 }
 
+/// Offline, evidence-bound correction of observational counters only.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MetricsCounterRepair {
+    pub version: u8,
+    pub source_manifest_sha256: String,
+    pub tip_slot: u64,
+    pub tip_hash: Hash,
+    pub expected_total_transactions: u64,
+    pub expected_total_blocks: u64,
+    pub total_transactions: u64,
+    pub total_blocks: u64,
+    pub daily_transactions: u64,
+    pub daily_date: String,
+}
+
 /// Metrics tracker with rolling window for TPS
 pub struct MetricsStore {
+    // Serialize counter persistence through a block's durable write and publish.
+    // Ordinary saves must not overwrite newly committed counters with old RAM.
+    persistence_lock: Mutex<()>,
     // Rolling window: (timestamp, tx_count) for last 60 seconds
     window: Mutex<VecDeque<(u64, u64)>>,
     total_transactions: Mutex<u64>,
@@ -73,6 +92,23 @@ pub struct MetricsStore {
     validator_count: Mutex<u64>,
 }
 
+pub(crate) struct PendingBlockMetrics<'a> {
+    metrics: &'a MetricsStore,
+    block: &'a Block,
+    observed_at_ms: u64,
+    date: String,
+    _guard: std::sync::MutexGuard<'a, ()>,
+}
+
+impl PendingBlockMetrics<'_> {
+    /// Publish only after the RocksDB batch succeeds. Dropping an uncommitted
+    /// update leaves in-memory counters unchanged; the caller may safely retry.
+    pub(crate) fn commit(self) {
+        self.metrics
+            .track_block_at(self.block, self.observed_at_ms, self.date);
+    }
+}
+
 impl Default for MetricsStore {
     fn default() -> Self {
         Self::new()
@@ -83,6 +119,7 @@ impl MetricsStore {
     pub fn new() -> Self {
         let today = Self::today_utc();
         MetricsStore {
+            persistence_lock: Mutex::new(()),
             window: Mutex::new(VecDeque::new()),
             total_transactions: Mutex::new(0),
             total_blocks: Mutex::new(0),
@@ -103,7 +140,10 @@ impl MetricsStore {
 
     /// Get current UTC date as YYYY-MM-DD
     fn today_utc() -> String {
-        let secs = Self::now_unix_ms() / 1000;
+        Self::date_utc(Self::now_unix_ms() / 1000)
+    }
+
+    fn date_utc(secs: u64) -> String {
         let days = secs / 86400;
         let (year, month, day) = Self::days_to_ymd(days);
         format!("{:04}-{:02}-{:02}", year, month, day)
@@ -142,13 +182,25 @@ impl MetricsStore {
 
     /// Track a new block
     pub fn track_block(&self, block: &Block) {
+        let _guard = self
+            .persistence_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        self.track_block_at(block, Self::now_unix_ms(), Self::today_utc());
+    }
+
+    fn track_block_at(&self, block: &Block, observed_at_ms: u64, today: String) {
         let tx_count = block
             .transactions
             .iter()
             .filter(|transaction| !transaction.is_consensus())
             .count() as u64;
         let timestamp = block.header.timestamp;
-        let observed_at_ms = Self::now_unix_ms();
+        let daily_count = if Self::date_utc(timestamp) == today {
+            tx_count
+        } else {
+            0
+        };
         let live_observation = timestamp > 0
             && (observed_at_ms / 1000).saturating_sub(timestamp)
                 <= OBSERVED_CADENCE_MAX_LIVE_LAG_SECS;
@@ -181,7 +233,6 @@ impl MetricsStore {
         }
 
         {
-            let today = Self::today_utc();
             let mut daily_date = self.daily_date.lock().unwrap_or_else(|e| e.into_inner());
             let mut daily_txs = self
                 .daily_transactions
@@ -189,9 +240,9 @@ impl MetricsStore {
                 .unwrap_or_else(|e| e.into_inner());
             if *daily_date != today {
                 *daily_date = today;
-                *daily_txs = tx_count;
+                *daily_txs = daily_count;
             } else {
-                *daily_txs += tx_count;
+                *daily_txs += daily_count;
             }
         }
 
@@ -260,6 +311,10 @@ impl MetricsStore {
         active_accounts: u64,
         slot_duration_ms: u64,
     ) -> Metrics {
+        let _guard = self
+            .persistence_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (total_txs_in_window, time_span) = {
             let window = self.window.lock().unwrap_or_else(|e| e.into_inner());
             if window.is_empty() {
@@ -335,10 +390,16 @@ impl MetricsStore {
             total_supply,
             total_burned,
             total_minted,
-            daily_transactions: *self
-                .daily_transactions
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()),
+            daily_transactions: if *self.daily_date.lock().unwrap_or_else(|e| e.into_inner())
+                == Self::today_utc()
+            {
+                *self
+                    .daily_transactions
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+            } else {
+                0
+            },
             observed_block_interval_ms,
             cadence_target_ms,
             head_staleness_ms,
@@ -350,6 +411,10 @@ impl MetricsStore {
 
     /// Load metrics from database
     pub fn load(&self, db: &Arc<DB>) -> Result<(), String> {
+        let _guard = self
+            .persistence_lock
+            .lock()
+            .map_err(|_| "Metrics persistence lock poisoned".to_string())?;
         let cf = db
             .cf_handle(CF_STATS)
             .ok_or_else(|| "Stats CF not found".to_string())?;
@@ -549,6 +614,10 @@ impl MetricsStore {
 
     /// Save metrics to database
     pub fn save(&self, db: &Arc<DB>) -> Result<(), String> {
+        let _guard = self
+            .persistence_lock
+            .lock()
+            .map_err(|_| "Metrics persistence lock poisoned".to_string())?;
         let cf = db
             .cf_handle(CF_STATS)
             .ok_or_else(|| "Stats CF not found".to_string())?;
@@ -610,6 +679,14 @@ impl MetricsStore {
     /// commit alongside block data. This eliminates the window between block commit
     /// and metrics persistence where a crash could leave counters stale.
     pub fn save_to_batch(&self, batch: &mut WriteBatch, db: &Arc<DB>) -> Result<(), String> {
+        let _guard = self
+            .persistence_lock
+            .lock()
+            .map_err(|_| "Metrics persistence lock poisoned".to_string())?;
+        self.save_to_batch_locked(batch, db)
+    }
+
+    fn save_to_batch_locked(&self, batch: &mut WriteBatch, db: &Arc<DB>) -> Result<(), String> {
         let cf = db
             .cf_handle(CF_STATS)
             .ok_or_else(|| "Stats CF not found".to_string())?;
@@ -659,9 +736,205 @@ impl MetricsStore {
 
         Ok(())
     }
+
+    /// Stage a new canonical block's counters in the same durable batch as its
+    /// anchor. The returned guard keeps saves serialized until publication.
+    pub(crate) fn prepare_block<'a>(
+        &'a self,
+        block: &'a Block,
+        batch: &mut WriteBatch,
+        db: &Arc<DB>,
+    ) -> Result<PendingBlockMetrics<'a>, String> {
+        let guard = self
+            .persistence_lock
+            .lock()
+            .map_err(|_| "Metrics persistence lock poisoned".to_string())?;
+        let cf = db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let date = Self::today_utc();
+        let observed_at_ms = Self::now_unix_ms();
+        let count = block
+            .transactions
+            .iter()
+            .filter(|transaction| !transaction.is_consensus())
+            .count() as u64;
+        let total_transactions = self
+            .total_transactions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .checked_add(count)
+            .ok_or_else(|| "Total transaction counter overflow".to_string())?;
+        let total_blocks = self
+            .total_blocks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .checked_add(1)
+            .ok_or_else(|| "Total block counter overflow".to_string())?;
+        let daily_count = if Self::date_utc(block.header.timestamp) == date {
+            count
+        } else {
+            0
+        };
+        let daily_transactions =
+            if *self.daily_date.lock().unwrap_or_else(|e| e.into_inner()) == date {
+                *self
+                    .daily_transactions
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+            } else {
+                0
+            }
+            .checked_add(daily_count)
+            .ok_or_else(|| "Daily transaction counter overflow".to_string())?;
+        self.save_to_batch_locked(batch, db)?;
+        batch.put_cf(&cf, b"total_transactions", total_transactions.to_le_bytes());
+        batch.put_cf(&cf, b"total_blocks", total_blocks.to_le_bytes());
+        batch.put_cf(&cf, b"daily_transactions", daily_transactions.to_le_bytes());
+        batch.put_cf(&cf, b"daily_date", date.as_bytes());
+        Ok(PendingBlockMetrics {
+            metrics: self,
+            block,
+            observed_at_ms,
+            date,
+            _guard: guard,
+        })
+    }
 }
 
 impl StateStore {
+    /// Apply an independently verified source report under exclusive operator
+    /// maintenance. Same evidence/plan retries are no-ops, including after restart;
+    /// conflicting plans and changed frontiers/counters abort before any write.
+    pub fn apply_metrics_counter_repair(
+        &self,
+        plan: &MetricsCounterRepair,
+    ) -> Result<bool, String> {
+        let source = Hash::from_hex(&plan.source_manifest_sha256)?;
+        if plan.version != 1
+            || source == Hash::default()
+            || plan.total_transactions < plan.expected_total_transactions
+            || plan.total_blocks < plan.expected_total_blocks
+            || plan.tip_slot.checked_add(1) != Some(plan.total_blocks)
+            || plan.daily_transactions > plan.total_transactions
+        {
+            return Err("invalid or non-additive metrics repair plan".to_string());
+        }
+        let _block_guard = self
+            .block_write_lock
+            .lock()
+            .map_err(|_| "Block write lock poisoned".to_string())?;
+        let _metrics_guard = self
+            .metrics
+            .persistence_lock
+            .lock()
+            .map_err(|_| "Metrics persistence lock poisoned".to_string())?;
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let mut record_key = b"metrics_counter_repair_v1:".to_vec();
+        record_key.extend_from_slice(&source.0);
+        let plan_value = serde_json::to_value(plan).map_err(|error| error.to_string())?;
+        if let Some(raw) = self
+            .db
+            .get_cf(&cf, &record_key)
+            .map_err(|error| error.to_string())?
+        {
+            let record: serde_json::Value =
+                serde_json::from_slice(&raw).map_err(|error| error.to_string())?;
+            if record["plan"] != plan_value {
+                return Err("metrics repair evidence already binds a different plan".to_string());
+            }
+            return Ok(false);
+        }
+        if plan.daily_date != MetricsStore::today_utc()
+            || self.get_last_slot()? != plan.tip_slot
+            || self
+                .get_block_by_slot(plan.tip_slot)?
+                .map(|block| block.hash())
+                != Some(plan.tip_hash)
+        {
+            return Err("metrics repair date or canonical frontier changed".to_string());
+        }
+        let read_counter = |key: &[u8]| -> Result<u64, String> {
+            let raw = self
+                .db
+                .get_cf(&cf, key)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "metrics repair requires existing durable counters".to_string())?;
+            Ok(u64::from_le_bytes(raw.as_slice().try_into().map_err(
+                |_| "invalid durable metric counter".to_string(),
+            )?))
+        };
+        if read_counter(b"total_transactions")? != plan.expected_total_transactions
+            || read_counter(b"total_blocks")? != plan.expected_total_blocks
+            || *self
+                .metrics
+                .total_transactions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                != plan.expected_total_transactions
+            || *self
+                .metrics
+                .total_blocks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                != plan.expected_total_blocks
+        {
+            return Err("metrics repair prior counters changed".to_string());
+        }
+        let record = serde_json::json!({
+            "plan": plan_value,
+            "previous_daily_transactions": self.db.get_cf(&cf, b"daily_transactions").map_err(|error| error.to_string())?,
+            "previous_daily_date": self.db.get_cf(&cf, b"daily_date").map_err(|error| error.to_string())?,
+        });
+        let mut batch = WriteBatch::default();
+        batch.put_cf(
+            &cf,
+            b"total_transactions",
+            plan.total_transactions.to_le_bytes(),
+        );
+        batch.put_cf(&cf, b"total_blocks", plan.total_blocks.to_le_bytes());
+        batch.put_cf(
+            &cf,
+            b"daily_transactions",
+            plan.daily_transactions.to_le_bytes(),
+        );
+        batch.put_cf(&cf, b"daily_date", plan.daily_date.as_bytes());
+        batch.put_cf(
+            &cf,
+            record_key,
+            serde_json::to_vec(&record).map_err(|error| error.to_string())?,
+        );
+        let mut options = rocksdb::WriteOptions::default();
+        options.set_sync(true);
+        self.db
+            .write_opt(batch, &options)
+            .map_err(|error| error.to_string())?;
+        *self
+            .metrics
+            .total_transactions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = plan.total_transactions;
+        *self
+            .metrics
+            .total_blocks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = plan.total_blocks;
+        *self
+            .metrics
+            .daily_transactions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = plan.daily_transactions;
+        *self
+            .metrics
+            .daily_date
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = plan.daily_date.clone();
+        Ok(true)
+    }
+
     /// Get current blockchain metrics
     pub fn get_metrics(&self) -> Metrics {
         let total_burned = self.get_total_burned().unwrap_or(0);
@@ -807,6 +1080,289 @@ mod tests {
             commit_round: 0,
             commit_signatures: Vec::new(),
         }
+    }
+
+    fn block_with_oracle_and_consensus(slot: u64) -> Block {
+        let mut block = sample_block(slot, MetricsStore::now_unix_ms() / 1000);
+        let oracle = Transaction::new(crate::Message::new(
+            vec![crate::Instruction {
+                program_id: crate::SYSTEM_PROGRAM_ID,
+                accounts: vec![Pubkey([7; 32])],
+                data: vec![30, 4, b'w', b'B', b'T', b'C', 1, 0, 0, 0, 0, 0, 0, 0, 8],
+            }],
+            Hash::default(),
+        ));
+        let mut consensus = oracle.clone();
+        consensus.tx_type = crate::transaction::TransactionType::Consensus;
+        block.transactions = vec![oracle, consensus];
+        block
+    }
+
+    #[test]
+    fn prepared_block_metrics_survive_restart_before_memory_publication() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let block = block_with_oracle_and_consensus(1);
+        let mut batch = WriteBatch::default();
+        assert_eq!(state.get_metrics().total_transactions, 0);
+        let pending = state
+            .metrics
+            .prepare_block(&block, &mut batch, &state.db)
+            .unwrap();
+        state.db.write(batch).unwrap();
+        // Simulate a crash after durable write but before in-memory publication.
+        drop(pending);
+        drop(state);
+        let reopened = StateStore::open(temp.path()).unwrap();
+        assert_eq!(reopened.get_metrics().total_transactions, 1);
+        assert_eq!(reopened.get_metrics().total_blocks, 1);
+        assert_eq!(reopened.get_metrics().daily_transactions, 1);
+    }
+
+    #[test]
+    fn failed_block_write_does_not_advance_metrics() {
+        let temp = tempfile::tempdir().unwrap();
+        drop(StateStore::open(temp.path()).unwrap());
+        let options = rocksdb::Options::default();
+        let families = DB::list_cf(&options, temp.path()).unwrap();
+        let db =
+            Arc::new(DB::open_cf_for_read_only(&options, temp.path(), families, false).unwrap());
+        let metrics = MetricsStore::new();
+        let block = block_with_oracle_and_consensus(1);
+        let mut batch = WriteBatch::default();
+        let pending = metrics.prepare_block(&block, &mut batch, &db).unwrap();
+        assert!(db.write(batch).is_err());
+        drop(pending);
+        let view = metrics.get_metrics(0, 0, 0, 0, 0, 400);
+        assert_eq!(view.total_transactions, 0);
+        assert_eq!(view.total_blocks, 0);
+        assert_eq!(view.daily_transactions, 0);
+        assert_eq!(view.last_observed_block_slot, 0);
+        drop(db);
+        let reopened = StateStore::open(temp.path()).unwrap();
+        assert_eq!(reopened.get_metrics().total_transactions, 0);
+        assert_eq!(reopened.get_metrics().total_blocks, 0);
+    }
+
+    #[test]
+    fn block_metrics_publish_serializes_saves_and_resets_daily_count() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        *state.metrics.total_transactions.lock().unwrap() = 20;
+        *state.metrics.daily_transactions.lock().unwrap() = 15;
+        *state.metrics.daily_date.lock().unwrap() = "2000-01-01".to_string();
+        state.metrics.save(&state.db).unwrap();
+        let block = block_with_oracle_and_consensus(1);
+        let mut batch = WriteBatch::default();
+        let pending = state
+            .metrics
+            .prepare_block(&block, &mut batch, &state.db)
+            .unwrap();
+        state.db.write(batch).unwrap();
+        std::thread::scope(|scope| {
+            let (started, ready) = std::sync::mpsc::channel();
+            let (finished, done) = std::sync::mpsc::channel();
+            let metrics = &state.metrics;
+            let db = &state.db;
+            let task = scope.spawn(move || {
+                started.send(()).unwrap();
+                metrics.save(db).unwrap();
+                finished.send(()).unwrap();
+            });
+            ready.recv().unwrap();
+            assert!(matches!(
+                done.recv_timeout(std::time::Duration::from_millis(50)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ));
+            pending.commit();
+            done.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            task.join().unwrap();
+        });
+        let view = state.get_metrics();
+        assert_eq!(view.total_transactions, 21);
+        assert_eq!(view.total_blocks, 1);
+        assert_eq!(view.daily_transactions, 1);
+        assert_eq!(view.last_observed_block_slot, 1);
+        drop(state);
+        let reopened = StateStore::open(temp.path()).unwrap();
+        assert_eq!(reopened.get_metrics().total_transactions, 21);
+        assert_eq!(reopened.get_metrics().daily_transactions, 1);
+    }
+
+    #[test]
+    fn canonical_metrics_count_once_across_storage_orders_and_replay() {
+        for anchor_first in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let state = StateStore::open(temp.path()).unwrap();
+            let root_before = state.compute_state_root_with_restrictions_cold_start();
+            let mut block = block_with_oracle_and_consensus(1);
+            let mut evm = block.transactions[0].clone();
+            evm.tx_type = crate::transaction::TransactionType::Evm;
+            block.transactions.push(evm);
+            state
+                .put_tx_meta_full(
+                    &block.transactions[2].signature(),
+                    &crate::TxMeta {
+                        success: Some(false),
+                        error: Some("execution reverted".to_string()),
+                        ..crate::TxMeta::default()
+                    },
+                )
+                .unwrap();
+            if anchor_first {
+                state.put_block_atomic(&block, Some(1), Some(1)).unwrap();
+            }
+            for _ in 0..2 {
+                let batch = state.begin_batch_at_slot(1);
+                state
+                    .commit_batch_with_block(batch, &block, Some(1), Some(1))
+                    .unwrap();
+                state.put_block_atomic(&block, Some(1), Some(1)).unwrap();
+            }
+            let mut empty = sample_block(2, block.header.timestamp);
+            empty.transactions.clear();
+            state.put_block_atomic(&empty, Some(2), Some(2)).unwrap();
+            let mut consensus_only = sample_block(3, block.header.timestamp);
+            consensus_only.transactions = vec![block.transactions[1].clone()];
+            state
+                .commit_batch_with_block(
+                    state.begin_batch_at_slot(3),
+                    &consensus_only,
+                    Some(3),
+                    Some(3),
+                )
+                .unwrap();
+            assert_eq!(state.get_metrics().total_transactions, 2);
+            assert_eq!(state.get_metrics().total_blocks, 3);
+            assert_eq!(state.get_metrics().daily_transactions, 2);
+            assert_eq!(
+                state.compute_state_root_with_restrictions_cold_start(),
+                root_before
+            );
+            drop(state);
+            let reopened = StateStore::open(temp.path()).unwrap();
+            assert_eq!(reopened.get_metrics().total_transactions, 2);
+            assert_eq!(reopened.get_metrics().total_blocks, 3);
+            reopened.put_block_atomic(&block, Some(1), Some(1)).unwrap();
+            assert_eq!(reopened.get_metrics().total_transactions, 2);
+        }
+    }
+
+    #[test]
+    fn historical_replay_does_not_inflate_today_and_stale_daily_is_hidden() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let mut old = block_with_oracle_and_consensus(1);
+        old.header.timestamp = 1;
+        state
+            .commit_batch_with_block(state.begin_batch_at_slot(1), &old, Some(1), Some(1))
+            .unwrap();
+        assert_eq!(state.get_metrics().total_transactions, 1);
+        assert_eq!(state.get_metrics().daily_transactions, 0);
+        let live = block_with_oracle_and_consensus(2);
+        state.put_block_atomic(&live, Some(2), Some(2)).unwrap();
+        assert_eq!(state.get_metrics().daily_transactions, 1);
+        *state.metrics.daily_date.lock().unwrap() = "2000-01-01".to_string();
+        assert_eq!(state.get_metrics().daily_transactions, 0);
+    }
+
+    #[test]
+    fn canonical_metrics_abort_on_unreadable_existing_slot() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let cf = state.db.cf_handle(CF_SLOTS).unwrap();
+        state
+            .db
+            .put_cf(&cf, 1u64.to_be_bytes(), b"corrupt")
+            .unwrap();
+        let block = block_with_oracle_and_consensus(1);
+        assert!(state
+            .commit_batch_with_block(state.begin_batch_at_slot(1), &block, Some(1), Some(1))
+            .is_err());
+        assert!(state.put_block_atomic(&block, Some(1), Some(1)).is_err());
+        assert_eq!(state.get_metrics().total_transactions, 0);
+        assert_eq!(state.get_metrics().total_blocks, 0);
+        assert_eq!(
+            state.db.get_cf(&cf, 1u64.to_be_bytes()).unwrap().unwrap(),
+            b"corrupt"
+        );
+    }
+
+    #[test]
+    fn metrics_repair_is_atomic_additive_and_idempotent_after_restart_and_progress() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let mut genesis = sample_block(0, 1);
+        genesis.transactions.clear();
+        state.put_block_atomic(&genesis, Some(0), Some(0)).unwrap();
+        let block = block_with_oracle_and_consensus(1);
+        state.put_block_atomic(&block, Some(1), Some(1)).unwrap();
+        let root = state.compute_state_root_with_restrictions_cold_start();
+        *state.metrics.total_transactions.lock().unwrap() = 0;
+        *state.metrics.total_blocks.lock().unwrap() = 1;
+        *state.metrics.daily_transactions.lock().unwrap() = 0;
+        state.metrics.save(&state.db).unwrap();
+        let plan = MetricsCounterRepair {
+            version: 1,
+            source_manifest_sha256: Hash::hash(b"verified fixture history").to_hex(),
+            tip_slot: 1,
+            tip_hash: block.hash(),
+            expected_total_transactions: 0,
+            expected_total_blocks: 1,
+            total_transactions: 1,
+            total_blocks: 2,
+            daily_transactions: 1,
+            daily_date: MetricsStore::today_utc(),
+        };
+        for field in [
+            "version", "source", "hash", "tip", "date", "counter", "blocks", "daily",
+        ] {
+            let mut bad = plan.clone();
+            match field {
+                "version" => bad.version = 2,
+                "source" => bad.source_manifest_sha256 = Hash::default().to_hex(),
+                "hash" => bad.tip_hash = Hash::default(),
+                "tip" => {
+                    bad.tip_slot = 2;
+                    bad.total_blocks = 3;
+                }
+                "date" => bad.daily_date = "2000-01-01".to_string(),
+                "counter" => bad.expected_total_transactions = 1,
+                "blocks" => bad.total_blocks = 1,
+                _ => bad.daily_transactions = 2,
+            }
+            assert!(state.apply_metrics_counter_repair(&bad).is_err(), "{field}");
+            assert_eq!(state.get_metrics().total_transactions, 0);
+        }
+        drop(state);
+        let read_only = StateStore::open_read_only_with_cache_mb(temp.path(), Some(8)).unwrap();
+        assert!(read_only.apply_metrics_counter_repair(&plan).is_err());
+        assert_eq!(read_only.get_metrics().total_transactions, 0);
+        drop(read_only);
+        let state = StateStore::open(temp.path()).unwrap();
+        assert!(state.apply_metrics_counter_repair(&plan).unwrap());
+        assert!(!state.apply_metrics_counter_repair(&plan).unwrap());
+        assert_eq!(state.get_metrics().total_transactions, 1);
+        assert_eq!(state.get_metrics().daily_transactions, 1);
+        assert_eq!(
+            state.compute_state_root_with_restrictions_cold_start(),
+            root
+        );
+        let mut conflict = plan.clone();
+        conflict.total_transactions = 2;
+        assert!(state
+            .apply_metrics_counter_repair(&conflict)
+            .unwrap_err()
+            .contains("different plan"));
+        drop(state);
+        let state = StateStore::open(temp.path()).unwrap();
+        assert!(!state.apply_metrics_counter_repair(&plan).unwrap());
+        let next = block_with_oracle_and_consensus(2);
+        state.put_block_atomic(&next, Some(2), Some(2)).unwrap();
+        assert_eq!(state.get_metrics().total_transactions, 2);
+        assert!(!state.apply_metrics_counter_repair(&plan).unwrap());
+        assert_eq!(state.get_metrics().total_transactions, 2);
     }
 
     #[test]

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use lichen_core::archive_v2::{
+    archive_v2_catalog_handoff_start, archive_v2_local_history_start,
     archive_v2_state_admission_fingerprint, benchmark_archive_v2_range,
     discover_archive_v2_catalog, load_archive_v2_role_marker,
     store_archive_v2_role_marker_create_new, ArchiveV2AdaptiveReservePolicy,
@@ -74,13 +75,14 @@ fn run(raw: Vec<String>) -> Result<(), String> {
         "restore" => run_restore(&args),
         "public-history-manifest" => run_public_history_manifest(&args),
         "profile-source" => run_profile_source(&args),
+        "metrics-reconcile" => run_metrics_reconcile(&args),
         "benchmark" => run_benchmark(&args),
         "help" | "--help" | "-h" => {
             print_usage();
             Ok(())
         }
         _ => Err(format!(
-            "unknown command {command:?}; expected status, catalog-extension-check, role-preflight, role-bootstrap, snapshot-hot, prewarm-indexes, verify, repair, declare-legacy-loss, build, mirror, restore, retirement-authorize, retirement-pass, retirement-reclaim, public-history-manifest, profile-source, or benchmark"
+            "unknown command {command:?}; expected status, catalog-extension-check, role-preflight, role-bootstrap, snapshot-hot, prewarm-indexes, verify, repair, declare-legacy-loss, build, mirror, restore, retirement-authorize, retirement-pass, retirement-reclaim, public-history-manifest, profile-source, metrics-reconcile, or benchmark"
         )),
     }
 }
@@ -694,10 +696,19 @@ fn evaluate_role_preflight(
         return Err("Archive V2 catalog genesis conflicts with local state".to_string());
     }
     let genesis_mossstake_slot_only = genesis_block_declares_mossstake_slot_only(&local_genesis)?;
-    let hot_start = finalized_slot.saturating_sub(recent_history_slots.saturating_sub(1));
-    // Full-archive migration owns both hot and legacy-cold local storage until
-    // signed retirement. Match runtime admission by accepting that physically
-    // verified unpublished tail; cache/consensus roles must keep it hot.
+    let catalog_coverage_end = catalog
+        .trailing_loss_declaration()
+        .map_err(|error| error.to_string())?
+        .map(|declaration| declaration.end_slot)
+        .or_else(|| catalog.entries.last().map(|entry| entry.manifest.end_slot));
+    let required_hot_start =
+        archive_v2_local_history_start(finalized_slot, recent_history_slots, catalog_coverage_end)?;
+    let hot_start = match role {
+        ArchiveV2Role::FullArchive => archive_v2_catalog_handoff_start(catalog_coverage_end)?,
+        ArchiveV2Role::VerifiedCache | ArchiveV2Role::Consensus => required_hot_start,
+    };
+    // Use the exact runtime handoff and physically verify its ENTIRE local
+    // suffix, including any bounded extension before the nominal hot window.
     let complete_hot_window = match role {
         ArchiveV2Role::FullArchive => {
             verify_full_archive_preflight_local_range(&state, hot_start, finalized_slot).is_ok()
@@ -706,7 +717,7 @@ fn evaluate_role_preflight(
             .verify_hot_canonical_block_range(hot_start, finalized_slot)
             .is_ok(),
     };
-    let required_archive_end = finalized_slot.checked_sub(recent_history_slots);
+    let required_archive_end = hot_start.checked_sub(1);
     let complete_catalog_verified = match required_archive_end {
         Some(end) => catalog
             .covers_genesis_through(end)
@@ -2652,6 +2663,56 @@ fn run_public_history_manifest(args: &CommandArgs) -> Result<(), String> {
 }
 
 fn run_profile_source(args: &CommandArgs) -> Result<(), String> {
+    print_json(&profile_source_report(args)?)
+}
+
+fn run_metrics_reconcile(args: &CommandArgs) -> Result<(), String> {
+    args.ensure_only(
+        &["state-dir", "plan", "plan-sha256", "source-manifest"],
+        &["acknowledge-stopped-validator"],
+    )?;
+    if !args.flags.contains("acknowledge-stopped-validator") {
+        return Err("metrics reconciliation requires --acknowledge-stopped-validator".to_string());
+    }
+    let plan_path = Path::new(args.required("plan")?);
+    let metadata = fs::symlink_metadata(plan_path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.len() > 65536 {
+        return Err("metrics repair plan must be a regular file of at most 64 KiB".to_string());
+    }
+    let raw = fs::read(plan_path).map_err(|error| error.to_string())?;
+    if Hash::hash(&raw) != Hash::from_hex(args.required("plan-sha256")?)? {
+        return Err("metrics repair plan checksum differs".to_string());
+    }
+    let plan: lichen_core::state::MetricsCounterRepair =
+        serde_json::from_slice(&raw).map_err(|error| error.to_string())?;
+    let evidence_path = Path::new(args.required("source-manifest")?);
+    let evidence_metadata =
+        fs::symlink_metadata(evidence_path).map_err(|error| error.to_string())?;
+    if !evidence_metadata.is_file() || evidence_metadata.len() > 16 * 1024 * 1024 {
+        return Err("metrics source manifest must be a regular file of at most 16 MiB".to_string());
+    }
+    if Hash::hash(&fs::read(evidence_path).map_err(|error| error.to_string())?)
+        != Hash::from_hex(&plan.source_manifest_sha256)?
+    {
+        return Err("metrics source manifest checksum differs".to_string());
+    }
+    let current = Path::new(args.required("state-dir")?).join("CURRENT");
+    if !fs::symlink_metadata(current)
+        .map_err(|error| error.to_string())?
+        .is_file()
+    {
+        return Err("metrics repair requires an existing state database".to_string());
+    }
+    // Writable RocksDB open acquires the exclusive database lock. The operator
+    // must also prove the service stopped and retain its current own WAL.
+    let state = StateStore::open_with_cache_mb(args.required("state-dir")?, Some(256))?;
+    let applied = state.apply_metrics_counter_repair(&plan)?;
+    print_json(&json!({"operation":"metrics_reconcile", "applied":applied,
+        "source_manifest_sha256":plan.source_manifest_sha256, "plan_sha256":Hash::hash(&raw).to_hex(),
+        "tip_slot":plan.tip_slot, "total_transactions":state.get_metrics().total_transactions}))
+}
+
+fn profile_source_report(args: &CommandArgs) -> Result<serde_json::Value, String> {
     args.ensure_only(
         &[
             "state-dir",
@@ -2659,6 +2720,10 @@ fn run_profile_source(args: &CommandArgs) -> Result<(), String> {
             "start-slot",
             "end-slot",
             "top-blocks",
+            "archive-root",
+            "catalog-root",
+            "network-id",
+            "genesis-hash",
         ],
         &[],
     )?;
@@ -2667,6 +2732,46 @@ fn run_profile_source(args: &CommandArgs) -> Result<(), String> {
     if let Some(cold) = args.optional("cold-store")? {
         state.open_cold_store_read_only(cold)?;
     }
+    let archive = if let Some(root) = args.optional("archive-root")? {
+        let root = PathBuf::from(root);
+        let catalog =
+            ArchiveV2Catalog::load(&root.join("catalog.av2")).map_err(|error| error.to_string())?;
+        if catalog.identity != parse_identity(args)?
+            || catalog.catalog_root != Hash::from_hex(args.required("catalog-root")?)?
+        {
+            return Err("profile archive identity or catalog root differs".to_string());
+        }
+        Some((root, catalog))
+    } else {
+        for option in ["catalog-root", "network-id", "genesis-hash"] {
+            if args.optional(option)?.is_some() {
+                return Err(format!("--{option} requires --archive-root"));
+            }
+        }
+        None
+    };
+    // Direct authenticated codec reads leave the source and its directories
+    // untouched, including on corruption. Never quarantine an audit source.
+    let get_block =
+        |slot| -> Result<Option<lichen_core::Block>, String> {
+            if let Some((root, catalog)) = &archive {
+                if let Some(entry) = catalog.entries.iter().find(|entry| {
+                    entry.manifest.start_slot <= slot && slot <= entry.manifest.end_slot
+                }) {
+                    let manifest = catalog
+                        .active_manifest(&entry.manifest.segment_object_hash)
+                        .map_err(|error| error.to_string())?;
+                    return ArchiveV2SegmentCodec::decode_block_at_path(
+                        &object_path(root, &manifest.segment_object_hash),
+                        manifest,
+                        &catalog.identity,
+                        slot,
+                    )
+                    .map_err(|error| error.to_string());
+                }
+            }
+            state.get_block_by_slot(slot)
+        };
     let start_slot = parse_u64(args.required("start-slot")?, "start-slot")?;
     let end_slot = parse_u64(args.required("end-slot")?, "end-slot")?;
     if end_slot < start_slot {
@@ -2689,13 +2794,20 @@ fn run_profile_source(args: &CommandArgs) -> Result<(), String> {
             "profile end {end_slot} exceeds finalized slot {finalized}"
         ));
     }
-    let genesis_hash = state
-        .get_block_by_slot(0)?
+    let genesis_hash = get_block(0)?
         .ok_or_else(|| "profile source is missing canonical genesis block 0".to_string())?
         .hash();
+    if archive
+        .as_ref()
+        .is_some_and(|(_, catalog)| catalog.identity.genesis_hash != genesis_hash)
+    {
+        return Err("profile archive genesis block differs from catalog identity".to_string());
+    }
     let mut total_block_bytes = 0u64;
     let mut total_transaction_bytes = 0u64;
     let mut total_transactions = 0u64;
+    let mut total_user_transactions = 0u64;
+    let mut user_transactions_by_utc_day = BTreeMap::<u64, u64>::new();
     let mut total_commit_signatures = 0u64;
     let mut nonempty_blocks = 0u64;
     let mut first_timestamp = None;
@@ -2703,16 +2815,28 @@ fn run_profile_source(args: &CommandArgs) -> Result<(), String> {
     let mut previous_hash = if start_slot == 0 {
         Hash::default()
     } else {
-        state
-            .get_block_by_slot(start_slot - 1)?
+        get_block(start_slot - 1)?
             .ok_or_else(|| format!("profile source is missing predecessor {}", start_slot - 1))?
             .hash()
     };
+    let previous_block_hash = previous_hash;
     let mut largest_blocks = Vec::<(u64, u64, u64, u64)>::new();
     for slot in start_slot..=end_slot {
-        let block = state
-            .get_block_by_slot(slot)?
+        let block = get_block(slot)?
             .ok_or_else(|| format!("profile source is missing canonical block {slot}"))?;
+        if block.header.slot != slot
+            || lichen_core::block::merkle_tx_root_from_hashes(
+                &block
+                    .transactions
+                    .iter()
+                    .map(|tx| tx.hash())
+                    .collect::<Vec<_>>(),
+            ) != block.header.tx_root
+        {
+            return Err(format!(
+                "profile source has incomplete or conflicting transactions at {slot}"
+            ));
+        }
         if block.header.parent_hash != previous_hash {
             return Err(format!(
                 "profile source continuity mismatch at canonical block {slot}"
@@ -2733,6 +2857,15 @@ fn run_profile_source(args: &CommandArgs) -> Result<(), String> {
                     .map(|bytes| total.saturating_add(bytes))
                 })?;
         let transaction_count = block.transactions.len() as u64;
+        let user_count = block
+            .transactions
+            .iter()
+            .filter(|tx| !tx.is_consensus())
+            .count() as u64;
+        total_user_transactions += user_count;
+        *user_transactions_by_utc_day
+            .entry(block.header.timestamp / 86400)
+            .or_default() += user_count;
         total_block_bytes = total_block_bytes.saturating_add(block_bytes);
         total_transaction_bytes = total_transaction_bytes.saturating_add(transaction_bytes);
         total_transactions = total_transactions.saturating_add(transaction_count);
@@ -2760,7 +2893,7 @@ fn run_profile_source(args: &CommandArgs) -> Result<(), String> {
             },
         )
         .collect::<Vec<_>>();
-    print_json(&json!({
+    Ok(json!({
         "operation": "profile_source",
         "state_dir": state_dir,
         "start_slot": start_slot,
@@ -2770,6 +2903,11 @@ fn run_profile_source(args: &CommandArgs) -> Result<(), String> {
         "block_count": block_count,
         "nonempty_blocks": nonempty_blocks,
         "transaction_count": total_transactions,
+        "user_transaction_count": total_user_transactions,
+        "user_transactions_by_utc_day": user_transactions_by_utc_day,
+        "previous_block_hash": previous_block_hash.to_hex(),
+        "last_block_hash": previous_hash.to_hex(),
+        "archive_catalog_root": archive.as_ref().map(|(_, catalog)| catalog.catalog_root.to_hex()),
         "commit_signature_count": total_commit_signatures,
         "block_bytes": total_block_bytes,
         "transaction_bytes": total_transaction_bytes,
@@ -3017,7 +3155,7 @@ fn write_bytes_create_new(path: &Path, encoded: &[u8]) -> Result<(), String> {
 
 fn print_usage() {
     println!(
-        "lichen-archive-v2 <status|catalog-extension-check|role-preflight|role-bootstrap|snapshot-hot|prewarm-indexes|verify|repair|declare-legacy-loss|build|mirror|restore|retirement-authorize|retirement-pass|retirement-reclaim|public-history-manifest|profile-source|benchmark> [options]\n\
+        "lichen-archive-v2 <status|catalog-extension-check|role-preflight|role-bootstrap|snapshot-hot|prewarm-indexes|verify|repair|declare-legacy-loss|build|mirror|restore|retirement-authorize|retirement-pass|retirement-reclaim|public-history-manifest|profile-source|metrics-reconcile|benchmark> [options]\n\
          Run `lichen-archive-v2 <command> --help` is intentionally unsupported; unknown options fail closed.\n\
          Retirement authorization accepts paired --start-slot/--end-slot bounds inside one verified segment; omitting both authorizes the full segment.\n\
          Replica specifications use name:failure-domain:path. Retirement evidence uses destination,failure-domain,verified-unix-seconds. Verify and mirror default to one object per pass."
@@ -3027,6 +3165,190 @@ fn print_usage() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metrics_reconcile_cli_requires_bound_plan_and_exclusive_existing_database() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let state = StateStore::open_with_cache_mb(&state_dir, Some(8)).unwrap();
+        let block = lichen_core::Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::default(),
+            [0; 32],
+            vec![],
+            1,
+        );
+        state.put_block_atomic(&block, Some(0), Some(0)).unwrap();
+        let evidence_path = temp.path().join("source.json");
+        let source = b"{\"fixture\":\"complete genesis with zero user transactions\"}";
+        fs::write(&evidence_path, source).unwrap();
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let plan = lichen_core::state::MetricsCounterRepair {
+            version: 1,
+            source_manifest_sha256: Hash::hash(source).to_hex(),
+            tip_slot: 0,
+            tip_hash: block.hash(),
+            expected_total_transactions: 0,
+            expected_total_blocks: 1,
+            total_transactions: 0,
+            total_blocks: 1,
+            daily_transactions: 0,
+            daily_date: today,
+        };
+        let raw = serde_json::to_vec(&plan).unwrap();
+        let plan_path = temp.path().join("plan.json");
+        fs::write(&plan_path, &raw).unwrap();
+        let mut args = CommandArgs::default();
+        for (key, value) in [
+            ("state-dir", state_dir.display().to_string()),
+            ("plan", plan_path.display().to_string()),
+            ("plan-sha256", Hash::hash(&raw).to_hex()),
+            ("source-manifest", evidence_path.display().to_string()),
+        ] {
+            args.values.insert(key.to_string(), vec![value]);
+        }
+        assert!(run_metrics_reconcile(&args)
+            .unwrap_err()
+            .contains("acknowledge-stopped-validator"));
+        args.flags
+            .insert("acknowledge-stopped-validator".to_string());
+        args.values
+            .insert("plan-sha256".to_string(), vec![Hash::default().to_hex()]);
+        assert!(run_metrics_reconcile(&args)
+            .unwrap_err()
+            .contains("plan checksum"));
+        args.values
+            .insert("plan-sha256".to_string(), vec![Hash::hash(&raw).to_hex()]);
+        fs::write(&evidence_path, b"changed").unwrap();
+        assert!(run_metrics_reconcile(&args)
+            .unwrap_err()
+            .contains("manifest checksum"));
+        fs::write(&evidence_path, source).unwrap();
+        assert!(run_metrics_reconcile(&args).is_err()); // Existing writable DB owns its LOCK.
+        assert_eq!(state.get_metrics().total_transactions, 0);
+        drop(state);
+        run_metrics_reconcile(&args).unwrap();
+        run_metrics_reconcile(&args).unwrap();
+        let state = StateStore::open_with_cache_mb(&state_dir, Some(8)).unwrap();
+        assert_eq!(state.get_metrics().total_transactions, 0);
+        assert_eq!(state.get_metrics().total_blocks, 1);
+    }
+
+    #[test]
+    fn metrics_profile_counts_canonical_archive_and_hot_suffix_without_source_writes() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let root = temp.path().join("archive");
+        fs::create_dir_all(root.join("objects")).unwrap();
+        let genesis = lichen_core::Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::default(),
+            [0; 32],
+            vec![],
+            0,
+        );
+        let native = lichen_core::Transaction::new(lichen_core::Message::new(
+            vec![lichen_core::Instruction {
+                program_id: lichen_core::SYSTEM_PROGRAM_ID,
+                accounts: vec![],
+                data: vec![30],
+            }],
+            Hash::default(),
+        ));
+        let mut consensus = native.clone();
+        consensus.tx_type = lichen_core::transaction::TransactionType::Consensus;
+        let mut evm = native.clone();
+        evm.tx_type = lichen_core::transaction::TransactionType::Evm;
+        let first = lichen_core::Block::new_with_timestamp(
+            1,
+            genesis.hash(),
+            Hash::default(),
+            [1; 32],
+            vec![native, consensus],
+            86399,
+        );
+        let last = lichen_core::Block::new_with_timestamp(
+            2,
+            first.hash(),
+            Hash::default(),
+            [1; 32],
+            vec![evm],
+            86401,
+        );
+        let state = StateStore::open_with_cache_mb(&state_dir, Some(8)).unwrap();
+        for block in [&genesis, &first, &last] {
+            state
+                .put_block_atomic(block, Some(block.header.slot), Some(block.header.slot))
+                .unwrap();
+        }
+        drop(state);
+        let identity = ArchiveV2Identity {
+            network_id: "lichen-testnet-1".to_string(),
+            genesis_hash: genesis.hash(),
+        };
+        let (bytes, manifest) = ArchiveV2SegmentCodec::encode(
+            identity.clone(),
+            None,
+            Hash::default(),
+            &lichen_core::archive_v2::ArchiveV2SegmentContents::from_blocks(vec![
+                genesis.clone(),
+                first.clone(),
+            ]),
+            &ArchiveV2CodecConfig::default(),
+        )
+        .unwrap();
+        let object = object_path(&root, &manifest.segment_object_hash);
+        fs::write(&object, &bytes).unwrap();
+        let mut catalog = ArchiveV2Catalog::empty(identity.clone()).unwrap();
+        catalog.append(manifest).unwrap();
+        catalog.store_atomic(&root.join("catalog.av2")).unwrap();
+        let mut args = CommandArgs::default();
+        for (key, value) in [
+            ("state-dir", state_dir.display().to_string()),
+            ("start-slot", "1".to_string()),
+            ("end-slot", "2".to_string()),
+            ("archive-root", root.display().to_string()),
+            ("network-id", identity.network_id),
+            ("genesis-hash", genesis.hash().to_hex()),
+            ("catalog-root", catalog.catalog_root.to_hex()),
+        ] {
+            args.values.insert(key.to_string(), vec![value]);
+        }
+        let report = profile_source_report(&args).unwrap();
+        assert_eq!(report["transaction_count"], 3);
+        assert_eq!(report["user_transaction_count"], 2);
+        assert_eq!(report["user_transactions_by_utc_day"], json!({"0":1,"1":1}));
+        assert_eq!(report["previous_block_hash"], genesis.hash().to_hex());
+        assert_eq!(report["last_block_hash"], last.hash().to_hex());
+        assert!(!root.join("quarantine").exists());
+        fs::write(&object, b"corrupt").unwrap();
+        assert!(profile_source_report(&args).is_err()); // Never fall back to the complete hot copy.
+        assert_eq!(fs::read(&object).unwrap(), b"corrupt");
+        assert!(!root.join("quarantine").exists());
+        fs::write(&object, bytes).unwrap();
+        args.values
+            .insert("catalog-root".to_string(), vec![Hash::default().to_hex()]);
+        assert!(profile_source_report(&args)
+            .unwrap_err()
+            .contains("identity or catalog"));
+        for key in ["archive-root", "catalog-root", "network-id", "genesis-hash"] {
+            args.values.remove(key);
+        }
+        assert_eq!(
+            profile_source_report(&args).unwrap()["user_transaction_count"],
+            2
+        );
+        let state = StateStore::open_with_cache_mb(&state_dir, Some(8)).unwrap();
+        state
+            .put_replay_block_header_atomic(&first, Some(2), Some(2))
+            .unwrap();
+        drop(state);
+        assert!(profile_source_report(&args)
+            .unwrap_err()
+            .contains("incomplete or conflicting"));
+    }
 
     #[test]
     fn index_prewarm_checks_actual_inputs_before_mutation() {
@@ -3134,6 +3456,77 @@ mod tests {
             ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS
         );
         assert_eq!(short.recent_history_slots, 20);
+    }
+
+    #[test]
+    fn role_preflight_checks_the_entire_unpublished_handoff() {
+        for missing_tail_block in [false, true] {
+            let temporary = tempfile::tempdir().unwrap();
+            let (mut args, _) = role_bootstrap_fixture_args(&temporary, true);
+            let state_dir = PathBuf::from(args.required("state-dir").unwrap());
+            let root = PathBuf::from(args.required("root").unwrap());
+            let state = StateStore::open_with_cache_mb(&state_dir, Some(8)).unwrap();
+            let genesis = state.get_block_by_slot(0).unwrap().unwrap();
+            let mut parent = genesis.hash();
+            for slot in 1..=8 {
+                let block = lichen_core::Block::new_with_timestamp(
+                    slot,
+                    parent,
+                    Hash::default(),
+                    [1; 32],
+                    Vec::new(),
+                    slot + 1,
+                );
+                parent = block.hash();
+                if !(missing_tail_block && slot == 2) {
+                    state
+                        .put_block_atomic(&block, Some(slot), Some(slot))
+                        .unwrap();
+                }
+            }
+            // The old CLI's nominal window (4..=8) is complete even when
+            // slot2 is missing. Runtime requires the full handoff (1..=8).
+            assert!(state.verify_hot_canonical_block_range(4, 8).is_ok());
+            drop(state);
+            let identity = ArchiveV2Identity {
+                network_id: "lichen-testnet-1".to_string(),
+                genesis_hash: genesis.hash(),
+            };
+            let (bytes, manifest) = ArchiveV2SegmentCodec::encode(
+                identity.clone(),
+                None,
+                Hash::default(),
+                &lichen_core::archive_v2::ArchiveV2SegmentContents::from_blocks(vec![genesis]),
+                &ArchiveV2CodecConfig::default(),
+            )
+            .unwrap();
+            fs::create_dir_all(root.join("objects")).unwrap();
+            fs::create_dir_all(root.join("manifests")).unwrap();
+            fs::write(object_path(&root, &manifest.segment_object_hash), bytes).unwrap();
+            fs::write(
+                manifest_path(&root, &manifest.segment_object_hash),
+                manifest.encode_canonical().unwrap(),
+            )
+            .unwrap();
+            let mut catalog = ArchiveV2Catalog::empty(identity).unwrap();
+            catalog.append(manifest).unwrap();
+            catalog.store_atomic(&root.join("catalog.av2")).unwrap();
+            args.values
+                .insert("recent-history-slots".to_string(), vec!["5".to_string()]);
+            for role in ["consensus", "full-archive"] {
+                args.values
+                    .insert("role".to_string(), vec![role.to_string()]);
+                let assessment = evaluate_role_preflight(&args, true, true).unwrap();
+                assert_eq!(assessment.hot_start, 1);
+                assert_eq!(assessment.required_archive_end, Some(0));
+                assert!(assessment.complete_catalog_verified);
+                assert_eq!(assessment.complete_hot_window, !missing_tail_block);
+                assert_eq!(assessment.admission.admitted, !missing_tail_block);
+            }
+            // This fixture uses the explicit local-dev policy override to
+            // test a short chain; public admission must still reject it.
+            assert!(evaluate_role_preflight(&args, false, false).is_err());
+        }
     }
 
     #[cfg(unix)]

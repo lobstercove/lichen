@@ -3298,10 +3298,13 @@ async function loadIdentityTab() {
       }).join('')
       : '<span style="color:var(--text-muted);font-size:0.82rem;">None yet</span>';
 
-    const allAchievements = ACHIEVEMENT_DEFS.map(def => {
+    const achievementBadge = def => {
       const earned = achievedIds.has(def.id);
-      return `<span style="display:inline-block;padding:0.25rem 0.6rem;border-radius:6px;font-size:0.75rem;margin:0.15rem;${earned ? 'background:var(--primary)18;color:var(--primary);border:1px solid var(--primary)33;' : 'background:var(--bg-tertiary);color:var(--text-muted);opacity:0.5;'}"><i class="${escapeHtmlExt(def.icon)}"></i> ${escapeHtmlExt(def.name)}</span>`;
-    }).join('');
+      return `<span class="achievement-badge ${earned ? 'is-earned' : 'is-locked'}" title="${escapeHtmlExt(def.desc)}"><i class="fas ${escapeHtmlExt(def.icon)}" aria-hidden="true"></i> ${escapeHtmlExt(def.name)}</span>`;
+    };
+    const earnedAchievements = ACHIEVEMENT_DEFS.filter(def => achievedIds.has(def.id));
+    const achievementPreview = earnedAchievements.slice(0, 4).map(achievementBadge).join('') || '<p class="achievement-empty">No achievements earned yet</p>';
+    const allAchievements = [...earnedAchievements, ...ACHIEVEMENT_DEFS.filter(def => !achievedIds.has(def.id))].map(achievementBadge).join('');
 
     container.innerHTML = `
       <!-- Profile Strip -->
@@ -3383,12 +3386,16 @@ async function loadIdentityTab() {
 
       <!-- Achievements (full width) -->
       <div style="padding:0 1rem 1rem;">
-        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;">
+        <div class="wallet-achievements" style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
             <span style="font-weight:600;font-size:0.85rem;"><i class="fas fa-award"></i> Achievements</span>
             <span style="font-size:0.75rem;color:var(--text-muted);">${achievements.length}/${ACHIEVEMENT_DEFS.length}</span>
           </div>
-          <div style="display:flex;flex-wrap:wrap;">${allAchievements}</div>
+          <div class="achievement-preview">${achievementPreview}</div>
+          <details class="achievement-details">
+            <summary><span class="achievement-expand">View all ${ACHIEVEMENT_DEFS.length} achievements</span><span class="achievement-collapse">Show less</span><i class="fas fa-chevron-down" aria-hidden="true"></i></summary>
+            <div class="achievement-grid" tabindex="0" role="region" aria-label="All achievements">${allAchievements}</div>
+          </details>
         </div>
       </div>
 

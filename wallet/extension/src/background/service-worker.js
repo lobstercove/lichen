@@ -12,7 +12,7 @@ import {
   revokeApprovedOrigin
 } from '../core/provider-router.js';
 
-const APP_VERSION = chrome.runtime?.getManifest?.().version || '0.1.9';
+const APP_VERSION = chrome.runtime?.getManifest?.().version || '0.1.11';
 
 async function broadcastProviderStateDirty() {
   try {

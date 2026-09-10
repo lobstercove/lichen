@@ -1,12 +1,25 @@
 # Archive V2 Activation, Cadence Recovery, And Validator Liveness Plan
 
-**Current status, September 6:** `v0.5.283` is the only successor candidate
-for checkpoint role-history compatibility, retaining the checkpoint cache-budget
-and verification-pruning fixes. The immutable v0.5.282 hosted archive gate failed
-fresh verified-cache admission; its local matrix pass does not override that failure.
-All four validators have signed v0.5.281 installed on their preserved state;
-recurrent OOM restarts leave sustained-memory acceptance incomplete. Internal
-gateway TLS is corrected; fresh capacity and full activation remain pending.
+**Current status, September 9, 11:40UTC:** signed `v0.5.290` is live on all four
+validators with Archive V2 catalog443. Fresh authorship and fixed finality passed
+at slot12,900,222; signed-artifact, exact counter, auxiliary restoration and
+maintenance guard checks completed. `v0.5.291` is the only successor candidate;
+it bounds account Activity pages to the newest archive ranges that can enter the
+page. Signed290 already bounds known-slot receipt reads. The live account-history
+latency gate remains open; candidate regression tests are not live timing proof.
+CI and signed release qualification remain required before a new deployment.
+
+Five obsolete EU diagnostic captures were retired with controls, provenance and
+the newest source preserved, recovering20,348,854,272observed free bytes. This
+does not establish complete legacy retirement. Another superseded EU12700000
+capture was retired on September9, recovering4,044,099,584observed free bytes.
+The isolated signed290 full-history scan of the preserved12850000 checkpoint is
+running with catalog443 and explicit live-growth/checkpoint/scratch reserves.
+Full history/restart acceptance, sustained capacity and
+qualified obsolete R2 cleanup remain open. Wallet/extension0.1.11 and DEX fixes
+are deployed; public DEX asset and desktop/tablet/mobile checks pass. Mobile icon
+polish remains deferred. Preserve active primary/replica objects, remaining legacy
+references, signed rollback and temporary credential renewal deadlines.
 Use [the current deployment preflight](ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md) and
 [v0.5.283 qualification](../audits/V0.5.283_CHECKPOINT_ROLE_HISTORY_2026-09-06.md).
 The dated execution narrative below is historical provenance and does not

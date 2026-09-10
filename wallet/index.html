@@ -20,6 +20,7 @@
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="wallet.css?v=20260625a">
+    <link rel="stylesheet" href="wallet-layout.css?v=20260908a">
     <link
         href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
         rel="stylesheet">
@@ -105,6 +106,10 @@
             </div>
 
             <div class="welcome-actions">
+                <div class="welcome-actions-heading">
+                    <h2>Your Lichen account</h2>
+                    <p>Create a wallet or bring your existing account. Your assets, all in one place.</p>
+                </div>
                 <button class="btn btn-primary btn-large" data-wallet-action="showCreateWallet">
                     <i class="fas fa-plus"></i> Create New Wallet
                 </button>
@@ -338,13 +343,13 @@
                 </div>
 
                 <div class="nav-actions">
-                    <button class="btn btn-small btn-secondary" data-wallet-action="showSettings">
+                    <button class="btn btn-small btn-secondary" data-wallet-action="showSettings" aria-label="Wallet settings" title="Settings">
                         <i class="fas fa-cog"></i>
                     </button>
-                    <button class="btn btn-small btn-primary" data-wallet-action="lockWallet">
+                    <button class="btn btn-small btn-primary" data-wallet-action="lockWallet" aria-label="Lock wallet" title="Lock wallet">
                         <i class="fas fa-lock"></i> <span>Lock</span>
                     </button>
-                    <button class="btn btn-small btn-danger" data-wallet-action="logoutWallet">
+                    <button class="btn btn-small btn-danger" data-wallet-action="logoutWallet" aria-label="Sign out of wallet" title="Sign out">
                         <i class="fas fa-sign-out-alt"></i>
                     </button>
                 </div>
@@ -354,11 +359,15 @@
         <!-- Dashboard Content -->
         <div class="dashboard-content">
             <div class="container">
+                <div class="dashboard-heading">
+                    <h1>Wallet overview</h1>
+                    <p>Manage your assets and account activity.</p>
+                </div>
                 <!-- Balance Card -->
                 <div class="balance-card">
                     <div class="balance-header">
                         <span class="balance-label">Public Balance</span>
-                        <button class="btn-icon" data-wallet-action="refreshBalance">
+                        <button class="btn-icon" data-wallet-action="refreshBalance" aria-label="Refresh balance" title="Refresh balance">
                             <i class="fas fa-sync-alt"></i>
                         </button>
                     </div>
@@ -385,7 +394,7 @@
                 </div>
 
                 <!-- Tabs: Assets | Activity | NFTs | Staking | Identity -->
-                <div class="dashboard-tabs">
+                <div class="dashboard-tabs" role="navigation" aria-label="Wallet sections">
                     <button class="dashboard-tab active" data-tab="assets">
                         <i class="fas fa-coins"></i> Assets
                     </button>
@@ -408,12 +417,14 @@
 
                 <!-- Tab Content -->
                 <div class="tab-content active" data-tab="assets">
+                    <div class="wallet-section-heading"><h2>Your assets</h2><span>Balance</span></div>
                     <div class="assets-list" id="assetsList">
                         <!-- Asset tokens -->
                     </div>
                 </div>
 
                 <div class="tab-content" data-tab="activity">
+                    <div class="wallet-section-heading"><h2>Activity</h2><span>Latest transactions</span></div>
                     <div class="activity-list" id="activityList">
                         <!-- Transaction history -->
                     </div>
@@ -1044,7 +1055,7 @@
                         <div class="settings-info-list">
                             <div class="settings-info-item">
                                 <span>Version</span>
-                                <strong>0.1.9</strong>
+                                <strong>0.1.11</strong>
                             </div>
                             <div class="settings-info-item">
                                 <span>Network</span>

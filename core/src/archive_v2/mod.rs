@@ -52,8 +52,8 @@ pub use join::{
     ArchiveV2JoinPlan, ArchiveV2MutableStateJoinMethod, ARCHIVE_V2_JOIN_PLAN_VERSION,
 };
 pub use reader::{
-    ArchiveV2DirectorySource, ArchiveV2ObjectSource, ArchiveV2Reader, ArchiveV2ReaderConfig,
-    ArchiveV2ReaderStatus,
+    ArchiveV2CategoryCursor, ArchiveV2DirectorySource, ArchiveV2ObjectSource, ArchiveV2Reader,
+    ArchiveV2ReaderConfig, ArchiveV2ReaderStatus,
 };
 pub use replication::{
     inspect_archive_v2_replica_inventory, ArchiveV2DirectoryReplica, ArchiveV2MirrorLimits,
@@ -69,6 +69,7 @@ pub use role_marker::{
     ARCHIVE_V2_ROLE_MARKER_FILENAME,
 };
 pub use roles::{
+    archive_v2_catalog_handoff_start, archive_v2_local_history_start,
     archive_v2_state_admission_fingerprint, ArchiveV2CapabilityAdvertisement, ArchiveV2Role,
     ArchiveV2RoleAdmission, ArchiveV2RoleConfig, ArchiveV2RoleRequirements,
     ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS, ARCHIVE_V2_ROLE_CONFIG_VERSION,

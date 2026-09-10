@@ -7,9 +7,11 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Candidate release line:** `v0.5.283`; the installed signed testnet release is
-`v0.5.281`. Preserve its signed artifacts, v0.5.280 and the v0.5.265 restart-safe
-rollback anchor. Archive V2 and sustained-memory acceptance remain incomplete.
+**Candidate release line:** `v0.5.291`; signed `v0.5.290` is live on all four
+testnet validators with Archive V2 catalog 443 as of September 9, 2026. Current authorship, finality,
+signed-binary parity and live transaction-counter checks passed after the catalog
+refresh. Full history verification, physical legacy retirement, sustained capacity
+and obsolete R2 cleanup remain incomplete. Preserve signed rollback artifacts.
 Official installable artifacts are the published
 GitHub release archives whose checksums, detached ML-DSA signature, release
 trust anchor, and provenance attestations all verify. The candidate bounds every
@@ -20,6 +22,31 @@ history before download and state replacement. The immutable v0.5.282 hosted
 archive gate failed this compatibility case despite passing the local matrix.
 See the [checkpoint compatibility audit](docs/audits/V0.5.283_CHECKPOINT_ROLE_HISTORY_2026-09-06.md)
 and [checkpoint memory audit](docs/audits/V0.5.282_CHECKPOINT_MEMORY_2026-09-06.md).
+Signed v0.5.284 restores transaction counters at the canonical execution
+commit boundary, makes their persistence atomic, and verifies live counter deltas
+against canonical blocks. Historical counter reconciliation completed on all four
+validators, followed by exact live oracle-transaction delta checks. See the
+[metrics audit](docs/audits/V0.5.284_CANONICAL_METRICS_2026-09-07.md).
+Signed v0.5.288 shares the bounded local-history handoff calculation
+between the validator and deployment CLI, including physical verification of
+the entire unpublished suffix and the unchanged50,000-slot extension limit.
+It retains bounded composed archive-history verification with streamed
+segments and temporary disk indexes, and avoids repeated checkpoint catalog
+admission scans. Full history parity, sustained capacity and eligible legacy
+retirement remain open. See the [current deployment preflight](docs/deployment/ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md)
+for the maintenance state and required resource checks.
+Signed v0.5.290 reads the local tip after asynchronous bootstrap RPC
+observations in both returning-node and post-registration readiness. This prevents
+endpoint timeouts from making an up-to-date validator appear behind. Existing
+voting, drift, finality and post-block-effects checks remain enforced.
+The v0.5.291 candidate bounds account Activity pagination to archive ranges
+that can contribute to the requested page. It preserves exact transaction
+cursors, deduplicates overlapping hot/archive rows, and fails on unavailable
+history when that history is needed. Regression tests cover the wallet's actual
+20-row RPC request and continuation without fetching unrelated archive indexes.
+The same source line retains live DEX candle updates and wallet 0.1.11: a
+30-minute tab connection across popup closure, password-protected approval,
+shared responsive web/extension layouts, and browser/PWA regression gates.
 Treat the candidate changes
 as unreleased until the exact tag, signature, provenance, and release gates pass.
 

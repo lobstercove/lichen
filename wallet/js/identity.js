@@ -837,19 +837,26 @@ function renderVouchesSection(received, given) {
 
 // ── Achievements Section ──
 function renderAchievementsSection(achievements, achievedIds) {
-    const all = ACHIEVEMENT_DEFS.map(def => {
+    const badge = def => {
         const earned = achievedIds.has(def.id);
-        return `<span class="id-badge ${earned ? 'id-badge-earned' : 'id-badge-locked'}" title="${escHtml(def.desc)}"><i class="fas ${def.icon}"></i> ${def.name}</span>`;
-    }).join('');
+        return `<span class="achievement-badge ${earned ? 'is-earned' : 'is-locked'}" title="${escHtml(def.desc)}"><i class="fas ${escHtml(def.icon)}" aria-hidden="true"></i> ${escHtml(def.name)}</span>`;
+    };
+    const earned = ACHIEVEMENT_DEFS.filter(def => achievedIds.has(def.id));
+    const preview = earned.slice(0, 4).map(badge).join('') || '<p class="achievement-empty">No achievements earned yet</p>';
+    const all = [...earned, ...ACHIEVEMENT_DEFS.filter(def => !achievedIds.has(def.id))].map(badge).join('');
 
     return `
-        <div class="id-section id-section-full">
+        <div class="id-section id-section-full wallet-achievements">
             <div class="id-section-head">
                 <span><i class="fas fa-award"></i> Achievements</span>
                 <span class="id-section-counter">${achievements.length}/${ACHIEVEMENT_DEFS.length}</span>
             </div>
             <div class="id-section-body">
-                <div class="id-chip-list">${all}</div>
+                <div class="achievement-preview">${preview}</div>
+                <details class="achievement-details">
+                    <summary><span class="achievement-expand">View all ${ACHIEVEMENT_DEFS.length} achievements</span><span class="achievement-collapse">Show less</span><i class="fas fa-chevron-down" aria-hidden="true"></i></summary>
+                    <div class="achievement-grid" tabindex="0" role="region" aria-label="All achievements">${all}</div>
+                </details>
             </div>
         </div>
     `;

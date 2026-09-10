@@ -79,6 +79,109 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.291 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.291</span>
+                    <span class="changelog-date">September 9, 2026 — candidate</span>
+                </div>
+                <h3>Bounded wallet Activity pagination</h3>
+                <ul>
+                    <li>Read account history from the newest archive ranges that can contribute to the page.</li>
+                    <li>Preserve transaction cursors within a block, hot/archive overlap and errors for unavailable required history.</li>
+                    <li>Exercise consecutive 20-row wallet RPC pages without fetching unrelated archive segments. Signed release and live latency acceptance remain required.</li>
+                </ul>
+            </article>
+
+            <!-- ============ v0.5.290 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.290</span>
+                    <span class="changelog-date">September 9, 2026 — candidate</span>
+                </div>
+                <h3>Bounded historical transaction receipt reads</h3>
+                <ul>
+                    <li>Read receipts from the transaction's known archive segment, avoiding archive-wide scans for missing legacy metadata.</li>
+                    <li>Cover native and Solana historical block responses with unavailable unrelated archive segments.</li>
+                    <li>Correct DEX native balance valuation across selected markets and include the Sharp security update.</li>
+                    <li>Full release qualification and live acceptance remain required.</li>
+                </ul>
+            </article>
+
+            <!-- ============ v0.5.289 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.289</span>
+                    <span class="changelog-date">September 9, 2026 — candidate</span>
+                </div>
+                <h3>Returning validator readiness after slow bootstrap queries</h3>
+                <ul>
+                    <li>Read the current local tip after bootstrap requests so endpoint timeouts cannot make a caught-up validator appear behind.</li>
+                    <li>Use the same observation order after registration while preserving voting, finality and post-block effects checks.</li>
+                    <li>Includes regression coverage for block progress during an HTTP timeout and rejection of actual lag. Full release qualification remains required.</li>
+                </ul>
+            </article>
+
+            <!-- ============ v0.5.288 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.288</span>
+                    <span class="changelog-date">September 8, 2026 — candidate</span>
+                </div>
+                <h3>Consistent archive deployment admission</h3>
+                <ul>
+                    <li>The validator and deployment CLI share the same bounded archive-to-hot-history handoff calculation.</li>
+                    <li>Admission verifies every block in the unpublished suffix and retains the 50,000-slot extension limit.</li>
+                    <li>Regression coverage rejects missing tail blocks, stale catalogs and overflow without changing consensus or storage formats.</li>
+                    <li>Includes wallet 0.1.11 balance actions and compact achievements. Full fleet acceptance remains pending.</li>
+                </ul>
+            </article>
+
+            <!-- ============ v0.5.287 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.287</span>
+                    <span class="changelog-date">September 8, 2026 — candidate</span>
+                </div>
+                <h3>Live DEX candles and wallet continuity</h3>
+                <ul>
+                    <li>Live quotes update forming DEX candles without stale snapshot overwrites.</li>
+                    <li>Wallet connections persist in the application tab after popup closure; signing retains explicit password approval.</li>
+                    <li>Wallet 0.1.10 aligns desktop, tablet, mobile and extension layouts, with browser regression and PWA update checks.</li>
+                    <li>Retains bounded Archive V2 history verification and checkpoint admission corrections. Signed v0.5.284 remains installed pending fleet qualification.</li>
+                </ul>
+            </article>
+
+            <!-- ============ v0.5.286 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.286</span>
+                    <span class="changelog-date">September 8, 2026 — candidate</span>
+                </div>
+                <h3>Bounded archive history verification</h3>
+                <ul>
+                    <li>Streams authenticated archive segments and uses temporary disk indexes for global history ordering and metadata lookup.</li>
+                    <li>Preserves canonical category roots, duplicate handling, conflict rejection and the existing checkpoint exporter filesystem behavior.</li>
+                    <li>Includes checkpoint catalog admission and canonical transaction-counter corrections.</li>
+                    <li>Signed v0.5.284 remains installed; full history, capacity and retirement acceptance remain pending.</li>
+                </ul>
+            </article>
+
+            <!-- ============ v0.5.284 ============ -->
+            <article class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.284</span>
+                    <span class="changelog-date">September 7, 2026 — candidate</span>
+                </div>
+                <h3>Canonical transaction metrics</h3>
+                <ul>
+                    <li>Counts native oracle and EVM transactions at the atomic canonical block commit, excluding consensus metadata.</li>
+                    <li>Preserves counters across failed writes, duplicate replay and restart; historical replay does not inflate today's UTC count.</li>
+                    <li>Checks live counter deltas against canonical blocks before and after Archive V2 admission and rejoin.</li>
+                    <li>Signed v0.5.284 is installed. Historical backfill and exact live counter checks passed on all four validators; full Archive V2 acceptance remains pending.</li>
+                </ul>
+            </article>
+
             <!-- ============ v0.5.283 ============ -->
             <article class="changelog-entry">
                 <div class="changelog-header">

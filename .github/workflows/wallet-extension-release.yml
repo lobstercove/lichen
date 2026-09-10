@@ -29,6 +29,9 @@ jobs:
               with:
                   node-version: "22"
 
+            - name: Install wallet audit dependencies
+              run: npm ci --ignore-scripts
+
             - name: Build JavaScript SDK
               run: cd sdk/js && npm ci --ignore-scripts && npm run build
 
@@ -38,6 +41,13 @@ jobs:
                   node scripts/qa/test_wallet_extension_audit.js
                   node scripts/qa/test_wallet_extension_signing_e2e.js
                   node scripts/qa/test_wallet_audit.js
+                  node scripts/qa/test_web_wallet_popup_session.js
+
+            - name: Install wallet test browser
+              run: npx --no-install playwright install --with-deps chromium
+
+            - name: Verify wallet layouts and popup sessions in Chromium
+              run: npm run test-wallet-browser
 
             - name: Package extension release artifacts
               run: |

@@ -5,6 +5,12 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 
 const HELPER_FAMILIES = [
     {
+        id: 'wallet-responsive-layout',
+        source: 'wallet/wallet-layout.css',
+        targets: ['wallet/extension/src/styles/wallet-layout.css'],
+        note: 'Shared web and extension wallet layout; custody remains in each provider.',
+    },
+    {
         id: 'shared-config-standard',
         source: 'wallet/shared-config.js',
         targets: [

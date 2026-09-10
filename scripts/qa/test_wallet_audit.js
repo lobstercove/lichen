@@ -641,9 +641,9 @@ test('wallet-connect.js exposes popup-backed web wallet provider without local c
     assert(walletConnectSrc.includes('function PopupLichenProvider('), 'PopupLichenProvider must exist');
     assert(walletConnectSrc.includes('function getPopupLichenProvider()'), 'Popup provider singleton accessor missing');
     assert(walletConnectSrc.includes("window.getPopupLichenProvider = window.getPopupLichenProvider || getPopupLichenProvider;"), 'Popup provider must be exported globally');
-    assert(walletConnectSrc.includes("var WALLET_POPUP_STATE_KEY = 'lichen_web_wallet_popup_state_v1';"), 'Popup provider must track web-wallet session state locally');
-    assert(walletConnectSrc.includes('PopupLichenProvider.prototype._handlePopupClosed') && walletConnectSrc.includes('this._setDisconnected();'),
-        'Popup provider must clear signing readiness when the web-wallet popup closes');
+    assert(walletConnectSrc.includes("var WALLET_POPUP_STATE_KEY = 'lichen_web_wallet_popup_state_v2';"), 'Popup provider must track bounded tab-local connection metadata');
+    assert(walletConnectSrc.includes('PopupLichenProvider.prototype._handlePopupClosed') && walletConnectSrc.includes('this._persistState();'),
+        'Popup closure must preserve account authorization while cancelling pending requests');
     assert(walletConnectSrc.includes("Object.prototype.hasOwnProperty.call(state, 'hasWallet')")
         && walletConnectSrc.includes('hasWallet: hasWallet'),
         'Popup provider must preserve hasWallet from the web-wallet bridge state');
@@ -756,7 +756,7 @@ test('popup wallet sessions are not forcibly reloaded or re-locked mid-flow', ()
     assert(walletBootstrapSrc.includes('if (!isBridgePopupSession()) {'), 'Service worker updates must not auto-reload the popup session');
     assert(walletConnectSrc.includes('if (!this.popup || this.popup.closed) {'), 'Popup provider must reuse an existing popup window');
     assert(!walletConnectSrc.includes('this.popup.location.href = popupUrl;'), 'Popup provider must not renavigate an already-open popup during repeated requests');
-    assert(walletConnectSrc.includes('this._setDisconnected();') && walletConnectSrc.includes('return Promise.resolve(this._lastState);'), 'Closing the popup must fail closed before returning cached provider state');
+    assert(walletConnectSrc.includes('this._lastState.expiresAt <= Date.now()') && walletConnectSrc.includes('return Promise.resolve(this._lastState);'), 'Expired connection metadata must be cleared before returning cached state');
     assert(walletConnectSrc.includes('self._handlePopupClosed();'), 'Popup close monitoring must use the non-disconnecting close handler');
 });
 

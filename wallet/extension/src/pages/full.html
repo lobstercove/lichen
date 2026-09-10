@@ -10,6 +10,7 @@
     <link rel="stylesheet" href="../styles/shared-theme.css">
     <link rel="stylesheet" href="../styles/wallet.css">
     <link rel="stylesheet" href="full.css">
+    <link rel="stylesheet" href="../styles/wallet-layout.css">
     <link
         href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
         rel="stylesheet">
@@ -74,6 +75,10 @@
             </div>
 
             <div class="welcome-actions">
+                <div class="welcome-actions-heading">
+                    <h2>Your Lichen account</h2>
+                    <p>Create a wallet or bring your existing account. Your assets, all in one place.</p>
+                </div>
                 <button class="btn btn-primary btn-large" id="btnCreateWallet">
                     <i class="fas fa-plus"></i> Create New Wallet
                 </button>
@@ -317,13 +322,13 @@
                 </div>
 
                 <div class="nav-actions">
-                    <button class="btn btn-small btn-secondary" id="navSettingsBtn">
+                    <button class="btn btn-small btn-secondary" id="navSettingsBtn" aria-label="Wallet settings" title="Settings">
                         <i class="fas fa-cog"></i>
                     </button>
-                    <button class="btn btn-small btn-primary" id="navLockBtn">
+                    <button class="btn btn-small btn-primary" id="navLockBtn" aria-label="Lock wallet" title="Lock wallet">
                         <i class="fas fa-lock"></i> <span>Lock</span>
                     </button>
-                    <button class="btn btn-small btn-danger" id="navLogoutBtn">
+                    <button class="btn btn-small btn-danger" id="navLogoutBtn" aria-label="Sign out of wallet" title="Sign out">
                         <i class="fas fa-sign-out-alt"></i>
                     </button>
                 </div>
@@ -333,11 +338,15 @@
         <!-- Dashboard Content -->
         <div class="dashboard-content">
             <div class="container">
+                <div class="dashboard-heading">
+                    <h1>Wallet overview</h1>
+                    <p>Manage your assets and account activity.</p>
+                </div>
                 <!-- Balance Card -->
                 <div class="balance-card">
                     <div class="balance-header">
                         <span class="balance-label">Public Balance</span>
-                        <button class="btn-icon" id="refreshBalanceBtn">
+                        <button class="btn-icon" id="refreshBalanceBtn" aria-label="Refresh balance" title="Refresh balance">
                             <i class="fas fa-sync-alt"></i>
                         </button>
                     </div>
@@ -363,7 +372,7 @@
                 </div>
 
                 <!-- Tabs -->
-                <div class="dashboard-tabs">
+                <div class="dashboard-tabs" role="navigation" aria-label="Wallet sections">
                     <button class="dashboard-tab active" data-tab="assets">
                         <i class="fas fa-coins"></i> Assets
                     </button>
@@ -376,20 +385,22 @@
                     <button class="dashboard-tab" data-tab="staking">
                         <i class="fas fa-layer-group"></i> Staking
                     </button>
-                    <button class="dashboard-tab" data-tab="shield">
-                        <i class="fas fa-shield-alt"></i> Shield
-                    </button>
                     <button class="dashboard-tab" data-tab="identity">
                         <i class="fas fa-fingerprint"></i> Identity
+                    </button>
+                    <button class="dashboard-tab" data-tab="shield">
+                        <i class="fas fa-shield-alt"></i> Shield
                     </button>
                 </div>
 
                 <!-- Tab Content -->
                 <div class="tab-content active" data-tab="assets">
+                    <div class="wallet-section-heading"><h2>Your assets</h2><span>Balance</span></div>
                     <div class="assets-list" id="assetsList"></div>
                 </div>
 
                 <div class="tab-content" data-tab="activity">
+                    <div class="wallet-section-heading"><h2>Activity</h2><span>Latest transactions</span></div>
                     <div class="activity-list" id="activityList"></div>
                 </div>
 
@@ -852,7 +863,7 @@
                     </div>
                     <div class="settings-card-body">
                         <div class="settings-info-list">
-                            <div class="settings-info-item"><span>Version</span><strong>0.1.9</strong></div>
+                            <div class="settings-info-item"><span>Version</span><strong>0.1.11</strong></div>
                             <div class="settings-info-item"><span>Network</span><strong>Lichen</strong></div>
                             <div class="settings-info-item"><span>License</span><strong>MIT</strong></div>
                         </div>

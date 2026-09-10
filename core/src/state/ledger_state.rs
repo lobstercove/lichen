@@ -487,10 +487,7 @@ impl StateStore {
         append_legacy_bincode(&mut value, block, "block")
             .map_err(|e| format!("Failed to serialize block: {}", e))?;
 
-        let is_new_slot = self
-            .get_block_by_slot(block.header.slot)
-            .unwrap_or(None)
-            .is_none();
+        let is_new_slot = self.get_block_by_slot(block.header.slot)?.is_none();
         let current_last_slot = self.get_last_slot().unwrap_or(0);
         let current_confirmed_slot = self.get_last_confirmed_slot().unwrap_or(0);
         let current_finalized_slot = self.get_last_finalized_slot().unwrap_or(0);
@@ -615,14 +612,18 @@ impl StateStore {
         self.batch_index_account_transactions(block, &mut batch)?;
         self.batch_index_block_activity(block, &mut batch)?;
 
-        if is_new_slot {
-            self.metrics.track_block(block);
-            self.metrics.save_to_batch(&mut batch, &self.db)?;
-        }
+        let pending_metrics = if is_new_slot {
+            Some(self.metrics.prepare_block(block, &mut batch, &self.db)?)
+        } else {
+            None
+        };
 
         self.db
             .write(batch)
             .map_err(|e| format!("Failed to write block batch: {}", e))?;
+        if let Some(pending) = pending_metrics {
+            pending.commit();
+        }
 
         self.push_blockhash_cache(block_hash, block.header.slot);
 
@@ -1433,6 +1434,29 @@ impl StateStore {
                     ..Default::default()
                 })),
                 Some((_, data)) => decode_tx_meta(&data)
+                    .map(Some)
+                    .map_err(|e| format!("Failed to deserialize Archive V2 tx meta: {e}")),
+                None => Ok(None),
+            },
+        }
+    }
+
+    /// Read a receipt for a transaction with a known canonical block slot.
+    /// Legacy transactions can have no receipt; that miss is confined to their
+    /// own authenticated segment instead of searching the entire archive.
+    pub fn get_tx_meta_full_at_slot(
+        &self,
+        sig: &Hash,
+        slot: u64,
+    ) -> Result<Option<crate::processor::TxMeta>, String> {
+        match self.get_hot_tx_meta_full(sig)? {
+            Some(meta) => Ok(Some(meta)),
+            None => match self.archive_v2_category_value_at_slot("tx_meta", &sig.0, slot)? {
+                Some(data) if data.len() == 8 => Ok(Some(crate::processor::TxMeta {
+                    compute_units_used: u64::from_le_bytes(data.try_into().unwrap()),
+                    ..Default::default()
+                })),
+                Some(data) => decode_tx_meta(&data)
                     .map(Some)
                     .map_err(|e| format!("Failed to deserialize Archive V2 tx meta: {e}")),
                 None => Ok(None),

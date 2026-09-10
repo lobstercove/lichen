@@ -194,10 +194,10 @@ assert(
     'read-only connected trade submit stays clickable and reacquires signer approval before preflight'
 );
 assert(
-    readWalletProviderSnapshot.includes('livePopupSession')
-        && readWalletProviderSnapshot.includes('exposedAccounts')
-        && readWalletProviderSnapshot.includes("providerType !== 'web-wallet' || windowOpen"),
-    'web wallet signing readiness requires a live popup session, not cached popup state'
+    readWalletProviderSnapshot.includes('const exposedAccounts = connected ? accounts : [];')
+        && readWalletProviderSnapshot.includes('providerState?.canRequestSignatures')
+        && !readWalletProviderSnapshot.includes('livePopupSession'),
+    'web wallet connection permits requesting password-protected approval after popup closure'
 );
 assert(
     dexJs.includes('function webWalletNeedsWalletSetup(providerState = lastExtensionProviderState)')
@@ -406,3 +406,5 @@ if (failed > 0) {
 }
 
 console.log(`\nDEX UI readiness: ${passed} passed, 0 failed`);
+require('./test_dex_live_candles.js');
+require('./test_dex_balance_valuation.js');

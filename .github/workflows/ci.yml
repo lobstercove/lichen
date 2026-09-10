@@ -96,6 +96,8 @@ jobs:
         run: node scripts/qa/test_legacy_bincode_codec_policy.js
       - name: Verify RocksDB WAL recovery diagnostics
         run: python3 scripts/qa/test_rocksdb_wal_inventory.py
+      - name: Verify canonical transaction metrics acceptance failures
+        run: python3 tests/test-live-transaction-metrics.py
       - name: Verify release audit summaries
         run: node scripts/qa/test_release_audit_summaries.js
       - name: Verify public claims against implementation boundaries
@@ -372,6 +374,19 @@ jobs:
           node scripts/qa/test_wallet_extension_audit.js
           node scripts/qa/test_wallet_extension_signing_e2e.js
           node scripts/qa/test_wallet_audit.js
+          node scripts/qa/test_web_wallet_popup_session.js
+      - name: Install wallet test browser
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Verify wallet layouts and popup sessions in Chromium
+        run: npm run test-wallet-browser
+      - name: Verify DEX balances and portfolio across viewports
+        run: node scripts/qa/test_dex_balance_browser.cjs
+      - name: Upload wallet browser evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: wallet-browser-evidence
+          path: dist/wallet-browser/
       - name: Package wallet extension
         run: node scripts/package-wallet-extension.mjs
       - name: Upload wallet extension artifacts

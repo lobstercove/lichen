@@ -25,6 +25,7 @@ pub mod wal;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use futures_util::{SinkExt, StreamExt};
 use lichen_core::archive_v2::{
+    archive_v2_catalog_handoff_start, archive_v2_local_history_start,
     archive_v2_state_admission_fingerprint, load_archive_v2_role_marker,
     store_archive_v2_role_marker_create_new, ArchiveV2AdaptiveReservePolicy,
     ArchiveV2CapabilityAdvertisement, ArchiveV2CapacityDecision, ArchiveV2CapacityGuard,
@@ -4052,6 +4053,37 @@ fn has_enough_direct_bootstrap_observations(
 ) -> bool {
     let required = usize::from(direct_endpoints > 0);
     direct_successes >= required
+}
+
+async fn observe_pre_consensus_tips(
+    sync_manager: &SyncManager,
+    http_client: Option<&reqwest::Client>,
+    rpc_urls: &[String],
+    read_local_slot: impl FnOnce() -> u64,
+) -> (u64, u64, usize, usize) {
+    let mut direct_successes = 0;
+    let mut direct_endpoints = rpc_urls
+        .iter()
+        .filter(|url| !is_shared_bootstrap_rpc(url))
+        .count();
+    if let Some(client) = http_client {
+        if let Some((slot, successes, endpoints)) = fetch_bootstrap_tip(client, rpc_urls).await {
+            sync_manager.note_seen(slot).await;
+            direct_successes = successes;
+            direct_endpoints = endpoints;
+        }
+    }
+    let network_slot = sync_manager.get_highest_seen().await;
+    // Block application continues during the RPC requests, including their
+    // timeouts. Read the local tip after all asynchronous observations so a
+    // caught-up validator is not judged against a pre-request local snapshot.
+    let current_slot = read_local_slot();
+    (
+        current_slot,
+        network_slot,
+        direct_successes,
+        direct_endpoints,
+    )
 }
 
 fn should_wait_for_pre_consensus_tip_observation(
@@ -11907,6 +11939,11 @@ fn checkpoint_profile_is_due(slot: u64, profile: CheckpointSnapshotProfile) -> b
     interval > 0 && slot.is_multiple_of(interval)
 }
 
+fn checkpoint_admission_is_due(slot: u64, has_archive_reader: bool) -> bool {
+    SyncManager::should_checkpoint(slot)
+        && (!has_archive_reader || slot.is_multiple_of(HOT_REPAIR_CHECKPOINT_INTERVAL_SLOTS))
+}
+
 fn checkpoint_minimum_available_bytes(
     profile: CheckpointSnapshotProfile,
     runtime_minimum_available_bytes: u64,
@@ -11987,7 +12024,11 @@ async fn maybe_create_checkpoint(
     sync_manager: &Arc<SyncManager>,
 ) {
     use crate::sync::SyncManager;
-    if !SyncManager::should_checkpoint(slot) {
+    // Choose the cadence before resolving an authenticated handoff profile.
+    // Legacy and preactivation retain their ordinary checkpoint interval.
+    if !SyncManager::should_checkpoint(slot)
+        || !checkpoint_admission_is_due(slot, state.has_archive_v2_reader())
+    {
         return;
     }
     if CHECKPOINT_CREATION_TERMINALLY_PAUSED.load(Ordering::Acquire) {
@@ -22913,47 +22954,6 @@ fn activate_runtime_archive_v2(
     Ok(capability)
 }
 
-fn archive_v2_local_history_start(
-    finalized_slot: u64,
-    recent_history_slots: u64,
-    catalog_coverage_end: Option<u64>,
-) -> Result<u64, String> {
-    if recent_history_slots == 0 {
-        return Err("Archive V2 recent-history retention must be non-zero".to_string());
-    }
-    let nominal_hot_start = finalized_slot.saturating_sub(recent_history_slots.saturating_sub(1));
-    let catalog_handoff_start = archive_v2_catalog_handoff_start(catalog_coverage_end)?;
-    // A catalog-bound hot checkpoint deliberately retains the unpublished
-    // tail between the immutable catalog and its nominal recent-history
-    // window. That physical tail remains valid after the node catches up and
-    // restarts; deriving coverage from the newer tip alone would invent a gap
-    // that is still present locally. Keep the same one-segment bound used by
-    // checkpoint construction so a stale catalog cannot silently turn into
-    // indefinitely growing local history.
-    let local_history_start = nominal_hot_start.min(catalog_handoff_start);
-    let unpublished_extension_slots = nominal_hot_start
-        .checked_sub(local_history_start)
-        .ok_or_else(|| "Archive V2 local handoff arithmetic failed".to_string())?;
-    if unpublished_extension_slots > ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS {
-        return Err(format!(
-            "Archive V2 catalog trails the configured hot window by {unpublished_extension_slots} slots, above the {}-slot unpublished-tail bound",
-            ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS
-        ));
-    }
-    Ok(local_history_start)
-}
-
-fn archive_v2_catalog_handoff_start(catalog_coverage_end: Option<u64>) -> Result<u64, String> {
-    catalog_coverage_end
-        .map(|slot| {
-            slot.checked_add(1).ok_or_else(|| {
-                "Archive V2 catalog coverage end cannot advance to a local handoff slot".to_string()
-            })
-        })
-        .transpose()
-        .map(|start| start.unwrap_or(0))
-}
-
 fn verify_local_archive_v2_block_range(
     state: &StateStore,
     start_slot: u64,
@@ -33241,10 +33241,6 @@ async fn run_validator() {
                 .build()
                 .expect("Failed to build bootstrap sync HTTP client")
         });
-        let direct_bootstrap_endpoint_count = bootstrap_rpc_urls_for_join
-            .iter()
-            .filter(|url| !is_shared_bootstrap_rpc(url))
-            .count();
         let pre_consensus_sync_started = Instant::now();
         let require_resume_stability = !is_joining_network && current_tip > 0;
         let mut resume_stability: Option<(Instant, u64)> = None;
@@ -33404,20 +33400,18 @@ async fn run_validator() {
             }
 
             // Wait for chain sync
-            let current_slot = state.get_last_slot().unwrap_or(0);
-            let mut network_slot = sync_manager_join.get_highest_seen().await;
-            let mut direct_bootstrap_successes = 0usize;
-            let mut direct_bootstrap_endpoints = direct_bootstrap_endpoint_count;
-            if let Some(bootstrap_http_client) = bootstrap_http_client_for_join.as_ref() {
-                if let Some((bootstrap_slot, direct_successes, direct_endpoints)) =
-                    fetch_bootstrap_tip(bootstrap_http_client, &bootstrap_rpc_urls_for_join).await
-                {
-                    sync_manager_join.note_seen(bootstrap_slot).await;
-                    network_slot = network_slot.max(bootstrap_slot);
-                    direct_bootstrap_successes = direct_successes;
-                    direct_bootstrap_endpoints = direct_endpoints;
-                }
-            }
+            let (
+                current_slot,
+                network_slot,
+                direct_bootstrap_successes,
+                direct_bootstrap_endpoints,
+            ) = observe_pre_consensus_tips(
+                &sync_manager_join,
+                bootstrap_http_client_for_join.as_ref(),
+                &bootstrap_rpc_urls_for_join,
+                || state.get_last_slot().unwrap_or(0),
+            )
+            .await;
             if network_slot > highest_network_slot {
                 highest_network_slot = network_slot;
                 last_network_progress_at = Instant::now();
@@ -33711,17 +33705,13 @@ async fn run_validator() {
             }
 
             loop {
-                let current_slot = state.get_last_slot().unwrap_or(0);
-                let mut network_slot = sync_manager.get_highest_seen().await;
-                if let Some(bootstrap_http_client) = bootstrap_http_client_for_join.as_ref() {
-                    if let Some((bootstrap_slot, _, _)) =
-                        fetch_bootstrap_tip(bootstrap_http_client, &bootstrap_rpc_urls_for_join)
-                            .await
-                    {
-                        sync_manager.note_seen(bootstrap_slot).await;
-                        network_slot = network_slot.max(bootstrap_slot);
-                    }
-                }
+                let (current_slot, network_slot, _, _) = observe_pre_consensus_tips(
+                    &sync_manager,
+                    bootstrap_http_client_for_join.as_ref(),
+                    &bootstrap_rpc_urls_for_join,
+                    || state.get_last_slot().unwrap_or(0),
+                )
+                .await;
 
                 sync_manager
                     .release_caught_up_sync_guard(current_slot)
@@ -49220,6 +49210,79 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn bootstrap_observation_reads_local_tip_after_endpoint_timeouts() {
+        let local_tip = Arc::new(AtomicU64::new(1_000));
+        let advancing_tip = local_tip.clone();
+        let app = axum::Router::new()
+            .route(
+                "/tip",
+                axum::routing::post(|| async {
+                    axum::Json(serde_json::json!({"jsonrpc":"2.0","id":1,"result":1_010}))
+                }),
+            )
+            .route(
+                "/slow",
+                axum::routing::post(move || {
+                    let local = advancing_tip.clone();
+                    async move {
+                        // The block receiver catches up while this endpoint is
+                        // still outstanding; the HTTP timeout must not hide it.
+                        local.store(1_010, Ordering::SeqCst);
+                        time::sleep(Duration::from_secs(1)).await;
+                        axum::Json(serde_json::json!({"result":1_010}))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(200))
+            .build()
+            .unwrap();
+        let sync = SyncManager::new();
+        let urls = vec![
+            format!("http://{address}/tip"),
+            format!("http://{address}/slow"),
+        ];
+        let (local, observed, successes, endpoints) =
+            observe_pre_consensus_tips(&sync, Some(&client), &urls, || {
+                local_tip.load(Ordering::SeqCst)
+            })
+            .await;
+        server.abort();
+        assert_eq!(
+            (local, observed, successes, endpoints),
+            (1_010, 1_010, 1, 2)
+        );
+        assert!(!needs_pre_consensus_tip_catch_up(local, observed, 1));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_observation_preserves_real_peer_tip_lag() {
+        let sync = SyncManager::new();
+        sync.note_seen(1_010).await;
+        let (local, observed, successes, endpoints) =
+            observe_pre_consensus_tips(&sync, None, &[], || 1_000).await;
+        assert_eq!(
+            (local, observed, successes, endpoints),
+            (1_000, 1_010, 0, 0)
+        );
+        assert!(needs_pre_consensus_tip_catch_up(local, observed, 1));
+        assert_eq!(
+            resume_voting_admission(
+                local,
+                observed,
+                false,
+                Duration::from_secs(60),
+                100,
+                Duration::from_secs(60),
+            ),
+            ResumeVotingAdmission::Wait
+        );
+    }
+
     #[test]
     fn continuously_moving_one_slot_lead_completes_the_passive_tracking_proof() {
         let start_slot = 10_000u64;
@@ -50291,6 +50354,33 @@ mod tests {
             ARCHIVE_V2_DEFAULT_CHECKPOINT_PEAK_BYTES,
             "the minimum admitted headroom must expose the full checkpoint write budget"
         );
+    }
+
+    #[test]
+    fn checkpoint_admission_preserves_profile_cadence_without_early_handoff_work() {
+        let bound = CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot: 1,
+            archive_v2_catalog_root: Some([7; 32]),
+        };
+        let preactivation = CheckpointSnapshotProfile::HotRepairV1 {
+            history_start_slot: 1,
+            archive_v2_catalog_root: None,
+        };
+        for slot in 0..=2 * HOT_REPAIR_CHECKPOINT_INTERVAL_SLOTS {
+            assert_eq!(
+                checkpoint_admission_is_due(slot, true),
+                SyncManager::should_checkpoint(slot) && checkpoint_profile_is_due(slot, bound),
+            );
+            for profile in [preactivation, CheckpointSnapshotProfile::FullArchiveV1] {
+                assert_eq!(
+                    checkpoint_admission_is_due(slot, false),
+                    SyncManager::should_checkpoint(slot)
+                        && checkpoint_profile_is_due(slot, profile),
+                );
+            }
+        }
+        assert!(!checkpoint_admission_is_due(12_618_000, true));
+        assert!(checkpoint_admission_is_due(12_620_000, true));
     }
 
     #[test]

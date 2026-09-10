@@ -2006,7 +2006,7 @@ function renderSessionOnlyWarningBox() {
     const popupCopy = isBridgePopupSession();
     const title = popupCopy ? 'Popup signing session.' : 'Encrypted browser wallet.';
     const body = popupCopy
-        ? 'This popup unlocks your encrypted browser wallet only to approve the requesting app. Closing it ends the live signing session.'
+        ? 'You can close this popup after connecting. The app reopens it for password-protected signing approval.'
         : 'Your wallet record is encrypted with your password and can be reopened in this browser. Use the extension for dedicated wallet custody.';
     return `
         <div class="warning-box">

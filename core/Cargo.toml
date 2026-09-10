@@ -1,6 +1,6 @@
 [package]
 name = "lobstercove-lichen-core"
-version = "0.5.283"
+version = "0.5.291"
 edition = "2021"
 authors = ["Lichen Labs <trading.lobster@lichen.network>"]
 description = "Lichen core blockchain implementation"
@@ -28,6 +28,7 @@ bs58 = "0.5"
 hex = "0.4"
 sha3 = "0.10"  # For Keccak256 (EVM addresses)
 rocksdb = "0.24"
+tempfile = "3.24.0"
 thiserror = "1.0"
 aes-gcm = "0.10"
 argon2 = "0.5"
@@ -80,7 +81,6 @@ zk = ["ark-ff", "ark-ec", "ark-bn254", "ark-relations", "ark-r1cs-std", "ark-cry
 
 [dev-dependencies]
 criterion = "0.5"
-tempfile = "3.24.0"
 bincode = "1"
 wat = "1"
 proptest = "1"

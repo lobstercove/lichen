@@ -919,8 +919,8 @@ function validateDexWalletAndPairState() {
         : '';
     assert(
         providerCloseBody.includes('pending.reject(new Error(\'Web wallet window closed before the request completed\'))') &&
-            providerCloseBody.includes('this._setDisconnected();'),
-        'DEX web-wallet provider clears live signing state when the popup is closed'
+            providerCloseBody.includes('this._persistState();') && !providerCloseBody.includes('this._setDisconnected();'),
+        'DEX web-wallet popup closure cancels pending requests and preserves the account connection'
     );
 }
 

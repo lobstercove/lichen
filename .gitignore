@@ -86,6 +86,8 @@ yarn-error.log*
 /tests/*
 !/tests/local-multi-validator-test.sh
 !/tests/archive-v2-https-source.py
+!/tests/live-transaction-metrics.py
+!/tests/test-live-transaction-metrics.py
 !/tests/e2e-launchpad.js
 !/tests/e2e-volume.js
 !/tests/helpers/
@@ -175,9 +177,12 @@ docs/audits/*
 !docs/audits/V0.5.275_PRODUCTION_READINESS_2026-09-03.md
 !docs/audits/V0.5.281_ARCHIVE_QUERY_RUNTIME_2026-09-06.md
 !docs/audits/V0.5.283_CHECKPOINT_ROLE_HISTORY_2026-09-06.md
+!docs/audits/V0.5.284_CANONICAL_METRICS_2026-09-07.md
+!docs/audits/V0.5.291_ACCOUNT_ACTIVITY_PAGINATION_2026-09-09.md
 !docs/audits/V0.5.282_CHECKPOINT_MEMORY_2026-09-06.md
 !docs/deployment/
 docs/deployment/*
+!docs/deployment/ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md
 !docs/deployment/ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md
 !docs/deployment/TESTNET_STATE_AND_SYNC_POLICY.md
 !docs/deployment/STORAGE_PHYSICAL_AND_CODE_AUDIT_2026-07-23.md
