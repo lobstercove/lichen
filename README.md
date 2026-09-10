@@ -7,17 +7,18 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Candidate release line:** `v0.5.291`; GitHub publication remains pending.
+**Published signed release:** [`v0.5.291`](https://github.com/lobstercove/lichen/releases/tag/v0.5.291).
 
 **Signed Testnet deployment:** all four validators completed `v0.5.291` with
-Archive V2 catalog 452 on September 9, 2026. Authorship, finality, signed-binary
+Archive V2 catalog 462 on September 10, 2026. Authorship, finality, signed-binary
 parity and exact live transaction-counter checks passed. All unused legacy cold
 copies and 100 emergency R2 mounts have been retired, recovering 150.71 GB of
 local filesystem space. All four public-history tails now match across 21
 categories through slot 12,970,000, with the native catalog handoff verified.
-Final composed-history acceptance, remaining hot reclamation, sustained capacity
-and obsolete R2 object cleanup remain open.
-The GitHub release is still a draft. Preserve signed rollback artifacts and
+The composed history proof through that fixed slot is accepted. Remaining hot
+reclamation and sustained capacity remain open; exact obsolete R2 object cleanup
+is in progress. The release was published at 07:42 UTC on September 10.
+Preserve signed rollback artifacts and
 consult the [dated deployment record](docs/deployment/V0.5.291_TESTNET_DEPLOYMENT_2026-09-09.md)
 before operating; a completed deployment observation is not a fresh fleet check.
 Official installable artifacts are the published
@@ -40,8 +41,8 @@ between the validator and deployment CLI, including physical verification of
 the entire unpublished suffix and the unchanged50,000-slot extension limit.
 It retains bounded composed archive-history verification with streamed
 segments and temporary disk indexes, and avoids repeated checkpoint catalog
-admission scans. Full history parity, sustained capacity and eligible legacy
-retirement remain open. See the [current deployment preflight](docs/deployment/ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md)
+admission scans. Sustained capacity and remaining eligible legacy retirement
+remain open. See the [current deployment preflight](docs/deployment/ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md)
 for the maintenance state and required resource checks.
 Signed v0.5.290 reads the local tip after asynchronous bootstrap RPC
 observations in both returning-node and post-registration readiness. This prevents
@@ -55,8 +56,8 @@ history when that history is needed. Regression tests cover the wallet's actual
 The same source line retains live DEX candle updates and wallet 0.1.11: a
 30-minute tab connection across popup closure, password-protected approval,
 shared responsive web/extension layouts, and browser/PWA regression gates.
-The signed tag workflow, signatures and provenance passed; public release
-publication remains pending final deployment acceptance.
+The signed tag workflow, signatures and provenance passed. The published
+release and merged `main` source have identical trees; the signed tag is unchanged.
 
 The signed `v0.5.272` release accepts the legacy deployed contract ABI field
 `name` while continuing to serialize the canonical `contract` field. Its
