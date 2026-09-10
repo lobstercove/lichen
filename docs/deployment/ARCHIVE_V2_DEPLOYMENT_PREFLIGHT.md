@@ -263,6 +263,23 @@ scope changes, new dependencies and unmatched keys. Keep durable per-object
 results and verify the post-delete listing and live history again. Report actual
 deleted bytes separately from candidates, local disk gains and preserved data.
 
+The deletion transport must not retry a request whose outcome is uncertain.
+An HTTP error alone does not establish that every selected object survived.
+Preserve the exact intent, HTTP response and per-key result. Reconcile an
+ambiguous batch against complete fresh inventories, including the protected set,
+before deciding whether a new request is justified. On September 10, a 429 batch
+was reconciled using two separated inventories showing all 1,000 objects still
+present and unchanged; the rejected receipts were retained separately before
+the later request returned an actual successful per-key result. No synthetic
+success record was used. A new failed batch requires its own reconciliation.
+
+A failed read-only gate before a delete request is a different continuation
+boundary. Repeat fresh acceptance only after validating all completed batch
+ledgers and proving there is no pending uncertain request. Record finite retry
+limits and terminal receipts. An RPC busy response is not evidence of stopped
+consensus; inspect the response and current finality, and retain the acceptance
+gate. Do not raise RPC concurrency or weaken disk reserves to make cleanup pass.
+
 ## Retiring superseded diagnostic checkpoint copies
 
 Inventory allocated blocks and hardlink references before selecting a copy.

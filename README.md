@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Published signed release:** [`v0.5.291`](https://github.com/lobstercove/lichen/releases/tag/v0.5.291).
+**Source release line:** `v0.5.291`, [published as a signed release](https://github.com/lobstercove/lichen/releases/tag/v0.5.291).
 
 **Signed Testnet deployment:** all four validators completed `v0.5.291` with
 Archive V2 catalog 462 on September 10, 2026. Authorship, finality, signed-binary
