@@ -1773,6 +1773,71 @@ separate tmpfs, while validator data uses ext4. A test of allocation behavior on
 `/tmp` cannot establish ext4 behavior or data-volume headroom. Run disposable
 fixtures on their intended filesystem, bind the device identity, use the actual
 service account and resolve executable paths before restricting the child PATH.
+Set `TMPDIR` for the tested process and assert the device and filesystem of
+`tempfile.gettempdir()` inside it. Merely placing the test script on the data
+volume does not move its temporary fixtures off a separate `/tmp` tmpfs.
+
+Before hot retirement, prove actual local source rows for every one of the 21
+public-history categories. A contiguous slot index and repaired account index
+can coexist with canonical block bodies already absent locally. Native
+retirement equivalence checks both hot and cold sources and rejects that case
+before its first journal or tombstone. Exercise this failure against the actual
+candidate ranges before a long maintenance window. An archive object's complete
+proof establishes the replacement's contents; it does not establish which
+physical local rows remain. Preserve failed native output and inspect every
+expected journal before deciding whether any deletion happened. Never create a
+journal, metadata row or block body just to make the admission check pass.
+
+Use read-only physical checks before scheduling the stop. The signed validator's
+binary public-history stream can feed its import checker with `--dry-run`,
+without `--execute`, a secondary database or a cold-store attachment. Run the
+checker in a namespace where the actual live source is read-only. Authenticate
+the expected rows against the catalog commitments first; a successful export
+alone can derive secondary rows from blocks and does not prove those rows are
+stored locally. Require zero conflicts and incomplete-block upgrades, and require
+every row to be identical rather than reported as an insertion. Apply only the
+missing-row exception explicitly supported by the signed retirement code; v291
+permits an already-absent deterministic `tx_by_slot` row after verifying its
+canonical block and transaction. It permits no other absent category.
+
+For canonical streams, preserve native page cursors and transaction ordinals,
+bind each signature to its authenticated segment index, normalize only the
+certificate fields defined by the native codec, sort by the category's canonical
+key order and compare the complete catalog commitment. Charge the retained rows,
+parser buffers and both native processes to the memory limit. Keep partial
+per-category reports after interruption, and do not convert a partially completed
+scan into a complete segment proof. The first native retirement pass must still
+run its own full equivalence check before its journal or tombstones.
+
+Catalog-only adoption after legacy cold removal uses the already verified role
+marker and own stopped WAL. Initial role bootstrap requires local genesis and
+must not be reapplied to this state. Require an exact append-only native catalog
+check, both complete source inventories, authenticated cache prewarming and
+actual marker-based runtime admission. Bind published and running catalogs
+separately while adoption is incomplete. The old runtime catalog can remain
+behind a newly published catalog; the consumer checks must describe both actual
+states instead of assuming publication also updated each process.
+
+For the September 10 catalog 462 operation, the unchanged native reserve was
+26,777,786,778 bytes. The complete adoption floor was 29,730,576,794 bytes after
+charging a 2 GiB index-cache budget, four 64 MiB catalog allowances and a 512 MiB
+operation margin. The immutable-source builder separately retained a 40 GiB
+floor and charged its producer, both outputs and seed objects. These are dated
+operation calculations, not reusable defaults: derive bounds again from the
+actual next candidate and test every wrapper consumer before the first write.
+
+A composed public-history acceptance must retain the completed full native
+prefix evidence, exact append-only catalogs, independent native tail manifests
+and the native handoff binding. Check key overlap wherever native composition
+can reject conflicting rows across that boundary. For signature-keyed `tx_meta`,
+the September 10 read-only check authenticated all 460 relevant source indexes,
+reproduced the native tail digest, and joined all prefix/tail keys using bounded
+SQLite scratch. Other categories require their own key/slot reasoning; empty
+tail categories and slot-keyed rows must be demonstrated from actual manifests
+and source code. Such a proof does not produce a new native manifest hash and
+does not independently authorize R2 deletion. Keep current fleet recovery,
+exact obsolete-prefix mapping, fresh zero-reference scans and deletion metadata
+checks as explicit acceptance requirements.
 
 ## Returning validator readiness and auxiliary scan holds
 
