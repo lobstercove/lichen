@@ -78,6 +78,28 @@ the minimum remains runtime reserve plus twice the input, growth and records
 allowances. Do not repeat accepted tombstones or infer reclaimed bytes from
 logical deletion counts. An unrelated journal change must abort continuation.
 
+When preserving logs by compression, allow the full worst-case output alongside
+the original; an assumed compression ratio is not an admission bound. Require
+full decompression and matching original content hashes before removing the raw
+file. After any failure, inspect each durable phase before choosing a resumption:
+an earlier file and log rotation may already have completed. Preserve those
+receipts, avoid repeating rotation, and authenticate any partial output before
+removing it after successful full preservation.
+
+Budget obsolete-artifact deletion separately from native archive maintenance.
+The India deletion-only continuation retains the signed runtime's complete
+filesystem, mutable-write, WAL, compaction and checkpoint reserves, plus bounded
+journal allocation and live-growth allowance. It opens no native database and
+does not stage a cache or restart a validator. The existing native-maintenance
+and catalog-adoption budgets remain mandatory for those operations. A successful
+housekeeping admission is not permission to start archive maintenance.
+
+Reference checks during incremental unlink must track the remaining files.
+Remove an inode from the reference set only after an exact durable intent and
+completion prove that operation removed its original path. Reject replacement
+paths, missing receipts and changed identities. Preserve the original ledger
+and validate its entire closed prefix before resuming through a new journal.
+
 Permanent placement must budget all consumers that share the filesystem.
 The current Testnet publisher requires the greater of 40 GiB free and its full
 calculated reserve/checkpoint/build/index peak; a full copy that leaves only
