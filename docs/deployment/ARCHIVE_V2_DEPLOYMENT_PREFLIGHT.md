@@ -58,6 +58,32 @@ still be hot. Do not restart a validator merely to clear its diagnostics.
 Budget recovery and full-fleet acceptance against the actual timer deadline;
 phase dispatch time is not the timer's activation time.
 
+Check required utilities and the actual filesystem scan behavior before a
+cleanup preflight. On September 11, the US swap inspection first stopped
+because `rg` was absent; after installing only the missing package without
+service restarts, its reference scan encountered one dangling systemd generator
+link. Both failures occurred before swap mutation. The qualified successor
+retains the raw diagnostic and accepts only that exact observed link, with its
+unchanged identity and absent target checked before and after scanning. Real
+swap references, changed links, additional errors and missing tools still fail
+closed. Its 39 tests include actual `rg` filesystem behavior and the complete
+deactivation/removal worker. Do not suppress arbitrary scanner errors or alter
+network service configuration to make a cleanup scan pass.
+
+When a compaction window ends, preserve its journal hashes, ordered receipts,
+queue transitions and measured cumulative bytes. A successor must validate
+every transition and start a fresh maintenance ledger. Qualify every supported
+input budget against the actual command, inspection and lifecycle consumers;
+the minimum remains runtime reserve plus twice the input, growth and records
+allowances. Do not repeat accepted tombstones or infer reclaimed bytes from
+logical deletion counts. An unrelated journal change must abort continuation.
+
+Permanent placement must budget all consumers that share the filesystem.
+The current Testnet publisher requires the greater of 40 GiB free and its full
+calculated reserve/checkpoint/build/index peak; a full copy that leaves only
+the runtime reserve would prevent further publication. Keep the sole periodic recovery checkpoint
+protected. A separately preserved derived capture is a different cleanup scope.
+
 1. **Bind the release.** Use a clean checkout and immutable tag. Check every
    version consumer and locked workspace before tagging; require full CI and the
    tag workflow, complete four-validator matrix, platform provenance, checksum
