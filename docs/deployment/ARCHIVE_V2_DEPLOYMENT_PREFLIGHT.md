@@ -36,6 +36,16 @@ configuration hashes and mutation receipt are retained under
 Future deployments must qualify the actual route and include its choice in the
 publication plan; do not copy ephemeral credential files into deployment notes.
 
+Pace every new SSH connection per host, including transport priming and repeated
+calls inside a health barrier. Spacing phases alone does not prevent a burst:
+the selected proposer also receives proposal and finality probes. During the
+September 11 catalog-479 refresh, India's firewall rejected this internal burst
+while the validator and SSH service remained active. The reviewed transport
+uses eight seconds between connections to each host and preserves strict host
+verification. Test the actual call pattern and avoid independent SSH probes
+during the lifecycle. Confirm a failed peer call never dispatched the target
+operation by inspecting its durable records before resuming pending phases.
+
 1. **Bind the release.** Use a clean checkout and immutable tag. Check every
    version consumer and locked workspace before tagging; require full CI and the
    tag workflow, complete four-validator matrix, platform provenance, checksum
@@ -61,10 +71,16 @@ publication plan; do not copy ephemeral credential files into deployment notes.
    Bind immutable identity and hashes separately from measured allocation; retain
    the original capacity reserve and exact deletion scope. Require fresh matching
    preflight/apply inspections and credit only observed released filesystem space.
+   Captures may hardlink SSTs while copying their control files. Verify copied
+   controls against their content, retained metadata and intended ownership;
+   their new inode must not be compared with the original source inode.
 3. **Reconcile capacity across every consumer.** Read the native calculation and
    all wrapper defaults. Distinguish installation, catalog refresh, checkpoint,
    archive building, manifest verification and retirement. Account for peak
    allocations, retained rollback inputs and recovery, on the actual filesystem.
+   Measure how much captured data is still shared. Retained SSTs that have become
+   exclusive are already included in occupied space; charge only the remaining
+   future retention separately, so the same allocation is not counted twice.
    Credit an existing cache only after a stopped, authenticated inventory proves
    its allocation and immutability. Test exact saved inputs, including one-byte
    failure boundaries, before dispatch. Projected deletion is not free space.
