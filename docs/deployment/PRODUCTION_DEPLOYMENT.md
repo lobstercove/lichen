@@ -22,8 +22,8 @@ Never deploy from a dirty or partially staged worktree. Require the exact tag
 workflow, attestations, checksums, detached PQ signature and four-validator
 Archive V2 gate before installation. Preserve all recorded signed artifact
 sets through live parity and rollback rehearsal; cleanup needs evidence checks.
-The [September 10 v0.5.291 deployment record](V0.5.291_TESTNET_DEPLOYMENT_2026-09-09.md)
-records the published signed release and completed catalog-462 adoption on all
+The [September 11 v0.5.291 deployment record](V0.5.291_TESTNET_DEPLOYMENT_2026-09-09.md)
+records the published signed release and completed catalog-484 adoption on all
 four existing Testnet validators. Preserve signed v0.5.290 and the older recorded
 rollback artifact sets, including v0.5.280, v0.5.281 and v0.5.265. Retaining an
 artifact does not establish that it can restart the current state and catalog;

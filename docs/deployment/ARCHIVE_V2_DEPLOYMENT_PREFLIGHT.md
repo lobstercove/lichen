@@ -199,6 +199,34 @@ Identify the actual occupied files, references and peak consumers, then qualify 
 fitting plan. Repeating the same failed scan or lowering its floor does not prove
 the deployment can finish or recover.
 
+Do not admit an online operation with a margin that ongoing cache growth or
+database compaction can consume before it finishes. Measure those consumers and
+retain an explicit allowance across the complete phase sequence. If a verifier
+stops, authenticate its existing catalog, manifests, native outputs and process
+state before resuming only the incomplete work. Keep the failed receipt and
+original qualified code. External deletion of live reader cache files can race
+metadata and decoding and cause a corruption report; cache removal requires the
+qualified stopped-cache procedure.
+
+For bounded retirement windows, preserve the entire journal hash/phase state and
+the accepted own-WAL return between windows. Authenticate each window back to its
+original authorization, including previous native receipts, exact stop/start WAL,
+running process, four-way finality and restored auxiliary states. Budget the full
+native-call timeout and startup/readiness/health time before the finite guard.
+Stop dispatching new work early enough to return within that budget. Do not
+repeat completed tombstones or compact only part of a group whose other required
+tombstones remain unfinished.
+
+Exercise reference checks inside the complete mutation callback. A helper's own
+authenticated read descriptor can otherwise be mistaken for an external reader.
+Any permitted descriptor must be owned by the current operation, read-only, and
+bound to the exact regular file and metadata. External readers, writable
+descriptors, mapped files, cwd references and unexpected hardlinks remain blockers.
+For artifact relocation, preserve the complete bytes and original path/permission
+metadata on the destination, independently read them back, then check all source
+aliases and live references before exact journaled removal. Keep current release
+and required immediate rollback artifacts locally available.
+
 Native maintenance units must also declare and verify their descriptor limits.
 Do not inherit systemd's default soft `LimitNOFILE`: the September 9 US live
 database contained 3,318 SST files while an isolated verifier inherited 1,024
