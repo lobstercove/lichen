@@ -46,6 +46,18 @@ verification. Test the actual call pattern and avoid independent SSH probes
 during the lifecycle. Confirm a failed peer call never dispatched the target
 operation by inspecting its durable records before resuming pending phases.
 
+Distinguish a historical source diagnostic from a new failed read. Signed
+v0.5.291 retains `last_error` after later success. Any use of the existing
+historical-event health branch must bind the same process, exact error and
+unchanged failure counter to fresh, complete, authenticated reads from both
+configured sources with matching catalog hashes. Preserve the raw fields and
+reject counter increases, different errors, quarantines, source mismatches and
+expired proof. Refresh that verification during extended work. A successful
+block query alone does not prove a cold-source read because the block can
+still be hot. Do not restart a validator merely to clear its diagnostics.
+Budget recovery and full-fleet acceptance against the actual timer deadline;
+phase dispatch time is not the timer's activation time.
+
 1. **Bind the release.** Use a clean checkout and immutable tag. Check every
    version consumer and locked workspace before tagging; require full CI and the
    tag workflow, complete four-validator matrix, platform provenance, checksum
