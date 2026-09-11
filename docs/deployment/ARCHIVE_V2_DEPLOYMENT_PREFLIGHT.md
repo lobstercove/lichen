@@ -47,6 +47,20 @@ publication plan; do not copy ephemeral credential files into deployment notes.
    state/WAL, catalog and source bindings. Log configuration hashes rather than
    credentials. Inspect active native readers before any stop. A process from an
    earlier receipt cannot stand in for the current process.
+   Test the composed remote worker, including its imports and embedded helpers.
+   A fixture that supplies extra modules can hide missing dependencies in the
+   deployed program. Reference-check fixtures must use the actual worker imports
+   and redirect only filesystem paths into the fixture. Exercise symlinks, open
+   descriptors, mappings, mounts and immutable-volume guards through that same
+   environment. Preserve failed preflight evidence and qualify the correction
+   before resuming; a preflight failure grants no deletion or replay authority.
+   Use the complete observed control-file layout, including retained legacy
+   symlinks with exact link and target identities and full hashes. Reject unknown
+   aliases. Sequential checkpoint removals can reduce another snapshot's hardlink
+   counts and increase its exclusive allocation without changing its content.
+   Bind immutable identity and hashes separately from measured allocation; retain
+   the original capacity reserve and exact deletion scope. Require fresh matching
+   preflight/apply inspections and credit only observed released filesystem space.
 3. **Reconcile capacity across every consumer.** Read the native calculation and
    all wrapper defaults. Distinguish installation, catalog refresh, checkpoint,
    archive building, manifest verification and retirement. Account for peak
