@@ -3182,6 +3182,7 @@ async function loadActivity(reset = true, options = {}) {
         _activityBeforeSlot = null;
         _activityItems = [];
         _activityHasMore = true;
+        activityList.innerHTML = '<div role="status"><i class="fas fa-spinner fa-spin" aria-hidden="true"></i> Loading activity...</div>';
     }
 
     const emptyHtml = `
@@ -3216,6 +3217,22 @@ async function loadActivity(reset = true, options = {}) {
             }
         } catch (e) {
             activityFetchError = e;
+        }
+
+        if (!isCurrentWalletView(wallet, generation) || requestGeneration !== _activityRequestGeneration) return;
+        if (activityFetchError) {
+            const errorHtml = `
+                <div class="activity-load-error" role="status" style="text-align: center; padding: 2rem; color: var(--text-muted);">
+                    <p>Activity unavailable</p>
+                    <p style="font-size: 0.85rem; margin-top: 0.5rem;">Recent transactions could not be loaded. Please try again.</p>
+                    <button class="btn btn-small btn-secondary" data-wallet-action="loadActivity"${reset ? '' : ' data-wallet-arg="false"'}>Try again</button>
+                </div>`;
+            if (reset) activityList.innerHTML = errorHtml;
+            else {
+                activityList.querySelector('.activity-load-error')?.remove();
+                activityList.insertAdjacentHTML('beforeend', errorHtml);
+            }
+            return;
         }
 
         // Fetch airdrops from faucet (only on first page, only if faucet is configured)
@@ -3277,14 +3294,7 @@ async function loadActivity(reset = true, options = {}) {
         _activityItems = mergeActivityItems(_activityItems, newItems);
 
         if (_activityItems.length === 0) {
-            activityList.innerHTML = activityFetchError ? `
-                <div style="text-align: center; padding: 3rem; color: var(--text-muted);">
-                    <i class="fas fa-exclamation-triangle" style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.35;"></i>
-                    <p>Activity unavailable</p>
-                    <p style="font-size: 0.85rem; opacity: 0.75; margin-top: 0.5rem;">The selected RPC could not return indexed transactions.</p>
-                    <button class="btn btn-small btn-secondary" data-wallet-action="loadActivity">Try again</button>
-                </div>
-            ` : emptyHtml;
+            activityList.innerHTML = emptyHtml;
             return;
         }
 
