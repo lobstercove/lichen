@@ -509,7 +509,8 @@ assert(
     productionDeployment.includes('Never deploy from a dirty or partially staged') &&
     mainnetRunbook.includes('LICHEN_RELEASE_TAG:?Set the qualified release tag') &&
     mainnetRunbookDoc.includes('LICHEN_RELEASE_TAG:?Set the qualified release tag') &&
-    productionDeployment.includes('`v0.5.265` restart-safe anchor') &&
+    productionDeployment.includes('Preserve signed v0.5.290 and the older recorded') &&
+    productionDeployment.includes('verify compatibility and the recorded recovery procedure before rollback') &&
     productionDeployment.includes('ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md') &&
     mainnetRunbookDoc.includes('ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md') &&
     archiveDeploymentPreflight.includes('CA:FALSE') &&

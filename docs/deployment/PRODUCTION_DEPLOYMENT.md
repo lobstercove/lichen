@@ -22,10 +22,12 @@ Never deploy from a dirty or partially staged worktree. Require the exact tag
 workflow, attestations, checksums, detached PQ signature and four-validator
 Archive V2 gate before installation. Preserve all recorded signed artifact
 sets through live parity and rollback rehearsal; cleanup needs evidence checks.
-For the existing Testnet, retain signed v0.5.280 and v0.5.281 plus the
-`v0.5.265` restart-safe anchor while successor qualification remains incomplete.
-`v0.5.265` remains Archive V2 dual-reader capable and must be retained until the
-new release, four-way V2 parity, and rollback rehearsal are recorded. Neither
+The [September 11 v0.5.291 deployment record](V0.5.291_TESTNET_DEPLOYMENT_2026-09-09.md)
+records the published signed release and completed catalog-484 adoption on all
+four existing Testnet validators. Preserve signed v0.5.290 and the older recorded
+rollback artifact sets, including v0.5.280, v0.5.281 and v0.5.265. Retaining an
+artifact does not establish that it can restart the current state and catalog;
+verify compatibility and the recorded recovery procedure before rollback. Neither
 `v0.5.229` nor any pre-schema-3 anchor can be used after required legacy rows
 are retired.
 
@@ -48,8 +50,9 @@ so external oracle feed timing cannot hide the regression.
 For a historical counter repair, use the signed release containing
 `lichen-archive-v2 metrics-reconcile` and follow the
 [canonical metrics audit](../audits/V0.5.284_CANONICAL_METRICS_2026-09-07.md).
-The v0.5.284 source is a candidate until the exact tag workflow and detached PQ
-signature are verified. The repair sequence is:
+Verify the chosen release's tag workflow and detached PQ signature. The existing
+Testnet correction has already completed; do not replay it as part of ordinary
+release or catalog maintenance. For a separately justified repair, the sequence is:
 
 1. Preserve prior durable counters and qualify an immutable canonical source.
    Run bounded `profile-source` ranges, link their predecessor/last hashes and

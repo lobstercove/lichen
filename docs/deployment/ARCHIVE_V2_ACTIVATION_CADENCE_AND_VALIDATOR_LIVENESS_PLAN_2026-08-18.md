@@ -1,27 +1,23 @@
 # Archive V2 Activation, Cadence Recovery, And Validator Liveness Plan
 
-**Current status, September 9, 11:40UTC:** signed `v0.5.290` is live on all four
-validators with Archive V2 catalog443. Fresh authorship and fixed finality passed
-at slot12,900,222; signed-artifact, exact counter, auxiliary restoration and
-maintenance guard checks completed. `v0.5.291` is the only successor candidate;
-it bounds account Activity pages to the newest archive ranges that can enter the
-page. Signed290 already bounds known-slot receipt reads. The live account-history
-latency gate remains open; candidate regression tests are not live timing proof.
-CI and signed release qualification remain required before a new deployment.
+**Source release line:** `v0.5.291`. Deployment status is recorded separately below.
 
-Five obsolete EU diagnostic captures were retired with controls, provenance and
-the newest source preserved, recovering20,348,854,272observed free bytes. This
-does not establish complete legacy retirement. Another superseded EU12700000
-capture was retired on September9, recovering4,044,099,584observed free bytes.
-The isolated signed290 full-history scan of the preserved12850000 checkpoint is
-running with catalog443 and explicit live-growth/checkpoint/scratch reserves.
-Full history/restart acceptance, sustained capacity and
-qualified obsolete R2 cleanup remain open. Wallet/extension0.1.11 and DEX fixes
-are deployed; public DEX asset and desktop/tablet/mobile checks pass. Mobile icon
-polish remains deferred. Preserve active primary/replica objects, remaining legacy
-references, signed rollback and temporary credential renewal deadlines.
-Use [the current deployment preflight](ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md) and
-[v0.5.283 qualification](../audits/V0.5.283_CHECKPOINT_ROLE_HISTORY_2026-09-06.md).
+**Current deployment record, September 10:** signed `v0.5.291` is published and
+all four Testnet validators completed Archive V2 catalog-462 adoption through
+slot `12,990,000`. Signed-artifact parity, authorship, common finality, auxiliary
+restoration and guard removal passed. The live archived Activity-page timings,
+exact transaction-counter checks and accepted fixed-tip composed history proof
+are in the [v0.5.291 deployment record](V0.5.291_TESTNET_DEPLOYMENT_2026-09-09.md).
+
+All unused legacy cold copies and 100 emergency R2 mounts have been retired.
+Remaining hot-history reclamation, eligible obsolete R2 object deletion and
+sustained archive publication/capacity remain open. A running v0.5.291 reader
+does not automatically adopt a newly published catalog. The next maintenance
+must fit the actual native restart boundary and complete verification time.
+Wallet/extension0.1.11 and DEX fixes are deployed; mobile icon polish is deferred.
+Use [the deployment preflight](ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md) for the current
+procedure and fresh sealed fleet evidence for each operation. Preserve active
+archives, own state/WAL, source captures and recorded signed rollback sets.
 The dated execution narrative below is historical provenance and does not
 authorize replaying old recovery, repair, PID-bound or credential commands.
 

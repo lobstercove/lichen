@@ -7,14 +7,23 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Candidate release line:** `v0.5.291`; signed `v0.5.290` is live on all four
-testnet validators with Archive V2 catalog 443 as of September 9, 2026. Current authorship, finality,
-signed-binary parity and live transaction-counter checks passed after the catalog
-refresh. Full history verification, physical legacy retirement, sustained capacity
-and obsolete R2 cleanup remain incomplete. Preserve signed rollback artifacts.
+**Source release line:** `v0.5.291`, [published as a signed release](https://github.com/lobstercove/lichen/releases/tag/v0.5.291).
+
+**Signed Testnet deployment:** all four validators completed `v0.5.291` with
+Archive V2 catalog 462 on September 10, 2026. Authorship, finality, signed-binary
+parity and exact live transaction-counter checks passed. All unused legacy cold
+copies and 100 emergency R2 mounts have been retired, recovering 150.71 GB of
+local filesystem space. All four public-history tails now match across 21
+categories through slot 12,970,000, with the native catalog handoff verified.
+The composed history proof through that fixed slot is accepted. Remaining hot
+reclamation and sustained capacity remain open; exact obsolete R2 object cleanup
+is in progress. The release was published at 07:42 UTC on September 10.
+Preserve signed rollback artifacts and
+consult the [dated deployment record](docs/deployment/V0.5.291_TESTNET_DEPLOYMENT_2026-09-09.md)
+before operating; a completed deployment observation is not a fresh fleet check.
 Official installable artifacts are the published
 GitHub release archives whose checksums, detached ML-DSA signature, release
-trust anchor, and provenance attestations all verify. The candidate bounds every
+trust anchor, and provenance attestations all verify. This source line bounds every
 checkpoint reader cache to 128 MiB and protects background verification from
 checkpoint pruning. The signed v0.5.281 query and index-cache fixes are retained.
 It also rejects checkpoints that omit the receiving role's configured hot
@@ -32,14 +41,14 @@ between the validator and deployment CLI, including physical verification of
 the entire unpublished suffix and the unchanged50,000-slot extension limit.
 It retains bounded composed archive-history verification with streamed
 segments and temporary disk indexes, and avoids repeated checkpoint catalog
-admission scans. Full history parity, sustained capacity and eligible legacy
-retirement remain open. See the [current deployment preflight](docs/deployment/ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md)
+admission scans. Sustained capacity and remaining eligible legacy retirement
+remain open. See the [current deployment preflight](docs/deployment/ARCHIVE_V2_DEPLOYMENT_PREFLIGHT.md)
 for the maintenance state and required resource checks.
 Signed v0.5.290 reads the local tip after asynchronous bootstrap RPC
 observations in both returning-node and post-registration readiness. This prevents
 endpoint timeouts from making an up-to-date validator appear behind. Existing
 voting, drift, finality and post-block-effects checks remain enforced.
-The v0.5.291 candidate bounds account Activity pagination to archive ranges
+Signed v0.5.291 bounds account Activity pagination to archive ranges
 that can contribute to the requested page. It preserves exact transaction
 cursors, deduplicates overlapping hot/archive rows, and fails on unavailable
 history when that history is needed. Regression tests cover the wallet's actual
@@ -47,8 +56,8 @@ history when that history is needed. Regression tests cover the wallet's actual
 The same source line retains live DEX candle updates and wallet 0.1.11: a
 30-minute tab connection across popup closure, password-protected approval,
 shared responsive web/extension layouts, and browser/PWA regression gates.
-Treat the candidate changes
-as unreleased until the exact tag, signature, provenance, and release gates pass.
+The signed tag workflow, signatures and provenance passed. The published
+release and merged `main` source have identical trees; the signed tag is unchanged.
 
 The signed `v0.5.272` release accepts the legacy deployed contract ABI field
 `name` while continuing to serialize the canonical `contract` field. Its
