@@ -7,11 +7,19 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Candidate release line:** `v0.5.291`; signed `v0.5.290` is live on all four
-testnet validators with Archive V2 catalog 443 as of September 9, 2026. Current authorship, finality,
-signed-binary parity and live transaction-counter checks passed after the catalog
-refresh. Full history verification, physical legacy retirement, sustained capacity
-and obsolete R2 cleanup remain incomplete. Preserve signed rollback artifacts.
+**Candidate release line:** `v0.5.292`; signed `v0.5.291` is installed across all
+four testnet validators. The last accepted four-validator return on September12,
+10:55UTC had catalog501 on US/EU,484 on Singapore and492 on India. US is undergoing
+another bounded own-state retirement window. Physical history reclamation,
+permanent archive placement, continuing publication and temporary R2 retirement
+remain incomplete. Preserve signed rollback artifacts and both active sources.
+
+The v0.5.292 candidate lets the offline archive CLI reuse one database connection
+and verified archive object for up to16 physical reclaim passes. Every pass
+remeasures free space and retains the native compaction limits and original
+journal. It returns on completion or a pause without progress. The default
+remains one pass; report work counters aggregate the selected passes.
+See the [bounded reclaim audit](docs/audits/V0.5.292_RECLAIM_PASSES_2026-09-12.md).
 Official installable artifacts are the published
 GitHub release archives whose checksums, detached ML-DSA signature, release
 trust anchor, and provenance attestations all verify. The candidate bounds every
@@ -39,12 +47,12 @@ Signed v0.5.290 reads the local tip after asynchronous bootstrap RPC
 observations in both returning-node and post-registration readiness. This prevents
 endpoint timeouts from making an up-to-date validator appear behind. Existing
 voting, drift, finality and post-block-effects checks remain enforced.
-The v0.5.291 candidate bounds account Activity pagination to archive ranges
+Signed v0.5.291 bounds account Activity pagination to archive ranges
 that can contribute to the requested page. It preserves exact transaction
 cursors, deduplicates overlapping hot/archive rows, and fails on unavailable
 history when that history is needed. Regression tests cover the wallet's actual
 20-row RPC request and continuation without fetching unrelated archive indexes.
-The same source line retains live DEX candle updates and wallet 0.1.11: a
+The same source line retains live DEX candle updates and wallet 0.1.12: a
 30-minute tab connection across popup closure, password-protected approval,
 shared responsive web/extension layouts, and browser/PWA regression gates.
 Treat the candidate changes

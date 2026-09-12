@@ -104,6 +104,17 @@ activation plan. Preserve historical release entries. Run public-claims,
 exchange-release-assets and the full frontend/deployment static QA before CI
 publication so a version bump cannot leave these consumers on the previous line.
 
+For signed releases that support reclaim `--max-passes-per-open`, qualify the
+selected count in1..16 against the complete maintenance time budget. Range and
+input limits apply to each pass; output work counts aggregate the invocation.
+Use `passes_completed` and the declared per-pass limits when checking the report,
+and take the final cumulative journal total without summing earlier totals.
+The CLI remeasures hot/cold free space before every pass; its unchanged native
+method still checks the individual compaction peak after flushing. Preserve the
+full external setup/recovery reserve, finite process timeout, original journal
+and own-state return budget. A capacity/native error never authorizes replay of
+an uncertain write. See the [reclaim audit](../audits/V0.5.292_RECLAIM_PASSES_2026-09-12.md).
+
 ## Retiring superseded diagnostic checkpoint copies
 
 Inventory allocated blocks and hardlink references before selecting a copy.
