@@ -1,6 +1,16 @@
 # Archive V2 Activation, Cadence Recovery, And Validator Liveness Plan
 
-**Current status, September 9, 11:40UTC:** signed `v0.5.290` is live on all four
+**Current status, September12, 11:55UTC:** signed `v0.5.291` is installed across
+all four validators. The accepted10:55UTC own-state return had four advancing
+authors and fixed finality, with US/EUcatalog501, Singapore484 and India492.
+US is now in another bounded native retirement window. Source-backed physical
+reclaim, permanent archive placement, continuing publication and R2 exit remain
+open. Wallet/extension0.1.12 is released; further product changes are queued.
+`v0.5.292` is the only successor candidate for bounded physical reclaim passes per
+database open, with fresh per-pass capacity checks and original journals.
+CI, signed artifacts and exact maintenance qualification remain required.
+
+**Historical September 9, 11:40UTC checkpoint:** signed `v0.5.290` was live on all four
 validators with Archive V2 catalog443. Fresh authorship and fixed finality passed
 at slot12,900,222; signed-artifact, exact counter, auxiliary restoration and
 maintenance guard checks completed. `v0.5.291` is the only successor candidate;

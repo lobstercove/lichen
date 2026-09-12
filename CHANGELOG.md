@@ -5,7 +5,21 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.291] - Unreleased
+## [0.5.292] - Unreleased
+
+### Changed
+
+- Allow the offline Archive V2 reclaim command to perform up to16 bounded passes
+  per database open, retaining the verified reader and original retirement
+  journal. The default remains one pass.
+- Remeasure hot/cold filesystem capacity before every pass, retain native
+  per-pass range/input limits, and return on completion or zero progress.
+  Aggregate work counters across passes without summing the cumulative journal
+  total twice. Capacity/native failures stop without retrying writes.
+- Cover native journal completion and archive reads, exact capacity floors,
+  changed capacity, split-only progress, errors, and pass-count boundaries.
+
+## [0.5.291] - 2026-09-10
 
 ### Fixed
 

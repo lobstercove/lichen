@@ -28,8 +28,8 @@ use lichen_core::{
     genesis_block_declares_mossstake_slot_only, keypair_password_from_env,
     plaintext_keypair_allowed_for_local_dev, ArchiveV2RetirementLimits,
     ArchiveV2RetirementPassReport, ArchiveV2RetirementPhase, ArchiveV2RetirementReclaimLimits,
-    CheckpointMeta, CheckpointSnapshotProfile, Hash, KeypairFile, StateStore,
-    PUBLIC_HISTORY_SNAPSHOT_CATEGORIES,
+    ArchiveV2RetirementReclaimReport, CheckpointMeta, CheckpointSnapshotProfile, Hash, KeypairFile,
+    StateStore, PUBLIC_HISTORY_SNAPSHOT_CATEGORIES,
 };
 use serde_json::json;
 
@@ -1798,6 +1798,7 @@ fn run_retirement_reclaim(args: &CommandArgs) -> Result<(), String> {
             "journal",
             "max-ranges",
             "max-estimated-input-bytes",
+            "max-passes-per-open",
             "reserve-bytes",
         ],
         &[
@@ -1806,6 +1807,8 @@ fn run_retirement_reclaim(args: &CommandArgs) -> Result<(), String> {
         ],
     )?;
     require_retirement_acknowledgements(args)?;
+    let max_passes =
+        parse_retirement_passes_per_open(args.optional("max-passes-per-open")?.unwrap_or("1"))?;
     let state_dir = PathBuf::from(args.required("state-dir")?);
     let cold_store = args.optional("cold-store")?.map(PathBuf::from);
     let root = PathBuf::from(args.required("root")?);
@@ -1825,16 +1828,6 @@ fn run_retirement_reclaim(args: &CommandArgs) -> Result<(), String> {
             default_reserve
         ));
     }
-    let hot_capacity = cli_filesystem_capacity(&capacity_probe_path(&state_dir)?)?;
-    let cold_capacity = match cold_store.as_deref() {
-        Some(cold) => cli_filesystem_capacity(&capacity_probe_path(cold)?)?,
-        None => hot_capacity,
-    };
-    let mut state = StateStore::open_with_cache_mb(&state_dir, Some(256))?;
-    if let Some(cold) = cold_store.as_deref() {
-        state.open_cold_store(cold)?;
-    }
-    attach_retirement_reader(&state, &root)?;
     let limits = ArchiveV2RetirementReclaimLimits {
         max_ranges: parse_u64(args.optional("max-ranges")?.unwrap_or("1"), "max-ranges")?,
         max_estimated_input_bytes: parse_u64(
@@ -1842,13 +1835,37 @@ fn run_retirement_reclaim(args: &CommandArgs) -> Result<(), String> {
                 .unwrap_or("67108864"),
             "max-estimated-input-bytes",
         )?,
-        hot_available_bytes: hot_capacity.available_bytes,
+        hot_available_bytes: 0,
         hot_required_reserve_bytes: reserve_bytes,
-        cold_available_bytes: cold_capacity.available_bytes,
+        cold_available_bytes: 0,
         cold_required_reserve_bytes: reserve_bytes,
+    }
+    .validate()?;
+    let mut capacities = || {
+        let hot = cli_filesystem_capacity(&capacity_probe_path(&state_dir)?)?;
+        let cold = match cold_store.as_deref() {
+            Some(cold) => cli_filesystem_capacity(&capacity_probe_path(cold)?)?,
+            None => hot,
+        };
+        Ok((hot.available_bytes, cold.available_bytes))
     };
+    // Check before opening, then measure again immediately before every native
+    // pass. Database setup and unrelated allocations can consume free space.
+    fresh_retirement_reclaim_limits(limits, capacities()?)?;
+    let mut state = StateStore::open_with_cache_mb(&state_dir, Some(256))?;
+    if let Some(cold) = cold_store.as_deref() {
+        state.open_cold_store(cold)?;
+    }
+    attach_retirement_reader(&state, &root)?;
     let journal = PathBuf::from(args.required("journal")?);
-    let report = state.reclaim_archive_v2_retirement_pass(&retirement, &journal, limits)?;
+    let (report, passes_completed) = run_retirement_reclaim_passes_per_open(
+        max_passes,
+        limits,
+        &mut capacities,
+        |fresh_limits| {
+            state.reclaim_archive_v2_retirement_pass(&retirement, &journal, fresh_limits)
+        },
+    )?;
     print_json(&json!({
         "operation": "retirement-reclaim",
         "journal": journal,
@@ -1863,6 +1880,9 @@ fn run_retirement_reclaim(args: &CommandArgs) -> Result<(), String> {
         "compaction_duration_millis": report.compaction_duration_millis,
         "paused_reason": report.paused_reason,
         "complete": report.phase == ArchiveV2RetirementPhase::Complete,
+        "passes_completed": passes_completed,
+        "max_ranges_per_pass": limits.max_ranges,
+        "max_estimated_input_bytes_per_pass": limits.max_estimated_input_bytes,
     }))
 }
 
@@ -3070,6 +3090,77 @@ fn run_retirement_passes_per_open(
     Ok((report, passes_completed))
 }
 
+fn fresh_retirement_reclaim_limits(
+    limits: ArchiveV2RetirementReclaimLimits,
+    (hot_available_bytes, cold_available_bytes): (u64, u64),
+) -> Result<ArchiveV2RetirementReclaimLimits, String> {
+    if hot_available_bytes < limits.hot_required_reserve_bytes
+        || cold_available_bytes < limits.cold_required_reserve_bytes
+    {
+        return Err(
+            "retirement reclaim filesystem capacity fell below its required reserve".into(),
+        );
+    }
+    ArchiveV2RetirementReclaimLimits {
+        hot_available_bytes,
+        cold_available_bytes,
+        ..limits
+    }
+    .validate()
+}
+
+fn run_retirement_reclaim_passes_per_open(
+    max_passes: u64,
+    limits: ArchiveV2RetirementReclaimLimits,
+    mut capacities: impl FnMut() -> Result<(u64, u64), String>,
+    mut run_pass: impl FnMut(
+        ArchiveV2RetirementReclaimLimits,
+    ) -> Result<ArchiveV2RetirementReclaimReport, String>,
+) -> Result<(ArchiveV2RetirementReclaimReport, u64), String> {
+    if max_passes == 0 || max_passes > MAX_RETIREMENT_PASSES_PER_OPEN {
+        return Err(format!(
+            "retirement reclaim pass count must be in 1..={MAX_RETIREMENT_PASSES_PER_OPEN}"
+        ));
+    }
+    let limits = limits.validate()?;
+    let mut run_fresh = || {
+        let fresh = fresh_retirement_reclaim_limits(limits, capacities()?)?;
+        run_pass(fresh)
+    };
+    let mut report = run_fresh()?;
+    let mut passes_completed = 1;
+    let mut progressed = report.compacted_ranges > 0 || report.split_ranges > 0;
+    for _ in 1..max_passes {
+        if report.phase == ArchiveV2RetirementPhase::Complete || !progressed {
+            break;
+        }
+        // Reaching a per-pass input/split bound can still make durable progress.
+        // A zero-progress pause must return to the operator instead of spinning.
+        let next = run_fresh()?;
+        progressed = next.compacted_ranges > 0 || next.split_ranges > 0;
+        passes_completed += 1;
+        report.phase = next.phase;
+        report.queued_ranges_after = next.queued_ranges_after;
+        report.compacted_ranges = report
+            .compacted_ranges
+            .saturating_add(next.compacted_ranges);
+        report.split_ranges = report.split_ranges.saturating_add(next.split_ranges);
+        report.estimated_input_bytes = report
+            .estimated_input_bytes
+            .saturating_add(next.estimated_input_bytes);
+        report.reclaimed_physical_bytes = report
+            .reclaimed_physical_bytes
+            .saturating_add(next.reclaimed_physical_bytes);
+        // This field already includes all earlier invocations of this journal.
+        report.total_reclaimed_physical_bytes = next.total_reclaimed_physical_bytes;
+        report.compaction_duration_millis = report
+            .compaction_duration_millis
+            .saturating_add(next.compaction_duration_millis);
+        report.paused_reason = next.paused_reason;
+    }
+    Ok((report, passes_completed))
+}
+
 fn parse_usize(value: &str, name: &str) -> Result<usize, String> {
     value
         .parse()
@@ -3158,6 +3249,7 @@ fn print_usage() {
         "lichen-archive-v2 <status|catalog-extension-check|role-preflight|role-bootstrap|snapshot-hot|prewarm-indexes|verify|repair|declare-legacy-loss|build|mirror|restore|retirement-authorize|retirement-pass|retirement-reclaim|public-history-manifest|profile-source|metrics-reconcile|benchmark> [options]\n\
          Run `lichen-archive-v2 <command> --help` is intentionally unsupported; unknown options fail closed.\n\
          Retirement authorization accepts paired --start-slot/--end-slot bounds inside one verified segment; omitting both authorizes the full segment.\n\
+         Retirement pass and reclaim accept --max-passes-per-open in 1..16 (default 1). Reclaim range/input limits apply per pass; report work counters aggregate all passes, while total_reclaimed_physical_bytes is the journal total.\n\
          Replica specifications use name:failure-domain:path. Retirement evidence uses destination,failure-domain,verified-unix-seconds. Verify and mirror default to one object per pass."
     );
 }
@@ -4089,6 +4181,342 @@ mod tests {
         assert!(report.recovered_pending_batch);
         assert_eq!(report.categories_completed, 8);
         assert_eq!(report.elapsed_millis, 121_000);
+    }
+
+    fn reclaim_test_limits() -> ArchiveV2RetirementReclaimLimits {
+        ArchiveV2RetirementReclaimLimits {
+            max_ranges: 2,
+            max_estimated_input_bytes: 1024 * 1024,
+            hot_available_bytes: u64::MAX,
+            hot_required_reserve_bytes: 1024,
+            cold_available_bytes: u64::MAX,
+            cold_required_reserve_bytes: 2048,
+        }
+    }
+
+    #[test]
+    fn retirement_reclaim_remeasures_capacity_and_preserves_per_pass_limits() {
+        let snapshots = [(8_000_000, 9_000_000), (7_000_000, 6_000_000)];
+        let mut measurements = snapshots.into_iter();
+        let mut observed = Vec::new();
+        let (report, count) = run_retirement_reclaim_passes_per_open(
+            16,
+            reclaim_test_limits(),
+            || {
+                Ok(measurements
+                    .next()
+                    .expect("no measurement after completion"))
+            },
+            |limits| {
+                observed.push(limits);
+                let first = observed.len() == 1;
+                Ok(ArchiveV2RetirementReclaimReport {
+                    phase: if first {
+                        ArchiveV2RetirementPhase::ReclaimPending
+                    } else {
+                        ArchiveV2RetirementPhase::Complete
+                    },
+                    queued_ranges_before: if first { 4 } else { 2 },
+                    queued_ranges_after: if first { 2 } else { 0 },
+                    compacted_ranges: 2,
+                    estimated_input_bytes: 1024 * 1024,
+                    reclaimed_physical_bytes: if first { 100 } else { 200 },
+                    total_reclaimed_physical_bytes: if first { 1_100 } else { 1_300 },
+                    compaction_duration_millis: if first { 8 } else { 9 },
+                    paused_reason: first.then(|| "compaction_input_budget".into()),
+                    ..Default::default()
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(count, 2);
+        for (limits, (hot, cold)) in observed.iter().zip(snapshots) {
+            assert_eq!(limits.hot_available_bytes, hot);
+            assert_eq!(limits.cold_available_bytes, cold);
+            assert_eq!(limits.max_ranges, 2);
+            assert_eq!(limits.max_estimated_input_bytes, 1024 * 1024);
+            assert_eq!(limits.hot_required_reserve_bytes, 1024);
+            assert_eq!(limits.cold_required_reserve_bytes, 2048);
+        }
+        assert_eq!(report.phase, ArchiveV2RetirementPhase::Complete);
+        assert_eq!(
+            (report.queued_ranges_before, report.queued_ranges_after),
+            (4, 0)
+        );
+        assert_eq!(report.compacted_ranges, 4);
+        assert_eq!(report.estimated_input_bytes, 2 * 1024 * 1024);
+        assert_eq!(report.reclaimed_physical_bytes, 300);
+        assert_eq!(report.total_reclaimed_physical_bytes, 1_300);
+        assert_eq!(report.compaction_duration_millis, 17);
+        assert!(report.paused_reason.is_none());
+    }
+
+    #[test]
+    fn retirement_reclaim_stops_on_zero_progress_or_completed_journal() {
+        for phase in [
+            ArchiveV2RetirementPhase::ReclaimPending,
+            ArchiveV2RetirementPhase::Complete,
+        ] {
+            let mut calls = 0;
+            let (report, count) = run_retirement_reclaim_passes_per_open(
+                16,
+                reclaim_test_limits(),
+                || Ok((10_000, 10_000)),
+                |_| {
+                    calls += 1;
+                    Ok(ArchiveV2RetirementReclaimReport {
+                        phase,
+                        paused_reason: Some("compaction_input_budget".into()),
+                        ..Default::default()
+                    })
+                },
+            )
+            .unwrap();
+            assert_eq!(calls, 1);
+            assert_eq!(count, 1);
+            assert_eq!(report.phase, phase);
+        }
+    }
+
+    #[test]
+    fn retirement_reclaim_split_progress_continues_but_count_is_bounded() {
+        let mut calls = 0;
+        let (report, count) = run_retirement_reclaim_passes_per_open(
+            16,
+            reclaim_test_limits(),
+            || Ok((10_000, 10_000)),
+            |_| {
+                calls += 1;
+                Ok(ArchiveV2RetirementReclaimReport {
+                    phase: ArchiveV2RetirementPhase::ReclaimPending,
+                    split_ranges: 64,
+                    queued_ranges_before: calls * 64,
+                    queued_ranges_after: (calls + 1) * 64,
+                    paused_reason: Some("reclaim_split_limit".into()),
+                    ..Default::default()
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(calls, 16);
+        assert_eq!(count, 16);
+        assert_eq!(report.split_ranges, 1024);
+        assert_eq!(report.queued_ranges_before, 64);
+        assert_eq!(report.queued_ranges_after, 17 * 64);
+    }
+
+    #[test]
+    fn retirement_reclaim_capacity_loss_does_not_dispatch_another_pass() {
+        for remaining in [(1023, 10_000), (10_000, 2047)] {
+            let temp = tempfile::tempdir().unwrap();
+            let journal = temp.path().join("durable-progress");
+            let mut samples = [(10_000, 10_000), remaining].into_iter();
+            let mut calls = 0;
+            let result = run_retirement_reclaim_passes_per_open(
+                16,
+                reclaim_test_limits(),
+                || Ok(samples.next().unwrap()),
+                |_| {
+                    calls += 1;
+                    fs::write(&journal, calls.to_string()).unwrap();
+                    Ok(ArchiveV2RetirementReclaimReport {
+                        phase: ArchiveV2RetirementPhase::ReclaimPending,
+                        compacted_ranges: 1,
+                        ..Default::default()
+                    })
+                },
+            );
+            assert!(result.unwrap_err().contains("required reserve"));
+            assert_eq!(calls, 1);
+            assert_eq!(fs::read_to_string(journal).unwrap(), "1");
+        }
+        assert!(fresh_retirement_reclaim_limits(reclaim_test_limits(), (1024, 2048)).is_ok());
+    }
+
+    #[test]
+    fn retirement_reclaim_capacity_and_native_errors_are_not_retried() {
+        let mut calls = 0;
+        let result = run_retirement_reclaim_passes_per_open(
+            16,
+            reclaim_test_limits(),
+            || Err("capacity probe failed".into()),
+            |_| {
+                calls += 1;
+                Ok(ArchiveV2RetirementReclaimReport::default())
+            },
+        );
+        assert_eq!(result.unwrap_err(), "capacity probe failed");
+        assert_eq!(calls, 0);
+        let result = run_retirement_reclaim_passes_per_open(
+            16,
+            reclaim_test_limits(),
+            || Ok((10_000, 10_000)),
+            |_| {
+                calls += 1;
+                Err("native journal conflict".into())
+            },
+        );
+        assert_eq!(result.unwrap_err(), "native journal conflict");
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn retirement_reclaim_invalid_limits_fail_before_native_dispatch() {
+        for max in [0, 17] {
+            assert!(run_retirement_reclaim_passes_per_open(
+                max,
+                reclaim_test_limits(),
+                || panic!("invalid count must not inspect capacity"),
+                |_| panic!("invalid count must not run a pass")
+            )
+            .is_err());
+        }
+        let mut invalid = reclaim_test_limits();
+        invalid.max_ranges = 0;
+        assert!(run_retirement_reclaim_passes_per_open(
+            1,
+            invalid,
+            || panic!("invalid limits must not inspect capacity"),
+            |_| panic!("invalid limits must not run a pass")
+        )
+        .is_err());
+        let error = run(vec![
+            "retirement-reclaim".into(),
+            "--acknowledge-stopped-validator".into(),
+            "--acknowledge-v2-rollback-only".into(),
+            "--max-passes-per-open".into(),
+            "17".into(),
+        ])
+        .unwrap_err();
+        assert!(error.contains("--max-passes-per-open"));
+    }
+
+    #[test]
+    fn retirement_reclaim_batch_completes_native_journal_and_preserves_archive_reads() {
+        use lichen_core::archive_v2::ArchiveV2SegmentContents;
+        use lichen_core::{Block, Keypair, Message, Transaction};
+
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateStore::open_with_cache_mb(temp.path().join("state"), Some(8)).unwrap();
+        let archive = temp.path().join("archive");
+        fs::create_dir_all(archive.join("objects")).unwrap();
+        let transaction = Transaction::new(Message::new(Vec::new(), Hash::hash(b"reclaim-batch")));
+        let tx_hash = transaction.signature();
+        let block = Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::default(),
+            [9; 32],
+            vec![transaction],
+            1,
+        );
+        state.put_block_atomic(&block, Some(0), Some(0)).unwrap();
+        state
+            .set_last_slot(lichen_core::state::COLD_RETENTION_SLOTS + 10)
+            .unwrap();
+        let identity = ArchiveV2Identity {
+            network_id: "reclaim-batch-testnet".into(),
+            genesis_hash: block.hash(),
+        };
+        let contents = ArchiveV2SegmentContents {
+            blocks: vec![block.clone()],
+            public_categories: BTreeMap::new(),
+        };
+        let (bytes, manifest) = ArchiveV2SegmentCodec::encode(
+            identity.clone(),
+            None,
+            Hash::default(),
+            &contents,
+            &ArchiveV2CodecConfig::default(),
+        )
+        .unwrap();
+        fs::write(object_path(&archive, &manifest.segment_object_hash), bytes).unwrap();
+        let mut catalog = ArchiveV2Catalog::empty(identity).unwrap();
+        catalog.append(manifest.clone()).unwrap();
+        catalog.store_atomic(&archive.join("catalog.av2")).unwrap();
+        attach_retirement_reader(&state, &archive).unwrap();
+        let replicas = ["a", "b"]
+            .into_iter()
+            .map(|name| ArchiveV2ReplicaEvidence {
+                destination: name.into(),
+                failure_domain: name.into(),
+                segment_object_hash: manifest.segment_object_hash,
+                verified_unix_seconds: 1,
+            })
+            .collect();
+        let request = state
+            .prepare_archive_v2_retirement_request(
+                manifest.segment_object_hash,
+                replicas,
+                2,
+                2,
+                ArchiveV2RollbackAnchor {
+                    release_tag: "v0.6.0".into(),
+                    release_commit: "b".repeat(40),
+                    artifact_sha256: Hash::hash(b"artifact"),
+                    detached_pq_checksum_signature_sha256: Hash::hash(b"pq"),
+                    archive_format_version: ARCHIVE_V2_FORMAT_VERSION,
+                    catalog_format_version: ARCHIVE_V2_CATALOG_VERSION,
+                    deployed_validator_count: 4,
+                    activated_unix_seconds: 1,
+                },
+                2,
+            )
+            .unwrap();
+        let retirement = ArchiveV2RetirementManifest::sign(request, &Keypair::generate()).unwrap();
+        let journal = temp.path().join("retirement.journal");
+        let (deleted, _) = run_retirement_passes_per_open(16, || {
+            state.retire_archive_v2_segment_pass(
+                &retirement,
+                &journal,
+                ArchiveV2RetirementLimits::default(),
+            )
+        })
+        .unwrap();
+        assert_eq!(deleted.phase, ArchiveV2RetirementPhase::ReclaimPending);
+        let limits = ArchiveV2RetirementReclaimLimits {
+            max_ranges: 1,
+            ..reclaim_test_limits()
+        };
+        let (reclaimed, count) = run_retirement_reclaim_passes_per_open(
+            16,
+            limits,
+            || {
+                let capacity = cli_filesystem_capacity(temp.path())?;
+                Ok((capacity.available_bytes, capacity.available_bytes))
+            },
+            |fresh| state.reclaim_archive_v2_retirement_pass(&retirement, &journal, fresh),
+        )
+        .unwrap();
+        assert!((1..=16).contains(&count));
+        assert_eq!(reclaimed.phase, ArchiveV2RetirementPhase::Complete);
+        assert_eq!(reclaimed.queued_ranges_after, 0);
+        assert_eq!(
+            state.get_block(&block.hash()).unwrap().unwrap().hash(),
+            block.hash()
+        );
+        assert_eq!(
+            state
+                .get_transaction(&tx_hash)
+                .unwrap()
+                .unwrap()
+                .signature(),
+            tx_hash
+        );
+        let completed = fs::read(&journal).unwrap();
+        let (again, count) = run_retirement_reclaim_passes_per_open(
+            16,
+            limits,
+            || Ok((10_000, 10_000)),
+            |fresh| state.reclaim_archive_v2_retirement_pass(&retirement, &journal, fresh),
+        )
+        .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(
+            again.total_reclaimed_physical_bytes,
+            reclaimed.total_reclaimed_physical_bytes
+        );
+        assert_eq!(fs::read(journal).unwrap(), completed);
     }
 
     #[test]

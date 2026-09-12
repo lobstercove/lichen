@@ -179,6 +179,7 @@ docs/audits/*
 !docs/audits/V0.5.283_CHECKPOINT_ROLE_HISTORY_2026-09-06.md
 !docs/audits/V0.5.284_CANONICAL_METRICS_2026-09-07.md
 !docs/audits/V0.5.291_ACCOUNT_ACTIVITY_PAGINATION_2026-09-09.md
+!docs/audits/V0.5.292_RECLAIM_PASSES_2026-09-12.md
 !docs/audits/V0.5.282_CHECKPOINT_MEMORY_2026-09-06.md
 !docs/deployment/
 docs/deployment/*
