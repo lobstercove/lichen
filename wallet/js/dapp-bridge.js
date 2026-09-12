@@ -363,7 +363,7 @@
             hasWallet: walletExists,
             isLocked,
             canRequestSignatures: connected && walletExists,
-            version: '0.1.11',
+            version: '0.1.12',
             providerType: 'web-wallet',
         };
     }

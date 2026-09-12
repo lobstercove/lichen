@@ -1,7 +1,7 @@
 // LichenWallet Service Worker — Cache-first assets with safe navigation fallback
 'use strict';
 
-const CACHE_VERSION = 'lichen-wallet-v8-20260909-response';
+const CACHE_VERSION = 'lichen-wallet-v9-20260912-activity';
 const APP_SHELL_URL = './';
 const ASSETS = [
     APP_SHELL_URL,

@@ -51,23 +51,30 @@ export class LichenRPC {
   }
 
   async call(method, params = []) {
-    const response = await fetch(this.url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: Date.now(),
-        method,
-        params
-      })
-    });
+    const controller = method === 'getTransactionsByAddress' ? new AbortController() : null;
+    const timeout = controller ? setTimeout(() => controller.abort(), 20000) : null;
+    try {
+      const response = await fetch(this.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller?.signal,
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: Date.now(),
+          method,
+          params
+        })
+      });
 
-    const data = await response.json();
-    if (data.error) {
-      throw new Error(data.error.message || 'RPC Error');
+      const data = await response.json();
+      if (data.error) {
+        throw new Error(data.error.message || 'RPC Error');
+      }
+
+      return data.result;
+    } finally {
+      if (timeout !== null) clearTimeout(timeout);
     }
-
-    return data.result;
   }
 
   getBalance(address) {

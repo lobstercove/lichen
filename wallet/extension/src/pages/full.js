@@ -1281,9 +1281,10 @@ async function showDashboard() {
   setupDashboardTabs();
 
   // Load data
+  const activity = loadActivity();
   await refreshBalance();
   await loadAssets();
-  await loadActivity();
+  await activity;
   await loadNftsTab();
   const activeTab = document.querySelector('.dashboard-tab.active')?.dataset?.tab;
   if (activeTab === 'identity') await loadIdentityTab();
@@ -3753,6 +3754,7 @@ async function loadAssets() {
 
 let _activityBeforeSlot = null;
 let _activityHasMore = true;
+let _activityRequestGeneration = 0;
 const ACTIVITY_PER_PAGE = 20;
 
 function getActivityCursor(result, txs, previousCursor) {
@@ -3769,6 +3771,11 @@ async function loadActivity(reset = true) {
   const wallet = getActiveWallet();
   const list = $('activityList');
   if (!wallet || !list) return;
+  const requestGeneration = ++_activityRequestGeneration;
+  const network = state.network?.selected || DEFAULT_NETWORK;
+  const isCurrentActivity = () => requestGeneration === _activityRequestGeneration
+    && getActiveWallet()?.id === wallet.id
+    && (state.network?.selected || DEFAULT_NETWORK) === network;
 
   if (reset) {
     _activityBeforeSlot = null;
@@ -3785,6 +3792,7 @@ async function loadActivity(reset = true) {
     if (typeof requestBeforeSlot === 'string') opts.before = requestBeforeSlot;
     else if (requestBeforeSlot) opts.before_slot = requestBeforeSlot;
     const result = await rpc().getTransactionsByAddress(wallet.address, opts);
+    if (!isCurrentActivity()) return;
     if (!result || typeof result !== 'object' || Array.isArray(result) || !Array.isArray(result.transactions)) {
       throw new Error('Invalid RPC response: expected transactions array');
     }
@@ -3987,7 +3995,11 @@ async function loadActivity(reset = true) {
       list.appendChild(loadMoreDiv);
     }
   } catch {
-    if (reset) list.innerHTML = '<div class="empty-state"><p>Failed to load activity</p></div>';
+    if (!isCurrentActivity()) return;
+    if (reset) {
+      list.innerHTML = '<div class="empty-state"><p>Failed to load activity</p><button class="btn btn-small btn-secondary" id="retryActivity">Try again</button></div>';
+      $('retryActivity').addEventListener('click', () => loadActivity());
+    }
   }
 }
 
