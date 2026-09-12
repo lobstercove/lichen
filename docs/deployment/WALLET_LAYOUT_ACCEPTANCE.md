@@ -21,7 +21,13 @@ Browser checks cover button geometry, compact preview, all92 rows and keyboard
 expand/collapse in the actual web and extension identity renderers.
 
 The manifest, About screens and provider version fallbacks are 0.1.12. The web
-PWA cache is `lichen-wallet-v9-20260912-activity` and includes the shared stylesheet.
+PWA cache is `lichen-wallet-v10-20260912-history` and includes the shared stylesheet.
+
+When the indexed history request fails, the web wallet displays a retry state
+instead of presenting old faucet records as complete recent activity. While an
+initial or refreshed history request is pending, it displays a loading state.
+Browser acceptance covers a delayed latest page, a failed page with available
+faucet records, and retry without advancing the pagination cursor.
 Production export content-versions first-party script and stylesheet references.
 Extension updates use the existing `wallet-extension-v0.1.12` tag workflow; a
 local package is not a browser-store publication or evidence of user auto-update.

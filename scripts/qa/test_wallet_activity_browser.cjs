@@ -110,6 +110,44 @@ async function main() {
         await faucet.clock.fastForward(2100);
         await faucet.waitForFunction(() => document.querySelector('#activityList .activity-item'));
         await faucet.close();
+
+        const incomplete = await context.newPage();await init(incomplete,port);
+        let faucetReads=0;
+        await incomplete.route('https://faucet.fixture/faucet/airdrops?*',async route=>{
+            faucetReads++;
+            await route.fulfill({contentType:'application/json',body:JSON.stringify([{recipient:'public-observation',amount_licn:10,timestamp_ms:1780000000000,signature:'old-faucet-record'}])});
+        });
+        await incomplete.evaluate(()=>{
+            showScreen('walletDashboard');setupDashboardTabs();setupWalletSelector();
+            document.querySelector('.dashboard-tab[data-tab="activity"]').click();
+            LICHEN_CONFIG.faucet='https://faucet.fixture';
+            document.getElementById('activityList').innerHTML='<a class="activity-item">Previously loaded old activity</a>';
+            rpc.call=async()=>new Promise(resolve=>{window.releaseHistory=resolve;});
+            void loadActivity();
+        });
+        await incomplete.waitForFunction(()=>window.releaseHistory);
+        assert.equal(await incomplete.locator('#activityList .activity-item').count(),0,'pending refresh must not present the previous list as current');
+        assert.equal(await incomplete.locator('#activityList [role="status"]').textContent(),' Loading activity...');
+        assert.equal(faucetReads,0,'faucet records cannot replace pending canonical history');
+        await incomplete.evaluate(result=>window.releaseHistory(result),history('newest-transfer'));
+        await incomplete.waitForFunction(()=>document.querySelector('#activityList a')?.href.includes('newest-transfer'));
+        assert.equal(await incomplete.locator('#activityList .activity-item').count(),2);
+        assert.equal(faucetReads,1);
+        await incomplete.evaluate(()=>{
+            rpc.call=async()=>{throw new Error('History unavailable');};void loadActivity();
+        });
+        await incomplete.getByText('Activity unavailable',{exact:true}).waitFor({state:'attached'});
+        assert.equal(await incomplete.locator('#activityList .activity-item').count(),0,'failed history must not display faucet-only activity');
+        assert.equal(faucetReads,1,'failed history must not query the faucet as a substitute');
+        await incomplete.evaluate(result=>{rpc.call=async()=>result;}, {...history('retry-latest'),has_more:true,next_before:'retry-latest'});
+        await incomplete.locator('#activityList button[data-wallet-action="loadActivity"]').click();
+        await incomplete.waitForFunction(()=>document.querySelector('#activityList a')?.href.includes('retry-latest'));
+        await incomplete.evaluate(()=>{rpc.call=async()=>{throw new Error('Next page unavailable');};void loadActivity(false);});
+        await incomplete.getByText('Activity unavailable',{exact:true}).waitFor({state:'attached'});
+        assert.equal(await incomplete.locator('#activityList a[href*="retry-latest"]').count(),1,'failed next page must retain the accepted latest page');
+        assert.equal(await incomplete.locator('.activity-load-error button').getAttribute('data-wallet-arg'),'false');
+        assert.equal(await incomplete.evaluate(()=>_activityBeforeSlot),'retry-latest','failed next page must preserve its cursor');
+        await incomplete.close();
     } finally { await context.close();await browser.close(); }
 
     const extension=path.join(root,'wallet/extension');
@@ -131,6 +169,6 @@ async function main() {
         assert(balancePending,'extension history must render while balance is pending');
         await page.close();
     } finally { await extensionContext.close(); }
-    console.log('Wallet activity browser PASS: web/extension immediate history, stale response rejection, history response-body timeouts, and bounded faucet supplement.');
+    console.log('Wallet activity browser PASS: web/extension immediate history, stale response rejection, body timeouts, bounded faucet supplement, delayed latest history, and failed history/pagination retry.');
 }
 main().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>{for(const res of pending)res.destroy();server.close();});
