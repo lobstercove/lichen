@@ -1,4 +1,4 @@
-# Wallet 0.1.11 layout and browser acceptance
+# Wallet 0.1.12 layout and browser acceptance
 
 September 8, 2026. The owner requested stronger desktop, tablet and mobile
 layouts while retaining the existing Lichen colours and transaction behavior.
@@ -20,13 +20,28 @@ views use the same classes and styles; the mobile header controls are retained.
 Browser checks cover button geometry, compact preview, all92 rows and keyboard
 expand/collapse in the actual web and extension identity renderers.
 
-The manifest, About screens and provider version fallbacks are 0.1.11. The web
-PWA cache is `lichen-wallet-v7-20260908-polish` and includes the new stylesheet.
+The manifest, About screens and provider version fallbacks are 0.1.12. The web
+PWA cache is `lichen-wallet-v9-20260912-activity` and includes the shared stylesheet.
 Production export content-versions first-party script and stylesheet references.
-Extension updates use the existing `wallet-extension-v0.1.11` tag workflow; a
+Extension updates use the existing `wallet-extension-v0.1.12` tag workflow; a
 local package is not a browser-store publication or evidence of user auto-update.
 
 ## Alignment boundaries
+
+The September 12 activity update starts history loading independently of price
+and balance requests in the web and extension full views. Both clients bound
+history requests to 20 seconds, including incomplete response bodies, and offer
+an explicit retry after an initial failure. A late request cannot overwrite a
+newer activity page. The web faucet supplement retains its two-second deadline
+through response decoding. Signing requests are not retried by this change.
+
+Read-only public observations before this update measured dashboard activity at
+4.364 seconds versus 0.583 seconds when opened directly; the underlying latest
+history RPC took 0.327 and 0.305 seconds. A representative archived 20-row page
+took 10.106 seconds initially and 4.484 seconds on repetition, with identical
+canonical content. These are separate frontend and backend observations, not
+measurements of the owner's wallet. Browser fixtures verify loading behavior;
+they do not establish that live archived-query latency is resolved.
 
 | Area | Shared behavior / verification |
 | --- | --- |

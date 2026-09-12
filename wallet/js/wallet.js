@@ -893,10 +893,13 @@ class LichenRPC {
     }
 
     async call(method, params = []) {
+        const controller = method === 'getTransactionsByAddress' ? new AbortController() : null;
+        const timeout = controller ? setTimeout(() => controller.abort(), 20000) : null;
         try {
             const response = await fetch(this.url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                signal: controller?.signal,
                 body: JSON.stringify({
                     jsonrpc: '2.0',
                     id: Date.now(),
@@ -915,6 +918,8 @@ class LichenRPC {
                 console.error('RPC Call Failed:', error);
             }
             throw error;
+        } finally {
+            if (timeout !== null) clearTimeout(timeout);
         }
     }
 
@@ -2732,13 +2737,14 @@ async function showDashboard() {
     clearWalletScopedDashboardUi();
     if (!wallet) return;
 
+    const activity = loadActivity(true, { wallet, generation });
     // Fetch live prices before rendering balances
     await fetchLivePrices();
     if (!isCurrentWalletView(wallet, generation)) return;
     await refreshBalance({ wallet, generation });
     await loadAssets({ wallet, generation });
     void refreshWalletRestrictionStatus({ updateAssets: true, updateSend: true });
-    await loadActivity(true, { wallet, generation });
+    await activity;
     await loadStaking({ wallet, generation });
     refreshNFTs({ wallet, generation });
     const activeTab = document.querySelector('.dashboard-tab.active')?.dataset?.tab;
@@ -3097,6 +3103,7 @@ async function loadAssets(options = {}) {
 let _activityBeforeSlot = null; // Pagination cursor for activity
 let _activityItems = [];        // Accumulated activity items
 let _activityHasMore = true;    // Whether more items may exist
+let _activityRequestGeneration = 0;
 const ACTIVITY_PAGE_SIZE = 20;  // Items per page
 const STAKING_VALIDATORS_CACHE_TTL_MS = 30 * 1000;
 let _stakingValidatorsCache = {
@@ -3169,6 +3176,7 @@ async function loadActivity(reset = true, options = {}) {
     const wallet = options.wallet || getActiveWallet();
     const generation = options.generation ?? _walletViewGeneration;
     if (!wallet) return;
+    const requestGeneration = ++_activityRequestGeneration;
 
     if (reset) {
         _activityBeforeSlot = null;
@@ -3218,26 +3226,29 @@ async function loadActivity(reset = true, options = {}) {
                 if (faucetUrl) {
                     const abortCtl = new AbortController();
                     const timer = setTimeout(() => abortCtl.abort(), 2000);
-                    const resp = await fetch(`${faucetUrl}/faucet/airdrops?address=${encodeURIComponent(wallet.address)}&limit=50`, { signal: abortCtl.signal });
-                    clearTimeout(timer);
-                    if (resp.ok) {
-                        const records = await resp.json();
-                        const chainKeys = new Set(transactions.map(activityItemKey));
-                        airdrops = records.map(a => ({
-                            type: 'Airdrop',
-                            from: 'Treasury',
-                            to: a.recipient,
-                            amount: a.amount_licn * SPORES_PER_LICN,
-                            timestamp: a.timestamp_ms,
-                            signature: a.signature,
-                            isAirdrop: true
-                        })).filter(a => !chainKeys.has(activityItemKey(a)));
+                    try {
+                        const resp = await fetch(`${faucetUrl}/faucet/airdrops?address=${encodeURIComponent(wallet.address)}&limit=50`, { signal: abortCtl.signal });
+                        if (resp.ok) {
+                            const records = await resp.json();
+                            const chainKeys = new Set(transactions.map(activityItemKey));
+                            airdrops = records.map(a => ({
+                                type: 'Airdrop',
+                                from: 'Treasury',
+                                to: a.recipient,
+                                amount: a.amount_licn * SPORES_PER_LICN,
+                                timestamp: a.timestamp_ms,
+                                signature: a.signature,
+                                isAirdrop: true
+                            })).filter(a => !chainKeys.has(activityItemKey(a)));
+                        }
+                    } finally {
+                        clearTimeout(timer);
                     }
                 }
             } catch (e) { /* faucet API unavailable — skip silently */ }
         }
 
-        if (!isActiveWalletView(wallet)) return;
+        if (!isCurrentWalletView(wallet, generation) || requestGeneration !== _activityRequestGeneration) return;
 
         _activityHasMore = rpcHasMore === true;
         if (_activityHasMore) {
@@ -3271,6 +3282,7 @@ async function loadActivity(reset = true, options = {}) {
                     <i class="fas fa-exclamation-triangle" style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.35;"></i>
                     <p>Activity unavailable</p>
                     <p style="font-size: 0.85rem; opacity: 0.75; margin-top: 0.5rem;">The selected RPC could not return indexed transactions.</p>
+                    <button class="btn btn-small btn-secondary" data-wallet-action="loadActivity">Try again</button>
                 </div>
             ` : emptyHtml;
             return;
@@ -3485,7 +3497,7 @@ async function loadActivity(reset = true, options = {}) {
         }
 
     } catch (error) {
-        if (!isActiveWalletView(wallet)) return;
+        if (!isCurrentWalletView(wallet, generation) || requestGeneration !== _activityRequestGeneration) return;
         console.error('Failed to load activity:', error);
         if (_activityItems.length === 0) activityList.innerHTML = emptyHtml;
     }
