@@ -1970,6 +1970,60 @@ continuation. Finish with both buckets empty, no incomplete multipart uploads,
 no consumers able to recreate objects, and fresh fleet/history acceptance.
 Dashboard storage totals alone do not prove completion.
 
+Temporary checkpoint transit is a separate deletion scope. Keep an exact object
+manifest and full destination readback, use credentials scoped to that transit
+prefix, and retain per-file completion receipts. An interrupted destination may
+contain verified complete files and one verified partial prefix; resume those
+bytes without discarding them. Before retiring the source checkpoint, independently
+read and hash the complete destination, including its control files. Record the
+transit objects in the R2 exit inventory so a successful checkpoint transfer does
+not leave temporary storage behind.
+
+## Checkpoint headroom and interrupted catalog adoption
+
+Bind checkpoint contents and file identities separately from allocation. A live
+database can release its other hard link to an immutable checkpoint SST without
+changing that checkpoint's bytes or identity. Recompute exclusive allocation
+from fresh link counts and allocated blocks; never require historical link-count
+equality or count shared blocks as immediately reclaimable. Exercise the actual
+inventory through the complete controller, including changed links, insufficient
+allocation and changes between inspection and stop.
+
+Preserve and independently verify the complete checkpoint off-host before
+stopping its validator. Remove only the exact inspected checkpoint while the
+validator and its relevant auxiliary services are stopped. Preserve controls,
+own WAL, current database, recovery receipts and the original halt deadline.
+Measure actual released filesystem bytes before admitting any native phase.
+The file-only phase's capacity calculation does not lower native staging,
+prewarm or restart floors. A subsequently published checkpoint can consume this
+headroom again; it is not a substitute for physical hot-history reclamation.
+
+If transport fails between phases, inspect the target's durable records, current
+processes, own WAL and timer before resuming. A peer health read reporting
+`Connection closed by ...` does not establish failure of the last completed
+mutation. Retry only bounded read-only observations. Skip completed phases and
+require an unattempted next phase, unchanged qualified worker, fresh peer
+finality, and enough time for its full execution plus own-state return and fleet
+acceptance. Never replay checkpoint removal or catalog replacement, retry an
+uncertain native write, or extend the halt timer to compensate for controller
+delay.
+
+Run long remote phases in bounded server-side jobs with private, durable inputs
+and outcomes. Verify that a harmless fixture completes after its dispatch SSH
+session closes. Release the dispatch process's operation lock before launching
+a child that acquires that lock nonblocking; otherwise the child can fail on its
+parent's lock. Keep the validator in its own service cgroup so an observer timeout
+does not terminate the validator. After a disconnect, inspect both the observer
+result and the original operation receipt before any continuation.
+
+If a completed maintenance guard has already expired, use a separately qualified
+own-state return that proves the old guard and native workers are inactive and
+rechecks the signed artifacts, own WAL, accepted catalog, indexes and source
+authorization. Do not rearm the old maintenance window. Require normal consensus
+acceptance and restoration of the original auxiliary-service states. Final
+auxiliary restoration has its own complete normal-runtime capacity budget;
+that budget cannot authorize staging, native maintenance or restart.
+
 ## Archive migration capacity and verifier admission
 
 The combined diagnostic and deployment SSH rate must fit the host firewall's
@@ -1977,8 +2031,11 @@ actual connection policy. On September 10, the US server limited new SSH
 connections to fewer than six within 30 seconds. A complete peer-health batch
 can consume five connections to its proposal-sampling host; overlapping
 diagnostics or the next batch can therefore receive `Connection refused` even
-while the validator and SSH service remain healthy. Consolidate reads and allow
-35 seconds between these batches. Do not weaken the firewall. A five-second
+while the validator and SSH service remain healthy. Consolidate reads and pace
+every actual SSH call per host, including connection priming and calls inside
+peer barriers. The qualified September 11 transport uses an eight-second minimum
+interval. A 35-second delay between lifecycle phases alone did not pace calls
+inside their barriers. Do not weaken the firewall. A five-second
 retry loop can keep refreshing the limit window rather than allowing recovery.
 
 If such a failure occurs before a target mutation, verify the controller's exact
